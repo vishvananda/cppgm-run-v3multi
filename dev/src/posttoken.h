@@ -205,6 +205,17 @@ struct IPostTokenOutput
 	virtual void emit_literal(const std::string& source,
 		const LiteralData& value) = 0;
 	virtual void emit_user_defined_literal(const UserDefinedLiteralData& value) = 0;
+	// The source token was an identifier/keyword before PA2 mapped its
+	// spelling to a SimpleTokenType.  Existing PA2 consumers receive the same
+	// simple event through the default forwarding implementation.
+	virtual void emit_simple_identifier(const std::string& source,
+		SimpleTokenType type)
+	{
+		emit_simple(source, type);
+	}
+	// Existing PA2 consumers ignore line boundaries.  PA3 overrides this
+	// optional event only through the explicit line-aware entry point below.
+	virtual void emit_new_line() {}
 	virtual void emit_eof() = 0;
 
 	virtual ~IPostTokenOutput() {}
@@ -213,6 +224,11 @@ struct IPostTokenOutput
 // Execute PA1's phases 1--3 and PA2's token conversion through the typed
 // output boundary above.
 void posttokenize_cpp_source(const std::string& source,
+	IPostTokenOutput& output);
+
+// The same typed conversion with logical-new-line events retained.  The
+// ordinary entry point intentionally keeps newline a no-op for PA2.
+void posttokenize_cpp_source_by_line(const std::string& source,
 	IPostTokenOutput& output);
 
 // These compatibility decoders are intentionally retained for PA2's required

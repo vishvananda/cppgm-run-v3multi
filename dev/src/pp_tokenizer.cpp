@@ -1158,7 +1158,10 @@ private:
 			TokenKind::PreprocessingOpOrPunc : TokenKind::Identifier;
 		const std::string data = data_from_units(begin, end);
 		pos_ = end;
-		emit_token(kind, data);
+		if (kind == TokenKind::PreprocessingOpOrPunc)
+			output_.emit_identifier_as_preprocessing_op_or_punc(data);
+		else
+			emit_token(kind, data);
 		mark_nonwhite(kind, match.identity, match.role);
 		return true;
 	}

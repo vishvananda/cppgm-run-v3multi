@@ -1495,12 +1495,21 @@ LiteralData character_value(const CharacterResult& character)
 class PostTokenStream : public IPPTokenStream
 {
 public:
-	explicit PostTokenStream(IPostTokenOutput& output)
-		: output_(output), pending_strings_(), operator_pending_(false)
+	PostTokenStream(IPostTokenOutput& output, bool line_aware)
+		: output_(output), line_aware_(line_aware), pending_strings_(),
+		  operator_pending_(false)
 	{}
 
 	void emit_whitespace_sequence() {}
-	void emit_new_line() {}
+
+	void emit_new_line()
+	{
+		if (!line_aware_)
+			return;
+		flush_strings();
+		operator_pending_ = false;
+		output_.emit_new_line();
+	}
 
 	void emit_header_name(const std::string& data)
 	{
@@ -1516,11 +1525,19 @@ public:
 		SimpleTokenType type;
 		if (lookup_simple_token_type(data, &type))
 		{
-			output_.emit_simple(data, type);
+			output_.emit_simple_identifier(data, type);
 			operator_pending_ = type == SimpleTokenType::KW_OPERATOR;
 		}
 		else
 			output_.emit_identifier(data);
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc(
+		const std::string& data)
+	{
+		// Preserve the phase-3 identifier-origin fact for typed post-token
+		// consumers while retaining the ordinary PA1 event for other streams.
+		emit_identifier(data);
 	}
 
 	void emit_pp_number(const std::string& data)
@@ -1616,6 +1633,7 @@ public:
 
 private:
 	IPostTokenOutput& output_;
+	bool line_aware_;
 	std::vector<StringPart> pending_strings_;
 	bool operator_pending_;
 
@@ -1837,6 +1855,13 @@ long double PA2Decode_long_double(const std::string& source)
 void posttokenize_cpp_source(const std::string& source,
 	IPostTokenOutput& output)
 {
-	PostTokenStream stream(output);
+	PostTokenStream stream(output, false);
+	tokenize_cpp_source(source, stream);
+}
+
+void posttokenize_cpp_source_by_line(const std::string& source,
+	IPostTokenOutput& output)
+{
+	PostTokenStream stream(output, true);
 	tokenize_cpp_source(source, stream);
 }
