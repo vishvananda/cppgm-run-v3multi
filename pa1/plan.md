@@ -83,7 +83,7 @@ inputs remained outside the repository under `/tmp` and were not committed.
 - Implementation checkpoint commit: `d62d4144` (`PA1: implement phase 1-3
   preprocessing tokenizer`).
 - Ledger follow-up commit: `bc8a31bb` (`PA1: record validation ledger`).
-- Correction commit: hash will be reported in the final handoff; the ledger
-  intentionally points to that self-identifying commit because a commit cannot
-  embed its own hash.
-- Final `git status --short`: pending correction commit, then rechecked clean.
+- Correction commit: `85bd3a67` (`PA1: fix raw prefix spans and compact phases`).
+- This ledger follow-up records the correction hash; its own hash is reported
+  in the final handoff because a commit cannot embed its own ID.
+- Final `git status --short`: verified clean after the ledger follow-up commit.
