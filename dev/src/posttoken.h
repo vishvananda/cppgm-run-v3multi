@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "IPPTokenStream.h"
+
 // The posttoken stage owns these typed facts.  The command-line program only
 // renders them; consumers that need a different presentation can implement
 // IPostTokenOutput without reparsing the rendered stream.
@@ -229,6 +231,12 @@ void posttokenize_cpp_source(const std::string& source,
 // The same typed conversion with logical-new-line events retained.  The
 // ordinary entry point intentionally keeps newline a no-op for PA2.
 void posttokenize_cpp_source_by_line(const std::string& source,
+	IPostTokenOutput& output);
+
+// Consume already-classified phase-3 tokens.  This is the typed boundary
+// used by PA4 after macro replacement; it does not render and re-tokenize a
+// source spelling.
+void posttokenize_cpp_tokens(const std::vector<PPToken>& tokens,
 	IPostTokenOutput& output);
 
 // These compatibility decoders are intentionally retained for PA2's required

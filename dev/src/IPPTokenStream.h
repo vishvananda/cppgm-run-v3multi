@@ -2,6 +2,37 @@
 
 #include <string>
 
+// This is the typed phase-3 token fact shared by the macro owner and the
+// posttoken consumer.  Whitespace, logical new-lines, and EOF have no
+// spelling; all other kinds retain the tokenizer's exact spelling.
+enum class PPTokenKind
+{
+	WhitespaceSequence,
+	NewLine,
+	HeaderName,
+	Identifier,
+	IdentifierAsPreprocessingOpOrPunc,
+	PPNumber,
+	CharacterLiteral,
+	UserDefinedCharacterLiteral,
+	StringLiteral,
+	UserDefinedStringLiteral,
+	PreprocessingOpOrPunc,
+	NonWhitespaceCharacter,
+	EndOfFile
+};
+
+struct PPToken
+{
+	PPTokenKind kind;
+	std::string spelling;
+
+	PPToken(PPTokenKind kind = PPTokenKind::EndOfFile,
+		const std::string& spelling = std::string())
+		: kind(kind), spelling(spelling)
+	{}
+};
+
 struct IPPTokenStream
 {
 	virtual void emit_whitespace_sequence() = 0;

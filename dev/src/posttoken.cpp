@@ -1789,6 +1789,52 @@ private:
 	}
 };
 
+void emit_pp_token(PostTokenStream* stream, const PPToken& token)
+{
+	switch (token.kind)
+	{
+	case PPTokenKind::WhitespaceSequence:
+		stream->emit_whitespace_sequence();
+		return;
+	case PPTokenKind::NewLine:
+		stream->emit_new_line();
+		return;
+	case PPTokenKind::HeaderName:
+		stream->emit_header_name(token.spelling);
+		return;
+	case PPTokenKind::Identifier:
+		stream->emit_identifier(token.spelling);
+		return;
+	case PPTokenKind::IdentifierAsPreprocessingOpOrPunc:
+		stream->emit_identifier_as_preprocessing_op_or_punc(token.spelling);
+		return;
+	case PPTokenKind::PPNumber:
+		stream->emit_pp_number(token.spelling);
+		return;
+	case PPTokenKind::CharacterLiteral:
+		stream->emit_character_literal(token.spelling);
+		return;
+	case PPTokenKind::UserDefinedCharacterLiteral:
+		stream->emit_user_defined_character_literal(token.spelling);
+		return;
+	case PPTokenKind::StringLiteral:
+		stream->emit_string_literal(token.spelling);
+		return;
+	case PPTokenKind::UserDefinedStringLiteral:
+		stream->emit_user_defined_string_literal(token.spelling);
+		return;
+	case PPTokenKind::PreprocessingOpOrPunc:
+		stream->emit_preprocessing_op_or_punc(token.spelling);
+		return;
+	case PPTokenKind::NonWhitespaceCharacter:
+		stream->emit_non_whitespace_char(token.spelling);
+		return;
+	case PPTokenKind::EndOfFile:
+		stream->emit_eof();
+		return;
+	}
+}
+
 } // namespace
 
 const char* fundamental_type_name(FundamentalType type)
@@ -1864,4 +1910,22 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 {
 	PostTokenStream stream(output, true);
 	tokenize_cpp_source(source, stream);
+}
+
+void posttokenize_cpp_tokens(const std::vector<PPToken>& tokens,
+	IPostTokenOutput& output)
+{
+	PostTokenStream stream(output, false);
+	bool saw_eof = false;
+	for (std::size_t i = 0; i < tokens.size(); ++i)
+	{
+		emit_pp_token(&stream, tokens[i]);
+		if (tokens[i].kind == PPTokenKind::EndOfFile)
+		{
+			saw_eof = true;
+			break;
+		}
+	}
+	if (!saw_eof)
+		stream.emit_eof();
 }
