@@ -1081,7 +1081,6 @@ private:
 		const size_t begin = pos_;
 		validate_external_range(begin, quote + 1);
 		size_t i = quote + 1;
-		bool has_content = false;
 		while (i < units_.size())
 		{
 			validate_literal_unit(i);
@@ -1089,22 +1088,18 @@ private:
 				throw std::runtime_error("unterminated literal");
 			if (units_[i].from_ucn)
 			{
-				has_content = true;
 				++i;
 				continue;
 			}
 			if (units_[i].cp == '\\')
 			{
 				i = consume_escape(i);
-				has_content = true;
 				continue;
 			}
 			if (units_[i].cp ==
 				(kind == LiteralKind::Character ? '\'' : '"'))
 			{
-				if (kind == LiteralKind::Character && !has_content)
-					throw std::runtime_error("empty character literal");
-				++i;
+			++i;
 				size_t suffix_end = i;
 				if (suffix_end < units_.size() &&
 					is_identifier_start(units_[suffix_end].cp))
@@ -1121,7 +1116,6 @@ private:
 				mark_nonwhite(token_kind);
 				return true;
 			}
-			has_content = true;
 			++i;
 		}
 
