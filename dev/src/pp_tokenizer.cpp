@@ -28,6 +28,8 @@ struct Range
 
 enum class TokenKind
 {
+	WhitespaceSequence,
+	NewLine,
 	HeaderName,
 	Identifier,
 	PPNumber,
@@ -36,7 +38,153 @@ enum class TokenKind
 	StringLiteral,
 	UserDefinedStringLiteral,
 	PreprocessingOpOrPunc,
-	NonWhitespaceCharacter
+	NonWhitespaceCharacter,
+	EndOfFile
+};
+
+enum class PreprocessingOperator
+{
+	None,
+	AlternativeHashHash,
+	ArrowStar,
+	ShiftRightAssign,
+	ShiftLeftAssign,
+	HashHash,
+	LessColon,
+	ColonGreater,
+	LessPercent,
+	PercentGreater,
+	AlternativeHash,
+	Ellipsis,
+	DotStar,
+	PlusAssign,
+	MinusAssign,
+	StarAssign,
+	SlashAssign,
+	PercentAssign,
+	CaretAssign,
+	AmpersandAssign,
+	PipeAssign,
+	ShiftLeft,
+	ShiftRight,
+	LessEqual,
+	GreaterEqual,
+	LogicalAnd,
+	EqualEqual,
+	NotEqual,
+	LogicalOr,
+	Increment,
+	Decrement,
+	Arrow,
+	Scope,
+	LeftBrace,
+	RightBrace,
+	LeftBracket,
+	RightBracket,
+	Hash,
+	LeftParen,
+	RightParen,
+	Semicolon,
+	Colon,
+	Question,
+	Dot,
+	Plus,
+	Minus,
+	Star,
+	Slash,
+	Percent,
+	Caret,
+	Ampersand,
+	Pipe,
+	Tilde,
+	Bang,
+	Equal,
+	Less,
+	Greater,
+	Comma,
+	New,
+	Delete,
+	And,
+	AndEq,
+	Bitand,
+	Bitor,
+	Compl,
+	Not,
+	NotEq,
+	Or,
+	OrEq,
+	Xor,
+	XorEq
+};
+
+enum class IdentifierRole
+{
+	None,
+	IncludeDirective
+};
+
+enum class LiteralKind
+{
+	Character,
+	String
+};
+
+enum class RawPrefixKind
+{
+	None,
+	R,
+	U8,
+	U,
+	UpperU,
+	L
+};
+
+struct RawPrefix
+{
+	RawPrefixKind kind;
+	size_t length;
+
+	RawPrefix(RawPrefixKind kind = RawPrefixKind::None, size_t length = 0)
+		: kind(kind), length(length)
+	{}
+};
+
+struct IdentifierPattern
+{
+	PreprocessingOperator identity;
+	IdentifierRole role;
+	const char* spelling;
+	size_t length;
+
+	template <size_t N>
+	IdentifierPattern(PreprocessingOperator identity, IdentifierRole role,
+		const char (&spelling)[N])
+		: identity(identity), role(role), spelling(spelling), length(N - 1)
+	{}
+};
+
+struct PunctuatorPattern
+{
+	PreprocessingOperator identity;
+	const char* spelling;
+	size_t length;
+
+	template <size_t N>
+	PunctuatorPattern(PreprocessingOperator identity,
+		const char (&spelling)[N])
+		: identity(identity), spelling(spelling), length(N - 1)
+	{}
+};
+
+struct IdentifierMatch
+{
+	PreprocessingOperator identity;
+	IdentifierRole role;
+
+	IdentifierMatch(PreprocessingOperator identity = PreprocessingOperator::None,
+		IdentifierRole role = IdentifierRole::None)
+		: identity(identity), role(role)
+	{}
 };
 
 const Range kAnnexE1[] =
@@ -62,19 +210,83 @@ const Range kAnnexE2[] =
 	{0x300, 0x36F}, {0x1DC0, 0x1DFF}, {0x20D0, 0x20FF}, {0xFE20, 0xFE2F}
 };
 
-const char* const kIdentifierLikeOperators[] =
+const IdentifierPattern kIdentifierPatterns[] =
 {
-	"new", "delete", "and", "and_eq", "bitand", "bitor", "compl",
-	"not", "not_eq", "or", "or_eq", "xor", "xor_eq"
+	{PreprocessingOperator::New, IdentifierRole::None, "new"},
+	{PreprocessingOperator::Delete, IdentifierRole::None, "delete"},
+	{PreprocessingOperator::And, IdentifierRole::None, "and"},
+	{PreprocessingOperator::AndEq, IdentifierRole::None, "and_eq"},
+	{PreprocessingOperator::Bitand, IdentifierRole::None, "bitand"},
+	{PreprocessingOperator::Bitor, IdentifierRole::None, "bitor"},
+	{PreprocessingOperator::Compl, IdentifierRole::None, "compl"},
+	{PreprocessingOperator::Not, IdentifierRole::None, "not"},
+	{PreprocessingOperator::NotEq, IdentifierRole::None, "not_eq"},
+	{PreprocessingOperator::Or, IdentifierRole::None, "or"},
+	{PreprocessingOperator::OrEq, IdentifierRole::None, "or_eq"},
+	{PreprocessingOperator::Xor, IdentifierRole::None, "xor"},
+	{PreprocessingOperator::XorEq, IdentifierRole::None, "xor_eq"},
+	{PreprocessingOperator::None, IdentifierRole::IncludeDirective, "include"}
 };
 
-const char* const kPunctuators[] =
+const PunctuatorPattern kPunctuatorPatterns[] =
 {
-	"%:%:", "->*", ">>=", "<<=", "##", "<:", ":>", "<%", "%>", "%:",
-	"...", ".*", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "<<",
-	">>", "<=", ">=", "&&", "==", "!=", "||", "++", "--", "->", "::",
-	"{", "}", "[", "]", "#", "(", ")", ";", ":", "?", ".", "+", "-",
-	"*", "/", "%", "^", "&", "|", "~", "!", "=", "<", ">", ","
+	{PreprocessingOperator::AlternativeHashHash, "%:%:"},
+	{PreprocessingOperator::ArrowStar, "->*"},
+	{PreprocessingOperator::ShiftRightAssign, ">>="},
+	{PreprocessingOperator::ShiftLeftAssign, "<<="},
+	{PreprocessingOperator::HashHash, "##"},
+	{PreprocessingOperator::LessColon, "<:"},
+	{PreprocessingOperator::ColonGreater, ":>"},
+	{PreprocessingOperator::LessPercent, "<%"},
+	{PreprocessingOperator::PercentGreater, "%>"},
+	{PreprocessingOperator::AlternativeHash, "%:"},
+	{PreprocessingOperator::Ellipsis, "..."},
+	{PreprocessingOperator::DotStar, ".*"},
+	{PreprocessingOperator::PlusAssign, "+="},
+	{PreprocessingOperator::MinusAssign, "-="},
+	{PreprocessingOperator::StarAssign, "*="},
+	{PreprocessingOperator::SlashAssign, "/="},
+	{PreprocessingOperator::PercentAssign, "%="},
+	{PreprocessingOperator::CaretAssign, "^="},
+	{PreprocessingOperator::AmpersandAssign, "&="},
+	{PreprocessingOperator::PipeAssign, "|="},
+	{PreprocessingOperator::ShiftLeft, "<<"},
+	{PreprocessingOperator::ShiftRight, ">>"},
+	{PreprocessingOperator::LessEqual, "<="},
+	{PreprocessingOperator::GreaterEqual, ">="},
+	{PreprocessingOperator::LogicalAnd, "&&"},
+	{PreprocessingOperator::EqualEqual, "=="},
+	{PreprocessingOperator::NotEqual, "!="},
+	{PreprocessingOperator::LogicalOr, "||"},
+	{PreprocessingOperator::Increment, "++"},
+	{PreprocessingOperator::Decrement, "--"},
+	{PreprocessingOperator::Arrow, "->"},
+	{PreprocessingOperator::Scope, "::"},
+	{PreprocessingOperator::LeftBrace, "{"},
+	{PreprocessingOperator::RightBrace, "}"},
+	{PreprocessingOperator::LeftBracket, "["},
+	{PreprocessingOperator::RightBracket, "]"},
+	{PreprocessingOperator::Hash, "#"},
+	{PreprocessingOperator::LeftParen, "("},
+	{PreprocessingOperator::RightParen, ")"},
+	{PreprocessingOperator::Semicolon, ";"},
+	{PreprocessingOperator::Colon, ":"},
+	{PreprocessingOperator::Question, "?"},
+	{PreprocessingOperator::Dot, "."},
+	{PreprocessingOperator::Plus, "+"},
+	{PreprocessingOperator::Minus, "-"},
+	{PreprocessingOperator::Star, "*"},
+	{PreprocessingOperator::Slash, "/"},
+	{PreprocessingOperator::Percent, "%"},
+	{PreprocessingOperator::Caret, "^"},
+	{PreprocessingOperator::Ampersand, "&"},
+	{PreprocessingOperator::Pipe, "|"},
+	{PreprocessingOperator::Tilde, "~"},
+	{PreprocessingOperator::Bang, "!"},
+	{PreprocessingOperator::Equal, "="},
+	{PreprocessingOperator::Less, "<"},
+	{PreprocessingOperator::Greater, ">"},
+	{PreprocessingOperator::Comma, ","}
 };
 
 bool is_hex_digit(int cp)
@@ -456,7 +668,7 @@ public:
 				continue;
 			if (units_[pos_].cp == '\n')
 			{
-				output_.emit_new_line();
+				emit_token(TokenKind::NewLine);
 				++pos_;
 				line_start_ = true;
 				directive_hash_ = false;
@@ -486,12 +698,12 @@ public:
 				throw std::runtime_error("unterminated literal");
 
 			const std::string data = data_from_units(pos_, pos_ + 1);
-			output_.emit_non_whitespace_char(data);
+			emit_token(TokenKind::NonWhitespaceCharacter, data);
 			++pos_;
-			mark_nonwhite(TokenKind::NonWhitespaceCharacter, data);
+			mark_nonwhite(TokenKind::NonWhitespaceCharacter);
 		}
 
-		output_.emit_eof();
+		emit_token(TokenKind::EndOfFile);
 	}
 
 private:
@@ -519,15 +731,69 @@ private:
 		return result;
 	}
 
-	bool matches(size_t at, const char* text) const
+	bool matches_ascii(size_t at, const char* spelling, size_t length) const
 	{
-		size_t i = at;
-		for (size_t j = 0; text[j] != '\0'; ++j, ++i)
+		for (size_t i = 0; i < length; ++i)
 		{
-			if (i >= units_.size() || units_[i].cp != static_cast<unsigned char>(text[j]))
+			if (at + i >= units_.size() ||
+				units_[at + i].cp != static_cast<unsigned char>(spelling[i]))
 				return false;
 		}
 		return true;
+	}
+
+	void emit_token(TokenKind kind)
+	{
+		switch (kind)
+		{
+		case TokenKind::WhitespaceSequence:
+			output_.emit_whitespace_sequence();
+			return;
+		case TokenKind::NewLine:
+			output_.emit_new_line();
+			return;
+		case TokenKind::EndOfFile:
+			output_.emit_eof();
+			return;
+		default:
+			throw std::runtime_error("token kind requires token data");
+		}
+	}
+
+	void emit_token(TokenKind kind, const std::string& data)
+	{
+		switch (kind)
+		{
+		case TokenKind::HeaderName:
+			output_.emit_header_name(data);
+			return;
+		case TokenKind::Identifier:
+			output_.emit_identifier(data);
+			return;
+		case TokenKind::PPNumber:
+			output_.emit_pp_number(data);
+			return;
+		case TokenKind::CharacterLiteral:
+			output_.emit_character_literal(data);
+			return;
+		case TokenKind::UserDefinedCharacterLiteral:
+			output_.emit_user_defined_character_literal(data);
+			return;
+		case TokenKind::StringLiteral:
+			output_.emit_string_literal(data);
+			return;
+		case TokenKind::UserDefinedStringLiteral:
+			output_.emit_user_defined_string_literal(data);
+			return;
+		case TokenKind::PreprocessingOpOrPunc:
+			output_.emit_preprocessing_op_or_punc(data);
+			return;
+		case TokenKind::NonWhitespaceCharacter:
+			output_.emit_non_whitespace_char(data);
+			return;
+		default:
+			throw std::runtime_error("token kind does not accept token data");
+		}
 	}
 
 	void validate_external_unit(size_t at) const
@@ -604,7 +870,7 @@ private:
 
 		if (consumed)
 		{
-			output_.emit_whitespace_sequence();
+			emit_token(TokenKind::WhitespaceSequence);
 			return true;
 		}
 		return false;
@@ -628,8 +894,8 @@ private:
 					throw std::runtime_error("empty header name");
 				++pos_;
 				const std::string data = data_from_units(begin, pos_);
-				output_.emit_header_name(data);
-				mark_nonwhite(TokenKind::HeaderName, data);
+				emit_token(TokenKind::HeaderName, data);
+				mark_nonwhite(TokenKind::HeaderName);
 				return;
 			}
 			has_content = true;
@@ -639,14 +905,19 @@ private:
 		throw std::runtime_error("unterminated header name");
 	}
 
-	size_t raw_prefix_length(size_t at) const
+	RawPrefix raw_prefix(size_t at) const
 	{
-		if (matches(at, "u8R\"")) return 4;
-		if (matches(at, "uR\"")) return 3;
-		if (matches(at, "UR\"")) return 3;
-		if (matches(at, "LR\"")) return 3;
-		if (matches(at, "R\"")) return 2;
-		return 0;
+		if (matches_ascii(at, "u8R\"", 4))
+			return RawPrefix(RawPrefixKind::U8, 4);
+		if (matches_ascii(at, "uR\"", 3))
+			return RawPrefix(RawPrefixKind::U, 3);
+		if (matches_ascii(at, "UR\"", 3))
+			return RawPrefix(RawPrefixKind::UpperU, 3);
+		if (matches_ascii(at, "LR\"", 3))
+			return RawPrefix(RawPrefixKind::L, 3);
+		if (matches_ascii(at, "R\"", 2))
+			return RawPrefix(RawPrefixKind::R, 2);
+		return RawPrefix();
 	}
 
 	bool raw_d_char(int cp) const
@@ -657,11 +928,11 @@ private:
 
 	bool scan_raw_string()
 	{
-		const size_t prefix_length = raw_prefix_length(pos_);
-		if (prefix_length == 0)
+		const RawPrefix prefix = raw_prefix(pos_);
+		if (prefix.kind == RawPrefixKind::None)
 			return false;
 
-		const size_t opening_quote = pos_ + prefix_length - 1;
+		const size_t opening_quote = pos_ + prefix.length - 1;
 		validate_external_range(pos_, opening_quote + 1);
 		const size_t physical_content_begin = units_[opening_quote].end;
 		if (physical_content_begin > physical_.size())
@@ -720,13 +991,11 @@ private:
 					if (suffix_end != suffix_begin)
 						data += data_from_units(suffix_begin, suffix_end);
 
-					if (suffix_end != suffix_begin)
-						output_.emit_user_defined_string_literal(data);
-					else
-						output_.emit_string_literal(data);
+					const TokenKind kind = suffix_end != suffix_begin ?
+						TokenKind::UserDefinedStringLiteral : TokenKind::StringLiteral;
+					emit_token(kind, data);
 					pos_ = suffix_end == suffix_begin ? logical_end : suffix_end;
-					mark_nonwhite(suffix_end == suffix_begin ?
-						TokenKind::StringLiteral : TokenKind::UserDefinedStringLiteral, data);
+					mark_nonwhite(kind);
 					return true;
 				}
 			}
@@ -775,13 +1044,13 @@ private:
 		throw std::runtime_error("invalid escape sequence");
 	}
 
-	bool literal_prefix(size_t at, bool* character, size_t* quote) const
+	bool literal_prefix(size_t at, LiteralKind* kind, size_t* quote) const
 	{
 		if (at >= units_.size())
 			return false;
 		if (units_[at].cp == '\'' || units_[at].cp == '"')
 		{
-			*character = units_[at].cp == '\'';
+			*kind = units_[at].cp == '\'' ? LiteralKind::Character : LiteralKind::String;
 			*quote = at;
 			return true;
 		}
@@ -789,13 +1058,13 @@ private:
 			at + 1 < units_.size() &&
 			(units_[at + 1].cp == '\'' || units_[at + 1].cp == '"'))
 		{
-			*character = units_[at + 1].cp == '\'';
+			*kind = units_[at + 1].cp == '\'' ? LiteralKind::Character : LiteralKind::String;
 			*quote = at + 1;
 			return true;
 		}
-		if (matches(at, "u8\""))
+		if (matches_ascii(at, "u8\"", 3))
 		{
-			*character = false;
+			*kind = LiteralKind::String;
 			*quote = at + 2;
 			return true;
 		}
@@ -804,9 +1073,9 @@ private:
 
 	bool scan_literal()
 	{
-		bool character = false;
+		LiteralKind kind = LiteralKind::String;
 		size_t quote = 0;
-		if (!literal_prefix(pos_, &character, &quote))
+		if (!literal_prefix(pos_, &kind, &quote))
 			return false;
 
 		const size_t begin = pos_;
@@ -830,9 +1099,10 @@ private:
 				has_content = true;
 				continue;
 			}
-			if (units_[i].cp == (character ? '\'' : '"'))
+			if (units_[i].cp ==
+				(kind == LiteralKind::Character ? '\'' : '"'))
 			{
-				if (character && !has_content)
+				if (kind == LiteralKind::Character && !has_content)
 					throw std::runtime_error("empty character literal");
 				++i;
 				size_t suffix_end = i;
@@ -841,27 +1111,14 @@ private:
 					suffix_end = consume_identifier(suffix_end);
 
 				const std::string data = data_from_units(begin, suffix_end);
-				if (character)
-				{
-					if (suffix_end != i)
-						output_.emit_user_defined_character_literal(data);
-					else
-						output_.emit_character_literal(data);
-				}
-				else
-				{
-					if (suffix_end != i)
-						output_.emit_user_defined_string_literal(data);
-					else
-						output_.emit_string_literal(data);
-				}
+				const TokenKind token_kind = kind == LiteralKind::Character ?
+					(suffix_end != i ? TokenKind::UserDefinedCharacterLiteral :
+						TokenKind::CharacterLiteral) :
+					(suffix_end != i ? TokenKind::UserDefinedStringLiteral :
+						TokenKind::StringLiteral);
+				emit_token(token_kind, data);
 				pos_ = suffix_end;
-				if (character)
-					mark_nonwhite(suffix_end != i ?
-						TokenKind::UserDefinedCharacterLiteral : TokenKind::CharacterLiteral, data);
-				else
-					mark_nonwhite(suffix_end != i ?
-						TokenKind::UserDefinedStringLiteral : TokenKind::StringLiteral, data);
+				mark_nonwhite(token_kind);
 				return true;
 			}
 			has_content = true;
@@ -882,6 +1139,19 @@ private:
 		return end;
 	}
 
+	IdentifierMatch classify_identifier(size_t begin, size_t end) const
+	{
+		for (size_t i = 0; i < sizeof(kIdentifierPatterns) /
+			sizeof(kIdentifierPatterns[0]); ++i)
+		{
+			const IdentifierPattern& pattern = kIdentifierPatterns[i];
+			if (end - begin == pattern.length &&
+				matches_ascii(begin, pattern.spelling, pattern.length))
+				return IdentifierMatch(pattern.identity, pattern.role);
+		}
+		return IdentifierMatch();
+	}
+
 	bool scan_identifier()
 	{
 		if (pos_ >= units_.size() || !is_identifier_start(units_[pos_].cp))
@@ -889,25 +1159,13 @@ private:
 
 		const size_t begin = pos_;
 		const size_t end = consume_identifier(pos_);
+		const IdentifierMatch match = classify_identifier(begin, end);
+		const TokenKind kind = match.identity != PreprocessingOperator::None ?
+			TokenKind::PreprocessingOpOrPunc : TokenKind::Identifier;
 		const std::string data = data_from_units(begin, end);
 		pos_ = end;
-
-		bool alternative = false;
-		for (size_t i = 0; i < sizeof(kIdentifierLikeOperators) /
-			sizeof(kIdentifierLikeOperators[0]); ++i)
-		{
-			if (data == kIdentifierLikeOperators[i])
-			{
-				alternative = true;
-				break;
-			}
-		}
-
-		if (alternative)
-			output_.emit_preprocessing_op_or_punc(data);
-		else
-			output_.emit_identifier(data);
-		mark_nonwhite(alternative ? TokenKind::PreprocessingOpOrPunc : TokenKind::Identifier, data);
+		emit_token(kind, data);
+		mark_nonwhite(kind, match.identity, match.role);
 		return true;
 	}
 
@@ -950,8 +1208,8 @@ private:
 		}
 
 		const std::string data = data_from_units(begin, pos_);
-		output_.emit_pp_number(data);
-		mark_nonwhite(TokenKind::PPNumber, data);
+		emit_token(TokenKind::PPNumber, data);
+		mark_nonwhite(TokenKind::PPNumber);
 		return true;
 	}
 
@@ -960,41 +1218,48 @@ private:
 		if (pos_ >= units_.size())
 			return false;
 
-		if (units_[pos_].cp == '<' && matches(pos_, "<::"))
+		if (units_[pos_].cp == '<' && matches_ascii(pos_, "<::", 3))
 		{
 			const size_t after = pos_ + 3;
 			if (after >= units_.size() ||
 				(units_[after].cp != ':' && units_[after].cp != '>'))
 			{
-				const std::string data = "<";
-				output_.emit_preprocessing_op_or_punc(data);
+				const std::string data = data_from_units(pos_, pos_ + 1);
+				emit_token(TokenKind::PreprocessingOpOrPunc, data);
 				++pos_;
-				mark_nonwhite(TokenKind::PreprocessingOpOrPunc, data);
+				mark_nonwhite(TokenKind::PreprocessingOpOrPunc,
+					PreprocessingOperator::Less);
 				return true;
 			}
 		}
 
-		for (size_t i = 0; i < sizeof(kPunctuators) / sizeof(kPunctuators[0]); ++i)
+		for (size_t i = 0; i < sizeof(kPunctuatorPatterns) /
+			sizeof(kPunctuatorPatterns[0]); ++i)
 		{
-			if (!matches(pos_, kPunctuators[i]))
+			const PunctuatorPattern& pattern = kPunctuatorPatterns[i];
+			if (!matches_ascii(pos_, pattern.spelling, pattern.length))
 				continue;
-			const std::string data(kPunctuators[i]);
-			const size_t end = pos_ + data.size();
+			const size_t end = pos_ + pattern.length;
 			validate_external_range(pos_, end);
+			const std::string data = data_from_units(pos_, end);
 			pos_ = end;
-			output_.emit_preprocessing_op_or_punc(data);
-			mark_nonwhite(TokenKind::PreprocessingOpOrPunc, data);
+			emit_token(TokenKind::PreprocessingOpOrPunc, data);
+			mark_nonwhite(TokenKind::PreprocessingOpOrPunc,
+				pattern.identity);
 			return true;
 		}
 		return false;
 	}
 
-	void mark_nonwhite(TokenKind kind, const std::string& data)
+	void mark_nonwhite(TokenKind kind,
+		PreprocessingOperator operator_identity = PreprocessingOperator::None,
+		IdentifierRole identifier_role = IdentifierRole::None)
 	{
 		if (line_start_)
 		{
 			if (kind == TokenKind::PreprocessingOpOrPunc &&
-				(data == "#" || data == "%:"))
+				(operator_identity == PreprocessingOperator::Hash ||
+					operator_identity == PreprocessingOperator::AlternativeHash))
 			{
 				directive_hash_ = true;
 				header_allowed_ = false;
@@ -1007,7 +1272,8 @@ private:
 		}
 		else if (directive_hash_ && !header_allowed_)
 		{
-			if (kind == TokenKind::Identifier && data == "include")
+			if (kind == TokenKind::Identifier &&
+				identifier_role == IdentifierRole::IncludeDirective)
 				header_allowed_ = true;
 			else
 				directive_hash_ = false;
