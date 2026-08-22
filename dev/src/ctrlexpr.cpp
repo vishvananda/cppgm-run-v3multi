@@ -204,307 +204,287 @@ public:
 	ParseError() : std::runtime_error("invalid controlling expression") {}
 };
 
-class Evaluator
+enum class ExprNodeKind : std::uint8_t
+{
+	Literal,
+	Identifier,
+	Defined,
+	Unary,
+	Binary,
+	Conditional
+};
+
+enum ExprNodeFlags
+{
+	ExprNodeUnsigned = 1,
+	ExprNodeTrue = 2,
+	ExprNodeFalse = 4,
+	ExprNodeParityOdd = 8
+};
+
+struct ExprNode
+{
+	ExprNodeKind kind;
+	SimpleTokenType operation;
+	std::size_t left;
+	std::size_t right;
+	std::size_t third;
+	std::uint64_t bits;
+	std::uint8_t flags;
+
+	ExprNode()
+		: kind(ExprNodeKind::Literal), operation(SimpleTokenType::OP_LBRACE),
+		  left(0), right(0), third(0), bits(0), flags(0)
+	{}
+};
+
+enum class ParseOperatorKind : std::uint8_t
+{
+	LeftParen,
+	Question,
+	Unary,
+	Binary,
+	Conditional
+};
+
+struct ParseOperator
+{
+	ParseOperatorKind kind;
+	SimpleTokenType operation;
+	std::size_t value_base;
+	std::size_t condition;
+	std::size_t when_true;
+
+	ParseOperator(ParseOperatorKind kind = ParseOperatorKind::LeftParen)
+		: kind(kind), operation(SimpleTokenType::OP_LBRACE), value_base(0),
+		  condition(0), when_true(0)
+	{}
+};
+
+bool is_prefix_unary(SimpleTokenType type)
+{
+	return type == SimpleTokenType::OP_PLUS ||
+		type == SimpleTokenType::OP_MINUS ||
+		type == SimpleTokenType::OP_LNOT ||
+		type == SimpleTokenType::OP_COMPL;
+}
+
+bool is_binary_operator(SimpleTokenType type)
+{
+	switch (type)
+	{
+	case SimpleTokenType::OP_STAR:
+	case SimpleTokenType::OP_DIV:
+	case SimpleTokenType::OP_MOD:
+	case SimpleTokenType::OP_PLUS:
+	case SimpleTokenType::OP_MINUS:
+	case SimpleTokenType::OP_LSHIFT:
+	case SimpleTokenType::OP_RSHIFT:
+	case SimpleTokenType::OP_LT:
+	case SimpleTokenType::OP_GT:
+	case SimpleTokenType::OP_LE:
+	case SimpleTokenType::OP_GE:
+	case SimpleTokenType::OP_EQ:
+	case SimpleTokenType::OP_NE:
+	case SimpleTokenType::OP_AMP:
+	case SimpleTokenType::OP_XOR:
+	case SimpleTokenType::OP_BOR:
+	case SimpleTokenType::OP_LAND:
+	case SimpleTokenType::OP_LOR:
+		return true;
+	default:
+		return false;
+	}
+}
+
+int binary_precedence(SimpleTokenType type)
+{
+	switch (type)
+	{
+	case SimpleTokenType::OP_LOR: return 2;
+	case SimpleTokenType::OP_LAND: return 3;
+	case SimpleTokenType::OP_BOR: return 4;
+	case SimpleTokenType::OP_XOR: return 5;
+	case SimpleTokenType::OP_AMP: return 6;
+	case SimpleTokenType::OP_EQ:
+	case SimpleTokenType::OP_NE: return 7;
+	case SimpleTokenType::OP_LT:
+	case SimpleTokenType::OP_GT:
+	case SimpleTokenType::OP_LE:
+	case SimpleTokenType::OP_GE: return 8;
+	case SimpleTokenType::OP_LSHIFT:
+	case SimpleTokenType::OP_RSHIFT: return 9;
+	case SimpleTokenType::OP_PLUS:
+	case SimpleTokenType::OP_MINUS: return 10;
+	case SimpleTokenType::OP_STAR:
+	case SimpleTokenType::OP_DIV:
+	case SimpleTokenType::OP_MOD: return 11;
+	default:
+		return -1;
+	}
+}
+
+int parse_operator_precedence(const ParseOperator& operation)
+{
+	if (operation.kind == ParseOperatorKind::Unary)
+		return 12;
+	if (operation.kind == ParseOperatorKind::Binary)
+		return binary_precedence(operation.operation);
+	if (operation.kind == ParseOperatorKind::Conditional)
+		return 1;
+	return -1;
+}
+
+std::size_t estimated_node_count(const std::vector<CtrlToken>& tokens)
+{
+	std::size_t count = 0;
+	for (std::size_t i = 0; i < tokens.size(); ++i)
+	{
+		const CtrlToken& token = tokens[i];
+		if (token.kind == CtrlTokenKind::Literal ||
+			is_identifier_or_keyword(token))
+			++count;
+		else if (token.kind == CtrlTokenKind::Simple &&
+			(is_prefix_unary(token.simple) ||
+				is_binary_operator(token.simple) ||
+				token.simple == SimpleTokenType::OP_QMARK))
+			++count;
+	}
+	return count;
+}
+
+class ExpressionParser
 {
 public:
-	explicit Evaluator(const std::vector<CtrlToken>& tokens)
-		: tokens_(tokens), position_(0)
-	{}
+	explicit ExpressionParser(const std::vector<CtrlToken>& tokens)
+		: tokens_(tokens), position_(0), nodes_(), operators_(), values_()
+	{
+		// This counts node-producing typed tokens without retaining another
+		// representation.  Parentheses and colons therefore do not cause a
+		// large line to reserve arena space that it cannot use.
+		nodes_.reserve(estimated_node_count(tokens_));
+	}
 
-	Value evaluate()
+	std::size_t parse()
 	{
 		if (tokens_.empty())
 			throw ParseError();
-		const Value result = parse_controlling_expression(true);
-		if (!at_end())
+
+		bool expect_operand = true;
+		while (!at_end())
+		{
+			if (expect_operand)
+				expect_operand = consume_operand();
+			else
+				expect_operand = consume_after_operand();
+		}
+		if (expect_operand)
 			throw ParseError();
-		return result;
+
+		while (!operators_.empty())
+		{
+			if (operators_.back().kind == ParseOperatorKind::LeftParen ||
+				operators_.back().kind == ParseOperatorKind::Question)
+				throw ParseError();
+			reduce_top();
+		}
+		if (values_.size() != 1)
+			throw ParseError();
+		return values_.back();
+	}
+
+	const std::vector<ExprNode>& nodes() const
+	{
+		return nodes_;
 	}
 
 private:
 	const std::vector<CtrlToken>& tokens_;
 	std::size_t position_;
+	std::vector<ExprNode> nodes_;
+	std::vector<ParseOperator> operators_;
+	std::vector<std::size_t> values_;
 
 	bool at_end() const
 	{
 		return position_ == tokens_.size();
 	}
 
-	const CtrlToken& peek() const
+	const CtrlToken& current() const
 	{
 		if (at_end())
 			throw ParseError();
 		return tokens_[position_];
 	}
 
-	bool consume(SimpleTokenType type)
+	std::size_t add_node(const ExprNode& node)
 	{
-		if (!at_end() && is_simple(tokens_[position_], type))
-		{
-			++position_;
-			return true;
-		}
-		return false;
-	}
-
-	void expect(SimpleTokenType type)
-	{
-		if (!consume(type))
-			throw ParseError();
-	}
-
-	Value parse_controlling_expression(bool evaluate_value)
-	{
-		Value condition = parse_logical_or(evaluate_value);
-		if (!consume(SimpleTokenType::OP_QMARK))
-			return condition;
-
-		const bool condition_known = evaluate_value && condition.valid;
-		const bool condition_true = condition_known && truth(condition);
-		Value when_true = parse_controlling_expression(
-			evaluate_value && condition_true);
-		expect(SimpleTokenType::OP_COLON);
-		Value when_false = parse_controlling_expression(
-			evaluate_value && condition_known && !condition_true);
-
-		const bool result_unsigned = common_unsigned(when_true, when_false);
-		if (!evaluate_value)
-			return Value(0, result_unsigned, true);
-		if (!condition.valid)
-			return invalid_value(result_unsigned);
-
-		const Value& selected = condition_true ? when_true : when_false;
-		if (!selected.valid)
-			return invalid_value(result_unsigned);
-		return Value(selected.bits, result_unsigned, true);
-	}
-
-	Value parse_logical_or(bool evaluate_value)
-	{
-		Value left = parse_logical_and(evaluate_value);
-		while (consume(SimpleTokenType::OP_LOR))
-		{
-			const bool right_active = evaluate_value && left.valid && !truth(left);
-			Value right = parse_logical_and(right_active);
-			if (!evaluate_value)
-				left = Value(0, false, true);
-			else if (!left.valid)
-				left = invalid_value(false);
-			else if (truth(left))
-				left = Value(1, false, true);
-			else if (!right.valid)
-				left = invalid_value(false);
-			else
-				left = Value(truth(right) ? 1 : 0, false, true);
-		}
-		return left;
-	}
-
-	Value parse_logical_and(bool evaluate_value)
-	{
-		Value left = parse_inclusive_or(evaluate_value);
-		while (consume(SimpleTokenType::OP_LAND))
-		{
-			const bool right_active = evaluate_value && left.valid && truth(left);
-			Value right = parse_inclusive_or(right_active);
-			if (!evaluate_value)
-				left = Value(0, false, true);
-			else if (!left.valid)
-				left = invalid_value(false);
-			else if (!truth(left))
-				left = Value(0, false, true);
-			else if (!right.valid)
-				left = invalid_value(false);
-			else
-				left = Value(truth(right) ? 1 : 0, false, true);
-		}
-		return left;
-	}
-
-	Value parse_inclusive_or(bool evaluate_value)
-	{
-		Value left = parse_exclusive_or(evaluate_value);
-		while (consume(SimpleTokenType::OP_BOR))
-		{
-			Value right = parse_exclusive_or(evaluate_value);
-			left = apply_binary(SimpleTokenType::OP_BOR, left, right,
-				evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_exclusive_or(bool evaluate_value)
-	{
-		Value left = parse_and(evaluate_value);
-		while (consume(SimpleTokenType::OP_XOR))
-		{
-			Value right = parse_and(evaluate_value);
-			left = apply_binary(SimpleTokenType::OP_XOR, left, right,
-				evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_and(bool evaluate_value)
-	{
-		Value left = parse_equality(evaluate_value);
-		while (consume(SimpleTokenType::OP_AMP))
-		{
-			Value right = parse_equality(evaluate_value);
-			left = apply_binary(SimpleTokenType::OP_AMP, left, right,
-				evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_equality(bool evaluate_value)
-	{
-		Value left = parse_relational(evaluate_value);
-		while (true)
-		{
-			SimpleTokenType operation;
-			if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_EQ))
-				operation = SimpleTokenType::OP_EQ;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_NE))
-				operation = SimpleTokenType::OP_NE;
-			else
-				break;
-			++position_;
-			Value right = parse_relational(evaluate_value);
-			left = apply_binary(operation, left, right, evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_relational(bool evaluate_value)
-	{
-		Value left = parse_shift(evaluate_value);
-		while (true)
-		{
-			SimpleTokenType operation;
-			if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_LT))
-				operation = SimpleTokenType::OP_LT;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_GT))
-				operation = SimpleTokenType::OP_GT;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_LE))
-				operation = SimpleTokenType::OP_LE;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_GE))
-				operation = SimpleTokenType::OP_GE;
-			else
-				break;
-			++position_;
-			Value right = parse_shift(evaluate_value);
-			left = apply_binary(operation, left, right, evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_shift(bool evaluate_value)
-	{
-		Value left = parse_additive(evaluate_value);
-		while (true)
-		{
-			SimpleTokenType operation;
-			if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_LSHIFT))
-				operation = SimpleTokenType::OP_LSHIFT;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_RSHIFT))
-				operation = SimpleTokenType::OP_RSHIFT;
-			else
-				break;
-			++position_;
-			Value right = parse_additive(evaluate_value);
-			left = apply_binary(operation, left, right, evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_additive(bool evaluate_value)
-	{
-		Value left = parse_multiplicative(evaluate_value);
-		while (true)
-		{
-			SimpleTokenType operation;
-			if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_PLUS))
-				operation = SimpleTokenType::OP_PLUS;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_MINUS))
-				operation = SimpleTokenType::OP_MINUS;
-			else
-				break;
-			++position_;
-			Value right = parse_multiplicative(evaluate_value);
-			left = apply_binary(operation, left, right, evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_multiplicative(bool evaluate_value)
-	{
-		Value left = parse_unary(evaluate_value);
-		while (true)
-		{
-			SimpleTokenType operation;
-			if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_STAR))
-				operation = SimpleTokenType::OP_STAR;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_DIV))
-				operation = SimpleTokenType::OP_DIV;
-			else if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_MOD))
-				operation = SimpleTokenType::OP_MOD;
-			else
-				break;
-			++position_;
-			Value right = parse_unary(evaluate_value);
-			left = apply_binary(operation, left, right, evaluate_value);
-		}
-		return left;
-	}
-
-	Value parse_unary(bool evaluate_value)
-	{
-		std::vector<SimpleTokenType> operations;
-		while (!at_end())
-		{
-			const SimpleTokenType type = tokens_[position_].simple;
-			if (tokens_[position_].kind != CtrlTokenKind::Simple ||
-				(type != SimpleTokenType::OP_PLUS &&
-				 type != SimpleTokenType::OP_MINUS &&
-				 type != SimpleTokenType::OP_LNOT &&
-				 type != SimpleTokenType::OP_COMPL))
-				break;
-			// Alternative word operators remain identifier-origin tokens.  When
-			// one appears without a following unary-expression, the primary
-			// identifier-or-keyword production is the valid interpretation.
-			if (tokens_[position_].identifier_like &&
-				!can_start_unary(position_ + 1))
-				break;
-			operations.push_back(type);
-			++position_;
-		}
-
-		Value result = parse_primary(evaluate_value);
-		for (std::size_t i = operations.size(); i != 0; --i)
-		{
-			const SimpleTokenType operation = operations[i - 1];
-			if (operation == SimpleTokenType::OP_LNOT)
-			{
-				// Logical-not is always a signed result, including in an
-				// inactive branch whose value is deliberately not computed.
-				const bool was_valid = result.valid;
-				result.is_unsigned = false;
-				if (!evaluate_value || !was_valid)
-					continue;
-				result.bits = truth(result) ? 0 : 1;
-				continue;
-			}
-			if (!evaluate_value || !result.valid)
-				continue;
-			if (operation == SimpleTokenType::OP_PLUS)
-				continue;
-			if (operation == SimpleTokenType::OP_MINUS)
-				result.bits = static_cast<std::uint64_t>(0) - result.bits;
-			else
-				result.bits = ~result.bits;
-		}
+		const std::size_t result = nodes_.size();
+		nodes_.push_back(node);
 		return result;
+	}
+
+	std::size_t add_literal(const CtrlToken& token)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Literal;
+		node.bits = token.bits;
+		if (token.is_unsigned)
+			node.flags |= ExprNodeUnsigned;
+		return add_node(node);
+	}
+
+	std::size_t add_identifier(const CtrlToken& token)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Identifier;
+		if (token.kind == CtrlTokenKind::Simple &&
+			token.simple == SimpleTokenType::KW_TRUE)
+			node.flags |= ExprNodeTrue;
+		else if (token.kind == CtrlTokenKind::Simple &&
+			token.simple == SimpleTokenType::KW_FALSE)
+			node.flags |= ExprNodeFalse;
+		return add_node(node);
+	}
+
+	std::size_t add_defined(bool parity_odd)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Defined;
+		if (parity_odd)
+			node.flags |= ExprNodeParityOdd;
+		return add_node(node);
+	}
+
+	std::size_t add_unary(SimpleTokenType operation, std::size_t operand)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Unary;
+		node.operation = operation;
+		node.left = operand;
+		return add_node(node);
+	}
+
+	std::size_t add_binary(SimpleTokenType operation, std::size_t left,
+		std::size_t right)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Binary;
+		node.operation = operation;
+		node.left = left;
+		node.right = right;
+		return add_node(node);
+	}
+
+	std::size_t add_conditional(std::size_t condition,
+		std::size_t when_true, std::size_t when_false)
+	{
+		ExprNode node;
+		node.kind = ExprNodeKind::Conditional;
+		node.left = condition;
+		node.right = when_true;
+		node.third = when_false;
+		return add_node(node);
 	}
 
 	bool can_start_unary(std::size_t position) const
@@ -516,98 +496,333 @@ private:
 			is_identifier_or_keyword(token) ||
 			is_simple(token, SimpleTokenType::OP_LPAREN))
 			return true;
-		if (token.kind != CtrlTokenKind::Simple)
-			return false;
-		return token.simple == SimpleTokenType::OP_PLUS ||
-			token.simple == SimpleTokenType::OP_MINUS ||
-			token.simple == SimpleTokenType::OP_LNOT ||
-			token.simple == SimpleTokenType::OP_COMPL;
-	}
-
-	Value parse_primary(bool evaluate_value)
-	{
-		if (at_end())
-			throw ParseError();
-
-		if (consume(SimpleTokenType::OP_LPAREN))
-		{
-			Value result = parse_controlling_expression(evaluate_value);
-			expect(SimpleTokenType::OP_RPAREN);
-			return result;
-		}
-
-		if (is_defined_operator())
-			return parse_defined(evaluate_value);
-
-		if (tokens_[position_].kind == CtrlTokenKind::Literal)
-		{
-			const CtrlToken& token = tokens_[position_];
-			++position_;
-			return Value(token.bits, token.is_unsigned, true);
-		}
-
-		if (is_identifier_or_keyword(tokens_[position_]))
-			return parse_identifier_or_keyword(evaluate_value);
-
-		throw ParseError();
+		return token.kind == CtrlTokenKind::Simple &&
+			is_prefix_unary(token.simple);
 	}
 
 	bool is_defined_operator() const
 	{
-		return tokens_[position_].kind == CtrlTokenKind::Identifier &&
-			tokens_[position_].defined_spelling;
+		return current().kind == CtrlTokenKind::Identifier &&
+			current().defined_spelling;
 	}
 
-	Value parse_identifier_or_keyword(bool evaluate_value)
-	{
-		if (!is_identifier_or_keyword(peek()))
-			throw ParseError();
-
-		const CtrlToken& token = tokens_[position_];
-		const bool is_true = token.kind == CtrlTokenKind::Simple &&
-			token.simple == SimpleTokenType::KW_TRUE;
-		const bool is_false = token.kind == CtrlTokenKind::Simple &&
-			token.simple == SimpleTokenType::KW_FALSE;
-		++position_;
-		if (!evaluate_value)
-			return Value(0, false, true);
-		if (is_true)
-			return Value(1, false, true);
-		if (is_false)
-			return Value(0, false, true);
-		return Value(0, false, true);
-	}
-
-	Value parse_defined(bool evaluate_value)
+	std::size_t parse_defined()
 	{
 		++position_; // the identifier spelling "defined"
 		bool operand_parity_odd = false;
-		if (consume(SimpleTokenType::OP_LPAREN))
+		if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_LPAREN))
 		{
-			operand_parity_odd = parse_defined_operand();
-			expect(SimpleTokenType::OP_RPAREN);
+			++position_;
+			if (at_end() || !is_identifier_or_keyword(tokens_[position_]))
+				throw ParseError();
+			operand_parity_odd = tokens_[position_].identifier_parity_odd;
+			++position_;
+			if (at_end() || !is_simple(tokens_[position_], SimpleTokenType::OP_RPAREN))
+				throw ParseError();
+			++position_;
 		}
 		else
-			operand_parity_odd = parse_defined_operand();
-
-		if (!evaluate_value)
-			return Value(0, false, true);
-		return Value(operand_parity_odd ? 1 : 0, false, true);
+		{
+			if (at_end() || !is_identifier_or_keyword(tokens_[position_]))
+				throw ParseError();
+			operand_parity_odd = tokens_[position_].identifier_parity_odd;
+			++position_;
+		}
+		return add_defined(operand_parity_odd);
 	}
 
-	bool parse_defined_operand()
+	bool consume_operand()
 	{
-		if (at_end() || !is_identifier_or_keyword(tokens_[position_]))
-			throw ParseError();
-		const bool operand_parity_odd =
-			tokens_[position_].identifier_parity_odd;
-		++position_;
-		return operand_parity_odd;
+		const CtrlToken& token = current();
+		if (token.kind == CtrlTokenKind::Literal)
+		{
+			values_.push_back(add_literal(token));
+			++position_;
+			return false;
+		}
+
+		if (is_simple(token, SimpleTokenType::OP_LPAREN))
+		{
+			ParseOperator operation(ParseOperatorKind::LeftParen);
+			operation.value_base = values_.size();
+			operators_.push_back(operation);
+			++position_;
+			return true;
+		}
+
+		if (is_defined_operator())
+		{
+			values_.push_back(parse_defined());
+			return false;
+		}
+
+		if (token.kind == CtrlTokenKind::Simple &&
+			is_prefix_unary(token.simple) &&
+			(!token.identifier_like || can_start_unary(position_ + 1)))
+		{
+			ParseOperator operation(ParseOperatorKind::Unary);
+			operation.operation = token.simple;
+			operation.value_base = values_.size();
+			operators_.push_back(operation);
+			++position_;
+			return true;
+		}
+
+		if (is_identifier_or_keyword(token))
+		{
+			values_.push_back(add_identifier(token));
+			++position_;
+			return false;
+		}
+		throw ParseError();
 	}
 
-	Value apply_binary(SimpleTokenType operation, const Value& left,
+	bool consume_after_operand()
+	{
+		const CtrlToken& token = current();
+		if (is_simple(token, SimpleTokenType::OP_RPAREN))
+		{
+			close_parenthesis();
+			return false;
+		}
+		if (is_simple(token, SimpleTokenType::OP_QMARK))
+		{
+			begin_conditional();
+			return true;
+		}
+		if (is_simple(token, SimpleTokenType::OP_COLON))
+		{
+			finish_conditional();
+			return true;
+		}
+		if (token.kind != CtrlTokenKind::Simple ||
+			!is_binary_operator(token.simple))
+			throw ParseError();
+
+		const int precedence = binary_precedence(token.simple);
+		while (!operators_.empty())
+		{
+			const ParseOperator& top = operators_.back();
+			if (top.kind == ParseOperatorKind::LeftParen ||
+				top.kind == ParseOperatorKind::Question ||
+				parse_operator_precedence(top) < precedence)
+				break;
+			reduce_top();
+		}
+		ParseOperator operation(ParseOperatorKind::Binary);
+		operation.operation = token.simple;
+		operation.value_base = values_.empty() ? 0 : values_.size() - 1;
+		operators_.push_back(operation);
+		++position_;
+		return true;
+	}
+
+	void begin_conditional()
+	{
+		while (!operators_.empty())
+		{
+			const ParseOperator& top = operators_.back();
+			if (top.kind == ParseOperatorKind::LeftParen ||
+				top.kind == ParseOperatorKind::Question ||
+				parse_operator_precedence(top) <= 1)
+				break;
+			reduce_top();
+		}
+		if (values_.empty())
+			throw ParseError();
+
+		ParseOperator operation(ParseOperatorKind::Question);
+		operation.condition = values_.back();
+		values_.pop_back();
+		operation.value_base = values_.size();
+		operators_.push_back(operation);
+		++position_;
+	}
+
+	void finish_conditional()
+	{
+		while (!operators_.empty() &&
+			operators_.back().kind != ParseOperatorKind::Question)
+		{
+			if (operators_.back().kind == ParseOperatorKind::LeftParen)
+				throw ParseError();
+			reduce_top();
+		}
+		if (operators_.empty())
+			throw ParseError();
+
+		ParseOperator operation = operators_.back();
+		if (values_.size() != operation.value_base + 1)
+			throw ParseError();
+		operation.when_true = values_.back();
+		values_.pop_back();
+		operation.kind = ParseOperatorKind::Conditional;
+		operators_.back() = operation;
+		++position_;
+	}
+
+	void close_parenthesis()
+	{
+		while (!operators_.empty() &&
+			operators_.back().kind != ParseOperatorKind::LeftParen)
+		{
+			if (operators_.back().kind == ParseOperatorKind::Question)
+				throw ParseError();
+			reduce_top();
+		}
+		if (operators_.empty())
+			throw ParseError();
+
+		const ParseOperator operation = operators_.back();
+		if (values_.size() != operation.value_base + 1)
+			throw ParseError();
+		operators_.pop_back();
+		++position_;
+	}
+
+	void reduce_top()
+	{
+		if (operators_.empty())
+			throw ParseError();
+		const ParseOperator operation = operators_.back();
+		operators_.pop_back();
+		if (operation.kind == ParseOperatorKind::Question ||
+			operation.kind == ParseOperatorKind::LeftParen)
+			throw ParseError();
+
+		if (operation.kind == ParseOperatorKind::Unary)
+		{
+			if (values_.size() != operation.value_base + 1)
+				throw ParseError();
+			const std::size_t operand = values_.back();
+			values_.pop_back();
+			values_.push_back(add_unary(operation.operation, operand));
+			return;
+		}
+
+		if (operation.kind == ParseOperatorKind::Binary)
+		{
+			if (values_.size() != operation.value_base + 2)
+				throw ParseError();
+			const std::size_t right = values_.back();
+			values_.pop_back();
+			const std::size_t left = values_.back();
+			values_.pop_back();
+			values_.push_back(add_binary(operation.operation, left, right));
+			return;
+		}
+
+		if (operation.kind == ParseOperatorKind::Conditional)
+		{
+			if (values_.size() != operation.value_base + 1)
+				throw ParseError();
+			const std::size_t when_false = values_.back();
+			values_.pop_back();
+			values_.push_back(add_conditional(operation.condition,
+				operation.when_true, when_false));
+			return;
+		}
+		throw ParseError();
+	}
+};
+
+struct EvaluationFrame
+{
+	std::size_t node;
+	std::uint8_t stage;
+	bool evaluate_value;
+	bool condition_known;
+	bool condition_true;
+	Value first;
+	Value second;
+
+	EvaluationFrame(std::size_t node, bool evaluate_value)
+		: node(node), stage(0), evaluate_value(evaluate_value),
+		  condition_known(false), condition_true(false), first(), second()
+	{}
+};
+
+class Evaluator
+{
+public:
+	explicit Evaluator(const std::vector<CtrlToken>& tokens)
+		: tokens_(tokens)
+	{}
+
+	Value evaluate()
+	{
+		ExpressionParser parser(tokens_);
+		const std::size_t root = parser.parse();
+		return evaluate_tree(parser.nodes(), root);
+	}
+
+private:
+	const std::vector<CtrlToken>& tokens_;
+
+	static Value pop_result(std::vector<Value>* results)
+	{
+		if (results->empty())
+			throw ParseError();
+		const Value result = results->back();
+		results->pop_back();
+		return result;
+	}
+
+	static Value apply_unary(SimpleTokenType operation, const Value& operand,
+		bool evaluate_value)
+	{
+		if (operation == SimpleTokenType::OP_LNOT)
+		{
+			Value result = operand;
+			result.is_unsigned = false;
+			if (!evaluate_value || !operand.valid)
+			{
+				result.bits = 0;
+				return result;
+			}
+			result.bits = truth(operand) ? 0 : 1;
+			return result;
+		}
+		if (!evaluate_value || !operand.valid ||
+			operation == SimpleTokenType::OP_PLUS)
+			return operand;
+		if (operation == SimpleTokenType::OP_MINUS)
+			return Value(static_cast<std::uint64_t>(0) - operand.bits,
+				operand.is_unsigned, true);
+		if (operation == SimpleTokenType::OP_COMPL)
+			return Value(~operand.bits, operand.is_unsigned, true);
+		throw ParseError();
+	}
+
+	static Value apply_logical(SimpleTokenType operation, const Value& left,
 		const Value& right, bool evaluate_value)
 	{
+		if (!evaluate_value)
+			return Value(0, false, true);
+		if (!left.valid)
+			return invalid_value(false);
+		if (operation == SimpleTokenType::OP_LAND)
+		{
+			if (!truth(left))
+				return Value(0, false, true);
+		}
+		else
+		{
+			if (truth(left))
+				return Value(1, false, true);
+		}
+		if (!right.valid)
+			return invalid_value(false);
+		return Value(truth(right) ? 1 : 0, false, true);
+	}
+
+	static Value apply_binary(SimpleTokenType operation, const Value& left,
+		const Value& right, bool evaluate_value)
+	{
+		if (operation == SimpleTokenType::OP_LAND ||
+			operation == SimpleTokenType::OP_LOR)
+			return apply_logical(operation, left, right, evaluate_value);
+
 		bool result_unsigned = common_unsigned(left, right);
 		if (operation == SimpleTokenType::OP_LSHIFT ||
 			operation == SimpleTokenType::OP_RSHIFT)
@@ -722,6 +937,150 @@ private:
 		default:
 			throw ParseError();
 		}
+	}
+
+	static Value evaluate_tree(const std::vector<ExprNode>& nodes,
+		std::size_t root)
+	{
+		std::vector<EvaluationFrame> frames;
+		std::vector<Value> results;
+		// Flat binary trees reach roughly half their node count in evaluation
+		// depth.  This small warm reserve avoids repeated growth there while
+		// leaving unary- or branch-heavy trees to grow only as needed.
+		frames.reserve(nodes.size() / 2 + 2);
+		frames.push_back(EvaluationFrame(root, true));
+
+		while (!frames.empty())
+		{
+			EvaluationFrame& frame = frames.back();
+			const ExprNode& node = nodes[frame.node];
+			if (node.kind == ExprNodeKind::Literal ||
+				node.kind == ExprNodeKind::Identifier ||
+				node.kind == ExprNodeKind::Defined)
+			{
+				Value result;
+				if (node.kind == ExprNodeKind::Literal)
+					result = Value(node.bits,
+						(node.flags & ExprNodeUnsigned) != 0, true);
+				else if (node.kind == ExprNodeKind::Defined)
+					result = Value(frame.evaluate_value &&
+						(node.flags & ExprNodeParityOdd) ? 1 : 0, false, true);
+				else if (!frame.evaluate_value)
+					result = Value(0, false, true);
+				else if (node.flags & ExprNodeTrue)
+					result = Value(1, false, true);
+				else
+					result = Value(0, false, true);
+				frames.pop_back();
+				results.push_back(result);
+				continue;
+			}
+
+			if (node.kind == ExprNodeKind::Unary)
+			{
+				if (frame.stage == 0)
+				{
+					frame.stage = 1;
+					frames.push_back(EvaluationFrame(node.left,
+						frame.evaluate_value));
+					continue;
+				}
+				const Value operand = pop_result(&results);
+				const Value result = apply_unary(node.operation, operand,
+					frame.evaluate_value);
+				frames.pop_back();
+				results.push_back(result);
+				continue;
+			}
+
+			if (node.kind == ExprNodeKind::Binary)
+			{
+				if (frame.stage == 0)
+				{
+					frame.stage = 1;
+					frames.push_back(EvaluationFrame(node.left,
+						frame.evaluate_value));
+					continue;
+				}
+				if (frame.stage == 1)
+				{
+					frame.first = pop_result(&results);
+					frame.stage = 2;
+					bool right_active = frame.evaluate_value;
+					if (node.operation == SimpleTokenType::OP_LAND)
+						right_active = right_active && frame.first.valid &&
+							truth(frame.first);
+					else if (node.operation == SimpleTokenType::OP_LOR)
+						right_active = right_active && frame.first.valid &&
+							!truth(frame.first);
+					frames.push_back(EvaluationFrame(node.right, right_active));
+					continue;
+				}
+				const Value right = pop_result(&results);
+				const Value result = apply_binary(node.operation, frame.first,
+					right, frame.evaluate_value);
+				frames.pop_back();
+				results.push_back(result);
+				continue;
+			}
+
+			if (node.kind == ExprNodeKind::Conditional)
+			{
+				if (frame.stage == 0)
+				{
+					frame.stage = 1;
+					frames.push_back(EvaluationFrame(node.left,
+						frame.evaluate_value));
+					continue;
+				}
+				if (frame.stage == 1)
+				{
+					frame.first = pop_result(&results);
+					frame.condition_known = frame.evaluate_value &&
+						frame.first.valid;
+					frame.condition_true = frame.condition_known &&
+						truth(frame.first);
+					frame.stage = 2;
+					frames.push_back(EvaluationFrame(node.right,
+						frame.evaluate_value && frame.condition_true));
+					continue;
+				}
+				if (frame.stage == 2)
+				{
+					frame.second = pop_result(&results);
+					frame.stage = 3;
+					frames.push_back(EvaluationFrame(node.third,
+						frame.evaluate_value && frame.condition_known &&
+							!frame.condition_true));
+					continue;
+				}
+
+				const Value when_false = pop_result(&results);
+				const bool result_unsigned = common_unsigned(frame.second,
+					when_false);
+				Value result;
+				if (!frame.evaluate_value)
+					result = Value(0, result_unsigned, true);
+				else if (!frame.first.valid)
+					result = invalid_value(result_unsigned);
+				else
+				{
+					const Value& selected = frame.condition_true ?
+						frame.second : when_false;
+					result = selected.valid ?
+						Value(selected.bits, result_unsigned, true) :
+						invalid_value(result_unsigned);
+				}
+				frames.pop_back();
+				results.push_back(result);
+				continue;
+			}
+			throw ParseError();
+		}
+
+		if (results.size() != 1)
+			throw ParseError();
+		return results.back();
 	}
 };
 
