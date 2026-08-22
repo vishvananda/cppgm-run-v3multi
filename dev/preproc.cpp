@@ -1,122 +1,163 @@
-// (C) 2013 CPPGM Foundation www.cppgm.org.  All rights reserved.
-
-#include <utility>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
-#include <fstream>
-
-using namespace std;
 
 #include "exceptions.h"
+#include "posttoken.h"
+#include "preproc_session.h"
 
-// For pragma once implementation:
-// system-wide unique file id type `PA5FileId`
-typedef pair<unsigned long int, unsigned long int> PA5FileId;
-
-// bootstrap system call interface, used by PA5GetFileId
-extern "C" long int syscall(long int n, ...) throw ();
-
-// PA5GetFileId returns true iff file found at path `path`.
-// out parameter `out_fileid` is set to file id
-bool PA5GetFileId(const string& path, PA5FileId& out_fileid)
+namespace
 {
-	struct
-	{
-			unsigned long int dev;
-			unsigned long int ino;
-			long int unused[16];
-	} data;
 
-	int res = syscall(4, path.c_str(), &data);
-
-	out_fileid = make_pair(data.dev, data.ino);
-
-	return res == 0;
+char hex_digit(unsigned int value)
+{
+	return value < 10 ? static_cast<char>('0' + value) :
+		static_cast<char>('A' + value - 10);
 }
 
-// OPTIONAL: Also search `PA5StdIncPaths` on `--stdinc` command-line switch (not by default)
-vector<string> PA5StdIncPaths =
+std::string hex_dump(const std::vector<std::uint8_t>& bytes)
 {
-    "/usr/include/c++/4.7/",
-    "/usr/include/c++/4.7/x86_64-linux-gnu/",
-    "/usr/include/c++/4.7/backward/",
-    "/usr/lib/gcc/x86_64-linux-gnu/4.7/include/",
-    "/usr/local/include/",
-    "/usr/lib/gcc/x86_64-linux-gnu/4.7/include-fixed/",
-    "/usr/include/x86_64-linux-gnu/",
-    "/usr/include/"
+	std::string result;
+	result.reserve(bytes.size() * 2);
+	for (std::size_t i = 0; i < bytes.size(); ++i)
+	{
+		result.push_back(hex_digit(bytes[i] >> 4));
+		result.push_back(hex_digit(bytes[i] & 0x0F));
+	}
+	return result;
+}
+
+class PostTokenOutput : public IPostTokenOutput
+{
+public:
+	explicit PostTokenOutput(std::ostream& output) : output_(output) {}
+
+	void emit_invalid(const std::string& source)
+	{
+		throw std::runtime_error("invalid posttoken: " + source);
+	}
+
+	void emit_simple(const std::string& source, SimpleTokenType type)
+	{
+		output_ << "simple " << source << " "
+			<< simple_token_type_name(type) << '\n';
+	}
+
+	void emit_identifier(const std::string& source)
+	{
+		output_ << "identifier " << source << '\n';
+	}
+
+	void emit_literal(const std::string& source, const LiteralData& value)
+	{
+		output_ << "literal " << source << " ";
+		if (value.element_count == 0)
+			output_ << fundamental_type_name(value.type) << " ";
+		else
+			output_ << "array of " << value.element_count << " "
+				<< fundamental_type_name(value.type) << " ";
+		output_ << hex_dump(value.bytes) << '\n';
+	}
+
+	void emit_user_defined_literal(const UserDefinedLiteralData& value)
+	{
+		output_ << "user-defined-literal " << value.source << " "
+			<< value.suffix << " ";
+		switch (value.kind)
+		{
+		case UserDefinedLiteralKind::Integer:
+			output_ << "integer " << value.prefix << '\n';
+			break;
+		case UserDefinedLiteralKind::Floating:
+			output_ << "floating " << value.prefix << '\n';
+			break;
+		case UserDefinedLiteralKind::Character:
+			output_ << "character "
+				<< fundamental_type_name(value.value.type) << " "
+				<< hex_dump(value.value.bytes) << '\n';
+			break;
+		case UserDefinedLiteralKind::String:
+			output_ << "string array of " << value.value.element_count << " "
+				<< fundamental_type_name(value.value.type) << " "
+				<< hex_dump(value.value.bytes) << '\n';
+			break;
+		}
+	}
+
+	void emit_eof()
+	{
+		output_ << "eof\n";
+	}
+
+private:
+	std::ostream& output_;
 };
 
-bool HasBatchStdinArg(int argc, char** argv)
+std::string read_source(const std::string& path)
 {
-	for (int i = 1; i < argc; i++)
-	{
-		if (string(argv[i]) == "--batch-stdin")
-			return true;
-	}
-	return false;
+	std::ifstream input(path.c_str(), std::ios::in | std::ios::binary);
+	if (!input)
+		throw std::runtime_error("unable to open source file: " + path);
+	std::ostringstream source;
+	source << input.rdbuf();
+	return source.str();
 }
 
-int RunNotImplementedBatchMode()
+PPPreprocessConfig build_config()
 {
-	string line;
-	while (getline(cin, line))
-	{
-		(void)line;
-		cout << "EXIT_NOT_IMPLEMENTED" << endl;
-	}
-	return EXIT_SUCCESS;
+	const std::time_t now = std::time(NULL);
+	const std::tm* local = std::localtime(&now);
+	const char* stamp = local == NULL ? NULL : std::asctime(local);
+	if (stamp == NULL || std::string(stamp).size() < 24)
+		throw std::runtime_error("unable to determine build date and time");
+	const std::string asctime_value(stamp);
+	const std::string date = asctime_value.substr(4, 7) +
+		asctime_value.substr(20, 4);
+	const std::string time = asctime_value.substr(11, 8);
+	return PPPreprocessConfig("Vishvananda Abrams", date, time);
 }
+
+} // namespace
 
 int main(int argc, char** argv)
 {
 	try
 	{
-		if (HasBatchStdinArg(argc, argv))
-			return RunNotImplementedBatchMode();
+		if (argc < 4 || std::string(argv[1]) != "-o")
+			throw std::logic_error("invalid usage");
+		const std::string outfile(argv[2]);
+		const std::size_t source_count = static_cast<std::size_t>(argc - 3);
+		std::ofstream output(outfile.c_str());
+		if (!output)
+			throw std::runtime_error("unable to open output file: " + outfile);
 
-		vector<string> args;
-
-		for (int i = 1; i < argc; i++)
-			args.emplace_back(argv[i]);
-
-		if (args.size() < 3 || args[0] != "-o")
-			throw logic_error("invalid usage");
-
-		string outfile = args[1];
-		size_t nsrcfiles = args.size() - 2;
-
-		throw NotImplementedException();
-
-		ofstream out(outfile);
-
-		out << "preproc " << nsrcfiles << endl;
-
-		for (size_t i = 0; i < nsrcfiles; i++)
+		const PPPreprocessConfig config = build_config();
+		output << "preproc " << source_count << '\n';
+		for (int i = 3; i < argc; ++i)
 		{
-			string srcfile = args[i+2];
-
-			out << "sof " << srcfile << endl;
-
-			ifstream in(srcfile);
-
-			// TODO: implement `preproc` as per PA5 description
-			out << "not yet implemented" << endl;
-	
-			out << "eof" << endl;
-
+			const std::string source_path(argv[i]);
+			output << "sof " << source_path << '\n';
+			const std::string source = read_source(source_path);
+			PPPreprocessingSession session(config);
+			const PPTokenBuffer& tokens = session.preprocess(source_path, source);
+			PostTokenOutput token_output(output);
+			posttokenize_cpp_tokens(tokens, token_output);
 		}
+		return EXIT_SUCCESS;
 	}
-	catch (const NotImplementedException& e)
+	catch (const NotImplementedException& error)
 	{
-		cerr << "ERROR: " << e.what() << endl;
+		std::cerr << "ERROR: " << error.what() << '\n';
 		return CPPGM_EXIT_NOT_IMPLEMENTED;
 	}
-	catch (exception& e)
+	catch (const std::exception& error)
 	{
-		cerr << "ERROR: " << e.what() << endl;
+		std::cerr << "ERROR: " << error.what() << '\n';
 		return EXIT_FAILURE;
 	}
 }

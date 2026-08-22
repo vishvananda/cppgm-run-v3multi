@@ -139,16 +139,32 @@ enum class PPTokenKind
 	EndOfFile
 };
 
+// A token's presumed source identity is typed and arena-owned.  Zero values
+// are the default-safe location used by PA1--PA4 callers that do not track
+// source provenance yet.
+struct PPSourceLocation
+{
+	PPSpellingId presumed_file;
+	std::size_t line;
+
+	PPSourceLocation(PPSpellingId presumed_file = 0, std::size_t line = 0)
+		: presumed_file(presumed_file), line(line)
+	{}
+};
+
 struct PPToken
 {
 	PPTokenKind kind;
 	PPTokenFixedIdentity fixed_identity;
 	PPSpellingId spelling;
+	PPSourceLocation source_location;
 
 	PPToken(PPTokenKind kind = PPTokenKind::EndOfFile,
 		PPSpellingId spelling = 0,
-		PPTokenFixedIdentity fixed_identity = PPTokenFixedIdentity::None)
-		: kind(kind), fixed_identity(fixed_identity), spelling(spelling)
+		PPTokenFixedIdentity fixed_identity = PPTokenFixedIdentity::None,
+		const PPSourceLocation& source_location = PPSourceLocation())
+		: kind(kind), fixed_identity(fixed_identity), spelling(spelling),
+		  source_location(source_location)
 	{}
 };
 
@@ -166,6 +182,13 @@ struct PPTokenBuffer
 
 struct IPPTokenStream
 {
+	// The canonical tokenizer may provide the physical source line for the
+	// next emitted token.  Legacy PA1 adapters ignore this typed metadata.
+	virtual void set_source_line(std::size_t line)
+	{
+		(void)line;
+	}
+
 	virtual void emit_whitespace_sequence() = 0;
 	virtual void emit_new_line() = 0;
 	virtual void emit_header_name(const std::string& data) = 0;

@@ -31,11 +31,13 @@ struct CtrlToken
 	bool identifier_like;
 	bool defined_spelling;
 	bool identifier_parity_odd;
+	bool defined_value;
 
 	CtrlToken()
 		: kind(CtrlTokenKind::Invalid), simple(SimpleTokenType::OP_LBRACE),
 		  bits(0), is_unsigned(false), identifier_like(false),
-		  defined_spelling(false), identifier_parity_odd(false)
+		  defined_spelling(false), identifier_parity_odd(false),
+		  defined_value(false)
 	{}
 };
 
@@ -219,7 +221,8 @@ enum ExprNodeFlags
 	ExprNodeUnsigned = 1,
 	ExprNodeTrue = 2,
 	ExprNodeFalse = 4,
-	ExprNodeParityOdd = 8
+	ExprNodeParityOdd = 8,
+	ExprNodeDefinedValue = 16
 };
 
 struct ExprNode
@@ -447,12 +450,12 @@ private:
 		return add_node(node);
 	}
 
-	std::size_t add_defined(bool parity_odd)
+	std::size_t add_defined(bool defined_value)
 	{
 		ExprNode node;
 		node.kind = ExprNodeKind::Defined;
-		if (parity_odd)
-			node.flags |= ExprNodeParityOdd;
+		if (defined_value)
+			node.flags |= ExprNodeDefinedValue;
 		return add_node(node);
 	}
 
@@ -509,13 +512,13 @@ private:
 	std::size_t parse_defined()
 	{
 		++position_; // the identifier spelling "defined"
-		bool operand_parity_odd = false;
+		bool operand_defined = false;
 		if (!at_end() && is_simple(tokens_[position_], SimpleTokenType::OP_LPAREN))
 		{
 			++position_;
 			if (at_end() || !is_identifier_or_keyword(tokens_[position_]))
 				throw ParseError();
-			operand_parity_odd = tokens_[position_].identifier_parity_odd;
+			operand_defined = tokens_[position_].defined_value;
 			++position_;
 			if (at_end() || !is_simple(tokens_[position_], SimpleTokenType::OP_RPAREN))
 				throw ParseError();
@@ -525,10 +528,10 @@ private:
 		{
 			if (at_end() || !is_identifier_or_keyword(tokens_[position_]))
 				throw ParseError();
-			operand_parity_odd = tokens_[position_].identifier_parity_odd;
+			operand_defined = tokens_[position_].defined_value;
 			++position_;
 		}
-		return add_defined(operand_parity_odd);
+		return add_defined(operand_defined);
 	}
 
 	bool consume_operand()
@@ -964,7 +967,7 @@ private:
 						(node.flags & ExprNodeUnsigned) != 0, true);
 				else if (node.kind == ExprNodeKind::Defined)
 					result = Value(frame.evaluate_value &&
-						(node.flags & ExprNodeParityOdd) ? 1 : 0, false, true);
+						(node.flags & ExprNodeDefinedValue) ? 1 : 0, false, true);
 				else if (!frame.evaluate_value)
 					result = Value(0, false, true);
 				else if (node.flags & ExprNodeTrue)
@@ -1115,6 +1118,7 @@ public:
 		token.identifier_like = true;
 		token.defined_spelling = source == "defined";
 		token.identifier_parity_odd = first_code_unit_is_odd(source);
+		token.defined_value = token.identifier_parity_odd;
 		tokens_.push_back(token);
 	}
 
@@ -1125,6 +1129,7 @@ public:
 		token.identifier_like = true;
 		token.defined_spelling = source == "defined";
 		token.identifier_parity_odd = first_code_unit_is_odd(source);
+		token.defined_value = token.identifier_parity_odd;
 		tokens_.push_back(token);
 	}
 
@@ -1200,7 +1205,131 @@ private:
 	}
 };
 
+class TypedControlOutput : public IPostTokenOutput
+{
+public:
+	TypedControlOutput(PPControlMacroDefined macro_defined, void* context)
+		: macro_defined_(macro_defined), context_(context), tokens_(),
+		  invalid_(false)
+	{}
+
+	void emit_invalid(const std::string& source)
+	{
+		(void)source;
+		invalid_ = true;
+	}
+
+	void emit_simple(const std::string& source, SimpleTokenType type)
+	{
+		(void)source;
+		CtrlToken token;
+		token.kind = CtrlTokenKind::Simple;
+		token.simple = type;
+		tokens_.push_back(token);
+	}
+
+	void emit_simple_identifier(const std::string& source,
+		SimpleTokenType type)
+	{
+		CtrlToken token;
+		token.kind = CtrlTokenKind::Simple;
+		token.simple = type;
+		token.identifier_like = true;
+		token.defined_spelling = source == "defined";
+		token.identifier_parity_odd = first_code_unit_is_odd(source);
+		token.defined_value = defined(source);
+		tokens_.push_back(token);
+	}
+
+	void emit_identifier(const std::string& source)
+	{
+		CtrlToken token;
+		token.kind = CtrlTokenKind::Identifier;
+		token.identifier_like = true;
+		token.defined_spelling = source == "defined";
+		token.identifier_parity_odd = first_code_unit_is_odd(source);
+		token.defined_value = defined(source);
+		tokens_.push_back(token);
+	}
+
+	void emit_literal(const std::string& source, const LiteralData& value)
+	{
+		(void)source;
+		std::uint64_t bits = 0;
+		bool is_unsigned = false;
+		if (!decode_integral_literal(value, &bits, &is_unsigned))
+		{
+			invalid_ = true;
+			return;
+		}
+		CtrlToken token;
+		token.kind = CtrlTokenKind::Literal;
+		token.bits = bits;
+		token.is_unsigned = is_unsigned;
+		tokens_.push_back(token);
+	}
+
+	void emit_user_defined_literal(const UserDefinedLiteralData& value)
+	{
+		(void)value;
+		invalid_ = true;
+	}
+
+	void emit_eof() {}
+
+	const std::vector<CtrlToken>& tokens() const { return tokens_; }
+	bool invalid() const { return invalid_; }
+
+private:
+	PPControlMacroDefined macro_defined_;
+	void* context_;
+	std::vector<CtrlToken> tokens_;
+	bool invalid_;
+
+	bool defined(const std::string& source) const
+	{
+		return macro_defined_ == NULL ? first_code_unit_is_odd(source) :
+			macro_defined_(context_, source);
+	}
+};
+
 } // namespace
+
+bool evaluate_cpp_control_expression(const PPTokenBuffer& tokens,
+	PPControlMacroDefined macro_defined, void* context,
+	PPControlExpressionValue* result)
+
+{
+	return evaluate_cpp_control_expression(tokens.spellings, tokens.tokens,
+		macro_defined, context, result);
+}
+
+bool evaluate_cpp_control_expression(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, PPControlMacroDefined macro_defined,
+	void* context, PPControlExpressionValue* result)
+{
+	if (result == NULL)
+		throw std::invalid_argument("null controlling-expression result");
+	TypedControlOutput output(macro_defined, context);
+	posttokenize_cpp_tokens(spellings, tokens, output);
+	if (output.invalid() || output.tokens().empty())
+	{
+		*result = PPControlExpressionValue(0, false, false);
+		return false;
+	}
+	try
+	{
+		const Value value = Evaluator(output.tokens()).evaluate();
+		*result = PPControlExpressionValue(value.bits, value.is_unsigned,
+			value.valid);
+		return true;
+	}
+	catch (const ParseError&)
+	{
+		*result = PPControlExpressionValue(0, false, false);
+		return false;
+	}
+}
 
 int run_ctrlexpr(std::istream& input, std::ostream& output,
 	std::ostream& errors)

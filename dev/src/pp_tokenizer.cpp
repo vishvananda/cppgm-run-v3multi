@@ -1,5 +1,6 @@
 #include "pp_tokenizer.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -7,6 +8,119 @@
 
 namespace
 {
+
+class TokenBufferStream : public IPPTokenStream
+{
+public:
+	PPSpellingTable& spellings;
+	std::vector<PPToken>* tokens;
+	std::size_t source_line;
+
+	TokenBufferStream(PPSpellingTable& spellings,
+		std::vector<PPToken>* tokens)
+		: spellings(spellings), tokens(tokens), source_line(0)
+	{}
+
+	void set_source_line(std::size_t line)
+	{
+		source_line = line;
+	}
+
+	void emit_whitespace_sequence()
+	{
+		push_token(PPToken(PPTokenKind::WhitespaceSequence));
+	}
+
+	void emit_new_line()
+	{
+		push_token(PPToken(PPTokenKind::NewLine));
+	}
+
+	void emit_header_name(const std::string& data)
+	{
+		push(PPTokenKind::HeaderName, data);
+	}
+
+	void emit_identifier(const std::string& data)
+	{
+		push(PPTokenKind::Identifier, data);
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc(
+		PPTokenFixedIdentity fixed_identity, const std::string& data)
+	{
+		push_token(PPToken(
+			PPTokenKind::IdentifierAsPreprocessingOpOrPunc,
+			spellings.intern(data), fixed_identity));
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc(
+		const std::string& data)
+	{
+		push(PPTokenKind::IdentifierAsPreprocessingOpOrPunc, data);
+	}
+
+	void emit_pp_number(const std::string& data)
+	{
+		push(PPTokenKind::PPNumber, data);
+	}
+
+	void emit_character_literal(const std::string& data)
+	{
+		push(PPTokenKind::CharacterLiteral, data);
+	}
+
+	void emit_user_defined_character_literal(const std::string& data)
+	{
+		push(PPTokenKind::UserDefinedCharacterLiteral, data);
+	}
+
+	void emit_string_literal(const std::string& data)
+	{
+		push(PPTokenKind::StringLiteral, data);
+	}
+
+	void emit_user_defined_string_literal(const std::string& data)
+	{
+		push(PPTokenKind::UserDefinedStringLiteral, data);
+	}
+
+	void emit_preprocessing_op_or_punc(const std::string& data)
+	{
+		(void)data;
+		throw std::runtime_error("untyped punctuator callback");
+	}
+
+	void emit_punctuator(PPTokenFixedIdentity fixed_identity,
+		const std::string& data)
+	{
+		push_token(PPToken(PPTokenKind::Punctuator,
+			spellings.intern(data), fixed_identity));
+	}
+
+	void emit_non_whitespace_char(const std::string& data)
+	{
+		push(PPTokenKind::NonWhitespaceCharacter, data);
+	}
+
+	void emit_eof()
+	{
+		push_token(PPToken(PPTokenKind::EndOfFile));
+	}
+
+private:
+	void push_token(const PPToken& token)
+	{
+		PPToken located = token;
+		located.source_location.line = source_line;
+		tokens->push_back(located);
+	}
+
+	void push(PPTokenKind kind, const std::string& data)
+	{
+		push_token(PPToken(kind, spellings.intern(data)));
+	}
+};
 
 struct Unit
 {
@@ -577,19 +691,31 @@ bool invalid_or_unconverted_ucn(const std::vector<Unit>& input, size_t at)
 	return value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF);
 }
 
+std::vector<size_t> make_physical_line_starts(
+	const std::vector<int>& physical)
+{
+	std::vector<size_t> result(1, 0);
+	for (size_t i = 0; i < physical.size(); ++i)
+		if (physical[i] == '\n')
+			result.push_back(i + 1);
+	return result;
+}
+
 class Tokenizer
 {
 public:
 	Tokenizer(const std::vector<int>& physical, const std::vector<Unit>& units,
 		IPPTokenStream& output)
 		: physical_(physical), units_(units), output_(output), pos_(0),
-		  line_start_(true), directive_hash_(false), header_allowed_(false)
+		  line_start_(true), directive_hash_(false), header_allowed_(false),
+		  physical_line_starts_(make_physical_line_starts(physical))
 	{}
 
 	void run()
 	{
 		while (pos_ < units_.size())
 		{
+			output_.set_source_line(source_line(pos_));
 			if (scan_whitespace())
 				continue;
 			if (units_[pos_].cp == '\n')
@@ -640,6 +766,18 @@ private:
 	bool line_start_;
 	bool directive_hash_;
 	bool header_allowed_;
+	std::vector<size_t> physical_line_starts_;
+
+	size_t source_line(size_t at) const
+	{
+		const size_t offset = at < units_.size() ?
+			units_[at].begin : physical_.size();
+		std::vector<size_t>::const_iterator found = std::upper_bound(
+			physical_line_starts_.begin(), physical_line_starts_.end(), offset);
+		if (found == physical_line_starts_.begin())
+			return 1;
+		return static_cast<size_t>(found - physical_line_starts_.begin());
+	}
 
 	std::string data_from_units(size_t begin, size_t end) const
 	{
@@ -1219,4 +1357,14 @@ void tokenize_cpp_source(const std::string& source, IPPTokenStream& output)
 
 	Tokenizer tokenizer(physical, logical, output);
 	tokenizer.run();
+}
+
+void tokenize_cpp_source_to_tokens(const std::string& source,
+	PPSpellingTable& spellings, std::vector<PPToken>* output)
+{
+	if (output == NULL)
+		throw std::invalid_argument("null token output");
+	output->clear();
+	TokenBufferStream stream(spellings, output);
+	tokenize_cpp_source(source, stream);
 }

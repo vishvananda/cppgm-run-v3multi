@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -15,104 +16,6 @@
 
 namespace
 {
-
-class TokenCollector : public IPPTokenStream
-{
-public:
-	PPSpellingTable& spellings;
-	std::vector<PPToken> tokens;
-
-	explicit TokenCollector(PPSpellingTable& spellings)
-		: spellings(spellings), tokens()
-	{}
-
-	void emit_whitespace_sequence()
-	{
-		tokens.push_back(PPToken(PPTokenKind::WhitespaceSequence));
-	}
-
-	void emit_new_line()
-	{
-		tokens.push_back(PPToken(PPTokenKind::NewLine));
-	}
-
-	void emit_header_name(const std::string& data)
-	{
-		push(PPTokenKind::HeaderName, data);
-	}
-
-	void emit_identifier(const std::string& data)
-	{
-		push(PPTokenKind::Identifier, data);
-	}
-
-	void emit_identifier_as_preprocessing_op_or_punc(
-		PPTokenFixedIdentity fixed_identity, const std::string& data)
-	{
-		tokens.push_back(PPToken(
-			PPTokenKind::IdentifierAsPreprocessingOpOrPunc,
-			spellings.intern(data), fixed_identity));
-	}
-
-	void emit_identifier_as_preprocessing_op_or_punc(const std::string& data)
-	{
-		push(PPTokenKind::IdentifierAsPreprocessingOpOrPunc, data);
-	}
-
-	void emit_pp_number(const std::string& data)
-	{
-		push(PPTokenKind::PPNumber, data);
-	}
-
-	void emit_character_literal(const std::string& data)
-	{
-		push(PPTokenKind::CharacterLiteral, data);
-	}
-
-	void emit_user_defined_character_literal(const std::string& data)
-	{
-		push(PPTokenKind::UserDefinedCharacterLiteral, data);
-	}
-
-	void emit_string_literal(const std::string& data)
-	{
-		push(PPTokenKind::StringLiteral, data);
-	}
-
-	void emit_user_defined_string_literal(const std::string& data)
-	{
-		push(PPTokenKind::UserDefinedStringLiteral, data);
-	}
-
-	void emit_preprocessing_op_or_punc(const std::string& data)
-	{
-		(void)data;
-		throw std::runtime_error("untyped punctuator callback");
-	}
-
-	void emit_punctuator(PPTokenFixedIdentity fixed_identity,
-		const std::string& data)
-	{
-		tokens.push_back(PPToken(PPTokenKind::Punctuator,
-			spellings.intern(data), fixed_identity));
-	}
-
-	void emit_non_whitespace_char(const std::string& data)
-	{
-		push(PPTokenKind::NonWhitespaceCharacter, data);
-	}
-
-	void emit_eof()
-	{
-		tokens.push_back(PPToken(PPTokenKind::EndOfFile));
-	}
-
-private:
-	void push(PPTokenKind kind, const std::string& data)
-	{
-		tokens.push_back(PPToken(kind, spellings.intern(data)));
-	}
-};
 
 struct PaintedToken
 {
@@ -226,6 +129,14 @@ bool is_paste(const PPToken& token)
 	return is_punctuator(token, PPTokenFixedIdentity::HashHash);
 }
 
+PPToken with_source_location(const PPToken& token,
+	const PPSourceLocation& location)
+{
+	PPToken result = token;
+	result.source_location = location;
+	return result;
+}
+
 std::vector<PaintedToken> trim_argument(
 	const std::vector<PaintedToken>& argument)
 {
@@ -279,46 +190,150 @@ public:
 		  define_id_(spellings.intern("define")),
 		  undef_id_(spellings.intern("undef")),
 		  va_args_id_(spellings.intern("__VA_ARGS__")),
-		  macros_(), next_macro_id_(1), paint_nodes_(1, PaintTrieNode())
+		  defined_id_(spellings.intern("defined")),
+		  macros_(), builtin_names_(), next_macro_id_(1),
+		  paint_nodes_(1, PaintTrieNode()), builtin_resolver_(NULL),
+		  builtin_context_(NULL)
 	{
+	}
+
+	void define(const std::vector<PPToken>& tokens, std::size_t line_begin,
+		std::size_t line_end, std::size_t after_directive)
+	{
+		parse_define(tokens, line_begin, line_end, after_directive);
+	}
+
+	void undef(const std::vector<PPToken>& tokens, std::size_t line_begin,
+		std::size_t line_end, std::size_t after_directive)
+	{
+		parse_undef(tokens, line_begin, line_end, after_directive);
+	}
+
+	void undef(PPSpellingId name)
+	{
+		macros_.erase(name);
+		builtin_names_.erase(name);
+	}
+
+	void expand(const std::vector<PPToken>& input,
+		std::vector<PPToken>* output)
+	{
+		if (output == NULL)
+			throw std::invalid_argument("null macro expansion output");
+		std::vector<PaintedToken> painted_input;
+		painted_input.reserve(input.size());
+		for (std::size_t i = 0; i < input.size(); ++i)
+			painted_input.push_back(PaintedToken(input[i]));
+		std::vector<PaintedToken> expanded;
+		expand_tokens(painted_input, &expanded);
+		output->clear();
+		output->reserve(expanded.size());
+		for (std::size_t i = 0; i < expanded.size(); ++i)
+			output->push_back(expanded[i].token);
+	}
+
+	void expand_control(const std::vector<PPToken>& input,
+		std::vector<PPToken>* output)
+	{
+		if (output == NULL)
+			throw std::invalid_argument("null control expansion output");
+		output->clear();
+		std::vector<PPToken> segment;
+		std::size_t at = 0;
+		while (at < input.size())
+		{
+			if (!is_identifier(input[at]) ||
+				input[at].spelling != defined_id_)
+			{
+				segment.push_back(input[at++]);
+				continue;
+			}
+
+			std::vector<PPToken> expanded_segment;
+			expand(segment, &expanded_segment);
+			output->insert(output->end(), expanded_segment.begin(),
+				expanded_segment.end());
+			segment.clear();
+			output->push_back(input[at++]);
+
+			while (at < input.size() && is_whitespace(input[at]))
+				output->push_back(input[at++]);
+			if (at < input.size() && is_punctuator(input[at],
+				PPTokenFixedIdentity::LeftParen))
+			{
+				output->push_back(input[at++]);
+				while (at < input.size() && is_whitespace(input[at]))
+					output->push_back(input[at++]);
+			}
+			if (at < input.size())
+			{
+				output->push_back(input[at++]);
+				while (at < input.size() && is_whitespace(input[at]))
+					output->push_back(input[at++]);
+				if (at < input.size() && is_punctuator(input[at],
+					PPTokenFixedIdentity::RightParen))
+					output->push_back(input[at++]);
+			}
+		}
+		std::vector<PPToken> expanded_segment;
+		expand(segment, &expanded_segment);
+		output->insert(output->end(), expanded_segment.begin(),
+			expanded_segment.end());
+	}
+
+	bool is_defined(PPSpellingId name) const
+	{
+		return macros_.find(name) != macros_.end() ||
+			builtin_names_.find(name) != builtin_names_.end();
+	}
+
+	void register_builtin(PPSpellingId name)
+	{
+		builtin_names_.insert(name);
+	}
+
+	void set_builtin_resolver(PPMacroBuiltinResolver resolver, void* context)
+	{
+		builtin_resolver_ = resolver;
+		builtin_context_ = context;
 	}
 
 	void process(const std::string& source, std::vector<PPToken>* output)
 	{
-		TokenCollector collector(spellings_);
-		tokenize_cpp_source(source, collector);
+		std::vector<PPToken> source_tokens;
+		tokenize_cpp_source_to_tokens(source, spellings_, &source_tokens);
 
 		std::vector<PaintedToken> final_tokens;
 		std::vector<PaintedToken> text_segment;
 		std::size_t at = 0;
-		while (at < collector.tokens.size())
+		while (at < source_tokens.size())
 		{
-			if (collector.tokens[at].kind == PPTokenKind::EndOfFile)
+			if (source_tokens[at].kind == PPTokenKind::EndOfFile)
 				break;
 
 			const std::size_t line_begin = at;
-			while (at < collector.tokens.size() &&
-				collector.tokens[at].kind != PPTokenKind::NewLine &&
-				collector.tokens[at].kind != PPTokenKind::EndOfFile)
+			while (at < source_tokens.size() &&
+				source_tokens[at].kind != PPTokenKind::NewLine &&
+				source_tokens[at].kind != PPTokenKind::EndOfFile)
 				++at;
 			const std::size_t line_end = at;
-			const bool has_newline = at < collector.tokens.size() &&
-				collector.tokens[at].kind == PPTokenKind::NewLine;
+			const bool has_newline = at < source_tokens.size() &&
+				source_tokens[at].kind == PPTokenKind::NewLine;
 
 			std::size_t first = skip_whitespace(
-				collector.tokens, line_begin, line_end);
-			if (first < line_end && is_hash(collector.tokens[first]))
+				source_tokens, line_begin, line_end);
+			if (first < line_end && is_hash(source_tokens[first]))
 			{
 				expand_text(text_segment, &final_tokens);
 				text_segment.clear();
-				parse_directive(collector.tokens, line_begin, line_end, first);
+				parse_directive(source_tokens, line_begin, line_end, first);
 			}
 			else
 			{
 				for (std::size_t i = line_begin; i < line_end; ++i)
-					text_segment.push_back(PaintedToken(collector.tokens[i]));
+					text_segment.push_back(PaintedToken(source_tokens[i]));
 				if (has_newline)
-					text_segment.push_back(PaintedToken(collector.tokens[at]));
+					text_segment.push_back(PaintedToken(source_tokens[at]));
 			}
 
 			if (has_newline)
@@ -339,9 +354,13 @@ private:
 	PPSpellingId define_id_;
 	PPSpellingId undef_id_;
 	PPSpellingId va_args_id_;
+	PPSpellingId defined_id_;
 	std::unordered_map<PPSpellingId, MacroDefinition> macros_;
+	std::unordered_set<PPSpellingId> builtin_names_;
 	std::size_t next_macro_id_;
 	std::vector<PaintTrieNode> paint_nodes_;
+	PPMacroBuiltinResolver builtin_resolver_;
+	void* builtin_context_;
 
 	bool is_parameter(const MacroDefinition& macro,
 		const PPToken& token, std::size_t* parameter_index)
@@ -742,6 +761,18 @@ private:
 				current.token.spelling == va_args_id_)
 				fail("__VA_ARGS__ outside variadic substitution");
 
+			if (builtin_resolver_ != NULL && is_identifier(current.token))
+			{
+				PPToken replacement;
+				if (builtin_resolver_(builtin_context_, current.token,
+					&replacement))
+				{
+					output->push_back(PaintedToken(replacement, current.paint,
+						true, false, false));
+					continue;
+				}
+			}
+
 			const MacroDefinition* macro = is_identifier(current.token) ?
 				find_macro(current.token.spelling) : NULL;
 			const bool tail_invocation = macro != NULL &&
@@ -871,12 +902,14 @@ private:
 		std::vector<SubstitutionUnit> units;
 		for (std::size_t i = 0; i < macro->replacement.size(); ++i)
 		{
+			const PPToken replacement_token = with_source_location(
+				macro->replacement[i], head.token.source_location);
 			if (is_paste(macro->replacement[i]))
 				units.push_back(SubstitutionUnit::paste_unit(
-					PaintedToken(macro->replacement[i], base_paint)));
+					PaintedToken(replacement_token, base_paint)));
 			else
 				units.push_back(SubstitutionUnit::token_unit(
-					PaintedToken(macro->replacement[i], base_paint, true)));
+					PaintedToken(replacement_token, base_paint, true)));
 		}
 		apply_pastes(&units);
 		for (std::size_t i = 0; i < units.size(); ++i)
@@ -889,21 +922,23 @@ private:
 	std::vector<PaintedToken> variadic_argument(
 		const MacroDefinition* macro,
 		const std::vector<std::vector<PaintedToken> >& arguments,
-		std::size_t first)
+		std::size_t first, const PPSourceLocation& location)
 	{
 		std::vector<PaintedToken> result;
 		for (std::size_t i = first; i < arguments.size(); ++i)
 		{
 			if (i != first)
 			{
-				result.push_back(PaintedToken(PPToken(PPTokenKind::Punctuator,
-					spellings_.intern(","), PPTokenFixedIdentity::Comma)));
+				result.push_back(PaintedToken(PPToken(
+					PPTokenKind::Punctuator, spellings_.intern(","),
+					PPTokenFixedIdentity::Comma, location)));
 				// The argument separator is part of the raw spelling of
 				// __VA_ARGS__.  The tokenizer has already collapsed source
 				// whitespace, so retain one separator whitespace event for
 				// stringization while remaining invisible to posttoken.
 				result.push_back(PaintedToken(PPToken(
-					PPTokenKind::WhitespaceSequence)));
+					PPTokenKind::WhitespaceSequence, 0,
+					PPTokenFixedIdentity::None, location)));
 			}
 			result.insert(result.end(), arguments[i].begin(), arguments[i].end());
 		}
@@ -927,15 +962,15 @@ private:
 
 	std::vector<PaintedToken> retokenize_one(const std::string& spelling)
 	{
-		TokenCollector collector(spellings_);
-		tokenize_cpp_source(spelling, collector);
+		std::vector<PPToken> source_tokens;
+		tokenize_cpp_source_to_tokens(spelling, spellings_, &source_tokens);
 		std::vector<PPToken> nonwhite;
-		for (std::size_t i = 0; i < collector.tokens.size(); ++i)
+		for (std::size_t i = 0; i < source_tokens.size(); ++i)
 		{
-			if (collector.tokens[i].kind == PPTokenKind::EndOfFile ||
-				is_whitespace(collector.tokens[i]))
+			if (source_tokens[i].kind == PPTokenKind::EndOfFile ||
+				is_whitespace(source_tokens[i]))
 				continue;
-			nonwhite.push_back(collector.tokens[i]);
+			nonwhite.push_back(source_tokens[i]);
 		}
 		if (nonwhite.size() != 1)
 			throw std::runtime_error(std::string(
@@ -944,7 +979,8 @@ private:
 	}
 
 	std::vector<PaintedToken> stringize(
-		const std::vector<PaintedToken>& raw, std::size_t paint)
+		const std::vector<PaintedToken>& raw, std::size_t paint,
+		const PPSourceLocation& location)
 	{
 		std::string spelling;
 		spelling.push_back('"');
@@ -985,7 +1021,8 @@ private:
 		// came from a raw-string token, changing the required stringized spelling.
 		return std::vector<PaintedToken>(1, PaintedToken(
 			PPToken(PPTokenKind::StringLiteral,
-				spellings_.intern(spelling)), paint));
+				spellings_.intern(spelling), PPTokenFixedIdentity::None,
+				location), paint));
 	}
 
 	void substitute_function(const MacroDefinition* macro,
@@ -1001,7 +1038,8 @@ private:
 			raw[i] = arguments[i];
 		if (macro->variadic)
 			raw[macro->parameters.size()] = variadic_argument(
-				macro, arguments, macro->parameters.size());
+				macro, arguments, macro->parameters.size(),
+				head.token.source_location);
 
 		for (std::size_t i = 0; i < macro->replacement.size(); ++i)
 		{
@@ -1038,7 +1076,8 @@ private:
 						&parameter_index))
 					fail("invalid stringization operator");
 				std::vector<PaintedToken> value = stringize(
-					raw[parameter_index], base_paint);
+					raw[parameter_index], base_paint,
+					head.token.source_location);
 				value[0].from_replacement = true;
 				units.push_back(SubstitutionUnit::token_unit(value[0]));
 				i = parameter;
@@ -1065,7 +1104,8 @@ private:
 				if (gnu_nonempty_variadic)
 					continue;
 				units.push_back(SubstitutionUnit::paste_unit(
-					PaintedToken(token, base_paint, true)));
+					PaintedToken(with_source_location(token,
+						head.token.source_location), base_paint, true)));
 				continue;
 			}
 
@@ -1095,6 +1135,8 @@ private:
 					for (std::size_t j = 0; j < value.size(); ++j)
 					{
 						PaintedToken substituted = value[j];
+						substituted.token.source_location =
+							head.token.source_location;
 						substituted.paint = parameter_paint(
 							substituted, head.paint, current_macro_paint);
 						units.push_back(SubstitutionUnit::token_unit(
@@ -1105,7 +1147,8 @@ private:
 			}
 
 			units.push_back(SubstitutionUnit::token_unit(
-				PaintedToken(token, base_paint, true)));
+				PaintedToken(with_source_location(token,
+					head.token.source_location), base_paint, true)));
 		}
 
 		apply_pastes(&units);
@@ -1175,6 +1218,8 @@ private:
 					spelling(right_unit.token.token);
 				std::vector<PaintedToken> retokenized =
 					retokenize_one(pasted);
+				retokenized[0].token.source_location =
+					left_unit.token.token.source_location;
 				result = SubstitutionUnit::token_unit(retokenized[0]);
 				result.token.from_replacement = true;
 				result.token.paint = merge_paint(
@@ -1188,6 +1233,71 @@ private:
 };
 
 } // namespace
+
+struct PPMacroSession::Impl
+{
+	MacroProcessor processor;
+
+	explicit Impl(PPSpellingTable& spellings)
+		: processor(spellings)
+	{}
+};
+
+PPMacroSession::PPMacroSession(PPSpellingTable& spellings)
+	: impl_(new Impl(spellings))
+{}
+
+PPMacroSession::~PPMacroSession()
+{
+	delete impl_;
+}
+
+void PPMacroSession::define(const std::vector<PPToken>& tokens,
+	std::size_t line_begin, std::size_t line_end,
+	std::size_t after_directive)
+{
+	impl_->processor.define(tokens, line_begin, line_end, after_directive);
+}
+
+void PPMacroSession::undef(const std::vector<PPToken>& tokens,
+	std::size_t line_begin, std::size_t line_end,
+	std::size_t after_directive)
+{
+	impl_->processor.undef(tokens, line_begin, line_end, after_directive);
+}
+
+void PPMacroSession::undef(PPSpellingId name)
+{
+	impl_->processor.undef(name);
+}
+
+void PPMacroSession::expand(const std::vector<PPToken>& input,
+	std::vector<PPToken>* output)
+{
+	impl_->processor.expand(input, output);
+}
+
+void PPMacroSession::expand_control(const std::vector<PPToken>& input,
+	std::vector<PPToken>* output)
+{
+	impl_->processor.expand_control(input, output);
+}
+
+bool PPMacroSession::is_defined(PPSpellingId name) const
+{
+	return impl_->processor.is_defined(name);
+}
+
+void PPMacroSession::register_builtin(PPSpellingId name)
+{
+	impl_->processor.register_builtin(name);
+}
+
+void PPMacroSession::set_builtin_resolver(
+	PPMacroBuiltinResolver resolver, void* context)
+{
+	impl_->processor.set_builtin_resolver(resolver, context);
+}
 
 void preprocess_cpp_source(const std::string& source,
 	PPTokenBuffer* output)

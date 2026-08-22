@@ -1923,10 +1923,10 @@ private:
 	}
 };
 
-void emit_pp_token(PostTokenStream* stream, const PPTokenBuffer& buffer,
+void emit_pp_token(PostTokenStream* stream, const PPSpellingTable& spellings,
 	const PPToken& token)
 {
-	const std::string& data = buffer.spellings.get(token.spelling);
+	const std::string& data = spellings.get(token.spelling);
 	switch (token.kind)
 	{
 	case PPTokenKind::WhitespaceSequence:
@@ -2052,12 +2052,18 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 void posttokenize_cpp_tokens(const PPTokenBuffer& buffer,
 	IPostTokenOutput& output)
 {
+	posttokenize_cpp_tokens(buffer.spellings, buffer.tokens, output);
+}
+
+void posttokenize_cpp_tokens(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, IPostTokenOutput& output)
+{
 	PostTokenStream stream(output, false);
 	bool saw_eof = false;
-	for (std::size_t i = 0; i < buffer.tokens.size(); ++i)
+	for (std::size_t i = 0; i < tokens.size(); ++i)
 	{
-		emit_pp_token(&stream, buffer, buffer.tokens[i]);
-		if (buffer.tokens[i].kind == PPTokenKind::EndOfFile)
+		emit_pp_token(&stream, spellings, tokens[i]);
+		if (tokens[i].kind == PPTokenKind::EndOfFile)
 		{
 			saw_eof = true;
 			break;

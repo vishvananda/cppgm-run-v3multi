@@ -239,6 +239,12 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 void posttokenize_cpp_tokens(const PPTokenBuffer& tokens,
 	IPostTokenOutput& output);
 
+// Same typed conversion for a token range that borrows an existing spelling
+// arena.  PA5 uses this for directive operands without copying or rendering
+// the session's full token buffer.
+void posttokenize_cpp_tokens(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, IPostTokenOutput& output);
+
 // These compatibility decoders are intentionally retained for PA2's required
 // floating-point bit representation.
 float PA2Decode_float(const std::string& source);
