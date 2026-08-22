@@ -91,8 +91,15 @@ build layouts and are not compared with this final measurement.
 - `make test-report-through-pa1`: exit 0, exactly 54/54 and 1/1 stage; no
   timeout.
 - `git diff --check`: PASS.
-- No checked-in fixture or reference changed.  Generated check artifacts were
-  removed from the worktree.
+- No checked-in fixture or reference changed, and no generated artifact is
+  tracked.  Ignored harness outputs under `pa1/tests/*.my*` and
+  `cppgm.tests/course/pa1/*.my*` remain from validation and provide the
+  54/54 fixture/status-semantic evidence.  Benchmark and adversarial
+  temporary inputs stayed outside the repository.
 - Audit/repair commit: `1fddbbe5071367c557991b265c9b49c2b135be7d`
   (`PA1: finalize architecture audit`).
+- Existing ledger follow-ups: `4835fe922e3851b4550f7cde619b575d6b5511f4`
+  and `a4777b59b67a12d8d75f039ee4b77c6ddf314d7c`.
+- This wording correction's commit is reported in the handoff rather than
+  self-embedded.
 - Post-follow-up `git status --short`: empty.
