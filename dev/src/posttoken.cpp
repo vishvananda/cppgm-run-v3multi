@@ -1492,6 +1492,117 @@ LiteralData character_value(const CharacterResult& character)
 	return result;
 }
 
+bool simple_token_type_for_punctuator(PPTokenFixedIdentity punctuator,
+	SimpleTokenType* type)
+{
+	switch (punctuator)
+	{
+	case PPTokenFixedIdentity::LeftBrace: *type = SimpleTokenType::OP_LBRACE; return true;
+	case PPTokenFixedIdentity::RightBrace: *type = SimpleTokenType::OP_RBRACE; return true;
+	case PPTokenFixedIdentity::LeftBracket: *type = SimpleTokenType::OP_LSQUARE; return true;
+	case PPTokenFixedIdentity::RightBracket: *type = SimpleTokenType::OP_RSQUARE; return true;
+	case PPTokenFixedIdentity::LeftParen: *type = SimpleTokenType::OP_LPAREN; return true;
+	case PPTokenFixedIdentity::RightParen: *type = SimpleTokenType::OP_RPAREN; return true;
+	case PPTokenFixedIdentity::Pipe: *type = SimpleTokenType::OP_BOR; return true;
+	case PPTokenFixedIdentity::Caret: *type = SimpleTokenType::OP_XOR; return true;
+	case PPTokenFixedIdentity::Tilde: *type = SimpleTokenType::OP_COMPL; return true;
+	case PPTokenFixedIdentity::Ampersand: *type = SimpleTokenType::OP_AMP; return true;
+	case PPTokenFixedIdentity::Bang: *type = SimpleTokenType::OP_LNOT; return true;
+	case PPTokenFixedIdentity::Semicolon: *type = SimpleTokenType::OP_SEMICOLON; return true;
+	case PPTokenFixedIdentity::Colon: *type = SimpleTokenType::OP_COLON; return true;
+	case PPTokenFixedIdentity::Ellipsis: *type = SimpleTokenType::OP_DOTS; return true;
+	case PPTokenFixedIdentity::Question: *type = SimpleTokenType::OP_QMARK; return true;
+	case PPTokenFixedIdentity::Scope: *type = SimpleTokenType::OP_COLON2; return true;
+	case PPTokenFixedIdentity::Dot: *type = SimpleTokenType::OP_DOT; return true;
+	case PPTokenFixedIdentity::DotStar: *type = SimpleTokenType::OP_DOTSTAR; return true;
+	case PPTokenFixedIdentity::Plus: *type = SimpleTokenType::OP_PLUS; return true;
+	case PPTokenFixedIdentity::Minus: *type = SimpleTokenType::OP_MINUS; return true;
+	case PPTokenFixedIdentity::Star: *type = SimpleTokenType::OP_STAR; return true;
+	case PPTokenFixedIdentity::Slash: *type = SimpleTokenType::OP_DIV; return true;
+	case PPTokenFixedIdentity::Percent: *type = SimpleTokenType::OP_MOD; return true;
+	case PPTokenFixedIdentity::Equal: *type = SimpleTokenType::OP_ASS; return true;
+	case PPTokenFixedIdentity::Less: *type = SimpleTokenType::OP_LT; return true;
+	case PPTokenFixedIdentity::Greater: *type = SimpleTokenType::OP_GT; return true;
+	case PPTokenFixedIdentity::PlusAssign: *type = SimpleTokenType::OP_PLUSASS; return true;
+	case PPTokenFixedIdentity::MinusAssign: *type = SimpleTokenType::OP_MINUSASS; return true;
+	case PPTokenFixedIdentity::StarAssign: *type = SimpleTokenType::OP_STARASS; return true;
+	case PPTokenFixedIdentity::SlashAssign: *type = SimpleTokenType::OP_DIVASS; return true;
+	case PPTokenFixedIdentity::PercentAssign: *type = SimpleTokenType::OP_MODASS; return true;
+	case PPTokenFixedIdentity::CaretAssign: *type = SimpleTokenType::OP_XORASS; return true;
+	case PPTokenFixedIdentity::AmpersandAssign: *type = SimpleTokenType::OP_BANDASS; return true;
+	case PPTokenFixedIdentity::PipeAssign: *type = SimpleTokenType::OP_BORASS; return true;
+	case PPTokenFixedIdentity::ShiftLeft: *type = SimpleTokenType::OP_LSHIFT; return true;
+	case PPTokenFixedIdentity::ShiftRight: *type = SimpleTokenType::OP_RSHIFT; return true;
+	case PPTokenFixedIdentity::ShiftRightAssign: *type = SimpleTokenType::OP_RSHIFTASS; return true;
+	case PPTokenFixedIdentity::ShiftLeftAssign: *type = SimpleTokenType::OP_LSHIFTASS; return true;
+	case PPTokenFixedIdentity::EqualEqual: *type = SimpleTokenType::OP_EQ; return true;
+	case PPTokenFixedIdentity::NotEqual: *type = SimpleTokenType::OP_NE; return true;
+	case PPTokenFixedIdentity::LessEqual: *type = SimpleTokenType::OP_LE; return true;
+	case PPTokenFixedIdentity::GreaterEqual: *type = SimpleTokenType::OP_GE; return true;
+	case PPTokenFixedIdentity::LogicalAnd: *type = SimpleTokenType::OP_LAND; return true;
+	case PPTokenFixedIdentity::LogicalOr: *type = SimpleTokenType::OP_LOR; return true;
+	case PPTokenFixedIdentity::Increment: *type = SimpleTokenType::OP_INC; return true;
+	case PPTokenFixedIdentity::Decrement: *type = SimpleTokenType::OP_DEC; return true;
+	case PPTokenFixedIdentity::Comma: *type = SimpleTokenType::OP_COMMA; return true;
+	case PPTokenFixedIdentity::ArrowStar: *type = SimpleTokenType::OP_ARROWSTAR; return true;
+	case PPTokenFixedIdentity::Arrow: *type = SimpleTokenType::OP_ARROW; return true;
+	case PPTokenFixedIdentity::Hash:
+	case PPTokenFixedIdentity::HashHash:
+	case PPTokenFixedIdentity::IdentifierNew:
+	case PPTokenFixedIdentity::IdentifierDelete:
+	case PPTokenFixedIdentity::IdentifierAnd:
+	case PPTokenFixedIdentity::IdentifierAndEq:
+	case PPTokenFixedIdentity::IdentifierBitand:
+	case PPTokenFixedIdentity::IdentifierBitor:
+	case PPTokenFixedIdentity::IdentifierCompl:
+	case PPTokenFixedIdentity::IdentifierNot:
+	case PPTokenFixedIdentity::IdentifierNotEq:
+	case PPTokenFixedIdentity::IdentifierOr:
+	case PPTokenFixedIdentity::IdentifierOrEq:
+	case PPTokenFixedIdentity::IdentifierXor:
+	case PPTokenFixedIdentity::IdentifierXorEq:
+	case PPTokenFixedIdentity::None:
+		return false;
+	}
+	return false;
+}
+
+bool simple_token_type_for_identifier(PPTokenFixedIdentity identity,
+	SimpleTokenType* type)
+{
+	switch (identity)
+	{
+	case PPTokenFixedIdentity::IdentifierNew:
+		*type = SimpleTokenType::KW_NEW; return true;
+	case PPTokenFixedIdentity::IdentifierDelete:
+		*type = SimpleTokenType::KW_DELETE; return true;
+	case PPTokenFixedIdentity::IdentifierAnd:
+		*type = SimpleTokenType::OP_LAND; return true;
+	case PPTokenFixedIdentity::IdentifierAndEq:
+		*type = SimpleTokenType::OP_BANDASS; return true;
+	case PPTokenFixedIdentity::IdentifierBitand:
+		*type = SimpleTokenType::OP_AMP; return true;
+	case PPTokenFixedIdentity::IdentifierBitor:
+		*type = SimpleTokenType::OP_BOR; return true;
+	case PPTokenFixedIdentity::IdentifierCompl:
+		*type = SimpleTokenType::OP_COMPL; return true;
+	case PPTokenFixedIdentity::IdentifierNot:
+		*type = SimpleTokenType::OP_LNOT; return true;
+	case PPTokenFixedIdentity::IdentifierNotEq:
+		*type = SimpleTokenType::OP_NE; return true;
+	case PPTokenFixedIdentity::IdentifierOr:
+		*type = SimpleTokenType::OP_LOR; return true;
+	case PPTokenFixedIdentity::IdentifierOrEq:
+		*type = SimpleTokenType::OP_BORASS; return true;
+	case PPTokenFixedIdentity::IdentifierXor:
+		*type = SimpleTokenType::OP_XOR; return true;
+	case PPTokenFixedIdentity::IdentifierXorEq:
+		*type = SimpleTokenType::OP_XORASS; return true;
+	default:
+		return false;
+	}
+}
+
 class PostTokenStream : public IPPTokenStream
 {
 public:
@@ -1533,10 +1644,26 @@ public:
 	}
 
 	void emit_identifier_as_preprocessing_op_or_punc(
+		PPTokenFixedIdentity fixed_identity, const std::string& data)
+	{
+		flush_strings();
+		operator_pending_ = false;
+		SimpleTokenType type;
+		if (simple_token_type_for_identifier(fixed_identity, &type))
+			// Keep the phase-3 identifier-origin distinction for typed
+			// posttoken consumers while mapping identity without a spelling
+			// lookup.
+			output_.emit_simple_identifier(data, type);
+		else
+			// A typed producer never supplies None here.  Keep the old callback
+			// behavior as a compatibility fallback for hand-built legacy streams.
+			emit_identifier_as_preprocessing_op_or_punc(data);
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc(
 		const std::string& data)
 	{
-		// Preserve the phase-3 identifier-origin fact for typed post-token
-		// consumers while retaining the ordinary PA1 event for other streams.
+		// Legacy textual streams have no fixed identity to carry.
 		emit_identifier(data);
 	}
 
@@ -1605,13 +1732,20 @@ public:
 	{
 		flush_strings();
 		operator_pending_ = false;
-		if (data == "#" || data == "##" || data == "%:" || data == "%:%:")
-		{
-			output_.emit_invalid(data);
-			return;
-		}
 		SimpleTokenType type;
 		if (lookup_simple_token_type(data, &type))
+			output_.emit_simple(data, type);
+		else
+			output_.emit_invalid(data);
+	}
+
+	void emit_punctuator(PPTokenFixedIdentity punctuator,
+		const std::string& data)
+	{
+		flush_strings();
+		operator_pending_ = false;
+		SimpleTokenType type;
+		if (simple_token_type_for_punctuator(punctuator, &type))
 			output_.emit_simple(data, type);
 		else
 			output_.emit_invalid(data);
@@ -1789,8 +1923,10 @@ private:
 	}
 };
 
-void emit_pp_token(PostTokenStream* stream, const PPToken& token)
+void emit_pp_token(PostTokenStream* stream, const PPTokenBuffer& buffer,
+	const PPToken& token)
 {
+	const std::string& data = buffer.spellings.get(token.spelling);
 	switch (token.kind)
 	{
 	case PPTokenKind::WhitespaceSequence:
@@ -1800,34 +1936,35 @@ void emit_pp_token(PostTokenStream* stream, const PPToken& token)
 		stream->emit_new_line();
 		return;
 	case PPTokenKind::HeaderName:
-		stream->emit_header_name(token.spelling);
+		stream->emit_header_name(data);
 		return;
 	case PPTokenKind::Identifier:
-		stream->emit_identifier(token.spelling);
+		stream->emit_identifier(data);
 		return;
 	case PPTokenKind::IdentifierAsPreprocessingOpOrPunc:
-		stream->emit_identifier_as_preprocessing_op_or_punc(token.spelling);
+		stream->emit_identifier_as_preprocessing_op_or_punc(
+			token.fixed_identity, data);
 		return;
 	case PPTokenKind::PPNumber:
-		stream->emit_pp_number(token.spelling);
+		stream->emit_pp_number(data);
 		return;
 	case PPTokenKind::CharacterLiteral:
-		stream->emit_character_literal(token.spelling);
+		stream->emit_character_literal(data);
 		return;
 	case PPTokenKind::UserDefinedCharacterLiteral:
-		stream->emit_user_defined_character_literal(token.spelling);
+		stream->emit_user_defined_character_literal(data);
 		return;
 	case PPTokenKind::StringLiteral:
-		stream->emit_string_literal(token.spelling);
+		stream->emit_string_literal(data);
 		return;
 	case PPTokenKind::UserDefinedStringLiteral:
-		stream->emit_user_defined_string_literal(token.spelling);
+		stream->emit_user_defined_string_literal(data);
 		return;
-	case PPTokenKind::PreprocessingOpOrPunc:
-		stream->emit_preprocessing_op_or_punc(token.spelling);
+	case PPTokenKind::Punctuator:
+		stream->emit_punctuator(token.fixed_identity, data);
 		return;
 	case PPTokenKind::NonWhitespaceCharacter:
-		stream->emit_non_whitespace_char(token.spelling);
+		stream->emit_non_whitespace_char(data);
 		return;
 	case PPTokenKind::EndOfFile:
 		stream->emit_eof();
@@ -1912,15 +2049,15 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 	tokenize_cpp_source(source, stream);
 }
 
-void posttokenize_cpp_tokens(const std::vector<PPToken>& tokens,
+void posttokenize_cpp_tokens(const PPTokenBuffer& buffer,
 	IPostTokenOutput& output)
 {
 	PostTokenStream stream(output, false);
 	bool saw_eof = false;
-	for (std::size_t i = 0; i < tokens.size(); ++i)
+	for (std::size_t i = 0; i < buffer.tokens.size(); ++i)
 	{
-		emit_pp_token(&stream, tokens[i]);
-		if (tokens[i].kind == PPTokenKind::EndOfFile)
+		emit_pp_token(&stream, buffer, buffer.tokens[i]);
+		if (buffer.tokens[i].kind == PPTokenKind::EndOfFile)
 		{
 			saw_eof = true;
 			break;

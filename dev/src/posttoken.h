@@ -236,7 +236,7 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 // Consume already-classified phase-3 tokens.  This is the typed boundary
 // used by PA4 after macro replacement; it does not render and re-tokenize a
 // source spelling.
-void posttokenize_cpp_tokens(const std::vector<PPToken>& tokens,
+void posttokenize_cpp_tokens(const PPTokenBuffer& tokens,
 	IPostTokenOutput& output);
 
 // These compatibility decoders are intentionally retained for PA2's required

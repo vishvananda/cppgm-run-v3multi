@@ -100,7 +100,7 @@ int main(int argc, char** argv)
 	{
 		std::ostringstream source;
 		source << std::cin.rdbuf();
-		std::vector<PPToken> tokens;
+		PPTokenBuffer tokens;
 		preprocess_cpp_source(source.str(), &tokens);
 		DebugPostTokenOutput output;
 		posttokenize_cpp_tokens(tokens, output);

@@ -37,84 +37,10 @@ enum class TokenKind
 	UserDefinedCharacterLiteral,
 	StringLiteral,
 	UserDefinedStringLiteral,
-	PreprocessingOpOrPunc,
+	AlternativeIdentifier,
+	Punctuator,
 	NonWhitespaceCharacter,
 	EndOfFile
-};
-
-enum class PreprocessingOperator
-{
-	None,
-	AlternativeHashHash,
-	ArrowStar,
-	ShiftRightAssign,
-	ShiftLeftAssign,
-	HashHash,
-	LessColon,
-	ColonGreater,
-	LessPercent,
-	PercentGreater,
-	AlternativeHash,
-	Ellipsis,
-	DotStar,
-	PlusAssign,
-	MinusAssign,
-	StarAssign,
-	SlashAssign,
-	PercentAssign,
-	CaretAssign,
-	AmpersandAssign,
-	PipeAssign,
-	ShiftLeft,
-	ShiftRight,
-	LessEqual,
-	GreaterEqual,
-	LogicalAnd,
-	EqualEqual,
-	NotEqual,
-	LogicalOr,
-	Increment,
-	Decrement,
-	Arrow,
-	Scope,
-	LeftBrace,
-	RightBrace,
-	LeftBracket,
-	RightBracket,
-	Hash,
-	LeftParen,
-	RightParen,
-	Semicolon,
-	Colon,
-	Question,
-	Dot,
-	Plus,
-	Minus,
-	Star,
-	Slash,
-	Percent,
-	Caret,
-	Ampersand,
-	Pipe,
-	Tilde,
-	Bang,
-	Equal,
-	Less,
-	Greater,
-	Comma,
-	New,
-	Delete,
-	And,
-	AndEq,
-	Bitand,
-	Bitor,
-	Compl,
-	Not,
-	NotEq,
-	Or,
-	OrEq,
-	Xor,
-	XorEq
 };
 
 enum class IdentifierRole
@@ -151,13 +77,13 @@ struct RawPrefix
 
 struct IdentifierPattern
 {
-	PreprocessingOperator identity;
+	PPTokenFixedIdentity identity;
 	IdentifierRole role;
 	const char* spelling;
 	size_t length;
 
 	template <size_t N>
-	IdentifierPattern(PreprocessingOperator identity, IdentifierRole role,
+	IdentifierPattern(PPTokenFixedIdentity identity, IdentifierRole role,
 		const char (&spelling)[N])
 		: identity(identity), role(role), spelling(spelling), length(N - 1)
 	{}
@@ -165,12 +91,12 @@ struct IdentifierPattern
 
 struct PunctuatorPattern
 {
-	PreprocessingOperator identity;
+	PPTokenFixedIdentity identity;
 	const char* spelling;
 	size_t length;
 
 	template <size_t N>
-	PunctuatorPattern(PreprocessingOperator identity,
+	PunctuatorPattern(PPTokenFixedIdentity identity,
 		const char (&spelling)[N])
 		: identity(identity), spelling(spelling), length(N - 1)
 	{}
@@ -178,10 +104,10 @@ struct PunctuatorPattern
 
 struct IdentifierMatch
 {
-	PreprocessingOperator identity;
+	PPTokenFixedIdentity identity;
 	IdentifierRole role;
 
-	IdentifierMatch(PreprocessingOperator identity = PreprocessingOperator::None,
+	IdentifierMatch(PPTokenFixedIdentity identity = PPTokenFixedIdentity::None,
 		IdentifierRole role = IdentifierRole::None)
 		: identity(identity), role(role)
 	{}
@@ -212,81 +138,81 @@ const Range kAnnexE2[] =
 
 const IdentifierPattern kIdentifierPatterns[] =
 {
-	{PreprocessingOperator::New, IdentifierRole::None, "new"},
-	{PreprocessingOperator::Delete, IdentifierRole::None, "delete"},
-	{PreprocessingOperator::And, IdentifierRole::None, "and"},
-	{PreprocessingOperator::AndEq, IdentifierRole::None, "and_eq"},
-	{PreprocessingOperator::Bitand, IdentifierRole::None, "bitand"},
-	{PreprocessingOperator::Bitor, IdentifierRole::None, "bitor"},
-	{PreprocessingOperator::Compl, IdentifierRole::None, "compl"},
-	{PreprocessingOperator::Not, IdentifierRole::None, "not"},
-	{PreprocessingOperator::NotEq, IdentifierRole::None, "not_eq"},
-	{PreprocessingOperator::Or, IdentifierRole::None, "or"},
-	{PreprocessingOperator::OrEq, IdentifierRole::None, "or_eq"},
-	{PreprocessingOperator::Xor, IdentifierRole::None, "xor"},
-	{PreprocessingOperator::XorEq, IdentifierRole::None, "xor_eq"},
-	{PreprocessingOperator::None, IdentifierRole::IncludeDirective, "include"}
+	{PPTokenFixedIdentity::IdentifierNew, IdentifierRole::None, "new"},
+	{PPTokenFixedIdentity::IdentifierDelete, IdentifierRole::None, "delete"},
+	{PPTokenFixedIdentity::IdentifierAnd, IdentifierRole::None, "and"},
+	{PPTokenFixedIdentity::IdentifierAndEq, IdentifierRole::None, "and_eq"},
+	{PPTokenFixedIdentity::IdentifierBitand, IdentifierRole::None, "bitand"},
+	{PPTokenFixedIdentity::IdentifierBitor, IdentifierRole::None, "bitor"},
+	{PPTokenFixedIdentity::IdentifierCompl, IdentifierRole::None, "compl"},
+	{PPTokenFixedIdentity::IdentifierNot, IdentifierRole::None, "not"},
+	{PPTokenFixedIdentity::IdentifierNotEq, IdentifierRole::None, "not_eq"},
+	{PPTokenFixedIdentity::IdentifierOr, IdentifierRole::None, "or"},
+	{PPTokenFixedIdentity::IdentifierOrEq, IdentifierRole::None, "or_eq"},
+	{PPTokenFixedIdentity::IdentifierXor, IdentifierRole::None, "xor"},
+	{PPTokenFixedIdentity::IdentifierXorEq, IdentifierRole::None, "xor_eq"},
+	{PPTokenFixedIdentity::None, IdentifierRole::IncludeDirective, "include"}
 };
 
 const PunctuatorPattern kPunctuatorPatterns[] =
 {
-	{PreprocessingOperator::AlternativeHashHash, "%:%:"},
-	{PreprocessingOperator::ArrowStar, "->*"},
-	{PreprocessingOperator::ShiftRightAssign, ">>="},
-	{PreprocessingOperator::ShiftLeftAssign, "<<="},
-	{PreprocessingOperator::HashHash, "##"},
-	{PreprocessingOperator::LessColon, "<:"},
-	{PreprocessingOperator::ColonGreater, ":>"},
-	{PreprocessingOperator::LessPercent, "<%"},
-	{PreprocessingOperator::PercentGreater, "%>"},
-	{PreprocessingOperator::AlternativeHash, "%:"},
-	{PreprocessingOperator::Ellipsis, "..."},
-	{PreprocessingOperator::DotStar, ".*"},
-	{PreprocessingOperator::PlusAssign, "+="},
-	{PreprocessingOperator::MinusAssign, "-="},
-	{PreprocessingOperator::StarAssign, "*="},
-	{PreprocessingOperator::SlashAssign, "/="},
-	{PreprocessingOperator::PercentAssign, "%="},
-	{PreprocessingOperator::CaretAssign, "^="},
-	{PreprocessingOperator::AmpersandAssign, "&="},
-	{PreprocessingOperator::PipeAssign, "|="},
-	{PreprocessingOperator::ShiftLeft, "<<"},
-	{PreprocessingOperator::ShiftRight, ">>"},
-	{PreprocessingOperator::LessEqual, "<="},
-	{PreprocessingOperator::GreaterEqual, ">="},
-	{PreprocessingOperator::LogicalAnd, "&&"},
-	{PreprocessingOperator::EqualEqual, "=="},
-	{PreprocessingOperator::NotEqual, "!="},
-	{PreprocessingOperator::LogicalOr, "||"},
-	{PreprocessingOperator::Increment, "++"},
-	{PreprocessingOperator::Decrement, "--"},
-	{PreprocessingOperator::Arrow, "->"},
-	{PreprocessingOperator::Scope, "::"},
-	{PreprocessingOperator::LeftBrace, "{"},
-	{PreprocessingOperator::RightBrace, "}"},
-	{PreprocessingOperator::LeftBracket, "["},
-	{PreprocessingOperator::RightBracket, "]"},
-	{PreprocessingOperator::Hash, "#"},
-	{PreprocessingOperator::LeftParen, "("},
-	{PreprocessingOperator::RightParen, ")"},
-	{PreprocessingOperator::Semicolon, ";"},
-	{PreprocessingOperator::Colon, ":"},
-	{PreprocessingOperator::Question, "?"},
-	{PreprocessingOperator::Dot, "."},
-	{PreprocessingOperator::Plus, "+"},
-	{PreprocessingOperator::Minus, "-"},
-	{PreprocessingOperator::Star, "*"},
-	{PreprocessingOperator::Slash, "/"},
-	{PreprocessingOperator::Percent, "%"},
-	{PreprocessingOperator::Caret, "^"},
-	{PreprocessingOperator::Ampersand, "&"},
-	{PreprocessingOperator::Pipe, "|"},
-	{PreprocessingOperator::Tilde, "~"},
-	{PreprocessingOperator::Bang, "!"},
-	{PreprocessingOperator::Equal, "="},
-	{PreprocessingOperator::Less, "<"},
-	{PreprocessingOperator::Greater, ">"},
-	{PreprocessingOperator::Comma, ","}
+	{PPTokenFixedIdentity::HashHash, "%:%:"},
+	{PPTokenFixedIdentity::ArrowStar, "->*"},
+	{PPTokenFixedIdentity::ShiftRightAssign, ">>="},
+	{PPTokenFixedIdentity::ShiftLeftAssign, "<<="},
+	{PPTokenFixedIdentity::HashHash, "##"},
+	{PPTokenFixedIdentity::LeftBracket, "<:"},
+	{PPTokenFixedIdentity::RightBracket, ":>"},
+	{PPTokenFixedIdentity::LeftBrace, "<%"},
+	{PPTokenFixedIdentity::RightBrace, "%>"},
+	{PPTokenFixedIdentity::Hash, "%:"},
+	{PPTokenFixedIdentity::Ellipsis, "..."},
+	{PPTokenFixedIdentity::DotStar, ".*"},
+	{PPTokenFixedIdentity::PlusAssign, "+="},
+	{PPTokenFixedIdentity::MinusAssign, "-="},
+	{PPTokenFixedIdentity::StarAssign, "*="},
+	{PPTokenFixedIdentity::SlashAssign, "/="},
+	{PPTokenFixedIdentity::PercentAssign, "%="},
+	{PPTokenFixedIdentity::CaretAssign, "^="},
+	{PPTokenFixedIdentity::AmpersandAssign, "&="},
+	{PPTokenFixedIdentity::PipeAssign, "|="},
+	{PPTokenFixedIdentity::ShiftLeft, "<<"},
+	{PPTokenFixedIdentity::ShiftRight, ">>"},
+	{PPTokenFixedIdentity::LessEqual, "<="},
+	{PPTokenFixedIdentity::GreaterEqual, ">="},
+	{PPTokenFixedIdentity::LogicalAnd, "&&"},
+	{PPTokenFixedIdentity::EqualEqual, "=="},
+	{PPTokenFixedIdentity::NotEqual, "!="},
+	{PPTokenFixedIdentity::LogicalOr, "||"},
+	{PPTokenFixedIdentity::Increment, "++"},
+	{PPTokenFixedIdentity::Decrement, "--"},
+	{PPTokenFixedIdentity::Arrow, "->"},
+	{PPTokenFixedIdentity::Scope, "::"},
+	{PPTokenFixedIdentity::LeftBrace, "{"},
+	{PPTokenFixedIdentity::RightBrace, "}"},
+	{PPTokenFixedIdentity::LeftBracket, "["},
+	{PPTokenFixedIdentity::RightBracket, "]"},
+	{PPTokenFixedIdentity::Hash, "#"},
+	{PPTokenFixedIdentity::LeftParen, "("},
+	{PPTokenFixedIdentity::RightParen, ")"},
+	{PPTokenFixedIdentity::Semicolon, ";"},
+	{PPTokenFixedIdentity::Colon, ":"},
+	{PPTokenFixedIdentity::Question, "?"},
+	{PPTokenFixedIdentity::Dot, "."},
+	{PPTokenFixedIdentity::Plus, "+"},
+	{PPTokenFixedIdentity::Minus, "-"},
+	{PPTokenFixedIdentity::Star, "*"},
+	{PPTokenFixedIdentity::Slash, "/"},
+	{PPTokenFixedIdentity::Percent, "%"},
+	{PPTokenFixedIdentity::Caret, "^"},
+	{PPTokenFixedIdentity::Ampersand, "&"},
+	{PPTokenFixedIdentity::Pipe, "|"},
+	{PPTokenFixedIdentity::Tilde, "~"},
+	{PPTokenFixedIdentity::Bang, "!"},
+	{PPTokenFixedIdentity::Equal, "="},
+	{PPTokenFixedIdentity::Less, "<"},
+	{PPTokenFixedIdentity::Greater, ">"},
+	{PPTokenFixedIdentity::Comma, ","}
 };
 
 bool is_hex_digit(int cp)
@@ -785,9 +711,6 @@ private:
 		case TokenKind::UserDefinedStringLiteral:
 			output_.emit_user_defined_string_literal(data);
 			return;
-		case TokenKind::PreprocessingOpOrPunc:
-			output_.emit_preprocessing_op_or_punc(data);
-			return;
 		case TokenKind::NonWhitespaceCharacter:
 			output_.emit_non_whitespace_char(data);
 			return;
@@ -1154,15 +1077,16 @@ private:
 		const size_t begin = pos_;
 		const size_t end = consume_identifier(pos_);
 		const IdentifierMatch match = classify_identifier(begin, end);
-		const TokenKind kind = match.identity != PreprocessingOperator::None ?
-			TokenKind::PreprocessingOpOrPunc : TokenKind::Identifier;
+		const TokenKind kind = match.identity != PPTokenFixedIdentity::None ?
+			TokenKind::AlternativeIdentifier : TokenKind::Identifier;
 		const std::string data = data_from_units(begin, end);
 		pos_ = end;
-		if (kind == TokenKind::PreprocessingOpOrPunc)
-			output_.emit_identifier_as_preprocessing_op_or_punc(data);
+		if (kind == TokenKind::AlternativeIdentifier)
+			output_.emit_identifier_as_preprocessing_op_or_punc(
+				match.identity, data);
 		else
 			emit_token(kind, data);
-		mark_nonwhite(kind, match.identity, match.role);
+		mark_nonwhite(kind, false, match.role);
 		return true;
 	}
 
@@ -1222,10 +1146,9 @@ private:
 				(units_[after].cp != ':' && units_[after].cp != '>'))
 			{
 				const std::string data = data_from_units(pos_, pos_ + 1);
-				emit_token(TokenKind::PreprocessingOpOrPunc, data);
+				output_.emit_punctuator(PPTokenFixedIdentity::Less, data);
 				++pos_;
-				mark_nonwhite(TokenKind::PreprocessingOpOrPunc,
-					PreprocessingOperator::Less);
+				mark_nonwhite(TokenKind::Punctuator, false);
 				return true;
 			}
 		}
@@ -1240,23 +1163,20 @@ private:
 			validate_external_range(pos_, end);
 			const std::string data = data_from_units(pos_, end);
 			pos_ = end;
-			emit_token(TokenKind::PreprocessingOpOrPunc, data);
-			mark_nonwhite(TokenKind::PreprocessingOpOrPunc,
-				pattern.identity);
+			output_.emit_punctuator(pattern.identity, data);
+			mark_nonwhite(TokenKind::Punctuator,
+				pattern.identity == PPTokenFixedIdentity::Hash);
 			return true;
 		}
 		return false;
 	}
 
-	void mark_nonwhite(TokenKind kind,
-		PreprocessingOperator operator_identity = PreprocessingOperator::None,
+	void mark_nonwhite(TokenKind kind, bool is_directive_hash = false,
 		IdentifierRole identifier_role = IdentifierRole::None)
 	{
 		if (line_start_)
 		{
-			if (kind == TokenKind::PreprocessingOpOrPunc &&
-				(operator_identity == PreprocessingOperator::Hash ||
-					operator_identity == PreprocessingOperator::AlternativeHash))
+			if (is_directive_hash)
 			{
 				directive_hash_ = true;
 				header_allowed_ = false;

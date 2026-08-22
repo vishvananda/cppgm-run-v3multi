@@ -1,6 +1,7 @@
 #include "macro.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstddef>
 #include <deque>
 #include <map>
@@ -18,7 +19,12 @@ namespace
 class TokenCollector : public IPPTokenStream
 {
 public:
+	PPSpellingTable& spellings;
 	std::vector<PPToken> tokens;
+
+	explicit TokenCollector(PPSpellingTable& spellings)
+		: spellings(spellings), tokens()
+	{}
 
 	void emit_whitespace_sequence()
 	{
@@ -32,60 +38,79 @@ public:
 
 	void emit_header_name(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::HeaderName, data));
+		push(PPTokenKind::HeaderName, data);
 	}
 
 	void emit_identifier(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::Identifier, data));
+		push(PPTokenKind::Identifier, data);
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc(
+		PPTokenFixedIdentity fixed_identity, const std::string& data)
+	{
+		tokens.push_back(PPToken(
+			PPTokenKind::IdentifierAsPreprocessingOpOrPunc,
+			spellings.intern(data), fixed_identity));
 	}
 
 	void emit_identifier_as_preprocessing_op_or_punc(const std::string& data)
 	{
-		tokens.push_back(PPToken(
-			PPTokenKind::IdentifierAsPreprocessingOpOrPunc, data));
+		push(PPTokenKind::IdentifierAsPreprocessingOpOrPunc, data);
 	}
 
 	void emit_pp_number(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::PPNumber, data));
+		push(PPTokenKind::PPNumber, data);
 	}
 
 	void emit_character_literal(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::CharacterLiteral, data));
+		push(PPTokenKind::CharacterLiteral, data);
 	}
 
 	void emit_user_defined_character_literal(const std::string& data)
 	{
-		tokens.push_back(PPToken(
-			PPTokenKind::UserDefinedCharacterLiteral, data));
+		push(PPTokenKind::UserDefinedCharacterLiteral, data);
 	}
 
 	void emit_string_literal(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::StringLiteral, data));
+		push(PPTokenKind::StringLiteral, data);
 	}
 
 	void emit_user_defined_string_literal(const std::string& data)
 	{
-		tokens.push_back(PPToken(
-			PPTokenKind::UserDefinedStringLiteral, data));
+		push(PPTokenKind::UserDefinedStringLiteral, data);
 	}
 
 	void emit_preprocessing_op_or_punc(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::PreprocessingOpOrPunc, data));
+		(void)data;
+		throw std::runtime_error("untyped punctuator callback");
+	}
+
+	void emit_punctuator(PPTokenFixedIdentity fixed_identity,
+		const std::string& data)
+	{
+		tokens.push_back(PPToken(PPTokenKind::Punctuator,
+			spellings.intern(data), fixed_identity));
 	}
 
 	void emit_non_whitespace_char(const std::string& data)
 	{
-		tokens.push_back(PPToken(PPTokenKind::NonWhitespaceCharacter, data));
+		push(PPTokenKind::NonWhitespaceCharacter, data);
 	}
 
 	void emit_eof()
 	{
 		tokens.push_back(PPToken(PPTokenKind::EndOfFile));
+	}
+
+private:
+	void push(PPTokenKind kind, const std::string& data)
+	{
+		tokens.push_back(PPToken(kind, spellings.intern(data)));
 	}
 };
 
@@ -107,16 +132,16 @@ struct PaintedToken
 
 struct MacroDefinition
 {
-	std::string name;
+	PPSpellingId name;
 	std::size_t id;
 	bool function_like;
 	bool variadic;
-	std::vector<std::string> parameters;
-	std::unordered_map<std::string, std::size_t> parameter_ids;
+	std::vector<PPSpellingId> parameters;
+	std::unordered_map<PPSpellingId, std::size_t> parameter_ids;
 	std::vector<PPToken> replacement;
 
 	MacroDefinition()
-		: name(), id(0), function_like(false), variadic(false),
+		: name(0), id(0), function_like(false), variadic(false),
 		  parameters(), parameter_ids(), replacement()
 	{}
 };
@@ -157,6 +182,22 @@ struct SubstitutionUnit
 	}
 };
 
+// Persistent binary trie for token-local unavailable macro sets.  Every
+// update copies only the fixed-width path for one macro ID; no paint record
+// owns or copies the whole active set.  Root zero is the empty set and leaf
+// keys are non-zero macro IDs.
+struct PaintTrieNode
+{
+	std::size_t key;
+	std::size_t left;
+	std::size_t right;
+
+	PaintTrieNode(std::size_t key = 0, std::size_t left = 0,
+		std::size_t right = 0)
+		: key(key), left(left), right(right)
+	{}
+};
+
 bool is_whitespace(const PPToken& token)
 {
 	return token.kind == PPTokenKind::WhitespaceSequence ||
@@ -169,20 +210,20 @@ bool is_identifier(const PPToken& token)
 		token.kind == PPTokenKind::IdentifierAsPreprocessingOpOrPunc;
 }
 
-bool is_punctuator(const PPToken& token, const char* spelling)
+bool is_punctuator(const PPToken& token, PPTokenFixedIdentity punctuator)
 {
-	return token.kind == PPTokenKind::PreprocessingOpOrPunc &&
-		token.spelling == spelling;
+	return token.kind == PPTokenKind::Punctuator &&
+		token.fixed_identity == punctuator;
 }
 
 bool is_hash(const PPToken& token)
 {
-	return is_punctuator(token, "#") || is_punctuator(token, "%:");
+	return is_punctuator(token, PPTokenFixedIdentity::Hash);
 }
 
 bool is_paste(const PPToken& token)
 {
-	return is_punctuator(token, "##") || is_punctuator(token, "%:%:");
+	return is_punctuator(token, PPTokenFixedIdentity::HashHash);
 }
 
 std::vector<PaintedToken> trim_argument(
@@ -233,16 +274,18 @@ std::size_t next_nonwhitespace(const std::vector<PPToken>& tokens,
 class MacroProcessor
 {
 public:
-	MacroProcessor()
-		: macros_(), next_macro_id_(1), paints_(), paint_ids_()
+	explicit MacroProcessor(PPSpellingTable& spellings)
+		: spellings_(spellings),
+		  define_id_(spellings.intern("define")),
+		  undef_id_(spellings.intern("undef")),
+		  va_args_id_(spellings.intern("__VA_ARGS__")),
+		  macros_(), next_macro_id_(1), paint_nodes_(1, PaintTrieNode())
 	{
-		paints_.push_back(std::vector<std::size_t>());
-		paint_ids_[paints_[0]] = 0;
 	}
 
 	void process(const std::string& source, std::vector<PPToken>* output)
 	{
-		TokenCollector collector;
+		TokenCollector collector(spellings_);
 		tokenize_cpp_source(source, collector);
 
 		std::vector<PaintedToken> final_tokens;
@@ -292,17 +335,20 @@ public:
 	}
 
 private:
-	std::unordered_map<std::string, MacroDefinition> macros_;
+	PPSpellingTable& spellings_;
+	PPSpellingId define_id_;
+	PPSpellingId undef_id_;
+	PPSpellingId va_args_id_;
+	std::unordered_map<PPSpellingId, MacroDefinition> macros_;
 	std::size_t next_macro_id_;
-	std::vector<std::vector<std::size_t> > paints_;
-	std::map<std::vector<std::size_t>, std::size_t> paint_ids_;
+	std::vector<PaintTrieNode> paint_nodes_;
 
-	static bool is_parameter(const MacroDefinition& macro,
+	bool is_parameter(const MacroDefinition& macro,
 		const PPToken& token, std::size_t* parameter_index)
 	{
 		if (!is_identifier(token))
 			return false;
-		std::unordered_map<std::string, std::size_t>::const_iterator found =
+		std::unordered_map<PPSpellingId, std::size_t>::const_iterator found =
 			macro.parameter_ids.find(token.spelling);
 		if (found != macro.parameter_ids.end())
 		{
@@ -310,7 +356,7 @@ private:
 				*parameter_index = found->second;
 			return true;
 		}
-		if (macro.variadic && token.spelling == "__VA_ARGS__")
+		if (macro.variadic && token.spelling == va_args_id_)
 		{
 			if (parameter_index != NULL)
 				*parameter_index = macro.parameters.size();
@@ -322,19 +368,17 @@ private:
 	static bool same_replacement(const std::vector<PPToken>& left,
 		const std::vector<PPToken>& right)
 	{
-		std::vector<PPToken> a;
-		std::vector<PPToken> b;
-		for (std::size_t i = 0; i < left.size(); ++i)
-			a.push_back(is_whitespace(left[i]) ?
-				PPToken(PPTokenKind::WhitespaceSequence) : left[i]);
-		for (std::size_t i = 0; i < right.size(); ++i)
-			b.push_back(is_whitespace(right[i]) ?
-				PPToken(PPTokenKind::WhitespaceSequence) : right[i]);
-		if (a.size() != b.size())
+		if (left.size() != right.size())
 			return false;
-		for (std::size_t i = 0; i < a.size(); ++i)
+		for (std::size_t i = 0; i < left.size(); ++i)
 		{
-			if (a[i].kind != b[i].kind || a[i].spelling != b[i].spelling)
+			const PPTokenKind left_kind = is_whitespace(left[i]) ?
+				PPTokenKind::WhitespaceSequence : left[i].kind;
+			const PPTokenKind right_kind = is_whitespace(right[i]) ?
+				PPTokenKind::WhitespaceSequence : right[i].kind;
+			if (left_kind != right_kind ||
+				left[i].fixed_identity != right[i].fixed_identity ||
+				left[i].spelling != right[i].spelling)
 				return false;
 		}
 		return true;
@@ -349,42 +393,94 @@ private:
 			same_replacement(left.replacement, right.replacement);
 	}
 
-	std::size_t intern_paint(std::vector<std::size_t> names)
+	static unsigned paint_bits()
 	{
-		std::sort(names.begin(), names.end());
-		names.erase(std::unique(names.begin(), names.end()), names.end());
-		std::map<std::vector<std::size_t>, std::size_t>::iterator found =
-			paint_ids_.find(names);
-		if (found != paint_ids_.end())
-			return found->second;
-		const std::size_t result = paints_.size();
-		paints_.push_back(names);
-		paint_ids_[paints_.back()] = result;
-		return result;
+		return static_cast<unsigned>(sizeof(std::size_t) * CHAR_BIT);
+	}
+
+	std::size_t branch(std::size_t left, std::size_t right)
+	{
+		if (left == 0 && right == 0)
+			return 0;
+		paint_nodes_.push_back(PaintTrieNode(0, left, right));
+		return paint_nodes_.size() - 1;
+	}
+
+	std::size_t insert_paint(std::size_t root, std::size_t macro_id,
+		unsigned depth)
+	{
+		if (depth == paint_bits())
+		{
+			if (root != 0 && paint_nodes_[root].key == macro_id)
+				return root;
+			paint_nodes_.push_back(PaintTrieNode(macro_id));
+			return paint_nodes_.size() - 1;
+		}
+
+		const unsigned shift = paint_bits() - depth - 1;
+		const bool high = ((macro_id >> shift) & 1u) != 0;
+		const std::size_t old_child = root == 0 ? 0 :
+			(high ? paint_nodes_[root].right : paint_nodes_[root].left);
+		const std::size_t new_child = insert_paint(old_child, macro_id,
+			depth + 1);
+		const std::size_t old_left = root == 0 ? 0 : paint_nodes_[root].left;
+		const std::size_t old_right = root == 0 ? 0 : paint_nodes_[root].right;
+		return high ? branch(old_left, new_child) :
+			branch(new_child, old_right);
+	}
+
+	std::size_t union_paint(std::size_t left, std::size_t right,
+		unsigned depth)
+	{
+		if (left == 0)
+			return right;
+		if (right == 0 || left == right)
+			return left;
+		if (depth == paint_bits())
+			return paint_nodes_[left].key == paint_nodes_[right].key ?
+				left : 0;
+		return branch(
+			union_paint(paint_nodes_[left].left,
+				paint_nodes_[right].left, depth + 1),
+			union_paint(paint_nodes_[left].right,
+				paint_nodes_[right].right, depth + 1));
+	}
+
+	std::size_t difference_paint(std::size_t left, std::size_t right,
+		unsigned depth)
+	{
+		if (left == 0 || right == 0 || left == right)
+			return left == right ? 0 : left;
+		if (depth == paint_bits())
+			return paint_nodes_[left].key == paint_nodes_[right].key ? 0 : left;
+		return branch(
+			difference_paint(paint_nodes_[left].left,
+				paint_nodes_[right].left, depth + 1),
+				difference_paint(paint_nodes_[left].right,
+					paint_nodes_[right].right, depth + 1));
+	}
+
+	std::size_t maximum_paint(std::size_t root) const
+	{
+		while (root != 0)
+		{
+			const PaintTrieNode& node = paint_nodes_[root];
+			if (node.key != 0)
+				return node.key;
+			root = node.right != 0 ? node.right : node.left;
+		}
+		return 0;
 	}
 
 	std::size_t add_paint(std::size_t inherited, std::size_t macro_id)
 	{
-		std::vector<std::size_t> names = paints_[inherited];
-		names.push_back(macro_id);
-		return intern_paint(names);
+		return painted(inherited, macro_id) ? inherited :
+			insert_paint(inherited, macro_id, 0);
 	}
 
 	std::size_t merge_paint(std::size_t left, std::size_t right)
 	{
-		std::vector<std::size_t> names = paints_[left];
-		names.insert(names.end(), paints_[right].begin(), paints_[right].end());
-		return intern_paint(names);
-	}
-
-	std::size_t remove_paint(std::size_t paint, std::size_t macro_id)
-	{
-		std::vector<std::size_t> names;
-		const std::vector<std::size_t>& painted_names = paints_[paint];
-		for (std::size_t i = 0; i < painted_names.size(); ++i)
-			if (painted_names[i] != macro_id)
-				names.push_back(painted_names[i]);
-		return intern_paint(names);
+		return union_paint(left, right, 0);
 	}
 
 	std::size_t parameter_paint(const PaintedToken& token,
@@ -395,19 +491,14 @@ private:
 			// A deferred token that already carries paint from a parent
 			// replacement has crossed a parameter boundary.  Drop the parent
 			// portion of that paint, while retaining unrelated unavailable names.
-			if (!paints_[token.paint].empty())
-			{
-				std::size_t result = token.paint;
-				for (std::size_t i = 0; i < paints_[inherited].size(); ++i)
-					result = remove_paint(result, paints_[inherited][i]);
-				return result;
-			}
-			if (!paints_[inherited].empty())
+			if (token.paint != 0)
+				return difference_paint(token.paint, inherited, 0);
+			if (inherited != 0)
 			{
 				const MacroDefinition* token_macro = is_identifier(token.token) ?
 					find_macro(token.token.spelling) : NULL;
 				if (token_macro != NULL &&
-					token_macro->id == paints_[inherited].back())
+					token_macro->id == maximum_paint(inherited))
 					return merge_paint(current_macro_paint,
 						add_paint(0, token_macro->id));
 				return 0;
@@ -422,15 +513,28 @@ private:
 
 	bool painted(std::size_t paint, std::size_t macro_id) const
 	{
-		const std::vector<std::size_t>& names = paints_[paint];
-		return std::binary_search(names.begin(), names.end(), macro_id);
+		for (unsigned depth = 0; paint != 0 && depth < paint_bits(); ++depth)
+		{
+			const PaintTrieNode& node = paint_nodes_[paint];
+			if (node.key != 0)
+				return node.key == macro_id;
+			const unsigned shift = paint_bits() - depth - 1;
+			paint = ((macro_id >> shift) & 1u) != 0 ?
+				node.right : node.left;
+		}
+		return paint != 0 && paint_nodes_[paint].key == macro_id;
 	}
 
-	const MacroDefinition* find_macro(const std::string& name) const
+	const MacroDefinition* find_macro(PPSpellingId name) const
 	{
-		std::unordered_map<std::string, MacroDefinition>::const_iterator found =
+		std::unordered_map<PPSpellingId, MacroDefinition>::const_iterator found =
 			macros_.find(name);
 		return found == macros_.end() ? NULL : &found->second;
+	}
+
+	const std::string& spelling(const PPToken& token) const
+	{
+		return spellings_.get(token.spelling);
 	}
 
 	static void fail(const char* message)
@@ -444,11 +548,11 @@ private:
 		std::size_t at = skip_whitespace(tokens, hash + 1, line_end);
 		if (at >= line_end || !is_identifier(tokens[at]))
 			fail("missing preprocessing directive name");
-		const std::string directive = tokens[at].spelling;
+		const PPSpellingId directive = tokens[at].spelling;
 		++at;
-		if (directive == "define")
+		if (directive == define_id_)
 			parse_define(tokens, line_begin, line_end, at);
-		else if (directive == "undef")
+		else if (directive == undef_id_)
 			parse_undef(tokens, line_begin, line_end, at);
 		else
 			fail("unsupported preprocessing directive");
@@ -460,9 +564,9 @@ private:
 		(void)line_begin;
 		at = skip_whitespace(tokens, at, line_end);
 		if (at >= line_end || !is_identifier(tokens[at]) ||
-			tokens[at].spelling == "__VA_ARGS__")
+			tokens[at].spelling == va_args_id_)
 			fail("invalid undef macro name");
-		const std::string name = tokens[at].spelling;
+		const PPSpellingId name = tokens[at].spelling;
 		++at;
 		at = skip_whitespace(tokens, at, line_end);
 		if (at != line_end)
@@ -476,14 +580,15 @@ private:
 		(void)line_begin;
 		at = skip_whitespace(tokens, at, line_end);
 		if (at >= line_end || !is_identifier(tokens[at]) ||
-			tokens[at].spelling == "__VA_ARGS__")
+			tokens[at].spelling == va_args_id_)
 			fail("invalid define macro name");
 
 		MacroDefinition definition;
 		definition.name = tokens[at].spelling;
 		++at;
 
-		if (at < line_end && is_punctuator(tokens[at], "("))
+		if (at < line_end && is_punctuator(tokens[at],
+			PPTokenFixedIdentity::LeftParen))
 		{
 			definition.function_like = true;
 			parse_parameters(tokens, line_end, &at, &definition);
@@ -503,7 +608,7 @@ private:
 			definition.replacement.pop_back();
 		validate_replacement(definition);
 
-		std::unordered_map<std::string, MacroDefinition>::const_iterator old =
+		std::unordered_map<PPSpellingId, MacroDefinition>::const_iterator old =
 			macros_.find(definition.name);
 		if (old != macros_.end())
 		{
@@ -523,7 +628,8 @@ private:
 		// immediately adjacent to the macro name.
 		++*at;
 		*at = skip_whitespace(tokens, *at, end);
-		if (*at < end && is_punctuator(tokens[*at], ")"))
+		if (*at < end && is_punctuator(tokens[*at],
+			PPTokenFixedIdentity::RightParen))
 		{
 			++*at;
 			return;
@@ -535,21 +641,22 @@ private:
 			if (*at >= end)
 				fail("unterminated macro parameter list");
 
-			if (is_punctuator(tokens[*at], "..."))
+			if (is_punctuator(tokens[*at], PPTokenFixedIdentity::Ellipsis))
 			{
 				if (definition->variadic)
 					fail("duplicate variadic marker");
 				definition->variadic = true;
 				++*at;
 				*at = skip_whitespace(tokens, *at, end);
-				if (*at >= end || !is_punctuator(tokens[*at], ")"))
+				if (*at >= end || !is_punctuator(tokens[*at],
+					PPTokenFixedIdentity::RightParen))
 					fail("variadic marker must end parameter list");
 				++*at;
 				return;
 			}
 
 			if (!is_identifier(tokens[*at]) ||
-				tokens[*at].spelling == "__VA_ARGS__")
+				tokens[*at].spelling == va_args_id_)
 				fail("invalid macro parameter");
 			for (std::size_t i = 0; i < definition->parameters.size(); ++i)
 				if (definition->parameters[i] == tokens[*at].spelling)
@@ -560,16 +667,19 @@ private:
 			++*at;
 			*at = skip_whitespace(tokens, *at, end);
 
-			if (*at < end && is_punctuator(tokens[*at], ")"))
+			if (*at < end && is_punctuator(tokens[*at],
+				PPTokenFixedIdentity::RightParen))
 			{
 				++*at;
 				return;
 			}
-			if (*at >= end || !is_punctuator(tokens[*at], ","))
+			if (*at >= end || !is_punctuator(tokens[*at],
+				PPTokenFixedIdentity::Comma))
 				fail("missing comma in macro parameter list");
 			++*at;
 			*at = skip_whitespace(tokens, *at, end);
-			if (*at < end && is_punctuator(tokens[*at], ")"))
+			if (*at < end && is_punctuator(tokens[*at],
+				PPTokenFixedIdentity::RightParen))
 				fail("trailing comma in macro parameter list");
 		}
 	}
@@ -604,7 +714,7 @@ private:
 				(void)parameter_index;
 			}
 			else if (is_identifier(token) &&
-				token.spelling == "__VA_ARGS__" && !definition.variadic)
+				token.spelling == va_args_id_ && !definition.variadic)
 			{
 				fail("__VA_ARGS__ outside variadic macro");
 			}
@@ -629,7 +739,7 @@ private:
 			work.pop_front();
 
 			if (is_identifier(current.token) &&
-				current.token.spelling == "__VA_ARGS__")
+				current.token.spelling == va_args_id_)
 				fail("__VA_ARGS__ outside variadic substitution");
 
 			const MacroDefinition* macro = is_identifier(current.token) ?
@@ -677,7 +787,8 @@ private:
 		std::deque<PaintedToken>::const_iterator at = work->begin();
 		while (at != work->end() && is_whitespace(at->token))
 			++at;
-		return at != work->end() && is_punctuator(at->token, "(") &&
+		return at != work->end() && is_punctuator(at->token,
+			PPTokenFixedIdentity::LeftParen) &&
 			!at->from_replacement;
 	}
 
@@ -691,7 +802,8 @@ private:
 			lookahead.push_back(work->front());
 			work->pop_front();
 		}
-		if (work->empty() || !is_punctuator(work->front().token, "("))
+		if (work->empty() || !is_punctuator(work->front().token,
+			PPTokenFixedIdentity::LeftParen))
 		{
 			for (std::size_t i = lookahead.size(); i > 0; --i)
 				work->push_front(lookahead[i - 1]);
@@ -706,12 +818,12 @@ private:
 		{
 			PaintedToken token = work->front();
 			work->pop_front();
-			if (is_punctuator(token.token, "("))
+			if (is_punctuator(token.token, PPTokenFixedIdentity::LeftParen))
 			{
 				++nesting;
 				current.push_back(token);
 			}
-			else if (is_punctuator(token.token, ")"))
+			else if (is_punctuator(token.token, PPTokenFixedIdentity::RightParen))
 			{
 				if (nesting != 0)
 				{
@@ -733,7 +845,8 @@ private:
 					break;
 				}
 			}
-			else if (is_punctuator(token.token, ",") && nesting == 0)
+			else if (is_punctuator(token.token, PPTokenFixedIdentity::Comma) &&
+				nesting == 0)
 			{
 				arguments->push_back(trim_argument(current));
 				current.clear();
@@ -776,15 +889,15 @@ private:
 	std::vector<PaintedToken> variadic_argument(
 		const MacroDefinition* macro,
 		const std::vector<std::vector<PaintedToken> >& arguments,
-		std::size_t first) const
+		std::size_t first)
 	{
 		std::vector<PaintedToken> result;
 		for (std::size_t i = first; i < arguments.size(); ++i)
 		{
 			if (i != first)
 			{
-				result.push_back(PaintedToken(PPToken(
-					PPTokenKind::PreprocessingOpOrPunc, ",")));
+				result.push_back(PaintedToken(PPToken(PPTokenKind::Punctuator,
+					spellings_.intern(","), PPTokenFixedIdentity::Comma)));
 				// The argument separator is part of the raw spelling of
 				// __VA_ARGS__.  The tokenizer has already collapsed source
 				// whitespace, so retain one separator whitespace event for
@@ -814,7 +927,7 @@ private:
 
 	std::vector<PaintedToken> retokenize_one(const std::string& spelling)
 	{
-		TokenCollector collector;
+		TokenCollector collector(spellings_);
 		tokenize_cpp_source(spelling, collector);
 		std::vector<PPToken> nonwhite;
 		for (std::size_t i = 0; i < collector.tokens.size(); ++i)
@@ -856,12 +969,13 @@ private:
 				token.kind == PPTokenKind::UserDefinedCharacterLiteral ||
 				token.kind == PPTokenKind::StringLiteral ||
 				token.kind == PPTokenKind::UserDefinedStringLiteral;
-			for (std::size_t j = 0; j < token.spelling.size(); ++j)
+			const std::string& token_spelling = this->spelling(token);
+			for (std::size_t j = 0; j < token_spelling.size(); ++j)
 			{
-				if (token.spelling[j] == '"' ||
-					(token.spelling[j] == '\\' && literal))
+				if (token_spelling[j] == '"' ||
+					(token_spelling[j] == '\\' && literal))
 					spelling.push_back('\\');
-				spelling.push_back(token.spelling[j]);
+				spelling.push_back(token_spelling[j]);
 			}
 			emitted = true;
 		}
@@ -870,7 +984,8 @@ private:
 		// Retokenizing it would apply phase-1 trigraph replacement to text that
 		// came from a raw-string token, changing the required stringized spelling.
 		return std::vector<PaintedToken>(1, PaintedToken(
-			PPToken(PPTokenKind::StringLiteral, spelling), paint));
+			PPToken(PPTokenKind::StringLiteral,
+				spellings_.intern(spelling)), paint));
 	}
 
 	void substitute_function(const MacroDefinition* macro,
@@ -940,10 +1055,11 @@ private:
 				const bool gnu_nonempty_variadic =
 					macro->variadic && left != std::string::npos &&
 					right != std::string::npos &&
-					is_punctuator(macro->replacement[left], ",") &&
+					is_punctuator(macro->replacement[left],
+						PPTokenFixedIdentity::Comma) &&
 					is_parameter(*macro, macro->replacement[right],
 						&right_parameter) &&
-					macro->replacement[right].spelling == "__VA_ARGS__" &&
+					macro->replacement[right].spelling == va_args_id_ &&
 					right_parameter == macro->parameters.size() &&
 					!raw[right_parameter].empty();
 				if (gnu_nonempty_variadic)
@@ -1037,7 +1153,7 @@ private:
 			else if (right_unit.placemarker &&
 				right_unit.variadic_placemarker &&
 				!left_unit.placemarker &&
-				left_unit.token.token.spelling == ",")
+				is_punctuator(left_unit.token.token, PPTokenFixedIdentity::Comma))
 			{
 				// GNU's checked-in extension gives `, ##__VA_ARGS__` a
 				// distinct empty-pack meaning: remove the comma.  The
@@ -1055,8 +1171,8 @@ private:
 			}
 			else
 			{
-				const std::string pasted = left_unit.token.token.spelling +
-					right_unit.token.token.spelling;
+				const std::string pasted = spelling(left_unit.token.token) +
+					spelling(right_unit.token.token);
 				std::vector<PaintedToken> retokenized =
 					retokenize_one(pasted);
 				result = SubstitutionUnit::token_unit(retokenized[0]);
@@ -1074,10 +1190,11 @@ private:
 } // namespace
 
 void preprocess_cpp_source(const std::string& source,
-	std::vector<PPToken>* output)
+	PPTokenBuffer* output)
 {
 	if (output == NULL)
 		throw std::invalid_argument("null macro output");
-	MacroProcessor processor;
-	processor.process(source, output);
+	output->clear();
+	MacroProcessor processor(output->spellings);
+	processor.process(source, &output->tokens);
 }
