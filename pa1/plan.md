@@ -65,6 +65,9 @@ temporary and removed.
 - `git diff --check`: PASS.
 - Performance evidence: recorded above for the 900-real-world case and
   interleaved 1/4 MiB temporary scale samples.
-- Implementation commit: pending; this ledger will be amended in the
-  follow-up ledger commit with the exact hash.
-- Final `git status --short`: pending final commit verification.
+- Implementation checkpoint commit: `d62d4144` (`PA1: implement phase 1-3
+  preprocessing tokenizer`).
+- Ledger follow-up commit: this plan update records the implementation hash;
+  its own hash is reported in the final handoff because a commit cannot embed
+  its own ID.
+- Final `git status --short`: verified clean after the ledger follow-up commit.
