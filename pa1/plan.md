@@ -95,5 +95,4 @@ build layouts and are not compared with this final measurement.
   removed from the worktree.
 - Audit/repair commit: `1fddbbe5071367c557991b265c9b49c2b135be7d`
   (`PA1: finalize architecture audit`).
-- This documentation follow-up records the repair hash; final clean-status
-  confirmation is performed after it.
+- Post-follow-up `git status --short`: empty.
