@@ -93,5 +93,7 @@ build layouts and are not compared with this final measurement.
 - `git diff --check`: PASS.
 - No checked-in fixture or reference changed.  Generated check artifacts were
   removed from the worktree.
-- Final repair commit and clean-status confirmation are recorded in the
-  follow-up ledger entry below.
+- Audit/repair commit: `1fddbbe5071367c557991b265c9b49c2b135be7d`
+  (`PA1: finalize architecture audit`).
+- This documentation follow-up records the repair hash; final clean-status
+  confirmation is performed after it.
