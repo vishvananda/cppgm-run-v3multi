@@ -5,8 +5,6 @@
 #include <limits>
 #include <sstream>
 #include <string>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "IPPTokenStream.h"
@@ -171,12 +169,66 @@ struct SimpleTokenEntry
 	SimpleTokenType type;
 };
 
+// Keep this fixed vocabulary source-sorted so lookup needs no node-based
+// allocation or mutable hash index.  Aliases intentionally share a typed
+// SimpleTokenType value.
 const SimpleTokenEntry kSimpleTokenEntries[] =
 {
+	{"!", SimpleTokenType::OP_LNOT},
+	{"!=", SimpleTokenType::OP_NE},
+	{"%", SimpleTokenType::OP_MOD},
+	{"%=", SimpleTokenType::OP_MODASS},
+	{"%>", SimpleTokenType::OP_RBRACE},
+	{"&", SimpleTokenType::OP_AMP},
+	{"&&", SimpleTokenType::OP_LAND},
+	{"&=", SimpleTokenType::OP_BANDASS},
+	{"(", SimpleTokenType::OP_LPAREN},
+	{")", SimpleTokenType::OP_RPAREN},
+	{"*", SimpleTokenType::OP_STAR},
+	{"*=", SimpleTokenType::OP_STARASS},
+	{"+", SimpleTokenType::OP_PLUS},
+	{"++", SimpleTokenType::OP_INC},
+	{"+=", SimpleTokenType::OP_PLUSASS},
+	{",", SimpleTokenType::OP_COMMA},
+	{"-", SimpleTokenType::OP_MINUS},
+	{"--", SimpleTokenType::OP_DEC},
+	{"-=", SimpleTokenType::OP_MINUSASS},
+	{"->", SimpleTokenType::OP_ARROW},
+	{"->*", SimpleTokenType::OP_ARROWSTAR},
+	{".", SimpleTokenType::OP_DOT},
+	{".*", SimpleTokenType::OP_DOTSTAR},
+	{"...", SimpleTokenType::OP_DOTS},
+	{"/", SimpleTokenType::OP_DIV},
+	{"/=", SimpleTokenType::OP_DIVASS},
+	{":", SimpleTokenType::OP_COLON},
+	{"::", SimpleTokenType::OP_COLON2},
+	{":>", SimpleTokenType::OP_RSQUARE},
+	{";", SimpleTokenType::OP_SEMICOLON},
+	{"<", SimpleTokenType::OP_LT},
+	{"<%", SimpleTokenType::OP_LBRACE},
+	{"<:", SimpleTokenType::OP_LSQUARE},
+	{"<<", SimpleTokenType::OP_LSHIFT},
+	{"<<=", SimpleTokenType::OP_LSHIFTASS},
+	{"<=", SimpleTokenType::OP_LE},
+	{"=", SimpleTokenType::OP_ASS},
+	{"==", SimpleTokenType::OP_EQ},
+	{">", SimpleTokenType::OP_GT},
+	{">=", SimpleTokenType::OP_GE},
+	{">>", SimpleTokenType::OP_RSHIFT},
+	{">>=", SimpleTokenType::OP_RSHIFTASS},
+	{"?", SimpleTokenType::OP_QMARK},
+	{"[", SimpleTokenType::OP_LSQUARE},
+	{"]", SimpleTokenType::OP_RSQUARE},
+	{"^", SimpleTokenType::OP_XOR},
+	{"^=", SimpleTokenType::OP_XORASS},
 	{"alignas", SimpleTokenType::KW_ALIGNAS},
 	{"alignof", SimpleTokenType::KW_ALIGNOF},
+	{"and", SimpleTokenType::OP_LAND},
+	{"and_eq", SimpleTokenType::OP_BANDASS},
 	{"asm", SimpleTokenType::KW_ASM},
 	{"auto", SimpleTokenType::KW_AUTO},
+	{"bitand", SimpleTokenType::OP_AMP},
+	{"bitor", SimpleTokenType::OP_BOR},
 	{"bool", SimpleTokenType::KW_BOOL},
 	{"break", SimpleTokenType::KW_BREAK},
 	{"case", SimpleTokenType::KW_CASE},
@@ -185,9 +237,10 @@ const SimpleTokenEntry kSimpleTokenEntries[] =
 	{"char16_t", SimpleTokenType::KW_CHAR16_T},
 	{"char32_t", SimpleTokenType::KW_CHAR32_T},
 	{"class", SimpleTokenType::KW_CLASS},
+	{"compl", SimpleTokenType::OP_COMPL},
 	{"const", SimpleTokenType::KW_CONST},
-	{"constexpr", SimpleTokenType::KW_CONSTEXPR},
 	{"const_cast", SimpleTokenType::KW_CONST_CAST},
+	{"constexpr", SimpleTokenType::KW_CONSTEXPR},
 	{"continue", SimpleTokenType::KW_CONTINUE},
 	{"decltype", SimpleTokenType::KW_DECLTYPE},
 	{"default", SimpleTokenType::KW_DEFAULT},
@@ -213,8 +266,12 @@ const SimpleTokenEntry kSimpleTokenEntries[] =
 	{"namespace", SimpleTokenType::KW_NAMESPACE},
 	{"new", SimpleTokenType::KW_NEW},
 	{"noexcept", SimpleTokenType::KW_NOEXCEPT},
+	{"not", SimpleTokenType::OP_LNOT},
+	{"not_eq", SimpleTokenType::OP_NE},
 	{"nullptr", SimpleTokenType::KW_NULLPTR},
 	{"operator", SimpleTokenType::KW_OPERATOR},
+	{"or", SimpleTokenType::OP_LOR},
+	{"or_eq", SimpleTokenType::OP_BORASS},
 	{"private", SimpleTokenType::KW_PRIVATE},
 	{"protected", SimpleTokenType::KW_PROTECTED},
 	{"public", SimpleTokenType::KW_PUBLIC},
@@ -246,88 +303,15 @@ const SimpleTokenEntry kSimpleTokenEntries[] =
 	{"volatile", SimpleTokenType::KW_VOLATILE},
 	{"wchar_t", SimpleTokenType::KW_WCHAR_T},
 	{"while", SimpleTokenType::KW_WHILE},
-
-	{"{", SimpleTokenType::OP_LBRACE},
-	{"<%", SimpleTokenType::OP_LBRACE},
-	{"}", SimpleTokenType::OP_RBRACE},
-	{"%>", SimpleTokenType::OP_RBRACE},
-	{"[", SimpleTokenType::OP_LSQUARE},
-	{"<:", SimpleTokenType::OP_LSQUARE},
-	{"]", SimpleTokenType::OP_RSQUARE},
-	{":>", SimpleTokenType::OP_RSQUARE},
-	{"(", SimpleTokenType::OP_LPAREN},
-	{")", SimpleTokenType::OP_RPAREN},
-	{"|", SimpleTokenType::OP_BOR},
-	{"bitor", SimpleTokenType::OP_BOR},
-	{"^", SimpleTokenType::OP_XOR},
 	{"xor", SimpleTokenType::OP_XOR},
-	{"~", SimpleTokenType::OP_COMPL},
-	{"compl", SimpleTokenType::OP_COMPL},
-	{"&", SimpleTokenType::OP_AMP},
-	{"bitand", SimpleTokenType::OP_AMP},
-	{"!", SimpleTokenType::OP_LNOT},
-	{"not", SimpleTokenType::OP_LNOT},
-	{";", SimpleTokenType::OP_SEMICOLON},
-	{":", SimpleTokenType::OP_COLON},
-	{"...", SimpleTokenType::OP_DOTS},
-	{"?", SimpleTokenType::OP_QMARK},
-	{"::", SimpleTokenType::OP_COLON2},
-	{".", SimpleTokenType::OP_DOT},
-	{".*", SimpleTokenType::OP_DOTSTAR},
-	{"+", SimpleTokenType::OP_PLUS},
-	{"-", SimpleTokenType::OP_MINUS},
-	{"*", SimpleTokenType::OP_STAR},
-	{"/", SimpleTokenType::OP_DIV},
-	{"%", SimpleTokenType::OP_MOD},
-	{"=", SimpleTokenType::OP_ASS},
-	{"<", SimpleTokenType::OP_LT},
-	{">", SimpleTokenType::OP_GT},
-	{"+=", SimpleTokenType::OP_PLUSASS},
-	{"-=", SimpleTokenType::OP_MINUSASS},
-	{"*=", SimpleTokenType::OP_STARASS},
-	{"/=", SimpleTokenType::OP_DIVASS},
-	{"%=", SimpleTokenType::OP_MODASS},
-	{"^=", SimpleTokenType::OP_XORASS},
 	{"xor_eq", SimpleTokenType::OP_XORASS},
-	{"&=", SimpleTokenType::OP_BANDASS},
-	{"and_eq", SimpleTokenType::OP_BANDASS},
+	{"{", SimpleTokenType::OP_LBRACE},
+	{"|", SimpleTokenType::OP_BOR},
 	{"|=", SimpleTokenType::OP_BORASS},
-	{"or_eq", SimpleTokenType::OP_BORASS},
-	{"<<", SimpleTokenType::OP_LSHIFT},
-	{">>", SimpleTokenType::OP_RSHIFT},
-	{">>=", SimpleTokenType::OP_RSHIFTASS},
-	{"<<=", SimpleTokenType::OP_LSHIFTASS},
-	{"==", SimpleTokenType::OP_EQ},
-	{"!=", SimpleTokenType::OP_NE},
-	{"not_eq", SimpleTokenType::OP_NE},
-	{"<=", SimpleTokenType::OP_LE},
-	{">=", SimpleTokenType::OP_GE},
-	{"&&", SimpleTokenType::OP_LAND},
-	{"and", SimpleTokenType::OP_LAND},
 	{"||", SimpleTokenType::OP_LOR},
-	{"or", SimpleTokenType::OP_LOR},
-	{"++", SimpleTokenType::OP_INC},
-	{"--", SimpleTokenType::OP_DEC},
-	{",", SimpleTokenType::OP_COMMA},
-	{"->*", SimpleTokenType::OP_ARROWSTAR},
-	{"->", SimpleTokenType::OP_ARROW}
+	{"}", SimpleTokenType::OP_RBRACE},
+	{"~", SimpleTokenType::OP_COMPL}
 };
-
-const std::unordered_map<std::string, SimpleTokenType>& simple_token_index()
-{
-	static const std::unordered_map<std::string, SimpleTokenType> index = []()
-	{
-		std::unordered_map<std::string, SimpleTokenType> result;
-		result.reserve(sizeof(kSimpleTokenEntries) /
-			sizeof(kSimpleTokenEntries[0]));
-		for (std::size_t i = 0; i < sizeof(kSimpleTokenEntries) /
-			sizeof(kSimpleTokenEntries[0]); ++i)
-			result.insert(std::make_pair(kSimpleTokenEntries[i].source,
-				kSimpleTokenEntries[i].type));
-		return result;
-	}();
-	return index;
-}
 
 bool is_hex_digit(char c)
 {
@@ -866,34 +850,35 @@ IntegerCandidate candidate(FundamentalType type)
 bool choose_integer_type(const IntegerSyntax& syntax,
 	IntegerCandidate* result)
 {
-	std::vector<FundamentalType> types;
+	FundamentalType types[6];
+	std::size_t type_count = 0;
 	if (syntax.decimal)
 	{
 		switch (syntax.suffix)
 		{
 		case IntegerSuffix::None:
-			types.push_back(FundamentalType::Int);
-			types.push_back(FundamentalType::LongInt);
-			types.push_back(FundamentalType::LongLongInt);
+			types[type_count++] = FundamentalType::Int;
+			types[type_count++] = FundamentalType::LongInt;
+			types[type_count++] = FundamentalType::LongLongInt;
 			break;
 		case IntegerSuffix::Unsigned:
-			types.push_back(FundamentalType::UnsignedInt);
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedInt;
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::Long:
-			types.push_back(FundamentalType::LongInt);
-			types.push_back(FundamentalType::LongLongInt);
+			types[type_count++] = FundamentalType::LongInt;
+			types[type_count++] = FundamentalType::LongLongInt;
 			break;
 		case IntegerSuffix::LongLong:
-			types.push_back(FundamentalType::LongLongInt);
+			types[type_count++] = FundamentalType::LongLongInt;
 			break;
 		case IntegerSuffix::UnsignedLong:
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::UnsignedLongLong:
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		}
 	}
@@ -902,41 +887,41 @@ bool choose_integer_type(const IntegerSyntax& syntax,
 		switch (syntax.suffix)
 		{
 		case IntegerSuffix::None:
-			types.push_back(FundamentalType::Int);
-			types.push_back(FundamentalType::UnsignedInt);
-			types.push_back(FundamentalType::LongInt);
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::LongLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::Int;
+			types[type_count++] = FundamentalType::UnsignedInt;
+			types[type_count++] = FundamentalType::LongInt;
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::LongLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::Unsigned:
-			types.push_back(FundamentalType::UnsignedInt);
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedInt;
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::Long:
-			types.push_back(FundamentalType::LongInt);
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::LongLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::LongInt;
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::LongLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::LongLong:
-			types.push_back(FundamentalType::LongLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::LongLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::UnsignedLong:
-			types.push_back(FundamentalType::UnsignedLongInt);
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedLongInt;
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		case IntegerSuffix::UnsignedLongLong:
-			types.push_back(FundamentalType::UnsignedLongLongInt);
+			types[type_count++] = FundamentalType::UnsignedLongLongInt;
 			break;
 		}
 	}
 
 	if (syntax.overflow)
 		return false;
-	for (std::size_t i = 0; i < types.size(); ++i)
+	for (std::size_t i = 0; i < type_count; ++i)
 	{
 		const IntegerCandidate possible = candidate(types[i]);
 		if (syntax.value <= possible.maximum)
@@ -1280,6 +1265,83 @@ FundamentalType encoding_type(StringEncoding encoding)
 	return FundamentalType::Char;
 }
 
+struct EncodedCodePoint
+{
+	std::uint32_t units[4];
+	std::size_t count;
+};
+
+bool encode_codepoint(StringEncoding encoding, std::uint32_t value,
+	EncodedCodePoint* encoded)
+{
+	if (!valid_unicode_value(value))
+		return false;
+	if (encoding == StringEncoding::Ordinary || encoding == StringEncoding::Utf8)
+	{
+		if (value <= 0x7F)
+		{
+			encoded->count = 1;
+			encoded->units[0] = value;
+		}
+		else if (value <= 0x7FF)
+		{
+			encoded->count = 2;
+			encoded->units[0] = 0xC0 | (value >> 6);
+			encoded->units[1] = 0x80 | (value & 0x3F);
+		}
+		else if (value <= 0xFFFF)
+		{
+			encoded->count = 3;
+			encoded->units[0] = 0xE0 | (value >> 12);
+			encoded->units[1] = 0x80 | ((value >> 6) & 0x3F);
+			encoded->units[2] = 0x80 | (value & 0x3F);
+		}
+		else
+		{
+			encoded->count = 4;
+			encoded->units[0] = 0xF0 | (value >> 18);
+			encoded->units[1] = 0x80 | ((value >> 12) & 0x3F);
+			encoded->units[2] = 0x80 | ((value >> 6) & 0x3F);
+			encoded->units[3] = 0x80 | (value & 0x3F);
+		}
+		return true;
+	}
+
+	if (encoding == StringEncoding::Utf16)
+	{
+		if (value <= 0xFFFF)
+		{
+			encoded->count = 1;
+			encoded->units[0] = value;
+		}
+		else
+		{
+			const std::uint32_t adjusted = value - 0x10000;
+			encoded->count = 2;
+			encoded->units[0] = 0xD800 | (adjusted >> 10);
+			encoded->units[1] = 0xDC00 | (adjusted & 0x3FF);
+		}
+		return true;
+	}
+
+	encoded->count = 1;
+	encoded->units[0] = value;
+	return true;
+}
+
+std::size_t encoded_element_bytes(const StringElement& element,
+	StringEncoding encoding)
+{
+	if (element.kind == StringElementKind::NumericCodeUnit)
+		return encoding_width(encoding);
+
+	EncodedCodePoint encoded;
+	if (!encode_codepoint(encoding, static_cast<std::uint32_t>(element.value),
+		&encoded))
+		return 0;
+	return encoded.count * encoding_width(encoding);
+}
+
 void append_unit(std::vector<std::uint8_t>* bytes, std::size_t* count,
 	std::uint64_t value, std::size_t width)
 {
@@ -1290,47 +1352,12 @@ void append_unit(std::vector<std::uint8_t>* bytes, std::size_t* count,
 bool append_codepoint(std::vector<std::uint8_t>* bytes, std::size_t* count,
 	StringEncoding encoding, std::uint32_t value)
 {
-	if (!valid_unicode_value(value))
+	EncodedCodePoint encoded;
+	if (!encode_codepoint(encoding, value, &encoded))
 		return false;
-	if (encoding == StringEncoding::Ordinary || encoding == StringEncoding::Utf8)
-	{
-		if (value <= 0x7F)
-			append_unit(bytes, count, value, 1);
-		else if (value <= 0x7FF)
-		{
-			append_unit(bytes, count, 0xC0 | (value >> 6), 1);
-			append_unit(bytes, count, 0x80 | (value & 0x3F), 1);
-		}
-		else if (value <= 0xFFFF)
-		{
-			append_unit(bytes, count, 0xE0 | (value >> 12), 1);
-			append_unit(bytes, count, 0x80 | ((value >> 6) & 0x3F), 1);
-			append_unit(bytes, count, 0x80 | (value & 0x3F), 1);
-		}
-		else
-		{
-			append_unit(bytes, count, 0xF0 | (value >> 18), 1);
-			append_unit(bytes, count, 0x80 | ((value >> 12) & 0x3F), 1);
-			append_unit(bytes, count, 0x80 | ((value >> 6) & 0x3F), 1);
-			append_unit(bytes, count, 0x80 | (value & 0x3F), 1);
-		}
-		return true;
-	}
-
-	if (encoding == StringEncoding::Utf16)
-	{
-		if (value <= 0xFFFF)
-			append_unit(bytes, count, value, 2);
-		else
-		{
-			const std::uint32_t adjusted = value - 0x10000;
-			append_unit(bytes, count, 0xD800 | (adjusted >> 10), 2);
-			append_unit(bytes, count, 0xDC00 | (adjusted & 0x3FF), 2);
-		}
-		return true;
-	}
-
-	append_unit(bytes, count, value, 4);
+	const std::size_t width = encoding_width(encoding);
+	for (std::size_t i = 0; i < encoded.count; ++i)
+		append_unit(bytes, count, encoded.units[i], width);
 	return true;
 }
 
@@ -1669,7 +1696,6 @@ private:
 		StringEncoding encoding = StringEncoding::Ordinary;
 		std::string suffix;
 		bool has_suffix = false;
-		std::size_t estimated_bytes = 4;
 		for (std::size_t i = 0; i < pending_strings_.size(); ++i)
 		{
 			const StringPart& part = pending_strings_[i];
@@ -1695,11 +1721,17 @@ private:
 				else if (suffix != part.suffix)
 					valid = false;
 			}
-			estimated_bytes += part.elements.size() * encoding_width(encoding);
 		}
 
 		if (valid)
 		{
+			std::size_t estimated_bytes = encoding_width(encoding);
+			for (std::size_t i = 0; i < pending_strings_.size(); ++i)
+			{
+				const StringPart& part = pending_strings_[i];
+				for (std::size_t j = 0; j < part.elements.size(); ++j)
+					estimated_bytes += encoded_element_bytes(part.elements[j], encoding);
+			}
 			LiteralData value;
 			value.type = encoding_type(encoding);
 			value.element_count = 0;
@@ -1758,14 +1790,24 @@ const char* simple_token_type_name(SimpleTokenType type)
 bool lookup_simple_token_type(const std::string& source,
 	SimpleTokenType* type)
 {
-	const std::unordered_map<std::string, SimpleTokenType>& index =
-		simple_token_index();
-	const std::unordered_map<std::string, SimpleTokenType>::const_iterator found =
-		index.find(source);
-	if (found == index.end())
-		return false;
-	*type = found->second;
-	return true;
+	std::size_t first = 0;
+	std::size_t last = sizeof(kSimpleTokenEntries) /
+		sizeof(kSimpleTokenEntries[0]);
+	while (first < last)
+	{
+		const std::size_t middle = first + (last - first) / 2;
+		const int comparison = source.compare(kSimpleTokenEntries[middle].source);
+		if (comparison == 0)
+		{
+			*type = kSimpleTokenEntries[middle].type;
+			return true;
+		}
+		if (comparison < 0)
+			last = middle;
+		else
+			first = middle + 1;
+	}
+	return false;
 }
 
 float PA2Decode_float(const std::string& source)
