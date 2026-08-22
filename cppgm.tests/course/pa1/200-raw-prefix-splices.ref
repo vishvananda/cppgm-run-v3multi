@@ -1,0 +1,7 @@
+string-literal 11 R"(direct)"
+new-line 0 
+string-literal 13 R"(trigraph)"
+new-line 0 
+string-literal 14 u8R"(encoded)"
+new-line 0 
+eof

@@ -10,13 +10,13 @@ namespace
 
 struct Unit
 {
-	int cp;
 	size_t begin;
 	size_t end;
+	int cp;
 	bool from_ucn;
 
 	Unit(int cp, size_t begin, size_t end, bool from_ucn = false)
-		: cp(cp), begin(begin), end(end), from_ucn(from_ucn)
+		: begin(begin), end(end), cp(cp), from_ucn(from_ucn)
 	{}
 };
 
@@ -356,34 +356,34 @@ bool read_ucn(const std::vector<Unit>& input, size_t at, int* value, size_t* cou
 	return true;
 }
 
-std::vector<Unit> phase1_ucns(const std::vector<Unit>& input)
+void phase1_ucns(std::vector<Unit>& units)
 {
-	std::vector<Unit> result;
-	result.reserve(input.size());
-
-	for (size_t i = 0; i < input.size();)
+	size_t read = 0;
+	size_t write = 0;
+	while (read < units.size())
 	{
 		// A pair of backslashes is an escape spelling in literals and must not
 		// expose the second slash as a fresh UCN introducer.
-		if (input[i].cp == '\\' && i + 1 < input.size() && input[i + 1].cp == '\\')
+		if (units[read].cp == '\\' && read + 1 < units.size() &&
+			units[read + 1].cp == '\\')
 		{
-			result.push_back(input[i]);
-			result.push_back(input[i + 1]);
-			i += 2;
+			units[write++] = units[read++];
+			units[write++] = units[read++];
 			continue;
 		}
 
 		int value = 0;
 		size_t count = 0;
-		if (read_ucn(input, i, &value, &count))
+		if (read_ucn(units, read, &value, &count))
 		{
 			const bool valid_value = value <= 0x10FFFF &&
 				!(value >= 0xD800 && value <= 0xDFFF);
 			if (valid_value)
 			{
-				result.push_back(Unit(value, input[i].begin,
-					input[i + count - 1].end, true));
-				i += count;
+				const Unit converted(value, units[read].begin,
+					units[read + count - 1].end, true);
+				units[write++] = converted;
+				read += count;
 				continue;
 			}
 
@@ -391,38 +391,34 @@ std::vector<Unit> phase1_ucns(const std::vector<Unit>& input)
 			// reject it outside a raw literal, while raw-string reversal can
 			// correctly retain the physical spelling.
 			for (size_t j = 0; j < count; ++j)
-				result.push_back(input[i + j]);
-			i += count;
+				units[write++] = units[read + j];
+			read += count;
 			continue;
 		}
 
-		result.push_back(input[i]);
-		++i;
+		units[write++] = units[read++];
 	}
-
-	return result;
+	units.erase(units.begin() + write, units.end());
 }
 
-std::vector<Unit> phase2_line_splicing(const std::vector<Unit>& input,
-	                                   size_t physical_size)
+void phase2_line_splicing(std::vector<Unit>& units, size_t physical_size)
 {
-	std::vector<Unit> result;
-	result.reserve(input.size() + 1);
-
-	for (size_t i = 0; i < input.size();)
+	size_t read = 0;
+	size_t write = 0;
+	while (read < units.size())
 	{
-		if (input[i].cp == '\\' && i + 1 < input.size() && input[i + 1].cp == '\n')
+		if (units[read].cp == '\\' && read + 1 < units.size() &&
+			units[read + 1].cp == '\n')
 		{
-			i += 2;
+			read += 2;
 			continue;
 		}
-		result.push_back(input[i]);
-		++i;
+		units[write++] = units[read++];
 	}
+	units.erase(units.begin() + write, units.end());
 
-	if (physical_size != 0 && (result.empty() || result.back().cp != '\n'))
-		result.push_back(Unit('\n', physical_size, physical_size));
-	return result;
+	if (physical_size != 0 && (units.empty() || units.back().cp != '\n'))
+		units.push_back(Unit('\n', physical_size, physical_size));
 }
 
 bool starts_ucn(const std::vector<Unit>& input, size_t at)
@@ -653,17 +649,6 @@ private:
 		return 0;
 	}
 
-	bool physical_matches(size_t at, const char* text) const
-	{
-		for (size_t i = 0; text[i] != '\0'; ++i)
-		{
-			if (at + i >= physical_.size() ||
-				physical_[at + i] != static_cast<unsigned char>(text[i]))
-				return false;
-		}
-		return true;
-	}
-
 	bool raw_d_char(int cp) const
 	{
 		return cp != ' ' && cp != '\t' && cp != '\v' && cp != '\f' &&
@@ -676,23 +661,14 @@ private:
 		if (prefix_length == 0)
 			return false;
 
-		const size_t physical_begin = units_[pos_].begin;
-		bool prefix_matches = false;
-		if (prefix_length == 2)
-			prefix_matches = physical_matches(physical_begin, "R\"");
-		else if (prefix_length == 4)
-			prefix_matches = physical_matches(physical_begin, "u8R\"");
-		else
-			prefix_matches = physical_matches(physical_begin, "uR\"") ||
-				physical_matches(physical_begin, "UR\"") ||
-				physical_matches(physical_begin, "LR\"");
-		if (!prefix_matches)
-			throw std::runtime_error("invalid raw string prefix");
-		validate_external_range(pos_, pos_ + prefix_length);
+		const size_t opening_quote = pos_ + prefix_length - 1;
+		validate_external_range(pos_, opening_quote + 1);
+		const size_t physical_content_begin = units_[opening_quote].end;
+		if (physical_content_begin > physical_.size())
+			throw std::runtime_error("invalid raw string source span");
 
-		size_t delimiter_begin = physical_begin + prefix_length;
 		std::vector<int> delimiter;
-		size_t open = delimiter_begin;
+		size_t open = physical_content_begin;
 		while (open < physical_.size() && physical_[open] != '(')
 		{
 			if (!raw_d_char(physical_[open]))
@@ -739,7 +715,8 @@ private:
 						suffix_end = consume_identifier(suffix_begin);
 					}
 
-					std::string data = data_from_physical(physical_begin, physical_end);
+					std::string data = data_from_units(pos_, opening_quote + 1);
+					data += data_from_physical(physical_content_begin, physical_end);
 					if (suffix_end != suffix_begin)
 						data += data_from_units(suffix_begin, suffix_end);
 
@@ -1053,9 +1030,9 @@ void tokenize_cpp_source(const std::string& source, IPPTokenStream& output)
 	if (!physical.empty() && physical[0] == 0xFEFF)
 		physical.erase(physical.begin());
 
-	std::vector<Unit> phase1 = phase1_trigraphs(physical);
-	phase1 = phase1_ucns(phase1);
-	std::vector<Unit> logical = phase2_line_splicing(phase1, physical.size());
+	std::vector<Unit> logical = phase1_trigraphs(physical);
+	phase1_ucns(logical);
+	phase2_line_splicing(logical, physical.size());
 
 	Tokenizer tokenizer(physical, logical, output);
 	tokenizer.run();
