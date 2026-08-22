@@ -1,0 +1,5 @@
+#define PA5_AUDIT_HEADER "pa5-audit-byte-\xC3\xA9.h"
+#include PA5_AUDIT_HEADER
+#line 17 "line-\xC3\xA9.cc"
+__FILE__
+__LINE__

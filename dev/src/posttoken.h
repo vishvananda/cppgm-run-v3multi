@@ -215,6 +215,21 @@ struct IPostTokenOutput
 	{
 		emit_simple(source, type);
 	}
+	// Typed phase-3 consumers may retain the canonical spelling identity at
+	// the identifier lookup boundary.  Legacy consumers continue to receive
+	// the source spelling through the defaults.
+	virtual void emit_identifier_with_spelling(PPSpellingId spelling,
+		const std::string& source)
+	{
+		(void)spelling;
+		emit_identifier(source);
+	}
+	virtual void emit_simple_identifier_with_spelling(PPSpellingId spelling,
+		const std::string& source, SimpleTokenType type)
+	{
+		(void)spelling;
+		emit_simple_identifier(source, type);
+	}
 	// Existing PA2 consumers ignore line boundaries.  PA3 overrides this
 	// optional event only through the explicit line-aware entry point below.
 	virtual void emit_new_line() {}

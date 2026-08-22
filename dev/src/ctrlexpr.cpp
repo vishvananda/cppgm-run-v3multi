@@ -1209,7 +1209,14 @@ class TypedControlOutput : public IPostTokenOutput
 {
 public:
 	TypedControlOutput(PPControlMacroDefined macro_defined, void* context)
-		: macro_defined_(macro_defined), context_(context), tokens_(),
+		: macro_defined_(macro_defined), macro_defined_id_(NULL),
+		  context_(context), tokens_(),
+		  invalid_(false)
+	{}
+
+	TypedControlOutput(PPControlMacroDefinedId macro_defined, void* context)
+		: macro_defined_(NULL), macro_defined_id_(macro_defined),
+		  context_(context), tokens_(),
 		  invalid_(false)
 	{}
 
@@ -1231,24 +1238,36 @@ public:
 	void emit_simple_identifier(const std::string& source,
 		SimpleTokenType type)
 	{
+		emit_simple_identifier_with_spelling(0, source, type);
+	}
+
+	void emit_simple_identifier_with_spelling(PPSpellingId spelling,
+		const std::string& source, SimpleTokenType type)
+	{
 		CtrlToken token;
 		token.kind = CtrlTokenKind::Simple;
 		token.simple = type;
 		token.identifier_like = true;
 		token.defined_spelling = source == "defined";
 		token.identifier_parity_odd = first_code_unit_is_odd(source);
-		token.defined_value = defined(source);
+		token.defined_value = defined(spelling, source);
 		tokens_.push_back(token);
 	}
 
 	void emit_identifier(const std::string& source)
+	{
+		emit_identifier_with_spelling(0, source);
+	}
+
+	void emit_identifier_with_spelling(PPSpellingId spelling,
+		const std::string& source)
 	{
 		CtrlToken token;
 		token.kind = CtrlTokenKind::Identifier;
 		token.identifier_like = true;
 		token.defined_spelling = source == "defined";
 		token.identifier_parity_odd = first_code_unit_is_odd(source);
-		token.defined_value = defined(source);
+		token.defined_value = defined(spelling, source);
 		tokens_.push_back(token);
 	}
 
@@ -1282,31 +1301,24 @@ public:
 
 private:
 	PPControlMacroDefined macro_defined_;
+	PPControlMacroDefinedId macro_defined_id_;
 	void* context_;
 	std::vector<CtrlToken> tokens_;
 	bool invalid_;
 
-	bool defined(const std::string& source) const
+	bool defined(PPSpellingId spelling, const std::string& source) const
 	{
+		if (macro_defined_id_ != NULL && spelling != 0)
+			return macro_defined_id_(context_, spelling);
 		return macro_defined_ == NULL ? first_code_unit_is_odd(source) :
 			macro_defined_(context_, source);
 	}
 };
 
-} // namespace
-
-bool evaluate_cpp_control_expression(const PPTokenBuffer& tokens,
-	PPControlMacroDefined macro_defined, void* context,
+template <typename Callback>
+bool evaluate_cpp_control_expression_impl(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, Callback macro_defined, void* context,
 	PPControlExpressionValue* result)
-
-{
-	return evaluate_cpp_control_expression(tokens.spellings, tokens.tokens,
-		macro_defined, context, result);
-}
-
-bool evaluate_cpp_control_expression(const PPSpellingTable& spellings,
-	const std::vector<PPToken>& tokens, PPControlMacroDefined macro_defined,
-	void* context, PPControlExpressionValue* result)
 {
 	if (result == NULL)
 		throw std::invalid_argument("null controlling-expression result");
@@ -1329,6 +1341,33 @@ bool evaluate_cpp_control_expression(const PPSpellingTable& spellings,
 		*result = PPControlExpressionValue(0, false, false);
 		return false;
 	}
+}
+
+} // namespace
+
+bool evaluate_cpp_control_expression(const PPTokenBuffer& tokens,
+	PPControlMacroDefined macro_defined, void* context,
+	PPControlExpressionValue* result)
+
+{
+	return evaluate_cpp_control_expression(tokens.spellings, tokens.tokens,
+		macro_defined, context, result);
+}
+
+bool evaluate_cpp_control_expression(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, PPControlMacroDefined macro_defined,
+	void* context, PPControlExpressionValue* result)
+{
+	return evaluate_cpp_control_expression_impl(spellings, tokens,
+		macro_defined, context, result);
+}
+
+bool evaluate_cpp_control_expression_ids(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, PPControlMacroDefinedId macro_defined,
+	void* context, PPControlExpressionValue* result)
+{
+	return evaluate_cpp_control_expression_impl(spellings, tokens,
+		macro_defined, context, result);
 }
 
 int run_ctrlexpr(std::istream& input, std::ostream& output,

@@ -1,0 +1,2 @@
+#define PA5_AUDIT_NUL_HEADER "pa5-audit-\x00.h"
+#include PA5_AUDIT_NUL_HEADER

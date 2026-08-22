@@ -220,16 +220,30 @@ public:
 	{
 		if (output == NULL)
 			throw std::invalid_argument("null macro expansion output");
+		// Paint is an expansion-local unavailable-macro set.  Its roots never
+		// escape as PPToken facts, so retaining the persistent trie between
+		// public expansions only turns a temporary work structure into
+		// session-lifetime memory.
+		reset_paint_arena();
 		std::vector<PaintedToken> painted_input;
 		painted_input.reserve(input.size());
 		for (std::size_t i = 0; i < input.size(); ++i)
 			painted_input.push_back(PaintedToken(input[i]));
-		std::vector<PaintedToken> expanded;
-		expand_tokens(painted_input, &expanded);
-		output->clear();
-		output->reserve(expanded.size());
-		for (std::size_t i = 0; i < expanded.size(); ++i)
-			output->push_back(expanded[i].token);
+		try
+		{
+			std::vector<PaintedToken> expanded;
+			expand_tokens(painted_input, &expanded);
+			output->clear();
+			output->reserve(expanded.size());
+			for (std::size_t i = 0; i < expanded.size(); ++i)
+				output->push_back(expanded[i].token);
+		}
+		catch (...)
+		{
+			reset_paint_arena();
+			throw;
+		}
+		reset_paint_arena();
 	}
 
 	void expand_control(const std::vector<PPToken>& input,
@@ -500,6 +514,12 @@ private:
 	std::size_t merge_paint(std::size_t left, std::size_t right)
 	{
 		return union_paint(left, right, 0);
+	}
+
+	void reset_paint_arena()
+	{
+		paint_nodes_.clear();
+		paint_nodes_.push_back(PaintTrieNode());
 	}
 
 	std::size_t parameter_paint(const PaintedToken& token,

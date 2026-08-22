@@ -1,0 +1,6 @@
+preproc 1
+sof course/pa5/600-literal-boundaries.t
+identifier escaped_include_ok
+literal "line-f.cc" array of 10 char 6C696E652D662E636300
+literal 18 int 12000000
+eof

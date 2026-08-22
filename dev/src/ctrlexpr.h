@@ -22,12 +22,19 @@ struct PPControlExpressionValue
 // the spelling is exposed only at this identifier lookup boundary.
 typedef bool (*PPControlMacroDefined)(void* context,
 	const std::string& spelling);
+// PA5's typed path uses the existing spelling identity directly, avoiding a
+// render-and-relookup cycle for each `defined` operand.
+typedef bool (*PPControlMacroDefinedId)(void* context,
+	PPSpellingId spelling);
 
 bool evaluate_cpp_control_expression(const PPTokenBuffer& tokens,
 	PPControlMacroDefined macro_defined, void* context,
 	PPControlExpressionValue* result);
 bool evaluate_cpp_control_expression(const PPSpellingTable& spellings,
 	const std::vector<PPToken>& tokens, PPControlMacroDefined macro_defined,
+	void* context, PPControlExpressionValue* result);
+bool evaluate_cpp_control_expression_ids(const PPSpellingTable& spellings,
+	const std::vector<PPToken>& tokens, PPControlMacroDefinedId macro_defined,
 	void* context, PPControlExpressionValue* result);
 
 // Run PA3's controlling-expression adapter on one source stream.  The

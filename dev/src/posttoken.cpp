@@ -1631,20 +1631,34 @@ public:
 
 	void emit_identifier(const std::string& data)
 	{
+		emit_identifier_token(0, data);
+	}
+
+	void emit_identifier_token(PPSpellingId spelling,
+		const std::string& data)
+	{
 		flush_strings();
 		operator_pending_ = false;
 		SimpleTokenType type;
 		if (lookup_simple_token_type(data, &type))
 		{
-			output_.emit_simple_identifier(data, type);
+			output_.emit_simple_identifier_with_spelling(spelling, data, type);
 			operator_pending_ = type == SimpleTokenType::KW_OPERATOR;
 		}
 		else
-			output_.emit_identifier(data);
+			output_.emit_identifier_with_spelling(spelling, data);
 	}
 
 	void emit_identifier_as_preprocessing_op_or_punc(
 		PPTokenFixedIdentity fixed_identity, const std::string& data)
+	{
+		emit_identifier_as_preprocessing_op_or_punc_token(0,
+			fixed_identity, data);
+	}
+
+	void emit_identifier_as_preprocessing_op_or_punc_token(
+		PPSpellingId spelling, PPTokenFixedIdentity fixed_identity,
+		const std::string& data)
 	{
 		flush_strings();
 		operator_pending_ = false;
@@ -1653,7 +1667,7 @@ public:
 			// Keep the phase-3 identifier-origin distinction for typed
 			// posttoken consumers while mapping identity without a spelling
 			// lookup.
-			output_.emit_simple_identifier(data, type);
+			output_.emit_simple_identifier_with_spelling(spelling, data, type);
 		else
 			// A typed producer never supplies None here.  Keep the old callback
 			// behavior as a compatibility fallback for hand-built legacy streams.
@@ -1939,10 +1953,11 @@ void emit_pp_token(PostTokenStream* stream, const PPSpellingTable& spellings,
 		stream->emit_header_name(data);
 		return;
 	case PPTokenKind::Identifier:
-		stream->emit_identifier(data);
+		stream->emit_identifier_token(token.spelling, data);
 		return;
 	case PPTokenKind::IdentifierAsPreprocessingOpOrPunc:
-		stream->emit_identifier_as_preprocessing_op_or_punc(
+		stream->emit_identifier_as_preprocessing_op_or_punc_token(
+			token.spelling,
 			token.fixed_identity, data);
 		return;
 	case PPTokenKind::PPNumber:

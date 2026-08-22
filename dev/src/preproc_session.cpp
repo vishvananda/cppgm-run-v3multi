@@ -22,6 +22,12 @@ namespace
 
 typedef std::pair<unsigned long int, unsigned long int> PA5FileId;
 
+// Includes are semantically recursive, but an implementation must fail
+// before a malformed cycle can exhaust the process stack.  This is a
+// resource limit at the include owner; ordinary guarded/once'd headers remain
+// valid because the limit applies only to the active recursive depth.
+const std::size_t kMaxIncludeDepth = 256;
+
 extern "C" long int syscall(long int n, ...) throw ();
 
 bool PA5GetFileId(const std::string& path, PA5FileId& out_fileid)
@@ -75,130 +81,39 @@ std::size_t skip_whitespace(const std::vector<PPToken>& tokens,
 	return at;
 }
 
-void append_utf8(std::string* result, unsigned int value)
+std::string ordinary_string_literal_bytes(const LiteralData& value)
 {
-	if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
-		throw std::runtime_error("invalid code point in preprocessing string");
-	if (value <= 0x7f)
-		result->push_back(static_cast<char>(value));
-	else if (value <= 0x7ff)
-	{
-		result->push_back(static_cast<char>(0xc0 | (value >> 6)));
-		result->push_back(static_cast<char>(0x80 | (value & 0x3f)));
-	}
-	else if (value <= 0xffff)
-	{
-		result->push_back(static_cast<char>(0xe0 | (value >> 12)));
-		result->push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
-		result->push_back(static_cast<char>(0x80 | (value & 0x3f)));
-	}
-	else
-	{
-		result->push_back(static_cast<char>(0xf0 | (value >> 18)));
-		result->push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3f)));
-		result->push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
-		result->push_back(static_cast<char>(0x80 | (value & 0x3f)));
-	}
+	if (value.type != FundamentalType::Char || value.element_count == 0 ||
+		value.bytes.size() != value.element_count || value.bytes.back() != 0)
+		throw std::runtime_error("expected ordinary string literal");
+
+	std::string result;
+	result.reserve(value.bytes.size() - 1);
+	for (std::size_t i = 0; i + 1 < value.bytes.size(); ++i)
+		result.push_back(static_cast<char>(value.bytes[i]));
+	return result;
 }
 
-unsigned int hex_digit(char value)
-{
-	if (value >= '0' && value <= '9')
-		return static_cast<unsigned int>(value - '0');
-	if (value >= 'a' && value <= 'f')
-		return static_cast<unsigned int>(value - 'a' + 10);
-	if (value >= 'A' && value <= 'F')
-		return static_cast<unsigned int>(value - 'A' + 10);
-	return 16;
-}
-
-std::string decode_string_literal(const std::string& source)
+// C++11 _Pragma destringization is deliberately narrower than ordinary
+// literal decoding: only escaped quotes and escaped backslashes are removed.
+// Other backslash sequences remain text for the pragma processor.
+std::string destringize_pragma(const std::string& source)
 {
 	const std::size_t quote = source.find('"');
-	if (quote == std::string::npos || source.size() <= quote + 1 ||
+	if (quote == std::string::npos || quote + 1 >= source.size() ||
 		source[source.size() - 1] != '"')
-		throw std::runtime_error("invalid preprocessing string literal");
+		throw std::runtime_error("invalid _Pragma string literal");
 
 	std::string result;
 	for (std::size_t at = quote + 1; at + 1 < source.size(); ++at)
 	{
-		const char value = source[at];
-		if (value != '\\')
+		if (source[at] == '\\' && at + 1 < source.size() - 1 &&
+			(source[at + 1] == '\\' || source[at + 1] == '"'))
 		{
-			result.push_back(value);
-			continue;
+			result.push_back(source[++at]);
 		}
-		if (++at + 1 >= source.size())
-			throw std::runtime_error("truncated preprocessing escape");
-		const char escaped = source[at];
-		switch (escaped)
-		{
-		case 'a': result.push_back('\a'); break;
-		case 'b': result.push_back('\b'); break;
-		case 'f': result.push_back('\f'); break;
-		case 'n': result.push_back('\n'); break;
-		case 'r': result.push_back('\r'); break;
-		case 't': result.push_back('\t'); break;
-		case 'v': result.push_back('\v'); break;
-		case '\\': result.push_back('\\'); break;
-		case '\'': result.push_back('\''); break;
-		case '"': result.push_back('"'); break;
-		case '?': result.push_back('?'); break;
-		case 'x':
-		{
-			unsigned int value = 0;
-			std::size_t digits = 0;
-			while (at + 1 < source.size())
-			{
-				const unsigned int digit = hex_digit(source[at + 1]);
-				if (digit >= 16)
-					break;
-				value = value * 16 + digit;
-				++digits;
-				++at;
-			}
-			if (digits == 0)
-				throw std::runtime_error("invalid hexadecimal escape");
-			append_utf8(&result, value);
-			break;
-		}
-		case 'u':
-		case 'U':
-		{
-			const std::size_t digits = escaped == 'u' ? 4 : 8;
-			if (at + digits >= source.size())
-				throw std::runtime_error("truncated universal escape");
-			unsigned int value = 0;
-			for (std::size_t i = 0; i < digits; ++i)
-			{
-				const unsigned int digit = hex_digit(source[at + 1 + i]);
-				if (digit >= 16)
-					throw std::runtime_error("invalid universal escape");
-				value = value * 16 + digit;
-			}
-			at += digits;
-			append_utf8(&result, value);
-			break;
-		}
-		default:
-			if (escaped >= '0' && escaped <= '7')
-			{
-				unsigned int value = static_cast<unsigned int>(escaped - '0');
-				std::size_t count = 1;
-				while (count < 3 && at + 1 < source.size() &&
-					source[at + 1] >= '0' && source[at + 1] <= '7')
-				{
-					value = value * 8 +
-						static_cast<unsigned int>(source[at + 1] - '0');
-					++at;
-					++count;
-				}
-				append_utf8(&result, value);
-			}
-			else
-				result.push_back(escaped);
-			break;
-		}
+		else
+			result.push_back(source[at]);
 	}
 	return result;
 }
@@ -296,10 +211,10 @@ struct FileFrame
 	{}
 };
 
-class LineOperandOutput : public IPostTokenOutput
+class LiteralOperandOutput : public IPostTokenOutput
 {
 public:
-	LineOperandOutput() : literals(), other_tokens(0), invalid(false) {}
+	LiteralOperandOutput() : literals(), other_tokens(0), invalid(false) {}
 
 	void emit_invalid(const std::string& source)
 	{
@@ -322,7 +237,8 @@ public:
 
 	void emit_literal(const std::string& source, const LiteralData& value)
 	{
-		literals.push_back(std::make_pair(source, value));
+		(void)source;
+		literals.push_back(value);
 	}
 
 	void emit_user_defined_literal(const UserDefinedLiteralData& value)
@@ -333,7 +249,7 @@ public:
 
 	void emit_eof() {}
 
-	std::vector<std::pair<std::string, LiteralData> > literals;
+	std::vector<LiteralData> literals;
 	std::size_t other_tokens;
 	bool invalid;
 };
@@ -349,12 +265,17 @@ struct PPPreprocessingSession::Impl
 	std::vector<ConditionalFrame> conditionals;
 	std::unordered_map<PPSpellingId, DirectiveKind> directives;
 	std::unordered_map<PPSpellingId, BuiltinKind> builtins;
+	PPSpellingId pragma_once_id;
+	PPSpellingId pragma_operator_id;
 	std::size_t counter;
+	std::size_t include_depth;
 	FileFrame* current;
 
 	 explicit Impl(const PPPreprocessConfig& config)
 		: config(config), output(), macros(), pragma_once_files(),
-		  conditionals(), directives(), builtins(), counter(0), current(NULL)
+		  conditionals(), directives(), builtins(), pragma_once_id(0),
+		  pragma_operator_id(0), counter(0),
+		  include_depth(0), current(NULL)
 	{}
 
 	const PPTokenBuffer& run(const std::string& source_path,
@@ -367,6 +288,7 @@ struct PPPreprocessingSession::Impl
 		directives.clear();
 		builtins.clear();
 		counter = 0;
+		include_depth = 0;
 		current = NULL;
 		initialize_names();
 		process_file(source_path, source_path, source);
@@ -378,6 +300,8 @@ struct PPPreprocessingSession::Impl
 
 	void initialize_names()
 	{
+		pragma_once_id = output.spellings.intern("once");
+		pragma_operator_id = output.spellings.intern("_Pragma");
 		add_directive("if", DirectiveKind::If);
 		add_directive("ifdef", DirectiveKind::Ifdef);
 		add_directive("ifndef", DirectiveKind::Ifndef);
@@ -703,22 +627,19 @@ struct PPPreprocessingSession::Impl
 		std::vector<PPToken> expression(tokens);
 		expression.push_back(PPToken(PPTokenKind::EndOfFile));
 		PPControlExpressionValue value;
-		const bool parsed = evaluate_cpp_control_expression(
+		const bool parsed = evaluate_cpp_control_expression_ids(
 			output.spellings, expression, &Impl::macro_defined, this, &value);
 		if (!parsed || !value.valid)
 			throw std::runtime_error("invalid controlling expression");
 		return value.bits != 0;
 	}
 
-	static bool macro_defined(void* context, const std::string& spelling)
+	static bool macro_defined(void* context, PPSpellingId spelling)
 	{
 		Impl* self = static_cast<Impl*>(context);
 		if (self == NULL || self->macros.get() == NULL)
 			return false;
-		std::unordered_map<std::string, PPSpellingId>::const_iterator found =
-			self->output.spellings.ids.find(spelling);
-		return found != self->output.spellings.ids.end() &&
-			self->macros->is_defined(found->second);
+		return self->macros->is_defined(spelling);
 	}
 
 	void handle_include(const std::vector<PPToken>& tokens, std::size_t end,
@@ -733,21 +654,34 @@ struct PPPreprocessingSession::Impl
 				nonwhite.push_back(expanded[i]);
 		if (nonwhite.size() != 1 ||
 			(nonwhite[0].kind != PPTokenKind::HeaderName &&
-				nonwhite[0].kind != PPTokenKind::StringLiteral))
+				 nonwhite[0].kind != PPTokenKind::StringLiteral))
 			throw std::runtime_error("invalid include operand");
 
 		const std::string data = output.spellings.get(nonwhite[0].spelling);
 		std::string nextf;
-		if (nonwhite[0].kind == PPTokenKind::HeaderName && !data.empty() &&
-			data[0] == '<' && data[data.size() - 1] == '>')
+		if (nonwhite[0].kind == PPTokenKind::HeaderName && data.size() >= 2 &&
+			((data[0] == '<' && data[data.size() - 1] == '>') ||
+			 (data[0] == '"' && data[data.size() - 1] == '"')))
 			nextf = data.substr(1, data.size() - 2);
 		else
-			nextf = decode_string_literal(data);
+		{
+			std::vector<PPToken> typed(1, nonwhite[0]);
+			typed.push_back(PPToken(PPTokenKind::EndOfFile));
+			LiteralOperandOutput converted;
+			posttokenize_cpp_tokens(output.spellings, typed, converted);
+			if (converted.invalid || converted.other_tokens != 0 ||
+				converted.literals.size() != 1)
+				throw std::runtime_error("invalid include string literal");
+			nextf = ordinary_string_literal_bytes(converted.literals[0]);
+		}
 		include_file(nextf);
 	}
 
 	void include_file(const std::string& nextf)
 	{
+		if (nextf.find('\0') != std::string::npos)
+			throw std::runtime_error("include path contains NUL");
+
 		std::string pathrel;
 		const std::size_t slash = current->presumed_file.rfind('/');
 		if (slash != std::string::npos)
@@ -755,7 +689,8 @@ struct PPPreprocessingSession::Impl
 
 		std::string chosen;
 		PA5FileId fileid;
-		if (!pathrel.empty() && PA5GetFileId(pathrel, fileid))
+		if (!pathrel.empty() && pathrel.find('\0') == std::string::npos &&
+			PA5GetFileId(pathrel, fileid))
 			chosen = pathrel;
 		else if (PA5GetFileId(nextf, fileid))
 			chosen = nextf;
@@ -764,7 +699,24 @@ struct PPPreprocessingSession::Impl
 
 		if (pragma_once_files.find(fileid) != pragma_once_files.end())
 			return;
-		process_file(chosen, chosen, read_file(chosen));
+
+		// Resolve identity and honor once first.  The limit applies only at the
+		// edge that would read and recurse into another active frame.
+		if (include_depth >= kMaxIncludeDepth)
+			throw std::runtime_error("maximum include depth reached");
+
+		const std::string included_source = read_file(chosen);
+		++include_depth;
+		try
+		{
+			process_file(chosen, chosen, included_source);
+		}
+		catch (...)
+		{
+			--include_depth;
+			throw;
+		}
+		--include_depth;
 	}
 
 	void handle_line(const std::vector<PPToken>& tokens, std::size_t end,
@@ -785,12 +737,12 @@ struct PPPreprocessingSession::Impl
 
 		std::vector<PPToken> typed = nonwhite;
 		typed.push_back(PPToken(PPTokenKind::EndOfFile));
-		LineOperandOutput converted;
+		LiteralOperandOutput converted;
 		posttokenize_cpp_tokens(output.spellings, typed, converted);
 		if (converted.invalid || converted.other_tokens != 0 ||
 			converted.literals.size() != nonwhite.size())
 			throw std::runtime_error("invalid line directive literal");
-		const LiteralData& number = converted.literals[0].second;
+		const LiteralData& number = converted.literals[0];
 		if (number.element_count != 0 || number.bytes.empty() ||
 			number.bytes.size() > sizeof(std::size_t))
 			throw std::runtime_error("invalid line number");
@@ -803,8 +755,8 @@ struct PPPreprocessingSession::Impl
 		current->line_override = true;
 		current->use_physical_lines = false;
 		if (nonwhite.size() == 2)
-			current->presumed_file = decode_string_literal(
-				output.spellings.get(nonwhite[1].spelling));
+			current->presumed_file = ordinary_string_literal_bytes(
+				converted.literals[1]);
 		current->presumed_file_id = output.spellings.intern(
 			current->presumed_file);
 	}
@@ -814,8 +766,7 @@ struct PPPreprocessingSession::Impl
 		at = skip_whitespace(frame.tokens, at, end);
 		if (at >= end || !is_identifier(frame.tokens[at]))
 			return;
-		const std::string name = output.spellings.get(frame.tokens[at].spelling);
-		if (name != "once")
+		if (frame.tokens[at].spelling != pragma_once_id)
 			return;
 		++at;
 		if (skip_whitespace(frame.tokens, at, end) != end)
@@ -833,7 +784,7 @@ struct PPPreprocessingSession::Impl
 		while (at < input.size())
 		{
 			if (!is_identifier(input[at]) ||
-				output.spellings.get(input[at].spelling) != "_Pragma")
+				input[at].spelling != pragma_operator_id)
 			{
 				output_tokens->push_back(input[at++]);
 				continue;
@@ -852,8 +803,8 @@ struct PPPreprocessingSession::Impl
 			if (close >= input.size() || !is_punctuator(input[close],
 				PPTokenFixedIdentity::RightParen))
 				throw std::runtime_error("malformed _Pragma operator");
-			execute_pragma(decode_string_literal(
-			output.spellings.get(input[literal].spelling)));
+			execute_pragma(destringize_pragma(
+				output.spellings.get(input[literal].spelling)));
 			at = close + 1;
 		}
 	}
