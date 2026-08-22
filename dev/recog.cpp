@@ -5,72 +5,47 @@
 #include <stdexcept>
 #include <fstream>
 #include <iostream>
+#include <sstream>
+#include <ctime>
+#include <cstdlib>
 
-#include "exceptions.h"
+#include "pa6_recognizer.h"
+#include "preproc_session.h"
 
 using namespace std;
 
-bool PA6_IsClassName(const string& identifier)
+PPPreprocessConfig BuildPreprocessConfig()
 {
-	return identifier.find('C') != string::npos;
+	const time_t now = time(NULL);
+	const tm* local = localtime(&now);
+	const char* stamp = local == NULL ? NULL : asctime(local);
+	if (stamp == NULL || string(stamp).size() < 24)
+		throw runtime_error("unable to determine build date and time");
+	const string value(stamp);
+	return PPPreprocessConfig("Vishvananda Abrams",
+		value.substr(4, 7) + value.substr(20, 4), value.substr(11, 8));
 }
 
-bool PA6_IsTemplateName(const string& identifier)
+void DoRecog(istream& in, const string& source_path)
 {
-	return identifier.find('T') != string::npos;
-}
-
-bool PA6_IsTypedefName(const string& identifier)
-{
-	return identifier.find('Y') != string::npos;
-}
-
-bool PA6_IsEnumName(const string& identifier)
-{
-	return identifier.find('E') != string::npos;
-}
-
-bool PA6_IsNamespaceName(const string& identifier)
-{
-	return identifier.find('N') != string::npos;
-}
-
-bool HasBatchStdinArg(int argc, char** argv)
-{
-	for (int i = 1; i < argc; i++)
-	{
-		if (string(argv[i]) == "--batch-stdin")
-			return true;
-	}
-	return false;
-}
-
-int RunNotImplementedBatchMode()
-{
-	string line;
-	while (getline(cin, line))
-	{
-		(void)line;
-		cout << "EXIT_NOT_IMPLEMENTED" << endl;
-	}
-	return EXIT_SUCCESS;
-}
-
-void DoRecog(istream& in)
-{
-	if (/* TODO: implement PA6 */ false)
-		return;
-	else
-		throw NotImplementedException();
+	if (!in)
+		throw runtime_error("unable to open source file: " + source_path);
+	ostringstream source;
+	source << in.rdbuf();
+	if (!in.good() && !in.eof())
+		throw runtime_error("unable to read source file: " + source_path);
+	PPPreprocessingSession session(BuildPreprocessConfig());
+	const PPTokenBuffer& tokens = session.preprocess(source_path, source.str());
+	PA6Recognizer recognizer;
+	string reason;
+	if (!recognizer.recognize(tokens, &reason))
+		throw runtime_error(reason.empty() ? "syntax error" : reason);
 };
 
 int main(int argc, char** argv)
 {
 	try
 	{
-		if (HasBatchStdinArg(argc, argv))
-			return RunNotImplementedBatchMode();
-
 		vector<string> args;
 
 		for (int i = 1; i < argc; i++)
@@ -83,6 +58,8 @@ int main(int argc, char** argv)
 		size_t nsrcfiles = args.size() - 2;
 
 		ofstream out(outfile);
+		if (!out)
+			throw runtime_error("unable to open output file: " + outfile);
 
 		out << "recog " << nsrcfiles << endl;
 
@@ -93,12 +70,8 @@ int main(int argc, char** argv)
 			try
 			{
 				ifstream in(srcfile);
-				DoRecog(in);
+				DoRecog(in, srcfile);
 				out << srcfile << " OK" << endl;
-			}
-			catch (const NotImplementedException& e)
-			{
-				throw;
 			}
 			catch (const exception& e)
 			{
@@ -106,11 +79,7 @@ int main(int argc, char** argv)
 				out << srcfile << " BAD" << endl;
 			}
 		}
-	}
-	catch (const NotImplementedException& e)
-	{
-		cerr << "ERROR: " << e.what() << endl;
-		return CPPGM_EXIT_NOT_IMPLEMENTED;
+		return EXIT_SUCCESS;
 	}
 	catch (exception& e)
 	{
