@@ -45,6 +45,8 @@ const char* node_kind_name(PA10NodeKind kind)
 	case PA10NodeKind::DefaultTemplateArgument:
 		return "default-template-argument";
 	case PA10NodeKind::FunctionQualifier: return "function-qualifier";
+	case PA10NodeKind::NoexceptSpecification:
+		return "noexcept-specification";
 	case PA10NodeKind::RefQualifier: return "ref-qualifier";
 	case PA10NodeKind::TrailingReturnType: return "trailing-return-type";
 	case PA10NodeKind::ArraySuffix: return "array-suffix";
@@ -98,6 +100,7 @@ const char* node_kind_name(PA10NodeKind kind)
 	case PA10NodeKind::LambdaExpression: return "lambda-expression";
 	case PA10NodeKind::LambdaIntroducer: return "lambda-introducer";
 	case PA10NodeKind::LambdaDeclarator: return "lambda-declarator";
+	case PA10NodeKind::LambdaSpecifier: return "lambda-specifier";
 	case PA10NodeKind::ClassSpecifier: return "class-specifier";
 	case PA10NodeKind::ClassForwardDeclaration: return "class-forward-declaration";
 	case PA10NodeKind::SpecialMemberDeclaration:
@@ -107,6 +110,7 @@ const char* node_kind_name(PA10NodeKind kind)
 	case PA10NodeKind::ClassKey: return "class-key";
 	case PA10NodeKind::AccessSpecifier: return "access-specifier";
 	case PA10NodeKind::VirtualSpecifier: return "virtual";
+	case PA10NodeKind::VirtSpecifier: return "virt-specifier";
 	case PA10NodeKind::BaseClause: return "base-clause";
 	case PA10NodeKind::BaseSpecifier: return "base-specifier";
 	case PA10NodeKind::BaseName: return "base-name";
@@ -295,7 +299,6 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::DeclSpecifier:
 	case PA10NodeKind::TypeSpecifier:
 	case PA10NodeKind::CvQualifier:
-	case PA10NodeKind::PtrOperator:
 	case PA10NodeKind::RefQualifier:
 	case PA10NodeKind::FunctionQualifier:
 	case PA10NodeKind::SpecialInitializer:
@@ -303,9 +306,19 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::EnumKey:
 	case PA10NodeKind::AccessSpecifier:
 	case PA10NodeKind::VirtualSpecifier:
+	case PA10NodeKind::LambdaSpecifier:
 	case PA10NodeKind::ParameterKey:
 	case PA10NodeKind::LeafFixed:
 		if (node.has_token)
+			append_fixed_presentation(ast, node, output);
+		break;
+	case PA10NodeKind::PtrOperator:
+		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+		{
+			append_name(ast, node, output, depth + 1);
+			output << "::*";
+		}
+		else if (node.has_token)
 			append_fixed_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::DecltypeSpecifier:
@@ -554,6 +567,37 @@ void render_fixed_suffix(const PA10Ast& ast, const PA10AstNode& node,
 		output << ast.spelling(node.token_spelling);
 }
 
+void render_function_qualifier(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output)
+{
+	output << ' ' << ast.spelling(node.token_spelling);
+	if (node.token == SimpleTokenType::KW_NOEXCEPT)
+	{
+		if (!node.children.empty())
+		{
+			output << '(';
+			append_inline_node(ast, node.children.front(), output, 1);
+			output << ')';
+		}
+		return;
+	}
+	if (node.token == SimpleTokenType::KW_THROW)
+	{
+		output << '(';
+		for (std::size_t i = 0; i < node.semantic_child_count; ++i)
+		{
+			if (i != 0)
+				output << ',';
+			append_inline_node(ast,
+				ast.semantic_child_nodes[node.semantic_child_begin + i], output, 1);
+		}
+		output << ')';
+		return;
+	}
+	if (node.token_spelling != 0)
+		output << ast.spelling(node.token_spelling);
+}
+
 void render_node(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output, std::size_t indent)
 {
@@ -615,6 +659,8 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 			output << ' ' << node_text(ast, node.text);
 		break;
 	case PA10NodeKind::FunctionQualifier:
+		render_function_qualifier(ast, node, output);
+		break;
 	case PA10NodeKind::SpecialInitializer:
 		render_fixed_label(ast, node, output);
 		break;
@@ -631,12 +677,12 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		break;
 	case PA10NodeKind::TypeSpecifier:
 	case PA10NodeKind::CvQualifier:
-	case PA10NodeKind::PtrOperator:
 	case PA10NodeKind::ClassKey:
 	case PA10NodeKind::EnumKey:
 	case PA10NodeKind::AccessSpecifier:
 	case PA10NodeKind::VirtualSpecifier:
 	case PA10NodeKind::ParameterKey:
+	case PA10NodeKind::LambdaSpecifier:
 	case PA10NodeKind::LeafFixed:
 	case PA10NodeKind::UnaryExpression:
 	case PA10NodeKind::PostfixExpression:
@@ -652,6 +698,16 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 			else
 				render_fixed_suffix(ast, node, output);
 		}
+		break;
+	case PA10NodeKind::VirtSpecifier:
+		output << " TT_IDENTIFIER:" << ast.producer_spelling(
+			node.producer_spelling);
+		break;
+	case PA10NodeKind::PtrOperator:
+		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+			output << ' ' << join_name(ast, node) << "::*";
+		else if (node.has_token)
+			render_fixed_suffix(ast, node, output);
 		break;
 	case PA10NodeKind::TypeName:
 		output << ' ';

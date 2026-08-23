@@ -24,6 +24,15 @@ enum class PA10TokenKind
 	End
 };
 
+// Contextual fixed vocabulary is classified once at the posttoken -> PA10
+// boundary.  The original spelling remains available only for presentation.
+enum class PA10ContextualIdentifierKind
+{
+	None,
+	Override,
+	Final
+};
+
 // These facts describe the grammar's unqualified-id alternatives without
 // flattening them into a source spelling.  Presentation pieces remain cold
 // sidecar IDs; the typed fields are the semantic owner used by later stages.
@@ -76,6 +85,7 @@ struct PA10NameComponent
 struct PA10Token
 {
 	PA10TokenKind kind;
+	PA10ContextualIdentifierKind contextual_identifier;
 	SimpleTokenType fixed;
 	PPSpellingId spelling;
 	std::string source;
@@ -86,7 +96,9 @@ struct PA10Token
 		SimpleTokenType fixed = SimpleTokenType::OP_SEMICOLON,
 		PPSpellingId spelling = 0,
 		const std::string& source = std::string())
-		: kind(kind), fixed(fixed), spelling(spelling), source(source),
+		: kind(kind), contextual_identifier(
+			PA10ContextualIdentifierKind::None), fixed(fixed), spelling(spelling),
+			source(source),
 		  literal(), user_defined()
 	{}
 };
@@ -127,6 +139,7 @@ enum class PA10NodeKind
 	DefaultArgument,
 	DefaultTemplateArgument,
 	FunctionQualifier,
+	NoexceptSpecification,
 	RefQualifier,
 	TrailingReturnType,
 	ArraySuffix,
@@ -180,6 +193,7 @@ enum class PA10NodeKind
 	LambdaExpression,
 	LambdaIntroducer,
 	LambdaDeclarator,
+	LambdaSpecifier,
 	ClassSpecifier,
 	ClassForwardDeclaration,
 	SpecialMemberDeclaration,
@@ -187,6 +201,7 @@ enum class PA10NodeKind
 	ClassKey,
 	AccessSpecifier,
 	VirtualSpecifier,
+	VirtSpecifier,
 	BaseClause,
 	BaseSpecifier,
 	BaseName,
