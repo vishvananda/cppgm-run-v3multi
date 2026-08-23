@@ -1,212 +1,120 @@
 // (C) 2013 CPPGM Foundation www.cppgm.org.  All rights reserved.
 
-#include <vector>
-#include <string>
-#include <stdexcept>
-#include <iostream>
 #include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-using namespace std;
-
+#include "cy86_backend.h"
 #include "exceptions.h"
 
-struct ElfHeader
+namespace
 {
-    unsigned char ident[16] =
-    {
-        0x7f, 'E', 'L', 'F', // magic bytes
-        2, // 64-bit architecture
-        1, // two's compliment, little-endian
-        1, // ELF specification version 1.0
-        0, // System V ABI
-        0, // ABI Version
-        0, 0, 0, 0, 0, 0, 0 // Unused padding
-    };
 
-    short int type = 2; // executable file type
-    short int machine = 0x3E; // x86-64 Architecture
-    int version = 1; // ELF specification version 1.0
-    long int entry; // entry point virtual memory address
-
-    long int phoff = 64; // start of program segment header array file offset
-    long int shoff = 0; // no sections
-
-    int processor_flags = 0; // no processor-specific flags
-    short int ehsize = 64; // ELF header is 64 bytes long
-    short int phentsize = 56; // program header table entry size
-    short int phnum = 1; // number of program headers       
-    short int shentsize = 0; // no section header table entry size
-    short int shnum = 0; // no sections
-    short int shstrndx = 0; // no section header string table index
-};
-
-struct ProgramSegmentHeader
+bool has_batch_stdin_arg(int argc, char** argv)
 {
-    int type = 1; // PT_LOAD: loadable segment
-
-    static constexpr int executable = 1 << 0;
-    static constexpr int writable = 1 << 1;
-    static constexpr int readable = 1 << 2;
-
-    int flags = executable | writable | readable; // segment permissions
-
-    long int offset = 0; // source file offset
-    long int vaddr = 0x400000; // destination (virtual) memory address
-    long int paddr = 0; // unused, doesn't use physical memory
-    long int filesz; // source length
-    long int memsz; // destination length
-    long int align = 0; // unused, alignment of file/memory
-};
-
-// bootstrap system call interface, used by RABSetFileExecutable
-extern "C" long int syscall(long int n, ...) throw ();
-
-// PA9SetFileExecutable: sets file at `path` executable
-// returns true on success
-bool PA9SetFileExecutable(const string& path)
-{
-    int res = syscall(/* chmod */ 90, path.c_str(), 0755);
-
-    return res == 0;
-}
-
-bool HasBatchStdinArg(int argc, char** argv)
-{
-	for (int i = 1; i < argc; i++)
-	{
-		if (string(argv[i]) == "--batch-stdin")
+	for (int i = 1; i < argc; ++i)
+		if (std::string(argv[i]) == "--batch-stdin")
 			return true;
-	}
 	return false;
 }
 
-int RunNotImplementedBatchMode()
+std::vector<std::string> split_tabs(const std::string& line)
 {
-	string line;
-	while (getline(cin, line))
+	std::vector<std::string> fields;
+	std::size_t begin = 0;
+	for (std::size_t at = 0; at <= line.size(); ++at)
 	{
-		(void)line;
-		cout << "EXIT_NOT_IMPLEMENTED" << endl;
+		if (at != line.size() && line[at] != '\t')
+			continue;
+		fields.push_back(line.substr(begin, at - begin));
+		begin = at + 1;
+	}
+	return fields;
+}
+
+int run_batch_stdin()
+{
+	std::string line;
+	while (std::getline(std::cin, line))
+	{
+		int status = EXIT_FAILURE;
+		std::vector<std::string> fields = split_tabs(line);
+		std::ofstream stdout_file;
+		std::ofstream stderr_file;
+		std::streambuf* old_stdout = std::cout.rdbuf();
+		std::streambuf* old_stderr = std::cerr.rdbuf();
+
+		try
+		{
+			if (fields.size() < 5)
+				throw std::logic_error("invalid batch request");
+			stdout_file.open(fields[0].c_str(), std::ios::out | std::ios::trunc);
+			if (!stdout_file)
+				throw std::runtime_error("unable to open batch stdout");
+			if (fields[1] == fields[0])
+			{
+				std::cout.rdbuf(stdout_file.rdbuf());
+				std::cerr.rdbuf(stdout_file.rdbuf());
+			}
+			else
+			{
+				stderr_file.open(fields[1].c_str(),
+					std::ios::out | std::ios::trunc);
+				if (!stderr_file)
+					throw std::runtime_error("unable to open batch stderr");
+				std::cout.rdbuf(stdout_file.rdbuf());
+				std::cerr.rdbuf(stderr_file.rdbuf());
+			}
+
+			std::vector<std::string> args(fields.begin() + 4, fields.end());
+			cy86_compile(args);
+			status = EXIT_SUCCESS;
+		}
+		catch (const NotImplementedException& error)
+		{
+			std::cerr << "ERROR: " << error.what() << std::endl;
+			status = CPPGM_EXIT_NOT_IMPLEMENTED;
+		}
+		catch (const std::exception& error)
+		{
+			std::cerr << "ERROR: " << error.what() << std::endl;
+			status = EXIT_FAILURE;
+		}
+
+		std::cout.rdbuf(old_stdout);
+		std::cerr.rdbuf(old_stderr);
+		std::cout << (status == EXIT_SUCCESS ? "EXIT_SUCCESS" :
+			status == CPPGM_EXIT_NOT_IMPLEMENTED ? "EXIT_NOT_IMPLEMENTED" :
+			"EXIT_FAILURE") << std::endl;
 	}
 	return EXIT_SUCCESS;
 }
+
+} // namespace
 
 int main(int argc, char** argv)
 {
 	try
 	{
-		if (HasBatchStdinArg(argc, argv))
-			return RunNotImplementedBatchMode();
+		if (has_batch_stdin_arg(argc, argv))
+			return run_batch_stdin();
 
-		vector<string> args;
-
-		for (int i = 1; i < argc; i++)
-			args.emplace_back(argv[i]);
-
-		string output_target;
-		string outfile;
-		vector<string> srcfiles;
-
-		for (size_t i = 0; i < args.size(); i++)
-		{
-			if (args[i] == "--target")
-			{
-				if (i + 1 >= args.size())
-					throw logic_error("missing target after --target");
-				output_target = args[++i];
-				continue;
-			}
-
-			if (args[i] == "-o")
-			{
-				if (i + 1 >= args.size())
-					throw logic_error("missing output file after -o");
-				outfile = args[++i];
-				continue;
-			}
-
-			srcfiles.push_back(args[i]);
-		}
-
-		if (outfile.empty() || srcfiles.empty())
-			throw logic_error("invalid usage");
-
-		(void)output_target;
-		size_t nsrcfiles = srcfiles.size();
-
-		throw NotImplementedException();
-
-		for (size_t i = 0; i < nsrcfiles; i++)
-		{
-			string srcfile = srcfiles[i];
-
-			ifstream in(srcfile);
-
-			// TODO: parse / semantically analyze / generate code for srcfile
-		}
-
-		ElfHeader elf_header;
-		ProgramSegmentHeader program_segment_header;
-
-		// TODO: Replace this with assembled x86 machine code / data from above
-
-		char data[] = "TODO\n"; // 6 bytes
-
-		unsigned char code[] =
-		{
-            // ==== write(stdout, "TODO\n") ====
-			// mov rax, 1 ... system call `write`
-			0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
-
-			// mov rdi, 1 ... stdout fd
-			0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
-			
-			// mov rsi, 0x400000 + 64 + 56 ... address of "TODO" string
-			0x48, 0xbe,
-			    0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-
-			// mov rdx, 5 ... num bytes to write
-			0x48, 0xc7, 0xc2, 0x05, 0x00, 0x00, 0x00,
-
-			// syscall
-			0x0f, 0x05,
-            // =====================
-
-
-            // ===== exit(0) =======
-			// mov rax, 60 ... system call `exit`
-			0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00,
-
-			// mov rdi, 0 ... exit status 0
-			0x48, 0xc7, 0xc7, 0x00, 0x00, 0x00, 0x00,
-
-			// syscall
-			0x0f, 0x05
-            // =====================
-		};
-
-		elf_header.entry = 0x400000 + 64 + 56 + sizeof(data);
-		program_segment_header.filesz = 64 + 56 + 6 + sizeof(data) + sizeof(code);
-		program_segment_header.memsz = program_segment_header.filesz;
-
-		{
-			ofstream out(outfile);
-			out.write((char*) &elf_header, 64);
-			out.write((char*) &program_segment_header, 56);
-			out.write((char*) data, sizeof(data));
-			out.write((char*) code, sizeof(code));
-		}
-
-		PA9SetFileExecutable(outfile);
+		std::vector<std::string> args;
+		for (int i = 1; i < argc; ++i)
+			args.push_back(argv[i]);
+		cy86_compile(args);
+		return EXIT_SUCCESS;
 	}
-	catch (const NotImplementedException& e)
+	catch (const NotImplementedException& error)
 	{
-		cerr << "ERROR: " << e.what() << endl;
+		std::cerr << "ERROR: " << error.what() << std::endl;
 		return CPPGM_EXIT_NOT_IMPLEMENTED;
 	}
-	catch (exception& e)
+	catch (const std::exception& error)
 	{
-		cerr << "ERROR: " << e.what() << endl;
+		std::cerr << "ERROR: " << error.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }
