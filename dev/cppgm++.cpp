@@ -1,10 +1,14 @@
 // Student-facing scaffold for the PA10+ `cppgm++` binary.
 
 #include "exceptions.h"
+#include "pa10_ast.h"
+#include "preproc_session.h"
 #include "tool_help_text.h"
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -185,16 +189,23 @@ EmitMode parse_emit_mode(vector<string> & args)
   return mode;
 }
 
-void parse_source_output_invocation(const vector<string> & args,
-                                    bool allow_lowir_options)
+struct SourceOutputInvocation
+{
+  string outfile;
+  vector<string> inputs;
+};
+
+SourceOutputInvocation parse_source_output_invocation(
+    const vector<string> & args, bool allow_lowir_options)
 {
   bool explicit_outfile = false;
-  vector<string> inputs;
+  SourceOutputInvocation result;
 
   for(size_t i = 0; i < args.size(); ++i) {
     if(args[i] == "-o") {
       consume_required_option_argument(args, i, "-o", "output file");
       explicit_outfile = true;
+      result.outfile = args[i];
       continue;
     }
     if(allow_lowir_options &&
@@ -212,12 +223,13 @@ void parse_source_output_invocation(const vector<string> & args,
     if(starts_with(args[i], "-")) {
       throw logic_error("unsupported option in emit mode: " + args[i]);
     }
-    inputs.push_back(args[i]);
+    result.inputs.push_back(args[i]);
   }
 
-  if(!explicit_outfile || inputs.empty()) {
+  if(!explicit_outfile || result.inputs.empty()) {
     throw logic_error("invalid usage");
   }
+  return result;
 }
 
 bool consume_preprocess_option(const vector<string> & args, size_t & i)
@@ -381,8 +393,36 @@ int run_unimplemented_mode(const char * feature,
 
 int run_emit_ast_mode(const vector<string> & args)
 {
-  parse_source_output_invocation(args, false);
-  return run_unimplemented_mode("--emit-ast", "PA10");
+  const SourceOutputInvocation invocation =
+      parse_source_output_invocation(args, false);
+  ofstream output(invocation.outfile.c_str());
+  if(!output) {
+    throw runtime_error("unable to open output file: " + invocation.outfile);
+  }
+
+  output << invocation.inputs.size() << " translation units\n";
+  PPPreprocessConfig config;
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    const string & source_path = invocation.inputs[i];
+    ifstream input(source_path.c_str(), ios::in | ios::binary);
+    if(!input) {
+      throw runtime_error("unable to open source file: " + source_path);
+    }
+    ostringstream source;
+    source << input.rdbuf();
+    if(!input.good() && !input.eof()) {
+      throw runtime_error("unable to read source file: " + source_path);
+    }
+
+    PPPreprocessingSession preprocessing(config);
+    const PPTokenBuffer & tokens = preprocessing.preprocess(source_path,
+        source.str());
+    const PA10Ast ast = parse_pa10_ast(tokens);
+    output << "start translation unit " << (i + 1) << "\n";
+    render_pa10_ast(ast, output);
+    output << "end translation unit\n";
+  }
+  return EXIT_SUCCESS;
 }
 
 int run_emit_types_mode(const vector<string> & args)
