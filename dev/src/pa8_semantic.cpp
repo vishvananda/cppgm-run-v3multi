@@ -405,17 +405,14 @@ DeclaratorShape PA8ProgramModel::Impl::declarator(
 	result.name = qualified_name(source.name);
 	result.operations.reserve(source.operations.size());
 	bool direct_reference = false;
-	bool array_suffix = false;
 	for (std::size_t i = 0; i < source.operations.size(); ++i)
 	{
 		const CppSyntaxDeclaratorOp& source_operation = source.operations[i];
-		if (source_operation.kind == CppSyntaxDeclaratorOpKind::Array)
-			array_suffix = true;
+		if (!source_operation.is_prefix)
+			direct_reference = false;
 		if (source_operation.kind == CppSyntaxDeclaratorOpKind::LvalueReference ||
 			source_operation.kind == CppSyntaxDeclaratorOpKind::RvalueReference)
 		{
-			if (array_suffix)
-				throw std::runtime_error("array of reference declarator");
 			if (direct_reference)
 				throw std::runtime_error(
 					"direct reference-to-reference declarator");

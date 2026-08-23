@@ -13,22 +13,31 @@ decoded literals, spelling IDs, and declaration syntax into
 `CppSyntaxDeclaratorOp`; prefix markers, suffix operations, and bound
 expressions are copied into `DeclaratorShape`/`DeclaratorOp` without rendering.
 `SemanticCore` then interns canonical `TypeId`s and owns reference collapsing,
-pointer-to-reference rejection, reference-to-void rejection, and (after this
-repair) array-of-reference rejection.  PA8 evaluates each expression into a
-`PA8Value` that retains both the named `EntityId` and the post-dereference
-referent.  Binding applies C++11 lvalue/rvalue and cv rules, appends a typed
-lifetime-extended `Temporary` record for converted bindings, and records a
-typed relocation.  Image planning emits named entities in block 1 and
-temporaries in block 2, then patches relocations after all offsets are known.
+pointer-to-reference rejection, reference-to-void rejection, and array-of-
+reference rejection.  PA8 evaluates each expression into a `PA8Value` that
+retains both the named `EntityId` and the post-dereference referent.  Binding
+applies C++11 lvalue/rvalue and cv rules, appends a typed lifetime-extended
+`Temporary` record for converted bindings, and records a typed relocation.
+Image planning emits named entities in block 1 and temporaries in block 2, then
+patches relocations after all offsets are known.
 
-The audit found one real formation defect.  `array(...)` accepted a reference
-child, and flattened prefix application could turn `int& a[2]` or `int*& a[2]`
-into an apparently legal outer reference instead of diagnosing an array of
-references.  The repair has two bounded ownership points: canonical array
-formation rejects reference children (covering typedefs and all downstream
-callers), while the PA8 declarator adapter rejects the typed array-before-
-reference shape that flattening otherwise hides.  Grouped reference-to-array
-declarators such as `int (&r)[2]`, reference-to-pointer/function forms, direct
+The initial audit found one real formation defect: `array(...)` accepted a
+reference child, and flattened prefix application could turn `int& a[2]` or
+`int*& a[2]` into an apparently legal outer reference instead of diagnosing an
+array of references.  Canonical array formation now owns that invariant for
+direct and typedef-mediated forms.  The re-review found a second bounded
+adapter defect: `direct_reference` and the then-global array-shape check were
+carried across the whole flattened operation vector, while `apply_shape`
+processes contiguous prefix runs as distinct layers separated by Function or
+Array suffixes.  That falsely rejected legal nested layers such as
+`extern int& (*& slot)();` and `int& (*slots[2])();`.  The correction resets
+direct-spelling validation at each non-prefix boundary and removes the global
+array-shape check; adapter validation is now segment-scoped only for forbidden
+same-segment direct reference-to-reference and pointer-to-reference spellings.
+This matches N3485 8.3.2 paragraph 5: the forbidden formations are
+reference-to-reference, array-of-reference, and pointer-to-reference; the two
+cross-layer types are not one of those formations.
+Grouped reference-to-array, the two new nested-layer forms, direct
 pointer-to-reference rejection, direct reference-to-reference rejection, and
 typedef reference collapsing remain distinct and valid where required.
 
@@ -44,16 +53,18 @@ from changing block-1 declaration order.
 
 Focused evidence is `make -C dev nsinit -j2` and the exact repaired,
 representative, and durable-regression set at `make -C pa8 check TEST='...'`
-(12/12).  It covers both array-of-reference forms, grouped
-reference-to-array, reference-to-pointer/function, typedef collapse,
-reference-to-void, referent identity, and known/unknown temporary relocation.
-The reduced probes produced the expected success/failure statuses and
-deterministic images.  The documented reference workflow generated the three
-new fixtures; the reference accepts the two standard-invalid array-of-reference
-cases, so their checked-in exit sidecars pin `EXIT_FAILURE` and their failed
-payloads are not retained, while the grouped valid fixture is retained exactly.
-No handout test changed.  The original turn-start broad measurement was PA8
-**80/89** over **89 cases**, with exactly these nine failures:
+(14/14).  It covers both array-of-reference forms, grouped
+reference-to-array, the two nested cross-layer function forms,
+reference-to-pointer/function, typedef collapse, reference-to-void, referent
+identity, and known/unknown temporary relocation.  The reduced probes
+produced the expected success/failure statuses and deterministic images.  The
+documented reference workflow accepted both new legal nested-layer cases with
+`EXIT_SUCCESS` and generated their two fixtures.  The earlier reference accepts
+the two standard-invalid array-of-reference cases, so their checked-in exit
+sidecars pin `EXIT_FAILURE` and their failed payloads are not retained, while
+the grouped valid fixture is retained exactly.  No handout test changed.  The
+original turn-start broad measurement was PA8 **80/89** over **89 cases**, with
+exactly these nine failures:
 
 - `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`,
   `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`;
@@ -63,14 +74,14 @@ No handout test changed.  The original turn-start broad measurement was PA8
   `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`,
   `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`.
 
-The final checked-in PA8 suite is **83/92**: the three added regressions pass,
-and the original 89-case set remains **80/89** with exactly the same nine
+The final checked-in PA8 suite is **85/94**: all five added course regressions
+pass, and the original 89-case set remains **80/89** with exactly the same nine
 failure identities and no new failure.  `make test-pa8` exits 2 for those
 deferred cases; the exact through-PA7 report is **339/339**; and
-`make test-report-through-pa8` is **422/431** with the same nine identities.
+`make test-report-through-pa8` is **424/433** with the same nine identities.
 The file audit exits 0 with the existing single header warning recorded below.
-Performance evidence is structural only: formation and validation are linear
-in the current declarator, binding uses indexed identity plus bounded
+Performance evidence is structural only: formation and segment validation are
+linear in the current declarator, binding uses indexed identity plus bounded
 type/category checks and one temporary append, and image planning remains two
 entity passes plus the existing relocation pass.  There is no whole-arena hot
 scan, textual downgrade, duplicate semantic model, whole-program retry,
@@ -201,4 +212,4 @@ uncertainties.
 | --- | --- | --- |
 | `checkpointAudit` at `8b56021c` | coherent bounded repair/documentation milestone complete; final gates passed | typed ownership trace; current-TU declaration-owned linkage inheritance; scalar TU ownership; typed `(NameId, TU)` source/link indexes and per-TU ranges; monotonic entity scratch and child-before-directive traversal; 10 new focused PA8 probes plus two guards; final PA8 46/72 with the same 26 failure identities, through-PA7 339/339, file audit passed with one existing warning, and many-TU scale evidence above |
 | `checkpointAudit` at `bf249b24` | completed after final order-dependent using-entity repair; final amended commit carries the bounded result | typed `cpp_declaration_syntax` -> PA7/PA8 actions -> interned `NameId`/current-TU `NamespaceId` -> `NamespaceRecord` indexes -> invalidating writers -> PA7 rendering/PA8 image and exit behavior; same-target-only namespace-alias redefinition; direct/imported using-entity bucket compatibility with O(k) candidate inspection; both direct-declaration adapters always inspect imported candidates; PA8 focused 36/36, PA7 focused 9/9; original baseline 54/72 and expanded gate 71/89 with exactly the original 18 identities; through-PA7 339/339, through-PA8 410/428; file audit passed with one pre-existing header warning; six standard-informed reference divergences pinned by failure sidecars and valid reference fixtures retained |
-| `checkpointAudit` at `657e5559` + array/reference repair | completed bounded ownership-path audit; final PA8 83/92, with the original 89-case set still 80/89 and exactly the same nine failures; through-PA7 339/339; through-PA8 422/431 | typed `CppSyntaxDeclaratorOp` -> `DeclaratorShape` -> canonical reference/array invariants -> `PA8Value` entity/referent -> cv/category binding -> typed lifetime-extended temporaries -> block-1/block-2 image relocation; focused 12/12; three durable course regressions and prescribed fixtures; reference accepts the two standard-invalid array-of-reference cases, whose sidecars pin `EXIT_FAILURE`, while the grouped valid fixture is retained; the unchanged exact nine identities are `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`, `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`, `pa8/tests/600-qualified-redeclaration.t.1`, `pa8/tests/600-qualified-redeclaration2.t.1`, `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1`, `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`, and `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`; all broad gates passed with no new failure; file audit passed with the existing header warning; structural complexity only and no timing claim |
+| `checkpointAudit` at `657e5559` + array/reference repair | completed bounded ownership-path audit with nested-layer correction; final PA8 85/94, with the original 89-case set still 80/89 and exactly the same nine failures; through-PA7 339/339; through-PA8 424/433 | typed `CppSyntaxDeclaratorOp` -> `DeclaratorShape` -> segment-scoped direct-prefix validation -> canonical reference/array invariants -> `PA8Value` entity/referent -> cv/category binding -> typed lifetime-extended temporaries -> block-1/block-2 image relocation; focused 14/14; five durable course regressions and prescribed fixtures; the two new legal nested-layer cases reference-pass with `EXIT_SUCCESS`; canonical array formation remains the sole array-of-reference rejection owner; the unchanged exact nine identities are `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`, `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`, `pa8/tests/600-qualified-redeclaration.t.1`, `pa8/tests/600-qualified-redeclaration2.t.1`, `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1`, `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`, and `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`; all broad gates passed with no new failure; file audit passed with the existing header warning; structural complexity only and no timing claim |
