@@ -197,7 +197,7 @@ bool is_operator_function_token_impl(SimpleTokenType type)
 	}
 }
 
-bool find_template_close(const std::vector<PA10Token>& tokens,
+bool find_template_close_impl(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& close_index, std::size_t absolute_lt,
 	std::size_t* absolute_close)
 {
@@ -789,6 +789,82 @@ std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 		new_abstract_declarator_group);
 }
 
+bool find_template_close(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	std::size_t absolute_lt, std::size_t* absolute_close)
+{
+	return find_template_close_impl(tokens, template_close_index,
+		absolute_lt, absolute_close);
+}
+
+bool template_follow_is_valid(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	std::size_t absolute_close, std::size_t* charged_work)
+{
+	std::size_t work = 0;
+	const auto finish = [&work, charged_work](bool result) {
+		if (charged_work != NULL)
+			*charged_work = work;
+		return result;
+	};
+	std::size_t next = absolute_close + 1;
+	if (absolute_close < tokens.size() &&
+		tokens[absolute_close].kind == PA10TokenKind::RShiftPiece1 &&
+		next < tokens.size() &&
+		tokens[next].kind == PA10TokenKind::RShiftPiece2)
+	{
+		++work;
+		if (absolute_close < rshift_piece1_nested_close.size() &&
+			rshift_piece1_nested_close[absolute_close])
+			return finish(true);
+		++next;
+	}
+	if (next < tokens.size())
+		++work;
+	if (next >= tokens.size() || tokens[next].kind == PA10TokenKind::End)
+		return finish(true);
+	const PA10Token& token = tokens[next];
+	if (token.kind == PA10TokenKind::Identifier ||
+		token.kind == PA10TokenKind::Literal)
+		return finish(false);
+	if (token.kind != PA10TokenKind::Fixed)
+		return finish(true);
+	switch (token.fixed)
+	{
+	case SimpleTokenType::OP_LPAREN:
+	case SimpleTokenType::OP_LSQUARE:
+	case SimpleTokenType::OP_DOT:
+	case SimpleTokenType::OP_ARROW:
+	case SimpleTokenType::OP_COLON2:
+	case SimpleTokenType::OP_SEMICOLON:
+	case SimpleTokenType::OP_COMMA:
+	case SimpleTokenType::OP_RPAREN:
+	case SimpleTokenType::OP_RSQUARE:
+	case SimpleTokenType::OP_RBRACE:
+	case SimpleTokenType::OP_LT:
+	case SimpleTokenType::OP_GT:
+	case SimpleTokenType::OP_LE:
+	case SimpleTokenType::OP_GE:
+	case SimpleTokenType::OP_PLUS:
+	case SimpleTokenType::OP_MINUS:
+	case SimpleTokenType::OP_STAR:
+	case SimpleTokenType::OP_DIV:
+	case SimpleTokenType::OP_MOD:
+	case SimpleTokenType::OP_AMP:
+	case SimpleTokenType::OP_BOR:
+	case SimpleTokenType::OP_XOR:
+	case SimpleTokenType::OP_LAND:
+	case SimpleTokenType::OP_LOR:
+	case SimpleTokenType::OP_QMARK:
+	case SimpleTokenType::OP_COLON:
+	case SimpleTokenType::OP_ASS:
+		return finish(true);
+	default:
+		return finish(false);
+	}
+}
+
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
 	const std::vector<unsigned char>& rshift_piece1_nested_close,
@@ -899,6 +975,168 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	*after = cursor;
 	*consumed = count;
 	return true;
+}
+
+PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position)
+{
+	PA10ElaboratedSpecifierClassification result;
+	const bool class_key =
+		token_fixed_at(tokens, position, 0, SimpleTokenType::KW_CLASS) ||
+		token_fixed_at(tokens, position, 0, SimpleTokenType::KW_STRUCT) ||
+		token_fixed_at(tokens, position, 0, SimpleTokenType::KW_UNION);
+	const bool enum_key =
+		token_fixed_at(tokens, position, 0, SimpleTokenType::KW_ENUM);
+	if (!class_key && !enum_key)
+		return result;
+
+	std::size_t work = 0;
+	std::size_t cursor = position + 1;
+	std::size_t after = cursor;
+	std::size_t consumed = 0;
+	if (class_key)
+	{
+		if (!skip_attribute_specifiers(tokens, cursor, &after, &consumed))
+		{
+			result.charged_work = consumed;
+			return result;
+		}
+		work += consumed;
+		cursor = after;
+	}
+	else if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_CLASS) ||
+		token_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_STRUCT))
+	{
+		++work;
+		++cursor;
+	}
+
+	if (token_identifier_at(tokens, cursor))
+	{
+		++work;
+		++cursor;
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LT))
+		{
+			std::size_t close = 0;
+			if (!find_template_close(tokens, template_close_index, cursor,
+				&close))
+			{
+				result.context =
+					PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+				result.charged_work = work;
+				return result;
+			}
+			++work;
+			cursor = close + 1;
+			if (close < tokens.size() &&
+				tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
+				cursor < tokens.size() &&
+				tokens[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close.size() &&
+				rshift_piece1_nested_close[close])
+			{
+				++work;
+				++cursor;
+			}
+		}
+	}
+
+	if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_SEMICOLON))
+	{
+		++work;
+		result.context =
+			PA10ElaboratedSpecifierContext::StandaloneForward;
+		result.charged_work = work;
+		return result;
+	}
+	if (!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LBRACE) &&
+		!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON))
+	{
+		result.context =
+			PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+		result.charged_work = work;
+		return result;
+	}
+	result.has_colon_clause =
+		token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON);
+
+	while (cursor < tokens.size())
+	{
+		++work;
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LBRACE))
+		{
+			if (cursor >= delimiter_close_index.size() ||
+				delimiter_close_index[cursor] >= tokens.size())
+			{
+				result.context =
+					PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+				result.charged_work = work;
+				return result;
+			}
+			result.has_body = true;
+			const std::size_t close = delimiter_close_index[cursor];
+			result.context =
+				token_fixed_at(tokens, close + 1, 0,
+					SimpleTokenType::OP_SEMICOLON) ?
+					PA10ElaboratedSpecifierContext::StandaloneDefinition :
+					PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+			result.charged_work = work;
+			return result;
+		}
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_SEMICOLON))
+		{
+			result.context = enum_key ?
+				PA10ElaboratedSpecifierContext::StandaloneForward :
+				PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+			result.charged_work = work;
+			return result;
+		}
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN) ||
+			token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LSQUARE))
+		{
+			if (cursor >= delimiter_close_index.size() ||
+				delimiter_close_index[cursor] >= tokens.size())
+			{
+				result.context =
+					PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+				result.charged_work = work;
+				return result;
+			}
+			cursor = delimiter_close_index[cursor] + 1;
+			continue;
+		}
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LT))
+		{
+			std::size_t close = 0;
+			if (find_template_close(tokens, template_close_index, cursor,
+				&close))
+			{
+				++work;
+				cursor = close + 1;
+				if (close < tokens.size() &&
+					tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
+					cursor < tokens.size() &&
+					tokens[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+					close < rshift_piece1_nested_close.size() &&
+					rshift_piece1_nested_close[close])
+				{
+					++work;
+					++cursor;
+				}
+				continue;
+			}
+		}
+		++cursor;
+	}
+
+	result.context =
+		PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+	result.charged_work = work;
+	return result;
 }
 
 } // namespace PA10ParserSupport
