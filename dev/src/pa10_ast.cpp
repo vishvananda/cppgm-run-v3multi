@@ -229,6 +229,24 @@ private:
 		return ast_.intern_presentation(value);
 	}
 
+	void append_operator_presentation(PA10AstNode& owner,
+		const std::string& value)
+	{
+		if (owner.operator_presentation_count == 0)
+			owner.operator_presentation_begin =
+				ast_.operator_presentation_spellings.size();
+		ast_.operator_presentation_spellings.push_back(intern(value));
+		++owner.operator_presentation_count;
+	}
+
+	void append_semantic_child(PA10AstNode& owner, PA10AstNode child)
+	{
+		if (owner.semantic_child_count == 0)
+			owner.semantic_child_begin = ast_.semantic_child_nodes.size();
+		ast_.semantic_child_nodes.push_back(std::move(child));
+		++owner.semantic_child_count;
+	}
+
 	PA10AstNode node(PA10NodeKind kind) const
 	{
 		return PA10AstNode(kind);
@@ -278,9 +296,31 @@ private:
 		return consume_identifier_token().spelling;
 	}
 
-	const std::string& producer_source(PPSpellingId spelling) const
+	std::string decoded_linkage_label(const LiteralData& literal) const
 	{
-		return ast_.producer_spelling(spelling);
+		if (literal.type != FundamentalType::Char ||
+			literal.element_count == 0)
+			return std::string();
+		std::size_t count = literal.element_count;
+		if (count > literal.bytes.size())
+			count = literal.bytes.size();
+		if (count != 0 && literal.bytes[count - 1] == 0)
+			--count;
+		std::string result;
+		result.reserve(count);
+		for (std::size_t i = 0; i < count; ++i)
+			result.push_back(static_cast<char>(literal.bytes[i]));
+		return result;
+	}
+
+	PA10LinkageKind linkage_kind(const LiteralData& literal) const
+	{
+		const std::string label = decoded_linkage_label(literal);
+		if (label == "C")
+			return PA10LinkageKind::C;
+		if (label == "C++")
+			return PA10LinkageKind::Cxx;
+		return PA10LinkageKind::Unknown;
 	}
 
 	PA10Name parse_name()
@@ -533,48 +573,6 @@ private:
 	PA10AstNode parse_template_parameter();
 	void skip_class_key_attribute();
 
-	bool copy_declarator_name(const PA10AstNode& declarator,
-		PA10AstNode& target)
-	{
-		if (declarator.kind == PA10NodeKind::Identifier)
-		{
-			if (!declarator.name_parts.empty())
-			{
-				target.global_name = declarator.global_name;
-				target.name_parts = declarator.name_parts;
-				return true;
-			}
-			if (declarator.unqualified_id_kind !=
-				PA10UnqualifiedIdKind::None)
-			{
-				target.unqualified_id_kind = declarator.unqualified_id_kind;
-				target.unqualified_id_token = declarator.unqualified_id_token;
-				target.unqualified_id_token_spelling =
-					declarator.unqualified_id_token_spelling;
-				target.unqualified_id_spelling =
-					declarator.unqualified_id_spelling;
-				target.operator_function_kind =
-					declarator.operator_function_kind;
-				target.operator_token = declarator.operator_token;
-				target.operator_token_spelling =
-					declarator.operator_token_spelling;
-				target.operator_presentation_parts =
-					declarator.operator_presentation_parts;
-				return true;
-			}
-			if (declarator.text != 0)
-			{
-				target.text = declarator.text;
-				target.producer_spelling = declarator.producer_spelling;
-				return true;
-			}
-		}
-		for (std::size_t i = 0; i < declarator.children.size(); ++i)
-			if (copy_declarator_name(declarator.children[i], target))
-				return true;
-		return false;
-	}
-
 	bool declarator_has_parameter(const PA10AstNode& declarator) const
 	{
 		if (declarator.kind == PA10NodeKind::ParameterClause)
@@ -666,13 +664,11 @@ PA10AstNode PA10Parser::parse_declaration()
 PA10AstNode PA10Parser::parse_namespace(bool inline_namespace)
 {
 	consume_fixed(SimpleTokenType::KW_NAMESPACE);
-	PA10StringId name = 0;
 	PPSpellingId producer_name = 0;
 	bool anonymous = true;
 	if (identifier())
 	{
 		const PA10Token token = consume_identifier_token();
-		name = intern(token.source);
 		producer_name = token.spelling;
 		anonymous = false;
 	}
@@ -684,7 +680,6 @@ PA10AstNode PA10Parser::parse_namespace(bool inline_namespace)
 		const PA10Name target = parse_name();
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		PA10AstNode result = node(PA10NodeKind::NamespaceAliasDefinition);
-		result.text = name;
 		result.producer_spelling = producer_name;
 		result.children.push_back(name_node(PA10NodeKind::Target, target));
 		return result;
@@ -695,7 +690,6 @@ PA10AstNode PA10Parser::parse_namespace(bool inline_namespace)
 		result.text = intern("<unnamed>");
 	else
 	{
-		result.text = name;
 		result.producer_spelling = producer_name;
 	}
 	if (inline_namespace)
@@ -719,10 +713,11 @@ PA10AstNode PA10Parser::parse_linkage_specification()
 		fail("linkage specification needs a string literal");
 	const PA10Token linkage = consume_token();
 	PA10AstNode result = node(PA10NodeKind::LinkageSpecification);
-	std::string name = linkage.source;
-	if (name.size() >= 2 && name[0] == '"' && name[name.size() - 1] == '"')
-		name = name.substr(1, name.size() - 2);
-	result.text = intern(name);
+	result.has_literal = true;
+	result.literal = linkage.literal;
+	result.linkage_kind = linkage_kind(linkage.literal);
+	if (result.linkage_kind == PA10LinkageKind::Unknown)
+		result.text = intern(decoded_linkage_label(linkage.literal));
 	consume_fixed(SimpleTokenType::OP_LBRACE);
 	enter();
 	while (!fixed(SimpleTokenType::OP_RBRACE))
@@ -754,7 +749,6 @@ PA10AstNode PA10Parser::parse_using()
 			fail("qualified alias name");
 		consume_fixed(SimpleTokenType::OP_ASS);
 		PA10AstNode result = node(PA10NodeKind::AliasDeclaration);
-		result.text = intern(producer_source(name.parts.back()));
 		result.producer_spelling = name.parts.back();
 		result.children.push_back(parse_type_id());
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
@@ -921,6 +915,7 @@ PA10AstNode PA10Parser::parse_type_id(bool conversion_target)
 PA10AstNode PA10Parser::parse_abstract_declarator(
 	bool stop_at_empty_parameter_clause)
 {
+	RecursionGuard recursion(*this);
 	PA10AstNode result = node(PA10NodeKind::AbstractDeclarator);
 	while (fixed(SimpleTokenType::OP_STAR) ||
 		fixed(SimpleTokenType::OP_AMP) || fixed(SimpleTokenType::OP_LAND))
@@ -1021,9 +1016,7 @@ PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
 		result.children.push_back(fixed_node(PA10NodeKind::RefQualifier));
 	if (fixed(SimpleTokenType::KW_NOEXCEPT))
 	{
-		consume_fixed(SimpleTokenType::KW_NOEXCEPT);
-		PA10AstNode qualifier = node(PA10NodeKind::FunctionQualifier);
-		qualifier.text = intern("noexcept");
+		PA10AstNode qualifier = fixed_node(PA10NodeKind::FunctionQualifier);
 		if (fixed(SimpleTokenType::OP_LPAREN))
 		{
 			consume_fixed(SimpleTokenType::OP_LPAREN);
@@ -1121,10 +1114,8 @@ PA10AstNode PA10Parser::parse_initializer()
 		if (fixed(SimpleTokenType::KW_DEFAULT) ||
 			fixed(SimpleTokenType::KW_DELETE))
 		{
-			const PA10Token special = consume_token();
 			PA10AstNode special_initializer =
-				node(PA10NodeKind::SpecialInitializer);
-			special_initializer.text = intern(special.source);
+				fixed_node(PA10NodeKind::SpecialInitializer);
 			result.children.push_back(std::move(special_initializer));
 			return result;
 		}
@@ -1161,6 +1152,7 @@ PA10AstNode PA10Parser::parse_initializer_clause()
 
 PA10AstNode PA10Parser::parse_braced_init_list()
 {
+	RecursionGuard recursion(*this);
 	consume_fixed(SimpleTokenType::OP_LBRACE);
 	PA10AstNode result = node(PA10NodeKind::BracedInitList);
 	if (!fixed(SimpleTokenType::OP_RBRACE))
@@ -1546,9 +1538,7 @@ PA10AstNode PA10Parser::parse_lambda_declarator()
 		consume_fixed(SimpleTokenType::KW_MUTABLE);
 	if (fixed(SimpleTokenType::KW_NOEXCEPT))
 	{
-		consume_fixed(SimpleTokenType::KW_NOEXCEPT);
-		PA10AstNode qualifier = node(PA10NodeKind::FunctionQualifier);
-		qualifier.text = intern("noexcept");
+		PA10AstNode qualifier = fixed_node(PA10NodeKind::FunctionQualifier);
 		result.children.push_back(std::move(qualifier));
 	}
 	if (fixed(SimpleTokenType::OP_ARROW))
@@ -1635,7 +1625,6 @@ PA10AstNode PA10Parser::parse_statement()
 		consume_fixed(SimpleTokenType::KW_GOTO);
 		PA10AstNode result = node(PA10NodeKind::GotoStatement);
 		const PA10Token label = consume_identifier_token();
-		result.text = intern(label.source);
 		result.producer_spelling = label.spelling;
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		return result;
@@ -1670,7 +1659,6 @@ PA10AstNode PA10Parser::parse_statement()
 	{
 		PA10AstNode result = node(PA10NodeKind::LabeledStatement);
 		const PA10Token label = consume_identifier_token();
-		result.text = intern(label.source);
 		result.producer_spelling = label.spelling;
 		consume_fixed(SimpleTokenType::OP_COLON);
 		result.children.push_back(parse_statement());
@@ -1844,7 +1832,6 @@ PA10AstNode PA10Parser::parse_class_declaration(bool in_decl_specifier)
 		if (identifier())
 		{
 			const PA10Token name = consume_identifier_token();
-			result.text = intern(name.source);
 			result.producer_spelling = name.spelling;
 		}
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
@@ -1867,7 +1854,6 @@ PA10AstNode PA10Parser::parse_class_specifier()
 	if (identifier())
 	{
 		const PA10Token name = consume_identifier_token();
-		result.text = intern(name.source);
 		result.producer_spelling = name.spelling;
 	}
 	else
@@ -1920,13 +1906,13 @@ PA10AstNode PA10Parser::parse_base_specifier()
 {
 	PA10AstNode result = node(PA10NodeKind::BaseSpecifier);
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
-		result.children.push_back(fixed_node(PA10NodeKind::LeafFixed));
+		result.children.push_back(fixed_node(PA10NodeKind::VirtualSpecifier));
 	if (fixed(SimpleTokenType::KW_PUBLIC) ||
 		fixed(SimpleTokenType::KW_PROTECTED) ||
 		fixed(SimpleTokenType::KW_PRIVATE))
 		result.children.push_back(fixed_node(PA10NodeKind::AccessSpecifier));
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
-		result.children.push_back(fixed_node(PA10NodeKind::LeafFixed));
+		result.children.push_back(fixed_node(PA10NodeKind::VirtualSpecifier));
 	if (!name_start())
 		fail("expected base name");
 	result.children.push_back(name_node(PA10NodeKind::BaseName, parse_name()));
@@ -1945,10 +1931,7 @@ PA10AstNode PA10Parser::parse_operator_name()
 	PA10AstNode result = node(PA10NodeKind::Identifier);
 	result.unqualified_id_kind = PA10UnqualifiedIdKind::OperatorFunction;
 	result.unqualified_id_token = keyword.fixed;
-	result.unqualified_id_token_spelling = intern(keyword.source);
-	result.unqualified_id_spelling = keyword.spelling;
-	result.operator_presentation_parts.push_back(
-		result.unqualified_id_token_spelling);
+	append_operator_presentation(result, keyword.source);
 	if (fixed(SimpleTokenType::OP_LSQUARE))
 	{
 		const PA10Token open = consume_token();
@@ -1957,10 +1940,8 @@ PA10AstNode PA10Parser::parse_operator_name()
 		const PA10Token close = consume_token();
 		result.operator_function_kind = PA10OperatorFunctionKind::Subscript;
 		result.operator_token = open.fixed;
-		result.operator_token_spelling = intern(open.source);
-		result.operator_presentation_parts.push_back(
-			result.operator_token_spelling);
-		result.operator_presentation_parts.push_back(intern(close.source));
+		append_operator_presentation(result, open.source);
+		append_operator_presentation(result, close.source);
 	}
 	else if (fixed(SimpleTokenType::OP_LPAREN))
 	{
@@ -1970,20 +1951,20 @@ PA10AstNode PA10Parser::parse_operator_name()
 		const PA10Token close = consume_token();
 		result.operator_function_kind = PA10OperatorFunctionKind::Call;
 		result.operator_token = open.fixed;
-		result.operator_token_spelling = intern(open.source);
-		result.operator_presentation_parts.push_back(
-			result.operator_token_spelling);
-		result.operator_presentation_parts.push_back(intern(close.source));
+		append_operator_presentation(result, open.source);
+		append_operator_presentation(result, close.source);
 	}
 	else if (look().kind == PA10TokenKind::Fixed &&
 		is_operator_function_token(look().fixed))
 	{
 		const PA10Token op = consume_token();
-		result.operator_function_kind = PA10OperatorFunctionKind::Token;
+		result.operator_function_kind = op.fixed == SimpleTokenType::KW_NEW ?
+			PA10OperatorFunctionKind::New :
+			op.fixed == SimpleTokenType::KW_DELETE ?
+			PA10OperatorFunctionKind::Delete :
+			PA10OperatorFunctionKind::Token;
 		result.operator_token = op.fixed;
-		result.operator_token_spelling = intern(op.source);
-		result.operator_presentation_parts.push_back(
-			result.operator_token_spelling);
+		append_operator_presentation(result, op.source);
 		if ((op.fixed == SimpleTokenType::KW_NEW ||
 			op.fixed == SimpleTokenType::KW_DELETE) &&
 			fixed(SimpleTokenType::OP_LSQUARE))
@@ -1992,8 +1973,11 @@ PA10AstNode PA10Parser::parse_operator_name()
 			if (!fixed(SimpleTokenType::OP_RSQUARE))
 				fail("allocation operator[] needs closing bracket");
 			const PA10Token close = consume_token();
-			result.operator_presentation_parts.push_back(intern(open.source));
-			result.operator_presentation_parts.push_back(intern(close.source));
+			result.operator_function_kind = op.fixed == SimpleTokenType::KW_NEW ?
+				PA10OperatorFunctionKind::NewArray :
+				PA10OperatorFunctionKind::DeleteArray;
+			append_operator_presentation(result, open.source);
+			append_operator_presentation(result, close.source);
 		}
 	}
 	else
@@ -2001,10 +1985,9 @@ PA10AstNode PA10Parser::parse_operator_name()
 		const std::size_t begin = position_;
 		PA10AstNode conversion_type = parse_type_id(true);
 		result.operator_function_kind = PA10OperatorFunctionKind::Conversion;
-		result.semantic_children.push_back(std::move(conversion_type));
+		append_semantic_child(result, std::move(conversion_type));
 		for (std::size_t i = begin; i < position_; ++i)
-			result.operator_presentation_parts.push_back(
-				intern(tokens_[i].source));
+			append_operator_presentation(result, tokens_[i].source);
 	}
 	return result;
 }
@@ -2054,8 +2037,7 @@ PA10AstNode PA10Parser::parse_ctor_initializer()
 PA10AstNode PA10Parser::parse_special_member()
 {
 	PA10AstNode declarator = parse_declarator(false, true);
-	PA10AstNode result;
-	copy_declarator_name(declarator, result);
+	PA10AstNode result = node(PA10NodeKind::SpecialMemberDeclaration);
 	result.children.push_back(std::move(declarator));
 
 	if (fixed(SimpleTokenType::OP_COLON))
@@ -2121,7 +2103,6 @@ PA10AstNode PA10Parser::parse_enum_specifier()
 	if (identifier())
 	{
 		const PA10Token name = consume_identifier_token();
-		result.text = intern(name.source);
 		result.producer_spelling = name.spelling;
 	}
 	if (fixed(SimpleTokenType::OP_COLON))
@@ -2140,7 +2121,6 @@ PA10AstNode PA10Parser::parse_enum_specifier()
 				fail("expected enumerator");
 			PA10AstNode enumerator = node(PA10NodeKind::Enumerator);
 			const PA10Token name = consume_identifier_token();
-			enumerator.text = intern(name.source);
 			enumerator.producer_spelling = name.spelling;
 			if (fixed(SimpleTokenType::OP_ASS))
 			{
@@ -2200,7 +2180,6 @@ PA10AstNode PA10Parser::parse_template_parameter()
 		{
 			PA10AstNode id = node(PA10NodeKind::Identifier);
 			const PA10Token name = consume_identifier_token();
-			id.text = intern(name.source);
 			id.producer_spelling = name.spelling;
 			result.children.push_back(std::move(id));
 		}
@@ -2330,6 +2309,7 @@ const char* node_kind_name(PA10NodeKind kind)
 		return "special-member-definition";
 	case PA10NodeKind::ClassKey: return "class-key";
 	case PA10NodeKind::AccessSpecifier: return "access-specifier";
+	case PA10NodeKind::VirtualSpecifier: return "virtual";
 	case PA10NodeKind::BaseClause: return "base-clause";
 	case PA10NodeKind::BaseSpecifier: return "base-specifier";
 	case PA10NodeKind::BaseName: return "base-name";
@@ -2376,6 +2356,27 @@ std::string node_text(const PA10Ast& ast, PA10StringId id)
 	return ast.spelling(id);
 }
 
+const PA10AstNode* find_declarator_name(const PA10AstNode& node,
+	std::size_t depth)
+{
+	if (depth >= PA10_MAX_AST_NESTING)
+		throw std::runtime_error("PA10 renderer nesting limit reached");
+	if (node.kind == PA10NodeKind::Identifier &&
+		(!node.name_parts.empty() ||
+			node.unqualified_id_kind != PA10UnqualifiedIdKind::None ||
+			node.producer_spelling != 0 ||
+			node.text != 0))
+		return &node;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode* found = find_declarator_name(node.children[i],
+			depth + 1);
+		if (found != NULL)
+			return found;
+	}
+	return NULL;
+}
+
 void render_unqualified_id(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output)
 {
@@ -2386,8 +2387,49 @@ void render_unqualified_id(const PA10Ast& ast, const PA10AstNode& node,
 			<< ast.producer_spelling(node.unqualified_id_spelling);
 		return;
 	}
-	for (std::size_t i = 0; i < node.operator_presentation_parts.size(); ++i)
-		output << ast.spelling(node.operator_presentation_parts[i]);
+	if (node.operator_presentation_begin >
+		ast.operator_presentation_spellings.size() ||
+		node.operator_presentation_count >
+		ast.operator_presentation_spellings.size() -
+			node.operator_presentation_begin)
+		throw std::runtime_error("invalid PA10 operator presentation range");
+	for (std::size_t i = 0; i < node.operator_presentation_count; ++i)
+		output << ast.spelling(ast.operator_presentation_spellings[
+			node.operator_presentation_begin + i]);
+}
+
+void render_special_member_name(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output)
+{
+	if (node.children.empty())
+		return;
+	const PA10AstNode* name = find_declarator_name(node.children.front(), 1);
+	if (name == NULL)
+		return;
+	if (!name->name_parts.empty())
+		output << ' ' << join_name(ast, *name);
+	else if (name->unqualified_id_kind != PA10UnqualifiedIdKind::None)
+		render_unqualified_id(ast, *name, output);
+	else if (name->producer_spelling != 0)
+		output << ' ' << ast.producer_spelling(name->producer_spelling);
+	else if (name->text != 0)
+		output << ' ' << node_text(ast, name->text);
+}
+
+void render_scalar_presentation(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output)
+{
+	if (node.producer_spelling != 0)
+		output << ' ' << ast.producer_spelling(node.producer_spelling);
+	else if (node.text != 0)
+		output << ' ' << node_text(ast, node.text);
+}
+
+void render_fixed_label(const PA10Ast& ast, const PA10AstNode& node,
+	std::ostream& output)
+{
+	if (node.token_spelling != 0)
+		output << ' ' << ast.spelling(node.token_spelling);
 }
 
 void render_fixed_suffix(const PA10Ast& ast, const PA10AstNode& node,
@@ -2417,21 +2459,24 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::EnumSpecifier:
 	case PA10NodeKind::NamespaceAliasDefinition:
 	case PA10NodeKind::AliasDeclaration:
+		render_scalar_presentation(ast, node, output);
+		break;
 	case PA10NodeKind::LinkageSpecification:
-		if (node.text != 0)
-			output << ' ' << node_text(ast, node.text);
+		if (node.linkage_kind == PA10LinkageKind::C)
+			output << " C";
+		else if (node.linkage_kind == PA10LinkageKind::Cxx)
+			output << " C++";
+		else
+			render_scalar_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::SpecialMemberDeclaration:
 	case PA10NodeKind::SpecialMemberDefinition:
-		if (!node.name_parts.empty())
-			output << ' ' << join_name(ast, node);
-		else if (node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
-			render_unqualified_id(ast, node, output);
-		else if (node.text != 0)
-			output << ' ' << node_text(ast, node.text);
+		render_special_member_name(ast, node, output);
 		break;
 	case PA10NodeKind::ClassSpecifier:
-		if (node.text != 0 && node_text(ast, node.text) != "<unnamed>")
+		if (node.producer_spelling != 0)
+			output << ' ' << ast.producer_spelling(node.producer_spelling);
+		else if (node.text != 0 && node_text(ast, node.text) != "<unnamed>")
 			output << ' ' << node_text(ast, node.text);
 		break;
 	case PA10NodeKind::Target:
@@ -2446,14 +2491,20 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		else if (node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
 			render_unqualified_id(ast, node, output);
 		else
-			output << ' ' << node_text(ast, node.text);
+			render_scalar_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::Enumerator:
 	case PA10NodeKind::GotoStatement:
 	case PA10NodeKind::LabeledStatement:
+		render_scalar_presentation(ast, node, output);
+		break;
 	case PA10NodeKind::Message:
+		if (node.text != 0)
+			output << ' ' << node_text(ast, node.text);
+		break;
 	case PA10NodeKind::FunctionQualifier:
-		output << ' ' << node_text(ast, node.text);
+	case PA10NodeKind::SpecialInitializer:
+		render_fixed_label(ast, node, output);
 		break;
 	case PA10NodeKind::DeclSpecifier:
 		if (!node.name_parts.empty())
@@ -2472,6 +2523,7 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::ClassKey:
 	case PA10NodeKind::EnumKey:
 	case PA10NodeKind::AccessSpecifier:
+	case PA10NodeKind::VirtualSpecifier:
 	case PA10NodeKind::ParameterKey:
 	case PA10NodeKind::LeafFixed:
 	case PA10NodeKind::UnaryExpression:
@@ -2515,9 +2567,6 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 			render_fixed_suffix(ast, node, output);
 		break;
 	case PA10NodeKind::LambdaIntroducer:
-		output << ' ' << node_text(ast, node.text);
-		break;
-	case PA10NodeKind::SpecialInitializer:
 		output << ' ' << node_text(ast, node.text);
 		break;
 	default:

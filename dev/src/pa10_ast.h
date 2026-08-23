@@ -36,7 +36,18 @@ enum class PA10OperatorFunctionKind
 	Token,
 	Subscript,
 	Call,
-	Conversion
+	Conversion,
+	New,
+	Delete,
+	NewArray,
+	DeleteArray
+};
+
+enum class PA10LinkageKind
+{
+	Unknown,
+	C,
+	Cxx
 };
 
 struct PA10Token
@@ -151,6 +162,7 @@ enum class PA10NodeKind
 	SpecialMemberDefinition,
 	ClassKey,
 	AccessSpecifier,
+	VirtualSpecifier,
 	BaseClause,
 	BaseSpecifier,
 	BaseName,
@@ -208,14 +220,16 @@ struct PA10AstNode
 	PPSpellingId unqualified_id_spelling;
 	PA10OperatorFunctionKind operator_function_kind;
 	SimpleTokenType operator_token;
-	PA10StringId operator_token_spelling;
-	// Individual cold source pieces used only when the exact dump composes an
-	// operator-function-id label.  They are not the operator's identity.
-	std::vector<PA10StringId> operator_presentation_parts;
-	// Structured semantic payload not printed as a separate dump subtree.
-	// Conversion-function-id stores its parsed type-id here while the
-	// declarator remains the rendered owner.
-	std::vector<PA10AstNode> semantic_children;
+	// Ranges into PA10Ast's cold/operator and semantic sidecars.  The ranges
+	// keep presentation and conversion payload out of every hot node while
+	// preserving one owner for each fact.
+	std::size_t operator_presentation_begin;
+	std::size_t operator_presentation_count;
+	std::size_t semantic_child_begin;
+	std::size_t semantic_child_count;
+	// Linkage labels are classified from the posttoken-decoded literal.  The
+	// literal itself remains on this node as the typed payload owner.
+	PA10LinkageKind linkage_kind;
 	bool has_literal;
 	LiteralData literal;
 	std::vector<PA10AstNode> children;
@@ -230,8 +244,9 @@ struct PA10AstNode
 		  unqualified_id_token_spelling(0), unqualified_id_spelling(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON),
-		  operator_token_spelling(0), operator_presentation_parts(),
-		  semantic_children(),
+		  operator_presentation_begin(0), operator_presentation_count(0),
+		  semantic_child_begin(0), semantic_child_count(0),
+		  linkage_kind(PA10LinkageKind::Unknown),
 		  has_literal(false), literal(),
 		  children()
 	{}
@@ -247,11 +262,16 @@ struct PA10Ast
 	// derived operator/destructor labels) has its own expected-O(1) index.
 	std::vector<std::string> presentation_spellings;
 	std::unordered_map<std::string, PA10StringId> presentation_ids;
+	// Cold operator labels are ranges of already-interned presentation IDs;
+	// conversion type-ids are sparse semantic children owned by the AST.
+	std::vector<PA10StringId> operator_presentation_spellings;
+	std::vector<PA10AstNode> semantic_child_nodes;
 	PA10AstNode root;
 
 	PA10Ast()
 		: producer_spellings(1, std::string()),
 		  presentation_spellings(1, std::string()), presentation_ids(),
+		  operator_presentation_spellings(), semantic_child_nodes(),
 		  root(PA10NodeKind::TranslationUnit)
 	{}
 

@@ -1,82 +1,123 @@
-# 1. Stage Design
+# 1. Stage design and spec alignment
 
-The phase-7 boundary is one `PPPreprocessingSession` per CLI source list,
-one canonical `PPTokenBuffer`, then posttoken facts: fixed
-`SimpleTokenType`, producer `PPSpellingId`, source spelling, and decoded
-literal data.  `PA10Ast` snapshots producer spellings, so identifier and
-qualified-name components retain their producer IDs after the session ends.
-`PA10AstNode` also owns typed unqualified-id facts: destructor marker plus
-producer name ID, operator-function enum/fixed token (including `[]`/`()`) and
-structured conversion target `type-id` in a semantic sidecar.  Individual
-presentation pieces are separate hash-indexed cold data; qualified names and
-operator labels are composed only by the renderer.
+The `--emit-ast` path is one production flow: the CLI validates the source
+list, rejects output/input inode aliases before opening the output, and emits
+one deterministic dump. Each command-line source file owns one fresh
+`PPPreprocessingSession` and one canonical `PPTokenBuffer`; the session's
+source-local macro, include, and conditional state therefore resets at the
+translation-unit boundary established by `preproc_session.h` and PA5. The
+posttoken facts feed the PA10 parser directly, and `PA10Ast` snapshots
+producer spellings before the session is destroyed.
 
-The AST is structured for later stages, with value-owned child vectors.  All
-consumed local wrapper operands now move into child vectors and wrapper
-replacement, avoiding subtree-copy amplification; no speed claim is made.
-Token consumption is monotonic, charged once under `96 * token_count + 2048`,
-with no whole-program retry or backtracking.  Unary prefixes fold iteratively;
-parser recursion and renderer traversal are bounded by
-`PA10_MAX_AST_NESTING = 1024`, with deterministic depth failure.
+Fixed syntax is carried as `SimpleTokenType`; identifier components retain
+`PPSpellingId`; literals retain `LiteralData` (type, element count, and
+decoded bytes) beside cold source text. Producer spelling IDs are the
+canonical presentation owner for scalar identifiers; `text` is reserved for
+synthetic or arbitrary presentation. Operator-function identity is typed,
+including call/subscript/conversion and scalar/array new/delete forms.
+Destructors retain the tilde marker and producer name ID. Conversion
+function-id type-ids are sparse semantic children of the identifier owner,
+not a copied field on the special-member wrapper. Operator presentation is
+an AST cold range of interned IDs and is composed only by the renderer.
 
-# 2. Failure Map
+The AST still has value-owned grammar children, but parser wrapper operands
+move into their owners. `SpecialInitializer` and `FunctionQualifier` retain
+their fixed token identity with cold spellings. Linkage labels are classified
+from decoded literal bytes and rendered from the typed C/C++ kind; source
+literal text is never reparsed. No parser retry or backtracking loop exists.
+Token consumption and structural entry are charged under
+`96 * token_count + 2048`; unary prefixes are folded iteratively.
+Declaration, expression, abstract-declarator, braced-initializer, and
+renderer name traversal paths are guarded by `PA10_MAX_AST_NESTING = 1024`.
 
-Baseline was 157 failures: 150 expected-success fixtures and 7
-expected-failure fixtures, all returning `EXIT_NOT_IMPLEMENTED`.  The final
-broad checkpoint run discovered all 157 and passed 76, leaving 81.  Residual
-families (75 status failures and 6 expected-success dump mismatches) are:
+This matches the PA10 README contract: only `--emit-ast -o <outfile>
+<srcfile...>` is implemented, translation-unit wrappers are deterministic,
+and preprocessing/tokenization/parsing/output failures return `EXIT_FAILURE`.
+The requested dump is the only text boundary; no host compiler, reference
+binary, source re-tokenization, or semantic classification is used.
 
-- `tests/general/100` — 3 qualified-`decltype`, member operator-call, and
-  template-condition seams.
-- `tests/general/200` — 69 advanced operator/conversion and qualified
-  declarators, special members, pointers, casts/new/initializers,
-  lambda/attribute/exception/linkage, expression/control, and
-  template/dependent/namespace/using/alias/angle-token seams.
-- `tests/general/300` — 2 local-typedef and namespace-alias shadow cases.
-- `tests/spec/200` — 6 bit-field, class-base/constructor-initializer,
-  explicit-instantiation/specialization, non-type-template-parameter, and
-  qualified-special-member cases.
-- `tests/spec/300` — 1 template-id-less-expression case.
+Root spec section 4's allocation exception is measured at this explicit-dump
+boundary rather than left as an unverified future question. A temporary AST
+probe over repeated `int xN = 42;` declarations reported:
 
-The counts account for all 81 residuals; no tests, refs, harnesses, or
-grammar fixtures were edited.
+| declarations | source bytes | PP tokens | AST nodes | child edges/capacity | literal nodes/bytes/capacity | producer bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 438 | 289 | 289 | 288/288 | 32/128/128 | 295 |
+| 128 | 1810 | 1153 | 1153 | 1152/1152 | 128/512/512 | 611 |
+| 512 | 7570 | 4609 | 4609 | 4608/4608 | 512/2048/2048 | 2147 |
 
-# 3. Active Checkpoint
+The same final executable measured full-driver peak RSS/wall samples of
+`4148 KB/0.00s`, `4896 KB/0.00s`, and `6892 KB/0.01s` at 32, 128, and 512
+declarations. These samples quantify the retained child-vector and literal
+byte ownership, while the collector-local `PA10Token::source` strings are
+discarded when `parse_pa10_ast` returns. They justify retaining the current
+value-owned vectors for this cold dump boundary without a general speed or
+asymptotic claim; hot-stage integration is an explicit re-evaluation trigger.
 
-Scope is the coherent `--emit-ast` boundary, move-owned AST construction,
-typed unqualified-id/operator/destructor/conversion facts, and the
-foundational declarations, declarators, function body, namespace/using/alias,
-expression/statement, and special-member slice.  Exact evidence: forced
-warning-free build exit 0; spec/100 `13/13` exit 0; general/100 `31/34` exit
-2; checked-in `100-bad.t` `1/1` exit 0; `make test-pa10` `76/157` pass,
-`81` fail, discovered `157`, exit 2; prior-through-PA9 `457/457` exit 0;
-file audit exit 0 with only the pre-existing
-`dev/src/cpp_semantic_core.h:1` bad-division warning; and diff checks clean.
-This is not full PA10.
+# 2. Exact final failure map
 
-# 4. Performance Evidence
+`make test-pa10` evaluated all 157 fixtures and exited 2: 77 passed and 80
+failed, consisting of 75 status failures and 5 expected-success dump
+mismatches. Status failures are exactly:
 
-No general speed or asymptotic AST-construction claim is made.  The immutable
-executable hash was
-`1a1d44ccb03b09e68b9fadb9ebaae6f2e7e6d6a6021a6c5f121596320d7068cf` before
-and after outside-repository characterization.  Equivalent temporary unary
-inputs with 128/256/512/768 prefixes (137/265/521/777 tokens) all exited 0;
-single-sample `/usr/bin/time` readings were respectively `0.10s` and peak
-RSS `6996/7032/7036/7040 KB`.  These are structural, non-comparative samples
-only.  Two 1100-parenthesis inputs (2209 tokens) both exited 1 with
-`PA10 parser recursion limit reached at token 261`, `0.10s`, and peak RSS
-`8088/8312 KB`, exercising deterministic depth rejection.
+- `general/100`: 3 (`decltype` qualified-id, member operator-call, and
+  template-condition seams);
+- `general/200`: 64 (advanced operators/conversions, qualified declarators
+  and special members, pointers/casts/new/initializers, lambda/attribute/
+  exception/linkage, expression/control, and template/dependent/
+  namespace/using/alias/angle-token seams);
+- `general/300`: 2 local-typedef and namespace-alias shadow cases;
+- `spec/200`: 5 bit-field, explicit-instantiation/specialization,
+  non-type-template-parameter, and qualified-special-member cases; and
+- `spec/300`: 1 template-id-less-expression case.
 
-# 5. Checkpoint Ledger
+The five dump mismatches are exactly `general/200-global-struct-paren-declaration`,
+`general/200-local-typedef-paren-declaration`,
+`general/200-member-template-if-less-template-call`,
+`general/200-mock-template-name-angle-forms`, and
+`general/200-relational-qualified-template-static-calls`. The failure identity
+set is exactly the old 81-test set in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` minus
+`spec/200-class-bases-and-ctor-init`; the comparison found zero new failures.
+The removed mismatch is the legitimate bounded repair giving base `virtual`
+its own node kind. No residual family outside this map was changed.
 
-- Baseline: `d895a4a3`, clean tree; 157 PA10 failures (150 success + 7
-  failure fixtures), discovered count 157.
-- Correction milestone: 76/157 pass, 81 remain, so 76 baseline failures are
-  removed; PA1--PA9 remain 457/457.  The existing five-path PA10 checkpoint
-  is amended in place with this move/typed-fact correction.
-- Final commit record: the existing checkpoint was amended in place with
-  subject `PA10: add structured emit-ast checkpoint` on 2026-08-23;
-  staged diff checks and post-commit clean-status verification passed.
-  Identify it by content, subject, and date rather than a prewritten self
-  hash.
-- Later final: full PA10 completion, if pursued, requires a later checkpoint.
+# 3. Final validation and performance characterization
+
+- `make -B -C pa10 -j2 CPPGM_STDLIB_FLAGS='-Wextra -Werror'`: exit 0.
+- `make test-pa10`: exit 2, discovered 157, passed 77, failed 80 (75 status
+  and 5 dump); the exact failure-set comparison above found no new identity.
+- `n=10; make test-report-through-pa9`: exit 0, 457/457 passed.
+- `perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src`: exit 0;
+  the only warning is the pre-existing
+  `dev/src/cpp_semantic_core.h:1` bad-division warning.
+- Focused checked probes for namespace, C/C++ linkage, member declarations,
+  function qualifiers, and class bases: 6/6 pass. The producer/literal/fixed
+  fact probe reports `producer_text_duplicates=0`, decoded literals, one C++
+  linkage kind, one default initializer, one `noexcept`, three operator
+  nodes, one conversion `TypeId`, and `ranges_valid=1`.
+- The two-translation-unit output probe exits 0 with two wrappers. `/dev/full`
+  exits 1 after finalization, and an output/input alias exits 1 before output
+  truncation. A 1100-level abstract declarator fails at token 1025 with the
+  nesting limit; a 1100-level parenthesized expression fails at token 261
+  with the recursion limit.
+- Final executable hash for the measured samples:
+  `856d2c96d45332d7fbea31f408b8f6e67068ece78757bab2ce94c1f982348d0e`.
+  Unary-prefix inputs with 128/256/512/768 prefixes all exit 0; the
+  single-sample wall/RSS readings are respectively `0.00s/4228 KB`,
+  `0.00s/4116 KB`, `0.00s/4272 KB`, and `0.00s/4360 KB`. These are bounded
+  characterization samples, not a general speed or asymptotic claim.
+
+# 4. Next checkpoint
+
+PA10 remains incomplete with the exact 80-test residual map above. A later
+implementation checkpoint should choose one residual grammar family
+(template-id/angle or declaration/type-context are natural candidates), add
+its earliest owner regression, and re-evaluate the measured child/literal
+storage when a hot stage begins consuming the AST.
+
+# 5. Completed checkpoint row
+
+| checkpoint | result | evidence |
+| --- | --- | --- |
+| `375ae19d` structured emit-ast increment plus finalized audit/repair | bounded checkpoint complete; full PA10 remains incomplete by the exact map above | 77/157 pass, 80 residuals, zero new failure identities, 457/457 through PA9, warning-clean build, file audit exit 0, measured storage and limit/output probes |

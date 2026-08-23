@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 using namespace std;
@@ -195,6 +196,8 @@ struct SourceOutputInvocation
   vector<string> inputs;
 };
 
+bool paths_alias(const string & left, const string & right);
+
 SourceOutputInvocation parse_source_output_invocation(
     const vector<string> & args, bool allow_lowir_options)
 {
@@ -230,6 +233,18 @@ SourceOutputInvocation parse_source_output_invocation(
     throw logic_error("invalid usage");
   }
   return result;
+}
+
+bool paths_alias(const string & left, const string & right)
+{
+  struct stat left_stat;
+  struct stat right_stat;
+  if(stat(left.c_str(), &left_stat) != 0 ||
+     stat(right.c_str(), &right_stat) != 0) {
+    return false;
+  }
+  return left_stat.st_dev == right_stat.st_dev &&
+      left_stat.st_ino == right_stat.st_ino;
 }
 
 bool consume_preprocess_option(const vector<string> & args, size_t & i)
@@ -395,12 +410,21 @@ int run_emit_ast_mode(const vector<string> & args)
 {
   const SourceOutputInvocation invocation =
       parse_source_output_invocation(args, false);
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    if(paths_alias(invocation.outfile, invocation.inputs[i])) {
+      throw logic_error("output file aliases source file: " +
+          invocation.inputs[i]);
+    }
+  }
   ofstream output(invocation.outfile.c_str());
   if(!output) {
     throw runtime_error("unable to open output file: " + invocation.outfile);
   }
 
   output << invocation.inputs.size() << " translation units\n";
+  if(!output) {
+    throw runtime_error("unable to write output file: " + invocation.outfile);
+  }
   PPPreprocessConfig config;
   for(size_t i = 0; i < invocation.inputs.size(); ++i) {
     const string & source_path = invocation.inputs[i];
@@ -421,6 +445,13 @@ int run_emit_ast_mode(const vector<string> & args)
     output << "start translation unit " << (i + 1) << "\n";
     render_pa10_ast(ast, output);
     output << "end translation unit\n";
+    if(!output) {
+      throw runtime_error("unable to write output file: " + invocation.outfile);
+    }
+  }
+  output.flush();
+  if(!output) {
+    throw runtime_error("unable to finalize output file: " + invocation.outfile);
   }
   return EXIT_SUCCESS;
 }
