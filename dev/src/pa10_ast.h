@@ -13,6 +13,11 @@
 enum class PA10TokenKind
 {
 	Fixed,
+	// OP_RSHIFT is split at the posttoken -> PA10 boundary so a template
+	// parser can consume either one close angle or both nested close angles
+	// without losing the shift operator seen by expression parsing.
+	RShiftPiece1,
+	RShiftPiece2,
 	Identifier,
 	Literal,
 	UserDefinedLiteral,
@@ -40,6 +45,32 @@ enum class PA10OperatorFunctionKind
 	Delete,
 	NewArray,
 	DeleteArray
+};
+
+enum class PA10TemplateArgumentKind
+{
+	TypeId,
+	Expression,
+	// Identifier-starting syntax can be either a type-id or an expression;
+	// PA10 retains the parsed syntax without making a semantic choice.
+	Unresolved
+};
+
+// One component of a qualified name. Template arguments are owned by the
+// PA10Ast sidecar and addressed by this range; the component itself retains
+// only producer identity and fixed syntax facts.
+struct PA10NameComponent
+{
+	PPSpellingId spelling;
+	bool template_disambiguator;
+	bool has_template_id;
+	std::size_t template_argument_begin;
+	std::size_t template_argument_count;
+
+	PA10NameComponent()
+		: spelling(0), template_disambiguator(false), has_template_id(false),
+		  template_argument_begin(0), template_argument_count(0)
+	{}
 };
 
 struct PA10Token
@@ -80,6 +111,7 @@ enum class PA10NodeKind
 	TypeSpecifierSeq,
 	TypeSpecifier,
 	TypeName,
+	DecltypeSpecifier,
 	CvQualifier,
 	TypeId,
 	AbstractDeclarator,
@@ -202,7 +234,11 @@ struct PA10AstNode
 	bool global_name;
 	// Qualified-name components retain producer identity.  The renderer
 	// resolves these IDs through PA10Ast::producer_spellings on demand.
-	std::vector<PPSpellingId> name_parts;
+	std::vector<PA10NameComponent> name_parts;
+	// A nested-name-specifier may be rooted in one typed decltype-specifier;
+	// the syntax node lives in PA10Ast's sidecar and is never flattened.
+	std::size_t name_prefix_begin;
+	std::size_t name_prefix_count;
 	// A single source identifier attached to a presentation-labelled node.
 	// Synthetic labels leave this zero and use text only.
 	PPSpellingId producer_spelling;
@@ -227,7 +263,8 @@ struct PA10AstNode
 		: kind(kind), has_token(false),
 		  token(SimpleTokenType::OP_SEMICOLON), token_spelling(0),
 		  identifier_declspecifier(false), text(0),
-		  global_name(false), name_parts(), producer_spelling(0),
+		  global_name(false), name_parts(), name_prefix_begin(0),
+		  name_prefix_count(0), producer_spelling(0),
 		  unqualified_id_kind(PA10UnqualifiedIdKind::None),
 		  unqualified_id_token(SimpleTokenType::OP_SEMICOLON),
 		  unqualified_id_token_spelling(0), unqualified_id_spelling(0),
@@ -237,6 +274,18 @@ struct PA10AstNode
 		  semantic_child_begin(0), semantic_child_count(0),
 		  has_literal(false), literal(),
 		  children()
+	{}
+};
+
+struct PA10TemplateArgument
+{
+	PA10TemplateArgumentKind kind;
+	PA10AstNode syntax;
+
+	PA10TemplateArgument(PA10TemplateArgumentKind kind =
+		PA10TemplateArgumentKind::Expression,
+		const PA10AstNode& syntax = PA10AstNode())
+		: kind(kind), syntax(syntax)
 	{}
 };
 
@@ -253,12 +302,18 @@ struct PA10Ast
 	// conversion type-ids are sparse semantic children owned by the AST.
 	std::vector<PA10StringId> operator_presentation_spellings;
 	std::vector<PA10AstNode> semantic_child_nodes;
+	// Template arguments are structured syntax owners. Name components refer
+	// to this vector by range instead of retaining a flattened spelling.
+	std::vector<PA10TemplateArgument> template_arguments;
+	std::vector<PA10AstNode> name_prefix_nodes;
 	PA10AstNode root;
 
 	PA10Ast()
 		: producer_spellings(1, std::string()),
 		  presentation_spellings(1, std::string()),
 		  operator_presentation_spellings(), semantic_child_nodes(),
+		  template_arguments(),
+		  name_prefix_nodes(),
 		  root(PA10NodeKind::TranslationUnit)
 	{}
 
