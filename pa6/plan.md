@@ -69,21 +69,37 @@ Focused evidence:
 - `make -C pa6 check TEST='course/pa6/125-abstract-parameter-and-cv-declarator.t tests/250-decl.t tests/260-declarator.t tests/400-exceptions.t course/pa6/500-deep-template-argument-failure-bad.t course/pa6/500-operator-template-angle-boundary.t'`: 6/6 pass.
 - Representative valid operator fixture: `OK`, tool exit 0,
   `elapsed=0.00s`, `rss_kb=4076`.
-- Post-change valid-unary characterization, each one run of the final
-  executable (not a comparative speed claim):
+- Immutable executable evidence: at HEAD
+  `e23bf725aefdc0dee6624ea7c5998fd0a7461ae5`,
+  `make -B -C dev recog -j2` passed and
+  `sha256sum dev/recog` was
+  `6ae938703ce47cdcb9939de73e8faf9792ffe2f4f945725ec4f60c1dc0a9c1b8`.
+  The hash was identical before and after all measurements; no rebuild was
+  performed between samples.
+- Final valid-unary characterization used temporary inputs of the exact form
+  `int main() { return !...!0; }`, with N adjacent `!` operators and no
+  inter-operator whitespace.  Each sample used:
+  `/usr/bin/time -f 'n=N elapsed=%e rss_kb=%M exit=%x' ./dev/recog -o OUT INPUT`.
+  These are single-run characterization results, not a comparative speed
+  claim:
 
   | unary operators | result | elapsed | peak RSS |
   | ---: | :--- | ---: | ---: |
-  | 1,000 | `OK`, exit 0 | 0.00s | 4,636 KiB |
-  | 16,000 | `OK`, exit 0 | 0.02s | 11,296 KiB |
-  | 128,000 | `OK`, exit 0 | 0.15s | 63,412 KiB |
-  | 256,000 | `OK`, exit 0 | 0.30s | 123,072 KiB |
+  | 1,000 | `OK`, exit 0 | 0.00s | 4,560 KiB |
+  | 16,000 | `OK`, exit 0 | 0.01s | 7,860 KiB |
+  | 128,000 | `OK`, exit 0 | 0.10s | 36,528 KiB |
+  | 256,000 | `OK`, exit 0 | 0.19s | 69,368 KiB |
 
   Time and retained token storage scale linearly over this sample; the
-  iterative prefix path avoids the pre-repair stack fault at the large sizes.
+  iterative prefix path accepts the large inputs without stack growth.
+- The previously recorded `4,636/11,296/63,412/123,072 KiB` table is
+  superseded/rejected intermediate evidence: it was recorded without an
+  immutable executable identity and with a different temporary input shape;
+  it is not a final performance result.
 - Deep malformed-template fixture: `BAD`, tool exit 0, work-bound reason,
-  `elapsed=0.04s`, `rss_kb=5104`; the bounded hostile path did not crash or
-  time out.
+  `elapsed=0.03s`, `rss_kb=5144`; the same immutable executable remained
+  unchanged before and after the probe, and the bounded hostile path did not
+  crash or time out.
 - PA6 terminates at syntax status and emits no object, generated program,
   relocation, or optimizer IR; the section-7 generated-code measures therefore
   have no PA6 consumer.  The parser's monotonic `work_` counter, explicit
@@ -98,12 +114,17 @@ Focused evidence:
 
 - Baseline: HEAD `2f150101c53e1f3ef40095eaa2e1b81c994037fd`, clean, prior PA6
   implementation and 292/292 through-stage evidence.
-- Final audit milestone, 2026-08-23, identified by this content/date: typed
-  grammar repair, parser ownership split, charged movement/work-budget audit,
-  iterative cast/unary prefix parsing, state-discipline repair, and the one
-  focused regression with documented reference provenance.
+- Implementation/audit commit: `e23bf725aefdc0dee6624ea7c5998fd0a7461ae5`,
+  containing the typed grammar repair, parser ownership split, charged
+  movement/work-budget audit, iterative cast/unary prefix parsing,
+  state-discipline repair, and focused regression with documented reference
+  provenance.
+- Evidence-correction milestone, 2026-08-23, identified by this content/date:
+  immutable executable identity plus corrected tight-unary and hostile
+  measurements; this is a documentation-only follow-up to the implementation
+  commit.
 - Final checks recorded for this tree: zero-warning PA6 file audit (26 files),
   `293 / 293` through-stage tests, and clean `git diff --check`.
-- Commit-ready checkpoint: the scoped PA6 sources, plan, fixture, and three
-  generated reference sidecars are the complete intended change set; no final
-  commit hash is recorded here because this plan is part of that commit.
+- Commit-ready evidence checkpoint: only `pa6/plan.md` changes in this
+  follow-up; its own follow-up commit hash is intentionally identified by the
+  content/date above because this plan is part of that commit.
