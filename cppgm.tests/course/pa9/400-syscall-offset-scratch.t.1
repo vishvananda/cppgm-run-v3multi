@@ -1,0 +1,4 @@
+arg: data64 0;
+start:
+	syscall4 t64 60 42 0 0 [arg + 1];
+	syscall1 t64 60 7;

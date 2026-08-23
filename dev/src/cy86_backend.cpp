@@ -333,192 +333,211 @@ struct OpcodeInfo
 	{}
 };
 
-bool starts_with(const std::string& value, const char* prefix)
+struct OpcodeDescriptor
 {
-	const std::string p(prefix);
-	return value.size() >= p.size() && value.compare(0, p.size(), p) == 0;
-}
+	const char* spelling;
+	OpFamily family;
+	unsigned width;
+	unsigned auxiliary_width;
+	unsigned syscall_arguments;
+	bool signed_operation;
+	CompareKind compare;
+};
 
-bool ends_with(const std::string& value, const char* suffix)
+// This is the fixed CY86 vocabulary from cy86-opcode.desc.  The source
+// spelling is used only at the token boundary; all downstream code receives
+// the typed family, widths, signedness, and comparison facts below.
+const OpcodeDescriptor kOpcodeDescriptors[] =
 {
-	const std::string s(suffix);
-	return value.size() >= s.size() &&
-		value.compare(value.size() - s.size(), s.size(), s) == 0;
-}
-
-bool parse_width_suffix(const std::string& value, std::size_t at,
-	unsigned* width)
-{
-	if (value.compare(at, std::string::npos, "8") == 0)
-	{
-		*width = 8;
-		return true;
-	}
-	if (value.compare(at, std::string::npos, "16") == 0)
-	{
-		*width = 16;
-		return true;
-	}
-	if (value.compare(at, std::string::npos, "32") == 0)
-	{
-		*width = 32;
-		return true;
-	}
-	if (value.compare(at, std::string::npos, "64") == 0)
-	{
-		*width = 64;
-		return true;
-	}
-	if (value.compare(at, std::string::npos, "80") == 0)
-	{
-		*width = 80;
-		return true;
-	}
-	return false;
-}
+	{"data8", OP_DATA, 8, 0, 0, false, CMP_EQ},
+	{"data16", OP_DATA, 16, 0, 0, false, CMP_EQ},
+	{"data32", OP_DATA, 32, 0, 0, false, CMP_EQ},
+	{"data64", OP_DATA, 64, 0, 0, false, CMP_EQ},
+	{"move8", OP_MOVE, 8, 0, 0, false, CMP_EQ},
+	{"move16", OP_MOVE, 16, 0, 0, false, CMP_EQ},
+	{"move32", OP_MOVE, 32, 0, 0, false, CMP_EQ},
+	{"move64", OP_MOVE, 64, 0, 0, false, CMP_EQ},
+	{"move80", OP_MOVE, 80, 0, 0, false, CMP_EQ},
+	{"jump", OP_JUMP, 0, 0, 0, false, CMP_EQ},
+	{"jumpif", OP_JUMPIF, 0, 0, 0, false, CMP_EQ},
+	{"call", OP_CALL, 0, 0, 0, false, CMP_EQ},
+	{"ret", OP_RET, 0, 0, 0, false, CMP_EQ},
+	{"not8", OP_NOT, 8, 0, 0, false, CMP_EQ},
+	{"not16", OP_NOT, 16, 0, 0, false, CMP_EQ},
+	{"not32", OP_NOT, 32, 0, 0, false, CMP_EQ},
+	{"not64", OP_NOT, 64, 0, 0, false, CMP_EQ},
+	{"and8", OP_AND, 8, 0, 0, false, CMP_EQ},
+	{"and16", OP_AND, 16, 0, 0, false, CMP_EQ},
+	{"and32", OP_AND, 32, 0, 0, false, CMP_EQ},
+	{"and64", OP_AND, 64, 0, 0, false, CMP_EQ},
+	{"or8", OP_OR, 8, 0, 0, false, CMP_EQ},
+	{"or16", OP_OR, 16, 0, 0, false, CMP_EQ},
+	{"or32", OP_OR, 32, 0, 0, false, CMP_EQ},
+	{"or64", OP_OR, 64, 0, 0, false, CMP_EQ},
+	{"xor8", OP_XOR, 8, 0, 0, false, CMP_EQ},
+	{"xor16", OP_XOR, 16, 0, 0, false, CMP_EQ},
+	{"xor32", OP_XOR, 32, 0, 0, false, CMP_EQ},
+	{"xor64", OP_XOR, 64, 0, 0, false, CMP_EQ},
+	{"lshift8", OP_LSHIFT, 8, 0, 0, false, CMP_EQ},
+	{"lshift16", OP_LSHIFT, 16, 0, 0, false, CMP_EQ},
+	{"lshift32", OP_LSHIFT, 32, 0, 0, false, CMP_EQ},
+	{"lshift64", OP_LSHIFT, 64, 0, 0, false, CMP_EQ},
+	{"srshift8", OP_SRSHIFT, 8, 0, 0, false, CMP_EQ},
+	{"srshift16", OP_SRSHIFT, 16, 0, 0, false, CMP_EQ},
+	{"srshift32", OP_SRSHIFT, 32, 0, 0, false, CMP_EQ},
+	{"srshift64", OP_SRSHIFT, 64, 0, 0, false, CMP_EQ},
+	{"urshift8", OP_URSHIFT, 8, 0, 0, false, CMP_EQ},
+	{"urshift16", OP_URSHIFT, 16, 0, 0, false, CMP_EQ},
+	{"urshift32", OP_URSHIFT, 32, 0, 0, false, CMP_EQ},
+	{"urshift64", OP_URSHIFT, 64, 0, 0, false, CMP_EQ},
+	{"s8convf80", OP_INT_TO_F80, 80, 8, 0, true, CMP_EQ},
+	{"s16convf80", OP_INT_TO_F80, 80, 16, 0, true, CMP_EQ},
+	{"s32convf80", OP_INT_TO_F80, 80, 32, 0, true, CMP_EQ},
+	{"s64convf80", OP_INT_TO_F80, 80, 64, 0, true, CMP_EQ},
+	{"u8convf80", OP_INT_TO_F80, 80, 8, 0, false, CMP_EQ},
+	{"u16convf80", OP_INT_TO_F80, 80, 16, 0, false, CMP_EQ},
+	{"u32convf80", OP_INT_TO_F80, 80, 32, 0, false, CMP_EQ},
+	{"u64convf80", OP_INT_TO_F80, 80, 64, 0, false, CMP_EQ},
+	{"f32convf80", OP_FLOAT_TO_F80, 80, 32, 0, false, CMP_EQ},
+	{"f64convf80", OP_FLOAT_TO_F80, 80, 64, 0, false, CMP_EQ},
+	{"f80convs8", OP_F80_TO_INT, 8, 8, 0, true, CMP_EQ},
+	{"f80convs16", OP_F80_TO_INT, 16, 16, 0, true, CMP_EQ},
+	{"f80convs32", OP_F80_TO_INT, 32, 32, 0, true, CMP_EQ},
+	{"f80convs64", OP_F80_TO_INT, 64, 64, 0, true, CMP_EQ},
+	{"f80convu8", OP_F80_TO_INT, 8, 8, 0, false, CMP_EQ},
+	{"f80convu16", OP_F80_TO_INT, 16, 16, 0, false, CMP_EQ},
+	{"f80convu32", OP_F80_TO_INT, 32, 32, 0, false, CMP_EQ},
+	{"f80convu64", OP_F80_TO_INT, 64, 64, 0, false, CMP_EQ},
+	{"f80convf32", OP_F80_TO_FLOAT, 32, 32, 0, false, CMP_EQ},
+	{"f80convf64", OP_F80_TO_FLOAT, 64, 64, 0, false, CMP_EQ},
+	{"iadd8", OP_IADD, 8, 0, 0, false, CMP_EQ},
+	{"iadd16", OP_IADD, 16, 0, 0, false, CMP_EQ},
+	{"iadd32", OP_IADD, 32, 0, 0, false, CMP_EQ},
+	{"iadd64", OP_IADD, 64, 0, 0, false, CMP_EQ},
+	{"fadd32", OP_FADD, 32, 0, 0, false, CMP_EQ},
+	{"fadd64", OP_FADD, 64, 0, 0, false, CMP_EQ},
+	{"fadd80", OP_FADD, 80, 0, 0, false, CMP_EQ},
+	{"isub8", OP_ISUB, 8, 0, 0, false, CMP_EQ},
+	{"isub16", OP_ISUB, 16, 0, 0, false, CMP_EQ},
+	{"isub32", OP_ISUB, 32, 0, 0, false, CMP_EQ},
+	{"isub64", OP_ISUB, 64, 0, 0, false, CMP_EQ},
+	{"fsub32", OP_FSUB, 32, 0, 0, false, CMP_EQ},
+	{"fsub64", OP_FSUB, 64, 0, 0, false, CMP_EQ},
+	{"fsub80", OP_FSUB, 80, 0, 0, false, CMP_EQ},
+	{"smul8", OP_SMUL, 8, 0, 0, true, CMP_EQ},
+	{"smul16", OP_SMUL, 16, 0, 0, true, CMP_EQ},
+	{"smul32", OP_SMUL, 32, 0, 0, true, CMP_EQ},
+	{"smul64", OP_SMUL, 64, 0, 0, true, CMP_EQ},
+	{"umul8", OP_UMUL, 8, 0, 0, false, CMP_EQ},
+	{"umul16", OP_UMUL, 16, 0, 0, false, CMP_EQ},
+	{"umul32", OP_UMUL, 32, 0, 0, false, CMP_EQ},
+	{"umul64", OP_UMUL, 64, 0, 0, false, CMP_EQ},
+	{"fmul32", OP_FMUL, 32, 0, 0, false, CMP_EQ},
+	{"fmul64", OP_FMUL, 64, 0, 0, false, CMP_EQ},
+	{"fmul80", OP_FMUL, 80, 0, 0, false, CMP_EQ},
+	{"sdiv8", OP_SDIV, 8, 0, 0, true, CMP_EQ},
+	{"sdiv16", OP_SDIV, 16, 0, 0, true, CMP_EQ},
+	{"sdiv32", OP_SDIV, 32, 0, 0, true, CMP_EQ},
+	{"sdiv64", OP_SDIV, 64, 0, 0, true, CMP_EQ},
+	{"udiv8", OP_UDIV, 8, 0, 0, false, CMP_EQ},
+	{"udiv16", OP_UDIV, 16, 0, 0, false, CMP_EQ},
+	{"udiv32", OP_UDIV, 32, 0, 0, false, CMP_EQ},
+	{"udiv64", OP_UDIV, 64, 0, 0, false, CMP_EQ},
+	{"fdiv32", OP_FDIV, 32, 0, 0, false, CMP_EQ},
+	{"fdiv64", OP_FDIV, 64, 0, 0, false, CMP_EQ},
+	{"fdiv80", OP_FDIV, 80, 0, 0, false, CMP_EQ},
+	{"smod8", OP_SMOD, 8, 0, 0, true, CMP_EQ},
+	{"smod16", OP_SMOD, 16, 0, 0, true, CMP_EQ},
+	{"smod32", OP_SMOD, 32, 0, 0, true, CMP_EQ},
+	{"smod64", OP_SMOD, 64, 0, 0, true, CMP_EQ},
+	{"umod8", OP_UMOD, 8, 0, 0, false, CMP_EQ},
+	{"umod16", OP_UMOD, 16, 0, 0, false, CMP_EQ},
+	{"umod32", OP_UMOD, 32, 0, 0, false, CMP_EQ},
+	{"umod64", OP_UMOD, 64, 0, 0, false, CMP_EQ},
+	{"ieq8", OP_ICMP, 8, 0, 0, false, CMP_EQ},
+	{"ieq16", OP_ICMP, 16, 0, 0, false, CMP_EQ},
+	{"ieq32", OP_ICMP, 32, 0, 0, false, CMP_EQ},
+	{"ieq64", OP_ICMP, 64, 0, 0, false, CMP_EQ},
+	{"feq32", OP_FCMP, 32, 0, 0, false, CMP_EQ},
+	{"feq64", OP_FCMP, 64, 0, 0, false, CMP_EQ},
+	{"feq80", OP_FCMP, 80, 0, 0, false, CMP_EQ},
+	{"ine8", OP_ICMP, 8, 0, 0, false, CMP_NE},
+	{"ine16", OP_ICMP, 16, 0, 0, false, CMP_NE},
+	{"ine32", OP_ICMP, 32, 0, 0, false, CMP_NE},
+	{"ine64", OP_ICMP, 64, 0, 0, false, CMP_NE},
+	{"fne32", OP_FCMP, 32, 0, 0, false, CMP_NE},
+	{"fne64", OP_FCMP, 64, 0, 0, false, CMP_NE},
+	{"fne80", OP_FCMP, 80, 0, 0, false, CMP_NE},
+	{"slt8", OP_ICMP, 8, 0, 0, true, CMP_LT},
+	{"slt16", OP_ICMP, 16, 0, 0, true, CMP_LT},
+	{"slt32", OP_ICMP, 32, 0, 0, true, CMP_LT},
+	{"slt64", OP_ICMP, 64, 0, 0, true, CMP_LT},
+	{"ult8", OP_ICMP, 8, 0, 0, false, CMP_LT},
+	{"ult16", OP_ICMP, 16, 0, 0, false, CMP_LT},
+	{"ult32", OP_ICMP, 32, 0, 0, false, CMP_LT},
+	{"ult64", OP_ICMP, 64, 0, 0, false, CMP_LT},
+	{"flt32", OP_FCMP, 32, 0, 0, false, CMP_LT},
+	{"flt64", OP_FCMP, 64, 0, 0, false, CMP_LT},
+	{"flt80", OP_FCMP, 80, 0, 0, false, CMP_LT},
+	{"sgt8", OP_ICMP, 8, 0, 0, true, CMP_GT},
+	{"sgt16", OP_ICMP, 16, 0, 0, true, CMP_GT},
+	{"sgt32", OP_ICMP, 32, 0, 0, true, CMP_GT},
+	{"sgt64", OP_ICMP, 64, 0, 0, true, CMP_GT},
+	{"ugt8", OP_ICMP, 8, 0, 0, false, CMP_GT},
+	{"ugt16", OP_ICMP, 16, 0, 0, false, CMP_GT},
+	{"ugt32", OP_ICMP, 32, 0, 0, false, CMP_GT},
+	{"ugt64", OP_ICMP, 64, 0, 0, false, CMP_GT},
+	{"fgt32", OP_FCMP, 32, 0, 0, false, CMP_GT},
+	{"fgt64", OP_FCMP, 64, 0, 0, false, CMP_GT},
+	{"fgt80", OP_FCMP, 80, 0, 0, false, CMP_GT},
+	{"sle8", OP_ICMP, 8, 0, 0, true, CMP_LE},
+	{"sle16", OP_ICMP, 16, 0, 0, true, CMP_LE},
+	{"sle32", OP_ICMP, 32, 0, 0, true, CMP_LE},
+	{"sle64", OP_ICMP, 64, 0, 0, true, CMP_LE},
+	{"ule8", OP_ICMP, 8, 0, 0, false, CMP_LE},
+	{"ule16", OP_ICMP, 16, 0, 0, false, CMP_LE},
+	{"ule32", OP_ICMP, 32, 0, 0, false, CMP_LE},
+	{"ule64", OP_ICMP, 64, 0, 0, false, CMP_LE},
+	{"fle32", OP_FCMP, 32, 0, 0, false, CMP_LE},
+	{"fle64", OP_FCMP, 64, 0, 0, false, CMP_LE},
+	{"fle80", OP_FCMP, 80, 0, 0, false, CMP_LE},
+	{"sge8", OP_ICMP, 8, 0, 0, true, CMP_GE},
+	{"sge16", OP_ICMP, 16, 0, 0, true, CMP_GE},
+	{"sge32", OP_ICMP, 32, 0, 0, true, CMP_GE},
+	{"sge64", OP_ICMP, 64, 0, 0, true, CMP_GE},
+	{"uge8", OP_ICMP, 8, 0, 0, false, CMP_GE},
+	{"uge16", OP_ICMP, 16, 0, 0, false, CMP_GE},
+	{"uge32", OP_ICMP, 32, 0, 0, false, CMP_GE},
+	{"uge64", OP_ICMP, 64, 0, 0, false, CMP_GE},
+	{"fge32", OP_FCMP, 32, 0, 0, false, CMP_GE},
+	{"fge64", OP_FCMP, 64, 0, 0, false, CMP_GE},
+	{"fge80", OP_FCMP, 80, 0, 0, false, CMP_GE},
+	{"syscall0", OP_SYSCALL, 64, 0, 0, false, CMP_EQ},
+	{"syscall1", OP_SYSCALL, 64, 0, 1, false, CMP_EQ},
+	{"syscall2", OP_SYSCALL, 64, 0, 2, false, CMP_EQ},
+	{"syscall3", OP_SYSCALL, 64, 0, 3, false, CMP_EQ},
+	{"syscall4", OP_SYSCALL, 64, 0, 4, false, CMP_EQ},
+	{"syscall5", OP_SYSCALL, 64, 0, 5, false, CMP_EQ},
+	{"syscall6", OP_SYSCALL, 64, 0, 6, false, CMP_EQ}
+};
 
 bool classify_opcode(const std::string& name, OpcodeInfo* result)
 {
-	OpcodeInfo info;
-	if (name == "data8" || name == "data16" || name == "data32" ||
-		name == "data64")
+	for (std::size_t i = 0;
+		i < sizeof(kOpcodeDescriptors) / sizeof(kOpcodeDescriptors[0]); ++i)
 	{
-		info.family = OP_DATA;
-		info.width = static_cast<unsigned>(name[4] - '0');
-		if (name == "data16") info.width = 16;
-		if (name == "data32") info.width = 32;
-		if (name == "data64") info.width = 64;
+		const OpcodeDescriptor& descriptor = kOpcodeDescriptors[i];
+		if (name != descriptor.spelling)
+			continue;
+		result->family = descriptor.family;
+		result->width = descriptor.width;
+		result->auxiliary_width = descriptor.auxiliary_width;
+		result->syscall_arguments = descriptor.syscall_arguments;
+		result->signed_operation = descriptor.signed_operation;
+		result->compare = descriptor.compare;
+		return true;
 	}
-	else if (starts_with(name, "move") &&
-		parse_width_suffix(name, 4, &info.width))
-		info.family = OP_MOVE;
-	else if (name == "jump") info.family = OP_JUMP;
-	else if (name == "jumpif") info.family = OP_JUMPIF;
-	else if (name == "call") info.family = OP_CALL;
-	else if (name == "ret") info.family = OP_RET;
-	else if (starts_with(name, "not") &&
-		parse_width_suffix(name, 3, &info.width))
-		info.family = OP_NOT;
-	else if (starts_with(name, "and") &&
-		parse_width_suffix(name, 3, &info.width))
-		info.family = OP_AND;
-	else if (starts_with(name, "or") &&
-		parse_width_suffix(name, 2, &info.width))
-		info.family = OP_OR;
-	else if (starts_with(name, "xor") &&
-		parse_width_suffix(name, 3, &info.width))
-		info.family = OP_XOR;
-	else if (starts_with(name, "lshift") &&
-		parse_width_suffix(name, 6, &info.width))
-		info.family = OP_LSHIFT;
-	else if (starts_with(name, "srshift") &&
-		parse_width_suffix(name, 7, &info.width))
-		info.family = OP_SRSHIFT;
-	else if (starts_with(name, "urshift") &&
-		parse_width_suffix(name, 7, &info.width))
-		info.family = OP_URSHIFT;
-	else if (ends_with(name, "convf80"))
-	{
-		const std::string prefix = name.substr(0, name.size() - 7);
-		if (prefix.size() > 1 &&
-			(prefix[0] == 's' || prefix[0] == 'u' || prefix[0] == 'f') &&
-			parse_width_suffix(prefix, 1, &info.auxiliary_width))
-		{
-			info.family = prefix[0] == 'f' ? OP_FLOAT_TO_F80 : OP_INT_TO_F80;
-			info.width = 80;
-			info.signed_operation = prefix[0] == 's';
-		}
-	}
-	else if (starts_with(name, "f80conv"))
-	{
-		const std::string suffix = name.substr(7);
-		if (suffix.size() > 1 && suffix[0] == 'f' &&
-			parse_width_suffix(suffix, 1, &info.auxiliary_width))
-		{
-			info.family = OP_F80_TO_FLOAT;
-			info.width = info.auxiliary_width;
-		}
-		else if (suffix.size() > 1 &&
-			(suffix[0] == 's' || suffix[0] == 'u') &&
-			parse_width_suffix(suffix, 1, &info.auxiliary_width))
-		{
-			info.family = OP_F80_TO_INT;
-			info.width = info.auxiliary_width;
-			info.signed_operation = suffix[0] == 's';
-		}
-	}
-	else
-	{
-		struct Prefix
-		{
-			const char* text;
-			OpFamily family;
-			bool signed_operation;
-		};
-		const Prefix prefixes[] =
-		{
-			{"iadd", OP_IADD, false}, {"isub", OP_ISUB, false},
-			{"fadd", OP_FADD, false}, {"fsub", OP_FSUB, false},
-			{"smul", OP_SMUL, true}, {"umul", OP_UMUL, false},
-			{"fmul", OP_FMUL, false}, {"sdiv", OP_SDIV, true},
-			{"udiv", OP_UDIV, false}, {"fdiv", OP_FDIV, false},
-			{"smod", OP_SMOD, true}, {"umod", OP_UMOD, false}
-		};
-		for (std::size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i)
-		{
-			const std::string prefix(prefixes[i].text);
-			if (starts_with(name, prefixes[i].text) &&
-				parse_width_suffix(name, prefix.size(), &info.width))
-			{
-				info.family = prefixes[i].family;
-				info.signed_operation = prefixes[i].signed_operation;
-				break;
-			}
-		}
-		if (info.family == OP_INVALID)
-		{
-			const Prefix compare_prefixes[] =
-			{
-				{"ieq", OP_ICMP, false}, {"ine", OP_ICMP, false},
-				{"slt", OP_ICMP, true}, {"ult", OP_ICMP, false},
-				{"sgt", OP_ICMP, true}, {"ugt", OP_ICMP, false},
-				{"sle", OP_ICMP, true}, {"ule", OP_ICMP, false},
-				{"sge", OP_ICMP, true}, {"uge", OP_ICMP, false},
-				{"feq", OP_FCMP, false}, {"fne", OP_FCMP, false},
-				{"flt", OP_FCMP, false}, {"fgt", OP_FCMP, false},
-				{"fle", OP_FCMP, false}, {"fge", OP_FCMP, false}
-			};
-			for (std::size_t i = 0;
-				i < sizeof(compare_prefixes) / sizeof(compare_prefixes[0]); ++i)
-			{
-				const std::string prefix(compare_prefixes[i].text);
-				if (!starts_with(name, compare_prefixes[i].text) ||
-					!parse_width_suffix(name, prefix.size(), &info.width))
-					continue;
-				info.family = compare_prefixes[i].family;
-				info.signed_operation = compare_prefixes[i].signed_operation;
-				if (prefix == "ieq" || prefix == "feq") info.compare = CMP_EQ;
-				else if (prefix == "ine" || prefix == "fne") info.compare = CMP_NE;
-				else if (prefix == "slt" || prefix == "ult" || prefix == "flt") info.compare = CMP_LT;
-				else if (prefix == "sgt" || prefix == "ugt" || prefix == "fgt") info.compare = CMP_GT;
-				else if (prefix == "sle" || prefix == "ule" || prefix == "fle") info.compare = CMP_LE;
-				else info.compare = CMP_GE;
-				break;
-			}
-		}
-	}
-
-	if (info.family == OP_INVALID && starts_with(name, "syscall") &&
-		name.size() == 8 && name[7] >= '0' && name[7] <= '6')
-	{
-		info.family = OP_SYSCALL;
-		info.width = 64;
-		info.syscall_arguments = static_cast<unsigned>(name[7] - '0');
-	}
-	if (info.family == OP_INVALID)
-		return false;
-	*result = info;
-	return true;
+	return false;
 }
 
 enum RawExprKind
@@ -598,39 +617,26 @@ struct CyStatement
 class CyParser
 {
 public:
-	CyParser(const std::vector<CyToken>& tokens, const LiteralStore& literals,
-		const NameTable& names)
-		: tokens_(tokens), literals_(literals), names_(names), at_(0),
-		  statements_(), label_names_()
+	CyParser(const std::vector<CyToken>& tokens, const NameTable& names,
+		std::vector<CyStatement>& statements)
+		: tokens_(tokens), names_(names), statements_(statements), at_(0)
 	{}
 
-	void parse(std::vector<CyStatement>* statements,
-		std::unordered_set<NameId>* label_names)
+	void parse()
 	{
 		while (at_ < tokens_.size())
 		{
 			CyStatement statement;
 			parse_statement(&statement);
-			statements_.push_back(statement);
+			statements_.push_back(std::move(statement));
 		}
-		*statements = statements_;
-		*label_names = label_names_;
 	}
 
 private:
 	const std::vector<CyToken>& tokens_;
-	const LiteralStore& literals_;
 	const NameTable& names_;
+	std::vector<CyStatement>& statements_;
 	std::size_t at_;
-	std::vector<CyStatement> statements_;
-	std::unordered_set<NameId> label_names_;
-
-	const CyToken& current() const
-	{
-		if (at_ >= tokens_.size())
-			throw std::runtime_error("unexpected end of CY86 program");
-		return tokens_[at_];
-	}
 
 	bool is_simple(SimpleTokenType type) const
 	{
@@ -692,6 +698,8 @@ private:
 		if (is_simple(SimpleTokenType::OP_PLUS) ||
 			is_simple(SimpleTokenType::OP_MINUS))
 		{
+			if (operand.expr.raw_kind == RAW_LITERAL)
+				throw std::runtime_error("literal CY86 immediate cannot have an offset");
 			operand.expr.has_offset = true;
 			operand.expr.offset_negative = is_simple(SimpleTokenType::OP_MINUS);
 			++at_;
@@ -710,6 +718,8 @@ private:
 		if (is_simple(SimpleTokenType::OP_PLUS) ||
 			is_simple(SimpleTokenType::OP_MINUS))
 		{
+			if (operand.expr.raw_kind == RAW_LITERAL)
+				throw std::runtime_error("literal CY86 memory address cannot have an offset");
 			operand.expr.has_offset = true;
 			operand.expr.offset_negative = is_simple(SimpleTokenType::OP_MINUS);
 			++at_;
@@ -747,7 +757,6 @@ private:
 		{
 			const NameId label = tokens_[at_].name;
 			result->labels.push_back(label);
-			label_names_.insert(label);
 			at_ += 2;
 		}
 
@@ -865,16 +874,10 @@ class CySemantic
 {
 public:
 	CySemantic(const NameTable& names, const LiteralStore& literals,
-		std::vector<CyStatement>& statements,
-		const std::unordered_set<NameId>& label_names)
+		std::vector<CyStatement>& statements)
 		: names_(names), literals_(literals), statements_(statements),
-		  label_names_(label_names), label_indices_()
+		  defined_labels_()
 	{}
-
-	const std::unordered_map<NameId, std::size_t>& label_indices() const
-	{
-		return label_indices_;
-	}
 
 	void validate()
 	{
@@ -889,7 +892,7 @@ public:
 				if (parse_register(names_.get(label), &ignored) ||
 					classify_opcode(names_.get(label), &ignored_opcode))
 					throw std::runtime_error("CY86 label conflicts with fixed name");
-				if (!label_indices_.insert(std::make_pair(label, i)).second)
+				if (!defined_labels_.insert(label).second)
 					throw std::runtime_error("duplicate CY86 label");
 			}
 		}
@@ -915,6 +918,7 @@ public:
 				throw std::runtime_error("wrong CY86 operand count");
 			for (std::size_t j = 0; j < statement.operands.size(); ++j)
 			{
+				validate_negated_operand(statement.operands[j]);
 				resolve_operand(&statement.operands[j]);
 				validate_operand(statement.operands[j], constraints[j]);
 			}
@@ -925,8 +929,18 @@ private:
 	const NameTable& names_;
 	const LiteralStore& literals_;
 	std::vector<CyStatement>& statements_;
-	const std::unordered_set<NameId>& label_names_;
-	std::unordered_map<NameId, std::size_t> label_indices_;
+	std::unordered_set<NameId> defined_labels_;
+
+	void validate_negated_operand(const CyOperand& operand) const
+	{
+		if (!operand.expr.negative)
+			return;
+		const StoredLiteral& literal = literals_.get(operand.expr.literal);
+		if (literal.element_count != 0 ||
+			(!is_integral_type(literal.type) &&
+			 !is_floating_type(literal.type)))
+			throw std::runtime_error("invalid negated CY86 operand literal");
+	}
 
 	void make_constraints(const OpcodeInfo& opcode,
 		std::vector<OperandConstraint>* result) const
@@ -950,10 +964,13 @@ private:
 		case OP_CALL: result->push_back(OperandConstraint(false, false, true, 64, VALUE_ADDRESS)); break;
 		case OP_RET: break;
 		case OP_NOT:
-			result->push_back(OperandConstraint(true, false, false, w, VALUE_INTEGER));
-			result->push_back(OperandConstraint(false, false, false, w, VALUE_INTEGER));
+			result->push_back(OperandConstraint(true, false, false, w, VALUE_ANY));
+			result->push_back(OperandConstraint(false, false, false, w, VALUE_ANY));
 			break;
 		case OP_AND: case OP_OR: case OP_XOR:
+			for (unsigned i = 0; i < 3; ++i)
+				result->push_back(OperandConstraint(i == 0, false, false, w, VALUE_ANY));
+			break;
 		case OP_IADD: case OP_ISUB: case OP_SMUL: case OP_UMUL:
 		case OP_SDIV: case OP_UDIV: case OP_SMOD: case OP_UMOD:
 			for (unsigned i = 0; i < 3; ++i)
@@ -995,9 +1012,9 @@ private:
 				opcode.family == OP_ICMP ? VALUE_INTEGER : VALUE_FLOAT));
 			break;
 		case OP_SYSCALL:
-			result->push_back(OperandConstraint(true, false, false, 64, VALUE_INTEGER));
+			result->push_back(OperandConstraint(true, false, false, 64, VALUE_ANY));
 			for (unsigned i = 0; i < opcode.syscall_arguments + 1; ++i)
-				result->push_back(OperandConstraint(false, false, false, 64, VALUE_INTEGER));
+				result->push_back(OperandConstraint(false, false, false, 64, VALUE_ANY));
 			break;
 		default: break;
 		}
@@ -1022,7 +1039,7 @@ private:
 				throw std::runtime_error("non-integral CY86 address offset");
 			return;
 		}
-		if (label_names_.find(expression->name) == label_names_.end())
+		if (defined_labels_.find(expression->name) == defined_labels_.end())
 			throw std::runtime_error("undefined CY86 label");
 		expression->resolved = EXPR_LABEL;
 		if (expression->has_offset &&
@@ -2173,12 +2190,15 @@ private:
 
 	void emit_syscall(CodeEmitter& emitter, const CyStatement& statement)
 	{
-		emitter.load_operand(statement.operands[1], X86_RAX, 64, X86_R10);
 		const X86Reg arguments[] =
 			{X86_RDI, X86_RSI, X86_RDX, X86_R10, X86_R8, X86_R9};
 		for (unsigned i = 0; i < statement.opcode.syscall_arguments; ++i)
 			emitter.load_operand(statement.operands[2 + i], arguments[i], 64,
 				arguments[i] == X86_R10 ? X86_R11 : X86_R11);
+		// Address materialization may use RAX as an offset scratch, including
+		// for an argument whose ABI destination is R10.  Load the syscall
+		// number after all arguments so that scratch ownership cannot erase it.
+		emitter.load_operand(statement.operands[1], X86_RAX, 64, X86_R11);
 		emitter.byte(0x0F);
 		emitter.byte(0x05);
 		emitter.store_operand(statement.operands[0], X86_RAX, 64, X86_R10);
@@ -2606,27 +2626,28 @@ int compile_impl(const std::vector<std::string>& args)
 
 	NameTable names;
 	LiteralStore literals;
-	std::vector<CyToken> tokens;
-	for (std::size_t i = 0; i < source_paths.size(); ++i)
-	{
-		std::string source;
-		if (!read_source(source_paths[i], &source))
-			throw std::runtime_error("unable to open source file: " + source_paths[i]);
-		PPPreprocessConfig config;
-		PPPreprocessingSession preprocessing(config);
-		const PPTokenBuffer& phase3 = preprocessing.preprocess(source_paths[i], source);
-		CyTokenCollector collector(names, literals, tokens);
-		posttokenize_cpp_tokens(phase3, collector);
-		if (collector.invalid())
-			throw std::runtime_error("invalid CY86 token");
-	}
-
 	std::vector<CyStatement> statements;
-	std::unordered_set<NameId> label_names;
-	CyParser parser(tokens, literals, names);
-	parser.parse(&statements, &label_names);
-	CySemantic semantic(names, literals, statements, label_names);
-	semantic.validate();
+	{
+		std::vector<CyToken> tokens;
+		for (std::size_t i = 0; i < source_paths.size(); ++i)
+		{
+			std::string source;
+			if (!read_source(source_paths[i], &source))
+				throw std::runtime_error("unable to open source file: " + source_paths[i]);
+			PPPreprocessConfig config;
+			PPPreprocessingSession preprocessing(config);
+			const PPTokenBuffer& phase3 = preprocessing.preprocess(source_paths[i], source);
+			CyTokenCollector collector(names, literals, tokens);
+			posttokenize_cpp_tokens(phase3, collector);
+			if (collector.invalid())
+				throw std::runtime_error("invalid CY86 token");
+		}
+
+		CyParser parser(tokens, names, statements);
+		parser.parse();
+		CySemantic semantic(names, literals, statements);
+		semantic.validate();
+	}
 
 	if (statements.empty())
 	{

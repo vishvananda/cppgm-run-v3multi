@@ -1,0 +1,17 @@
+/* Invalid width spellings are labels, not opcodes. */
+not80: data8 0;
+iadd80: data8 0;
+ieq80: data8 0;
+fadd8: data8 0;
+fadd16: data8 0;
+s80convf80: data8 0;
+u80convf80: data8 0;
+f80convs80: data8 0;
+f80convu80: data8 0;
+f80convf8: data8 0;
+f80convf16: data8 0;
+f80convf80: data8 0;
+
+start:
+	move64 x64 0;
+	syscall1 t64 60 x64;
