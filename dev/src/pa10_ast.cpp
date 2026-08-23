@@ -420,7 +420,8 @@ private:
 		return consume_identifier_token().spelling;
 	}
 
-	PA10Name parse_name(bool template_expected = false);
+	PA10Name parse_name(bool template_expected = false,
+		bool allow_standalone_decltype = false);
 	PA10NameComponent parse_name_component(bool template_expected,
 		bool template_disambiguator);
 	void parse_template_arguments(PA10NameComponent& component);
@@ -982,14 +983,19 @@ PA10TemplateArgument PA10Parser::parse_template_argument()
 		parse_assignment_expression());
 }
 
-PA10Name PA10Parser::parse_name(bool template_expected)
+PA10Name PA10Parser::parse_name(bool template_expected,
+	bool allow_standalone_decltype)
 {
 	PA10Name result;
 	if (fixed(SimpleTokenType::KW_DECLTYPE))
 	{
 		result.has_decltype_root = true;
 		result.decltype_root = parse_decltype_specifier();
-		if (!consume_fixed(SimpleTokenType::OP_COLON2))
+		if (fixed(SimpleTokenType::OP_COLON2))
+			consume_fixed(SimpleTokenType::OP_COLON2);
+		else if (allow_standalone_decltype)
+			return result;
+		else
 			fail("decltype root requires qualified-name separator");
 	}
 	else if (fixed(SimpleTokenType::OP_COLON2))
@@ -2412,10 +2418,10 @@ PA10AstNode PA10Parser::parse_base_specifier()
 		result.children.push_back(fixed_node(PA10NodeKind::AccessSpecifier));
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
 		result.children.push_back(fixed_node(PA10NodeKind::VirtualSpecifier));
-	if (!name_start())
+	if (!name_start() && !fixed(SimpleTokenType::KW_DECLTYPE))
 		fail("expected base name");
 	result.children.push_back(name_node(PA10NodeKind::BaseName,
-		parse_name(true)));
+		parse_name(true, true)));
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	return result;
@@ -2526,11 +2532,12 @@ PA10AstNode PA10Parser::parse_ctor_initializer()
 	PA10AstNode result = node(PA10NodeKind::CtorInitializer);
 	while (true)
 	{
-		if (!name_start())
+		if (!name_start() && !fixed(SimpleTokenType::KW_DECLTYPE))
 			fail("expected mem-initializer-id");
 		PA10AstNode initializer = node(PA10NodeKind::MemInitializer);
 		initializer.children.push_back(
-			name_node(PA10NodeKind::MemInitializerId, parse_name(true)));
+			name_node(PA10NodeKind::MemInitializerId,
+				parse_name(true, true)));
 		if (fixed(SimpleTokenType::OP_LPAREN))
 			initializer.children.push_back(parse_paren_argument_list());
 		else if (fixed(SimpleTokenType::OP_LBRACE))

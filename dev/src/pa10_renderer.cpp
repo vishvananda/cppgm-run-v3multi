@@ -142,6 +142,9 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output, std::size_t depth);
 
+void validate_node_sidecar_ranges(const PA10Ast& ast,
+	const PA10AstNode& node);
+
 void append_fixed_presentation(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output)
 {
@@ -165,6 +168,33 @@ void append_inline_children(const PA10Ast& ast,
 	}
 }
 
+void validate_node_sidecar_ranges(const PA10Ast& ast,
+	const PA10AstNode& node)
+{
+	if (node.name_prefix_begin > ast.name_prefix_nodes.size() ||
+		node.name_prefix_count > ast.name_prefix_nodes.size() -
+			node.name_prefix_begin)
+		throw std::runtime_error("invalid PA10 name prefix range");
+	if (node.operator_presentation_begin >
+		ast.operator_presentation_spellings.size() ||
+		node.operator_presentation_count >
+		ast.operator_presentation_spellings.size() -
+			node.operator_presentation_begin)
+		throw std::runtime_error("invalid PA10 operator presentation range");
+	if (node.semantic_child_begin > ast.semantic_child_nodes.size() ||
+		node.semantic_child_count > ast.semantic_child_nodes.size() -
+			node.semantic_child_begin)
+		throw std::runtime_error("invalid PA10 semantic child range");
+	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
+	{
+		const PA10NameComponent& component = node.name_parts[i];
+		if (component.template_argument_begin > ast.template_arguments.size() ||
+			component.template_argument_count > ast.template_arguments.size() -
+				component.template_argument_begin)
+			throw std::runtime_error("invalid PA10 template argument range");
+	}
+}
+
 void append_name(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output, std::size_t depth)
 {
@@ -178,9 +208,16 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 		output << "::";
 	if (node.name_prefix_count != 0)
 	{
-		append_inline_node(ast,
-			ast.name_prefix_nodes[node.name_prefix_begin], output, depth + 1);
-		output << "::";
+		for (std::size_t prefix = 0; prefix < node.name_prefix_count; ++prefix)
+		{
+			if (prefix != 0)
+				output << "::";
+			append_inline_node(ast,
+				ast.name_prefix_nodes[node.name_prefix_begin + prefix], output,
+				depth + 1);
+		}
+		if (!node.name_parts.empty())
+			output << "::";
 	}
 	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
 	{
@@ -215,6 +252,7 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 {
 	if (depth >= PA10_MAX_AST_NESTING)
 		throw std::runtime_error("PA10 renderer inline nesting limit reached");
+	validate_node_sidecar_ranges(ast, node);
 	switch (node.kind)
 	{
 	case PA10NodeKind::TypeId:
@@ -521,6 +559,7 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 {
 	if (indent >= PA10_MAX_AST_NESTING)
 		throw std::runtime_error("PA10 renderer nesting limit reached");
+	validate_node_sidecar_ranges(ast, node);
 	for (std::size_t i = 0; i < indent; ++i)
 		output << "  ";
 	if (node.kind == PA10NodeKind::LeafFixed &&
