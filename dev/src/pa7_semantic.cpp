@@ -184,6 +184,9 @@ struct TypeKeyHash
 	}
 };
 
+// Open-addressed ownership index.  Slots are always a power-of-two table of
+// entry indices, entries retain insertion order, and the 70% threshold leaves
+// a bounded probe terminator even for adversarial collisions.
 template <typename Key, typename Value, typename Hash>
 class FlatHashIndex
 {
@@ -259,6 +262,8 @@ private:
 	void ensure_capacity()
 	{
 		const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+		if (entries_.size() == maximum)
+			throw std::runtime_error("PA7 flat index entry overflow");
 		if (slots_.empty())
 		{
 			rehash(8);
@@ -277,6 +282,12 @@ private:
 
 public:
 	FlatHashIndex() : slots_(), entries_() {}
+
+	void clear()
+	{
+		std::vector<std::size_t>().swap(slots_);
+		std::vector<Entry>().swap(entries_);
+	}
 
 	std::size_t slot_count() const
 	{
@@ -531,6 +542,69 @@ struct LookupResult
 	}
 };
 
+enum class LookupMode
+{
+	InNamespace,
+	Unqualified
+};
+
+struct LookupCacheKey
+{
+	// The epoch is category-specific: a value declaration cannot invalidate a
+	// type lookup, while a namespace/topology change advances all three.
+	NamespaceId start;
+	NameId name;
+	LookupCategory category;
+	LookupMode mode;
+	std::uint64_t epoch;
+
+	LookupCacheKey(NamespaceId start = NamespaceId(),
+		NameId name = NameId(),
+		LookupCategory category = LookupCategory::Namespace,
+		LookupMode mode = LookupMode::InNamespace,
+		std::uint64_t epoch = 0)
+		: start(start), name(name), category(category), mode(mode),
+		  epoch(epoch)
+	{}
+
+	bool operator<(const LookupCacheKey& other) const
+	{
+		if (start.value != other.start.value)
+			return start.value < other.start.value;
+		if (name.value != other.name.value)
+			return name.value < other.name.value;
+		if (category != other.category)
+			return static_cast<int>(category) <
+				static_cast<int>(other.category);
+		if (mode != other.mode)
+			return static_cast<int>(mode) < static_cast<int>(other.mode);
+		return epoch < other.epoch;
+	}
+};
+
+struct LookupCacheKeyHash
+{
+	static std::size_t combine(std::size_t seed, std::size_t value)
+	{
+		value += static_cast<std::size_t>(0x9e3779b9U) +
+			(seed << 6) + (seed >> 2);
+		return seed ^ value;
+	}
+
+	std::size_t operator()(const LookupCacheKey& key) const
+	{
+		std::size_t result = key.start.value;
+		result = combine(result, key.name.value);
+		result = combine(result, static_cast<std::size_t>(key.category));
+		result = combine(result, static_cast<std::size_t>(key.mode));
+		result = combine(result, static_cast<std::size_t>(key.epoch));
+		return result;
+	}
+};
+
+typedef FlatHashIndex<LookupCacheKey, LookupResult,
+	LookupCacheKeyHash> LookupCacheIndex;
+
 } // namespace
 
 struct PA7SemanticModel::Impl
@@ -560,17 +634,27 @@ struct PA7SemanticModel::Impl
 	mutable std::vector<std::uint32_t> lookup_marks;
 	mutable std::uint32_t lookup_generation;
 	mutable std::vector<LookupFrame> lookup_work;
+	mutable LookupCacheIndex namespace_cache;
+	mutable LookupCacheIndex type_cache;
+	mutable LookupCacheIndex entity_cache;
+	mutable std::uint64_t namespace_epoch;
+	mutable std::uint64_t type_epoch;
+	mutable std::uint64_t entity_epoch;
 #ifdef PA7_AUDIT_COUNTERS
 	std::size_t lookup_queries;
 	std::size_t lookup_namespace_visits;
+	std::size_t lookup_cache_hits;
+	std::size_t lookup_cache_misses;
 #endif
 
 	explicit Impl(const PPTokenBuffer& input)
 		: input(input), tokens(), names(), names_by_spelling(), types(),
 		  canonical_types(), namespaces(), entities(), global(), lookup_marks(),
-		  lookup_generation(0), lookup_work()
+		  lookup_generation(0), lookup_work(), namespace_cache(), type_cache(),
+		  entity_cache(), namespace_epoch(1), type_epoch(1), entity_epoch(1)
 #ifdef PA7_AUDIT_COUNTERS
-		  , lookup_queries(0), lookup_namespace_visits(0)
+		  , lookup_queries(0), lookup_namespace_visits(0), lookup_cache_hits(0),
+		  lookup_cache_misses(0)
 #endif
 	{
 		global = create_namespace(NamespaceId(), NameId(), true, false);
@@ -593,6 +677,31 @@ struct PA7SemanticModel::Impl
 		names.push_back(spelling);
 		names_by_spelling.set(spelling, result);
 		return result;
+	}
+
+	bool lookup_name(PPSpellingId spelling, NameId* result) const
+	{
+		const NameId* found = names_by_spelling.find(spelling);
+		if (found == NULL)
+			return false;
+		*result = *found;
+		return true;
+	}
+
+	bool make_lookup_name(const CppSyntaxQualifiedName& source,
+		QualifiedName* result) const
+	{
+		result->global = source.global;
+		result->components.clear();
+		result->components.reserve(source.components.size());
+		for (std::size_t i = 0; i < source.components.size(); ++i)
+		{
+			NameId name;
+			if (!lookup_name(source.components[i], &name))
+				return false;
+			result->components.push_back(name);
+		}
+		return true;
 	}
 
 	const std::string& name_text(NameId name) const
@@ -748,6 +857,7 @@ struct PA7SemanticModel::Impl
 		const NamespaceId result = create_namespace(parent, name, false,
 			inline_namespace);
 		namespaces[parent.value].named_children.set(name, result);
+		invalidate_topology();
 		return result;
 	}
 
@@ -766,14 +876,54 @@ struct PA7SemanticModel::Impl
 		const NamespaceId result = create_namespace(parent, NameId(), true,
 			inline_namespace);
 		namespaces[parent.value].anonymous_child = result;
+		invalidate_topology();
 		return result;
+	}
+
+	LookupCacheIndex& cache_for(LookupCategory category) const
+	{
+		if (category == LookupCategory::Namespace)
+			return namespace_cache;
+		if (category == LookupCategory::Type)
+			return type_cache;
+		return entity_cache;
+	}
+
+	std::uint64_t epoch_for(LookupCategory category) const
+	{
+		if (category == LookupCategory::Namespace)
+			return namespace_epoch;
+		if (category == LookupCategory::Type)
+			return type_epoch;
+		return entity_epoch;
+	}
+
+	void invalidate(LookupCategory category) const
+	{
+		LookupCacheIndex& cache = cache_for(category);
+		std::uint64_t* epoch = NULL;
+		if (category == LookupCategory::Namespace)
+			epoch = &namespace_epoch;
+		else if (category == LookupCategory::Type)
+			epoch = &type_epoch;
+		else
+			epoch = &entity_epoch;
+		if (*epoch == std::numeric_limits<std::uint64_t>::max())
+			*epoch = 1;
+		else
+			++*epoch;
+		cache.clear();
+	}
+
+	void invalidate_topology() const
+	{
+		invalidate(LookupCategory::Namespace);
+		invalidate(LookupCategory::Type);
+		invalidate(LookupCategory::Entity);
 	}
 
 	void begin_lookup() const
 	{
-#ifdef PA7_AUDIT_COUNTERS
-		++const_cast<Impl*>(this)->lookup_queries;
-#endif
 		if (lookup_marks.size() < namespaces.size())
 			lookup_marks.resize(namespaces.size(), 0);
 		++lookup_generation;
@@ -868,26 +1018,67 @@ struct PA7SemanticModel::Impl
 	{
 		if (!scope.valid() || scope.value >= namespaces.size())
 			return LookupResult();
+	#ifdef PA7_AUDIT_COUNTERS
+		++const_cast<Impl*>(this)->lookup_queries;
+	#endif
+		const LookupCacheKey key(scope, name, category,
+			LookupMode::InNamespace, epoch_for(category));
+		const LookupResult* cached = cache_for(category).find(key);
+		if (cached != NULL)
+		{
+	#ifdef PA7_AUDIT_COUNTERS
+			++const_cast<Impl*>(this)->lookup_cache_hits;
+	#endif
+			return *cached;
+		}
+	#ifdef PA7_AUDIT_COUNTERS
+		++const_cast<Impl*>(this)->lookup_cache_misses;
+	#endif
 		begin_lookup();
 		mark_lookup_namespace(scope);
 		lookup_work.push_back(LookupFrame(scope));
-		return lookup_marked(name, category);
+		const LookupResult result = lookup_marked(name, category);
+		cache_for(category).set(key, result);
+		return result;
 	}
 
 	LookupResult lookup_unqualified(NamespaceId start, NameId name,
 		LookupCategory category) const
 	{
+		if (!start.valid() || start.value >= namespaces.size())
+			return LookupResult();
+	#ifdef PA7_AUDIT_COUNTERS
+		++const_cast<Impl*>(this)->lookup_queries;
+	#endif
+		const LookupCacheKey key(start, name, category,
+			LookupMode::Unqualified, epoch_for(category));
+		const LookupResult* cached = cache_for(category).find(key);
+		if (cached != NULL)
+		{
+	#ifdef PA7_AUDIT_COUNTERS
+			++const_cast<Impl*>(this)->lookup_cache_hits;
+	#endif
+			return *cached;
+		}
+	#ifdef PA7_AUDIT_COUNTERS
+		++const_cast<Impl*>(this)->lookup_cache_misses;
+	#endif
 		NamespaceId scope = start;
+		LookupResult result;
 		while (scope.valid())
 		{
 			LookupResult found = lookup_in_namespace(scope, name, category);
 			if (found.found())
-				return found;
+			{
+				result = found;
+				break;
+			}
 			if (scope.value == global.value)
 				break;
 			scope = namespaces[scope.value].parent;
 		}
-		return LookupResult();
+		cache_for(category).set(key, result);
+		return result;
 	}
 
 	LookupResult lookup_qualified(NamespaceId scope, NameId name,
@@ -959,6 +1150,15 @@ struct PA7SemanticModel::Impl
 		return lookup_qualified(scope, last, category);
 	}
 
+	bool accepts_lookup(const CppSyntaxQualifiedName& source,
+		NamespaceId start, LookupCategory category) const
+	{
+		QualifiedName path;
+		if (!make_lookup_name(source, &path))
+			return false;
+		return lookup_path(path, start, category).found();
+	}
+
 	NamespaceId resolve_declaration_target(const QualifiedName& path,
 		NamespaceId start) const
 	{
@@ -977,12 +1177,14 @@ struct PA7SemanticModel::Impl
 		if (record.entities.find(name) != NULL)
 			throw std::runtime_error("typedef conflicts with value declaration");
 		record.aliases.set(name, type);
+		invalidate(LookupCategory::Type);
 	}
 
 	void declare_namespace_alias(NamespaceId scope, NameId name,
 		NamespaceId target)
 	{
 		namespaces[scope.value].namespace_aliases.set(name, target);
+		invalidate_topology();
 	}
 
 	void add_using_directive(NamespaceId scope, NamespaceId target)
@@ -992,17 +1194,22 @@ struct PA7SemanticModel::Impl
 		if (std::find_if(directives.begin(), directives.end(),
 			[target](NamespaceId value) { return value.value == target.value; }) ==
 			directives.end())
+		{
 			directives.push_back(target);
+			invalidate_topology();
+		}
 	}
 
 	void add_using_type(NamespaceId scope, NameId name, TypeId type)
 	{
 		namespaces[scope.value].using_types.set(name, type);
+		invalidate(LookupCategory::Type);
 	}
 
 	void add_using_entity(NamespaceId scope, NameId name, EntityId entity)
 	{
 		namespaces[scope.value].using_entities.set(name, entity);
+		invalidate(LookupCategory::Entity);
 	}
 
 	TypeId merge_types(TypeId old_type, TypeId new_type)
@@ -1082,6 +1289,7 @@ struct PA7SemanticModel::Impl
 			record.functions.push_back(id);
 		else
 			record.variables.push_back(id);
+		invalidate(LookupCategory::Entity);
 	}
 
 	static std::uint64_t literal_value(const LiteralData& literal)
@@ -1285,8 +1493,14 @@ struct PA7SemanticModel::Impl
 		std::size_t parameter_ids = 0;
 		for (std::size_t i = 0; i < types.size(); ++i)
 			parameter_ids += types[i].key.parameters.size();
+		const std::size_t cache_slots = namespace_cache.slot_count() +
+			type_cache.slot_count() + entity_cache.slot_count();
+		const std::size_t cache_entries = namespace_cache.entry_count() +
+			type_cache.entry_count() + entity_cache.entry_count();
 		std::cerr << "PA7_AUDIT lookup_queries=" << lookup_queries
 			<< " namespace_visits=" << lookup_namespace_visits
+			<< " lookup_cache_hits=" << lookup_cache_hits
+			<< " lookup_cache_misses=" << lookup_cache_misses
 			<< " namespaces=" << namespaces.size()
 			<< " names=" << names.size()
 			<< " types=" << types.size()
@@ -1294,7 +1508,9 @@ struct PA7SemanticModel::Impl
 			<< " canonical_slots=" << canonical_types.slot_count()
 			<< " canonical_entries=" << canonical_types.entry_count()
 			<< " namespace_index_slots=" << namespace_slots
-			<< " namespace_index_entries=" << namespace_entries << "\n";
+			<< " namespace_index_entries=" << namespace_entries
+			<< " lookup_cache_slots=" << cache_slots
+			<< " lookup_cache_entries=" << cache_entries << "\n";
 	}
 #endif
 };
@@ -1305,6 +1521,31 @@ public:
 	explicit PA7SemanticActions(PA7SemanticModel::Impl& model)
 		: model_(model), current_(model.global), namespace_parents_()
 	{}
+
+	bool accept_type_name(const CppSyntaxQualifiedName& name) const
+	{
+		return model_.accepts_lookup(name, current_, LookupCategory::Type);
+	}
+
+	bool accept_namespace_name(const CppSyntaxQualifiedName& name) const
+	{
+		return model_.accepts_lookup(name, current_,
+			LookupCategory::Namespace);
+	}
+
+	bool accept_nested_name_specifier(
+		const CppSyntaxQualifiedName& name) const
+	{
+		if (name.global)
+			return true;
+		if (name.components.size() < 2)
+			return false;
+		CppSyntaxQualifiedName prefix;
+		prefix.components.assign(name.components.begin(),
+			name.components.end() - 1);
+		return model_.accepts_lookup(prefix, current_,
+			LookupCategory::Namespace);
+	}
 
 	void on_namespace_begin(bool inline_namespace, bool anonymous_namespace,
 		PPSpellingId name)

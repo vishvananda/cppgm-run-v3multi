@@ -147,6 +147,27 @@ public:
 		(void)spec;
 		(void)declarators;
 	}
+
+	// These are policy queries at the point where the grammar needs a
+	// potentially ambiguous name category. PA6 answers from its lexical mock
+	// categories; PA7 answers from the current semantic namespace.
+	virtual bool accept_type_name(const CppSyntaxQualifiedName& name) const
+	{
+		(void)name;
+		return true;
+	}
+	virtual bool accept_namespace_name(
+		const CppSyntaxQualifiedName& name) const
+	{
+		(void)name;
+		return true;
+	}
+	virtual bool accept_nested_name_specifier(
+		const CppSyntaxQualifiedName& name) const
+	{
+		(void)name;
+		return true;
+	}
 };
 
 struct CppSyntaxDeclarationTraits
@@ -164,16 +185,12 @@ struct CppSyntaxDeclarationTraits
 
 	static bool is_identifier(const CppSyntaxToken& token)
 	{
-		return token.kind == CppSyntaxTokenKind::Identifier ||
-			token.kind == CppSyntaxTokenKind::Override ||
-			token.kind == CppSyntaxTokenKind::Final;
+		return token.kind == CppSyntaxTokenKind::Identifier;
 	}
 
 	static bool is_literal(const CppSyntaxToken& token)
 	{
-		return token.kind == CppSyntaxTokenKind::Literal ||
-			token.kind == CppSyntaxTokenKind::EmptyString ||
-			token.kind == CppSyntaxTokenKind::Zero;
+		return token.kind == CppSyntaxTokenKind::Literal;
 	}
 
 	static std::size_t max_nesting()
@@ -197,15 +214,12 @@ class CppDeclarationSyntaxParser : private CppSyntaxCore<
 {
 public:
 	CppDeclarationSyntaxParser(const std::vector<CppSyntaxToken>& tokens,
-		CppDeclarationSyntaxConsumer& consumer,
-		bool use_mock_type_categories = false);
+		CppDeclarationSyntaxConsumer& consumer);
 
 	void parse();
 
 private:
 	CppDeclarationSyntaxConsumer& consumer_;
-	std::vector<PPSpellingId> known_type_spellings_;
-	bool use_mock_type_categories_;
 
 	const CppSyntaxToken& look(std::size_t offset = 0) const;
 	bool fixed(SimpleTokenType type, std::size_t offset = 0) const;
@@ -228,9 +242,6 @@ private:
 	CppSyntaxTypeId parse_type_id();
 	std::size_t parse_array_bound();
 	std::vector<CppSyntaxParameter> parse_parameter_clause(bool* variadic);
-	bool known_type(PPSpellingId spelling,
-		unsigned int categories = 0) const;
-	void remember_type(PPSpellingId spelling);
 	bool abstract_parenthesis_is_grouped() const;
 	CppSyntaxDeclarator parse_noptr_declarator(bool allow_abstract);
 	CppSyntaxDeclarator parse_ptr_declarator(bool allow_abstract);

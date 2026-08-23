@@ -2,10 +2,9 @@
 
 CppDeclarationSyntaxParser::CppDeclarationSyntaxParser(
 	const std::vector<CppSyntaxToken>& tokens,
-	CppDeclarationSyntaxConsumer& consumer, bool use_mock_type_categories)
+	CppDeclarationSyntaxConsumer& consumer)
 	: CppSyntaxCore<CppSyntaxToken, CppSyntaxDeclarationTraits>(tokens),
-	  consumer_(consumer), known_type_spellings_(),
-	  use_mock_type_categories_(use_mock_type_categories)
+	  consumer_(consumer)
 {}
 
 void CppDeclarationSyntaxParser::parse()
@@ -141,6 +140,8 @@ void CppDeclarationSyntaxParser::parse_namespace(bool inline_namespace)
 			throw std::runtime_error("unnamed namespace alias");
 		consume_fixed(SimpleTokenType::OP_ASS);
 		CppSyntaxQualifiedName target = parse_qualified_name();
+		if (!consumer_.accept_namespace_name(target))
+			throw std::runtime_error("invalid C++ namespace name");
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		consumer_.on_namespace_alias(name, target);
 		return;
@@ -166,6 +167,8 @@ void CppDeclarationSyntaxParser::parse_using()
 	{
 		consume_fixed(SimpleTokenType::KW_NAMESPACE);
 		CppSyntaxQualifiedName target = parse_qualified_name();
+		if (!consumer_.accept_namespace_name(target))
+			throw std::runtime_error("invalid C++ using namespace name");
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		consumer_.on_using_directive(target);
 		return;
@@ -178,10 +181,11 @@ void CppDeclarationSyntaxParser::parse_using()
 		consume_fixed(SimpleTokenType::OP_ASS);
 		CppSyntaxTypeId type = parse_type_id();
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
-		remember_type(name.components.back());
 		consumer_.on_alias_declaration(name.components.back(), type);
 		return;
 	}
+	if (!consumer_.accept_nested_name_specifier(name))
+		throw std::runtime_error("invalid C++ nested name specifier");
 	consume_fixed(SimpleTokenType::OP_SEMICOLON);
 	consumer_.on_using_declaration(name);
 }
@@ -219,12 +223,6 @@ void CppDeclarationSyntaxParser::parse_simple_declaration()
 		consume_fixed(SimpleTokenType::OP_COMMA);
 	} while (true);
 	consume_fixed(SimpleTokenType::OP_SEMICOLON);
-	if (spec.is_typedef)
-		for (std::size_t i = 0; i < declarators.size(); ++i)
-			if (declarators[i].has_name &&
-				declarators[i].name.components.size() == 1 &&
-				!declarators[i].name.global)
-				remember_type(declarators[i].name.components.back());
 	consumer_.on_simple_declaration(spec, declarators);
 }
 
@@ -349,6 +347,8 @@ CppSyntaxDeclSpec CppDeclarationSyntaxParser::parse_decl_specifiers()
 				break;
 			result.has_named_type = true;
 			result.named_type = parse_qualified_name();
+			if (!consumer_.accept_type_name(result.named_type))
+				throw std::runtime_error("invalid C++ type name");
 			consumed = true;
 			continue;
 		}
@@ -433,24 +433,6 @@ CppDeclarationSyntaxParser::parse_parameter_clause(bool* variadic)
 	return result;
 }
 
-bool CppDeclarationSyntaxParser::known_type(PPSpellingId spelling,
-	unsigned int categories) const
-{
-	if (use_mock_type_categories_ &&
-		(categories & CPP_SYNTAX_NAME_TYPEDEF) != 0)
-		return true;
-	for (std::size_t i = 0; i < known_type_spellings_.size(); ++i)
-		if (known_type_spellings_[i] == spelling)
-			return true;
-	return false;
-}
-
-void CppDeclarationSyntaxParser::remember_type(PPSpellingId spelling)
-{
-	if (!known_type(spelling))
-		known_type_spellings_.push_back(spelling);
-}
-
 bool CppDeclarationSyntaxParser::abstract_parenthesis_is_grouped() const
 {
 	if (!fixed(SimpleTokenType::OP_LPAREN))
@@ -460,10 +442,12 @@ bool CppDeclarationSyntaxParser::abstract_parenthesis_is_grouped() const
 			CppSyntaxDeclarationTraits>::look(1);
 	if (next == NULL)
 		return false;
-	if (next->kind == CppSyntaxTokenKind::Identifier ||
-		next->kind == CppSyntaxTokenKind::Override ||
-		next->kind == CppSyntaxTokenKind::Final)
-		return !known_type(next->spelling, next->name_categories);
+	if (next->kind == CppSyntaxTokenKind::Identifier)
+	{
+		CppSyntaxQualifiedName name;
+		name.components.push_back(next->spelling);
+		return !consumer_.accept_type_name(name);
+	}
 	return next->kind == CppSyntaxTokenKind::Fixed &&
 		(next->fixed == SimpleTokenType::OP_STAR ||
 		 next->fixed == SimpleTokenType::OP_AMP ||

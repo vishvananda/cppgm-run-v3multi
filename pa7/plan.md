@@ -1,148 +1,119 @@
 # PA7 final full-stage architecture audit
 
-## Final alignment
+## Final alignment and ownership path
 
-PA7 now has one production syntax owner for the shared PA6/PA7 responsibility. The path is:
+PA7's production path is one typed ownership chain:
 
-`source bytes -> PPPreprocessingSession::preprocess -> canonical PPTokenBuffer -> posttokenize_cpp_tokens -> CppSyntaxTokenCollector -> CppDeclarationSyntaxParser -> CppDeclarationSyntaxConsumer -> PA7SemanticModel::Impl -> render_namespace/render_type -> nsdecl`.
+source bytes -> PPPreprocessingSession::preprocess -> canonical PPTokenBuffer -> posttokenize_cpp_tokens -> CppSyntaxTokenCollector -> CppDeclarationSyntaxParser -> PA7SemanticActions/PA7SemanticModel::Impl -> render_namespace/render_type -> nsdecl.
 
-The collector is the single typed posttoken boundary. Each token retains fixed enums, `PPSpellingId` where applicable, decoded `LiteralData`, EOF, and PA6's mock categories/special tokens (`override`, `final`, empty string, zero, split rshift). PA7 uses the canonical stream directly. Its ordinary input runs exactly one `CppDeclarationSyntaxParser`; `PA7SemanticActions` supplies semantic actions only. PA6 uses the same parser with an acceptance consumer for the common grammar and adapts to its legacy token view only for the broader PA6 extension parser. `nsdecl` never runs PA6 and never renders/reparses syntax.
+CppSyntaxCore owns cursor look, charged token movement, EOF classification, work accounting, and nesting bounds. CppDeclarationSyntaxParser is the one production declaration syntax owner for declarations, namespaces, qualified names, declarators, parameter clauses, type-ids, and literal bounds. It exposes only policy queries and actions at ambiguous name points.
 
-This resolves spec.md §1's shared-core requirement: declaration, namespace, declarator, parameter, type-id, literal-bound, cursor charge, EOF, and nesting production ownership is shared; stage code owns policy/actions and semantic storage. Qualified names remain global plus ordered `NameId` components. The model owns `NameId`, `TypeId`, `EntityId`, and `NamespaceId` identity, namespace/entity/type lookup, canonical type equality, and first-declaration vectors.
+PA7 constructs one CppSyntaxTokenCollector with no observer and runs one CppDeclarationSyntaxParser. Its actions query the current semantic namespace, intern only action-owned names, and build QualifiedName { global, vector<NameId> }, canonical TypeId values, EntityId/NamespaceId ownership, and deterministic first-declaration vectors. It never runs PA6 and never renders/reparses token text.
 
-Representative traces:
+PA6 supplies the same parser an acceptance policy for the common grammar. The policy is exact for the subset it claims: a final type component must have lexical C/E/Y category; a namespace component must have N; non-root nested-name prefixes must be C/E/Y/N; a bare T-only template category is rejected because template-id productions remain in PA6's legacy extension. If the common parser or policy rejects, PA6 alone falls through to its existing complete parser, using the observer-built PA6 token view. Thus a successful common PA6 input runs one parser, and ordinary PA7 input runs exactly one parser.
 
-- `namespace A { namespace B { typedef int T; } } using namespace A; A::B::T x;` is collected once, converted to `QualifiedName{global=false, [NameId(A), NameId(B), NameId(T)]}`, resolved by namespace-category lookup followed by type-category lookup, and stored as one canonical `TypeId`.
-- For `int a[3]; int a[];`, the shared parser consumes the decoded integer `LiteralData` through its charged `consume_literal()`; the semantic action interns `array(int, 3)`, and redeclaration merge completes the unknown bound to the existing array `TypeId`.
-- For `typedef int& L; void f(int a[3], L&&, ...);`, shared declarator operations are applied from the declarator hole outward: function parameters are collected in source order, array parameters adjust to pointers, and `reference()` collapses `L&&` to the lvalue reference represented by `L`; the final function `TypeId` retains the variadic bit.
-- Rendering accepts typed owner facts only: `render_type(TypeId)` uses an explicit task stack, while `render_namespace(NamespaceId)` uses an explicit namespace stack and the existing variable/function/child vectors. Text is produced only at the requested semantic-dump boundary.
+Representative typed traces:
 
-## Architecture findings and changes
+- namespace A { namespace B { typedef int T; } } using namespace A; A::B::T x; collects once, looks up A/B as namespaces and T as a type in the current semantic scope, and stores the resulting declaration with one canonical TypeId.
+- int a[3]; int a[]; consumes the decoded integer LiteralData through charged consume_literal(). The first declaration interns array(int, 3); the second interns/merges the unknown bound to the existing canonical array identity.
+- typedef int& LR; void f(int a[3], LR&&, ...); retains source-order parameter tasks, adjusts the array parameter to a pointer, collapses LR&& to the lvalue-reference identity, and sets the variadic function bit.
+- Rendering accepts typed owner facts only: render_type(TypeId) and render_namespace(NamespaceId) use explicit bounded task stacks and append text only at the requested semantic-dump boundary.
 
-The reviewed milestone's shared cursor was insufficient because PA6 and PA7 still had parallel collectors and declaration parsers. The repair:
+## Corrective architecture changes
 
-- added `cpp_syntax_tokens.h` and one `CppSyntaxTokenCollector`;
-- extracted the concrete shared grammar into `cpp_declaration_syntax.h/.cpp`, with a compact action interface and bounded syntax temporaries rather than a retained translation-unit AST;
-- made PA6 consume that owner and preserve its legacy extension parser/contracts;
-- made PA7 consume the same parser once, then perform semantic actions in source order;
-- retained the earlier iterative lookup, merge, type rendering, namespace rendering, and charged literal movement fixes;
-- replaced PA7 node maps with a lazy flat index: entry keys/values live once in insertion-order vectors and slots hold entry indices.
+- CppSyntaxTokenCollector is the sole posttoken owner. Canonical tokens retain fixed enums, PPSpellingId identifiers, decoded LiteralData, an explicit ordinary-vs-UDL distinction, and EOF. A cold CppSyntaxTokenObserver supplies PA6-only mock categories, override/final, empty-string/zero categories, UDL-to-literal adaptation, and RSHIFT splitting only when recog asks for it. nsdecl supplies no observer, performs no C/T/Y/E/N or special-spelling scans, and stores no PA6-only fields.
+- The PA6 compatibility vector is made from that one collection event; it is not a second posttoken collector. CppDeclarationSyntaxParser no longer has known_type_spellings_ or a global linear type guess. PA6CommonSyntaxPolicy answers lexical mock questions; PA7SemanticActions asks actual namespace/type lookup without interning unknown spellings.
+- The prior ae1d309b20a2ac6261550fa2b3212b9a3cb5199d shared-cursor milestone was reviewed as an intermediate, not papered over: it still had parallel token/grammar ownership, global type memory, and no broad typed lookup cache. This correction removes those blockers while retaining PA6's legacy extension and all PA1-PA7 contracts.
+- PA7's earlier node-map replacement remains the storage owner. The compact FlatHashIndex now has explicit clear/overflow paths and the lookup cache uses the same deterministic insertion-order ownership model.
 
-No tests or reference files were edited.
+PA6 earliest-owner regressions are 275-shared-type-category-bad.t, 275-shared-typedef-not-symbol-table-bad.t, 275-shared-namespace-alias-category-bad.t, and 275-shared-using-namespace-category-bad.t. They cover lowercase type false positives, typedef-memory leakage, namespace aliases, and qualified using-namespace categories. Existing pa6 template tests cover valid T-category angle handling; existing PA7 220-namespace-name-lookup-shadowing.t and 350-parenthesized-parameter-declarators.t cover semantic scope/ambiguity.
 
 ## Bounds, cache, and storage rationale
 
-`CppSyntaxCore` owns cursor look, charged advance, EOF classification, work limits, and nesting limits. PA6 uses 1024 nesting and `max(10000, 512 * token_count)` work; PA7 shared syntax uses 4096 nesting and `1024 + 64 * token_count` work. Every shared-parser token consume charges before `advance()`; array bounds no longer move the cursor directly.
+CppSyntaxCore charges every shared-parser consume before advance(). parse_array_bound() now uses the charged literal consumer; no raw parser helper moves position_ directly. PA7 syntax work is 1024 + 64 * token_count with nesting bound 4096. Lookup uses an iterative DFS worklist and a reusable generation-mark vector: every reachable anonymous/inline/using namespace is marked once per uncached lookup, child order precedes using-directive order, and cycles terminate without a namespace-count zero-fill allocation.
 
-Lookup uses a reusable generation-mark vector and an iterative DFS worklist. Each query marks a reachable anonymous/inline/using namespace once, visits children before using directives in the prior deterministic order, and terminates on cycles without namespace-count zero-fill. Its per-query bound is the reachable graph/worklist size; repeated declarations pay the required lookup traversal, not an accidental recursive stack or allocation proportional to all namespaces.
+Each lookup cache key is complete: (start NamespaceId, NameId, LookupCategory, LookupMode {in-namespace, unqualified}, category epoch). Namespace creation/reopening topology changes, namespace aliases, and using directives advance all category epochs. Type aliases and using-type declarations advance only the type epoch; values and using-entity declarations advance only the entity epoch. Caches are cleared on invalidation, so stale generations cannot amplify storage; a redeclaration that keeps the same EntityId does not invalidate entity identity. An uncached lookup is bounded by reachable graph size; a cache hit is expected O(1), with bounded linear probing.
 
-The flat index maintains power-of-two capacity, a 70% load threshold, bounded linear probing, explicit growth/probe overflow failures, and no deletion holes. Equality and `TypeKeyHash` cover every key field, including kind, fundamental, child, cv, bound/unknown-bound, result, variadic, parameter count, and every parameter `TypeId`. Expected lookup is constant-time; worst-case probing is explicitly bounded by table capacity. No hash iteration affects output: all rendered order is carried by vectors.
+FlatHashIndex uses power-of-two capacity (minimum 8), a 70% load threshold, insertion-order entries_, slot-to-entry indices, bounded probes, explicit capacity/entry overflow failures, and no hash iteration in output. Key equality/hash fields are complete for LookupCacheKey and TypeKey; collision/full-table paths terminate with errors. Empty per-namespace indexes allocate no slots. The three lookup caches are also empty until used and the measured repeated-query case retained only two entries/eight slots. Canonical TypeKey vectors remain intentionally owned by renderable TypeRecords and one canonical index entry; no node-map or empty-slot key copies remain.
 
-Each of the six per-namespace indexes is initially empty and allocates slots only after its first entry. Canonical `TypeKey` values are intentionally retained both in the directly renderable `TypeRecord` and in the canonical index entry; the index no longer duplicates keys into empty slots or during rehash, and its slot arrays store only entry indices. The measurements below cover this remaining vector cost and the per-namespace index amplification. No new semantic cache key was added.
+PA7 emits a semantic dump, not generated code or objects. Code size, instruction count, object size, and link metrics are therefore inapplicable; the applicable evidence is time, RSS, semantic output bytes/hashes, and structural owner counters.
 
 ## Scaling and profile evidence
 
-PA7 emits a semantic dump, not generated code or objects; generated-code size/instruction metrics are therefore inapplicable. The applicable measures are elapsed/user/system time, maximum RSS, output-byte/hash equivalence, and structural counters.
+All audit binaries below used Linux x86_64, g++ 15.2.0, -std=gnu++11 -Wall -O3, equivalent environment, and -DPA7_AUDIT_COUNTERS:
 
-The immutable before binary was built from the clean c75b6088 archive in `/tmp/pa7-baseline.mwF1LQ`:
+~~~sh
+AUDIT=/tmp/pa7-correction-audit.bZLkto
+mkdir -p "$AUDIT/ae1-source"
+git archive ae1d309b20a2ac6261550fa2b3212b9a3cb5199d | tar -x -C "$AUDIT/ae1-source"
+make -C "$AUDIT/ae1-source/dev" nsdecl CPPGM_STDLIB_FLAGS=-DPA7_AUDIT_COUNTERS -B -j2
+make -C dev nsdecl CPPGM_STDLIB_FLAGS=-DPA7_AUDIT_COUNTERS -B -j2
+cp "$AUDIT/ae1-source/dev/nsdecl" "$AUDIT/ae1-nsdecl-audit"
+cp dev/nsdecl "$AUDIT/candidate-nsdecl-audit"
+sha256sum "$AUDIT/ae1-nsdecl-audit" "$AUDIT/candidate-nsdecl-audit"
+~~~
 
-```sh
-make -C /tmp/pa7-baseline.mwF1LQ/dev nsdecl CPPGM_TEST_RUNNER=0 -j2
-sha256sum /tmp/pa7-baseline.mwF1LQ/dev/nsdecl
-# aafbec433acce83c683cb3207a95e3def52a018822d5ca4d1a5e789eebacdb83
-```
+The immutable ae1d309b executable hash was 31c100f375f958d1f36dccd5e5cf0d42da5cdf0dc8a147d7cca7d5518be30421; the corrected candidate hash was b52312b2c43fe78022c63ad9deac95cd361dabac0a93cb6860197e5d97442127. The c75b6088 node-map-era audit executable used for storage characterization was ac2ee6ca75ffb953bd4f06a9288c9ff8a536f9700c36f503f523d1e03416974d.
 
-The after binary is the final normal build of the working source:
+Lookup inputs were temporary /tmp files with this exact shape, for N = 50, 100, 200, 400, 800, 1600, 3200, 6400:
 
-```sh
-make -C dev nsdecl CPPGM_TEST_RUNNER=0 -B -j2
-sha256sum dev/nsdecl
-# 658d777bf2fb9ffcdfa3365a936a24161f0d5b54247ca4c56e95a2e725093632
-```
+~~~text
+namespace N0 { typedef int T0; }
+namespace Ni { using namespace N(i-1); }  for i = 1 .. N-1
+using namespace N(N-1);
+T0 v0; ... T0 v(N-1);
+~~~
 
-Both used g++ 15.2.0, `-std=gnu++11 -Wall -O3`, Linux x86_64, and test runner disabled. Inputs were temporary files under `/tmp/pa7-final-audit.1XytN8`; refreshed run records were under `/tmp/pa7-final-audit-rerun.0KS779`. Lookup shape was:
+measure_lookup.sh interleaved five baseline/candidate runs per N with /usr/bin/time -f 'elapsed=%e user=%U sys=%S rss_kb=%M' binary -o output input, then cmp'ed every pair. Median fields are elapsed/user/system seconds and maximum RSS KB; these are characterization measurements, not a claim of statistically significant timing precision.
 
-```text
-namespace A0 { typedef int T0; }
-namespace Ai { using namespace A(i-1); }  for i=1..N-1
-using namespace A(N-1);
-T0 v0; ... T0 v99;
-```
-
-For each N in 50, 100, 200, 400, 800, 1600, 3200, 6400, five interleaved baseline/candidate runs used:
-
-```sh
-/usr/bin/time -f 'elapsed=%e user=%U sys=%S rss_kb=%M exit=%x' \
-  binary -o /tmp/out input.cpp
-cmp -s baseline.out candidate.out
-```
-
-All 40 pairs exited 0 and compared equal. The following are medians of the five runs; fields are elapsed/user/system seconds and RSS KB.
-
-| N | baseline e/u/s/RSS | candidate e/u/s/RSS |
-|---:|---:|---:|
-| 50 | 0/0/0/4060 | 0/0/0/4340 |
-| 100 | 0/0/0/4332 | 0/0/0/4596 |
-| 200 | 0/0/0/4568 | 0/0/0/4592 |
-| 400 | 0/0/0/5516 | 0/0/0/5460 |
-| 800 | .01/0/0/7084 | .01/0/0/7096 |
-| 1600 | .02/.02/0/10456 | .02/.01/0/10484 |
-| 3200 | .05/.04/.01/17108 | .04/.03/.01/17088 |
-| 6400 | .11/.08/.03/30712 | .09/.06/.03/30736 |
-
-Output hashes were identical in every row; for example N=50 was `38673b144ce6a7bf448cd25ea2a80e474ba2e31a8789d4181626a290e987abd9` and N=6400 was `d9e4f862d1db59f34d1ae3ee8461d9be4558f74517f76c7b48332931cc91c4b8`. Timings are characterization at this scale, not a claim of statistically significant speedup.
-
-The nested-type shape was an actual compound chain, not redundant parentheses:
-
-```text
-typedef int T0;
-i mod 3 == 0: typedef Ti *T(i+1);
-i mod 3 == 1: typedef Ti (*T(i+1))(int);
-i mod 3 == 2: typedef Ti T(i+1)[2];
-Tn x;
-```
-
-This cycles pointers, pointer-to-functions, and arrays while keeping function parameters valid. Five interleaved runs for N=25, 50, 100, 200, 400, 800, 1600 produced identical output bytes/hashes. Output bytes were 656, 1183, 2182, 4234, 8282, 16434, and 32683 respectively; candidate RSS medians were 4052, 4084, 4388, 4584, 5068, 6312, and 8792 KB. Elapsed medians were 0, 0, 0, 0, 0, .01, and .01 seconds for the candidate. A single N=3000 characterization, still below the 4096 render guard, passed equivalently with 61,159 output bytes and identical hash `45ee7ebf30dbf7b0d13e2e23e33cb27c90e4efc6368ae14fe180a5b3b2f9ba01`; baseline/candidate elapsed was .03/.03 seconds and RSS 13,740/12,128 KB. The explicit variadic check produced identical output:
-
-```text
-function f function of (pointer to function of (pointer to int) returning int, lvalue-reference to array of 2 int, ...) returning void
-```
-
-For structural corroboration, an audit-only build used `-DPA7_AUDIT_COUNTERS` and had hash `279a5c342f1d2b4fbcc5b3829c6752b9470990588ee29feb139841a832a7d568`. Lookup namespace visits were:
-
-```sh
-make -C dev nsdecl CPPGM_STDLIB_FLAGS=-DPA7_AUDIT_COUNTERS CPPGM_TEST_RUNNER=0 -B -j2
-sha256sum dev/nsdecl
-# 279a5c342f1d2b4fbcc5b3829c6752b9470990588ee29feb139841a832a7d568
-```
-
-| N | lookup queries | namespace visits | namespaces | namespace index slots/entries |
+| N | ae1 elapsed/user/sys/RSS | corrected elapsed/user/sys/RSS | ae1 visits | corrected visits / cache hits / misses |
 |---:|---:|---:|---:|---:|
-| 50 | 199 | 5199 | 51 | 392/151 |
-| 100 | 299 | 10299 | 101 | 520/201 |
-| 200 | 499 | 20499 | 201 | 776/301 |
-| 400 | 899 | 40899 | 401 | 1288/501 |
-| 800 | 1699 | 81699 | 801 | 2312/901 |
-| 1600 | 3299 | 163299 | 1601 | 4360/1701 |
-| 3200 | 6499 | 326499 | 3201 | 8456/3301 |
-| 6400 | 12899 | 652899 | 6401 | 16648/6501 |
+| 50 | 0/0/0/4092 | 0/0/0/4076 | 2,649 | 150 / 149 / 151 |
+| 100 | 0/0/0/4344 | 0/0/0/4328 | 10,299 | 300 / 299 / 301 |
+| 200 | 0/0/0/4844 | 0/0/0/4840 | 40,599 | 600 / 599 / 601 |
+| 400 | .01/0/0/5828 | 0/0/0/5824 | 161,199 | 1,200 / 1,199 / 1,201 |
+| 800 | .02/.02/0/8020 | .01/0/0/8016 | 642,399 | 2,400 / 2,399 / 2,401 |
+| 1600 | .07/.06/0/12172 | .02/.01/0/12180 | 2,564,799 | 4,800 / 4,799 / 4,801 |
+| 3200 | .27/.25/.01/20808 | .05/.03/.02/20828 | 10,249,599 | 9,600 / 9,599 / 9,601 |
+| 6400 | 1.13/1.09/.03/37832 | .10/.07/.03/37820 | 40,979,199 | 19,200 / 19,199 / 19,201 |
 
-The counter grows linearly with the fixed 100 declarations and confirms iterative graph work rather than recursive stack growth. For the type chain, N=1600 had 2153 canonical type entries in 4096 slots, 533 parameter TypeIds, and 1602 namespace index entries in 4104 slots. These counters explain the measured flat storage and the absence of empty-slot key amplification.
+Candidate query counts are 6N and the two stable cache entries are reported at every row; the old path's visits are quadratic in this N-chain/N-query family, while the corrected structural work is exactly 3N. Baseline and candidate output bytes/hashes were identical at every row: N=50 d6150962c115b71a9913559e9b6168bd9b8e5634d2011878a0ac8946b59a2fd4; N=6400 b2108e572a5cf6fc11b949658135aecfc971964e834333853c3f7af485333fe5.
+
+For the FlatHashIndex storage check, one-run characterization on the same inputs compared c75b6088 (node maps), ae1d309b (flat indexes, no new cache), and the corrected candidate. At N=100/400/1600, c75/ae1/candidate elapsed/user/sys/RSS were respectively 0/0/0/4304, 0/0/0/4316, 0/0/0/4356; 0.01/.01/0/5848, 0.01/0/0/5808, 0/0/0/5844; and .12/.11/0/12172, .08/.06/.01/12156, .02/.01/.01/12164. All outputs matched (N=1600 hash 63e3983c5ee737468a5a51441ff7060d52ade0310c362b01c802d0c3e3412b2b). These single runs are storage/time characterization, not a controlled isolated index benchmark; they show no material representative RSS loss from the flat ownership layout.
+
+Nested compound rendering used actual type wrappers, not redundant parentheses:
+
+~~~text
+typedef int B0;
+i mod 3 == 1: typedef B(i-1) *B(i);
+i mod 3 == 2: typedef B(i-1) B(i)[1];
+i mod 3 == 0: typedef B(i-1) B(i)();
+B(N) value;
+~~~
+
+measure_nested.sh ran three interleaved baseline/candidate repetitions for N = 32, 64, 128, 256, 512, 1024, 2048, 4096, with pairwise cmp. The 4096 candidate median was .03/.02/.01 seconds/RSS 14900 KB and 64,334 output bytes; N=32 was 0/0/0/RSS 3816 KB and 658 bytes. All 24 pairs were byte-equivalent. Representative candidate output hashes were N=32 79b86effd66a793d35a3240acf2bd58e59a3db6cd063ce7c28f86eb8ff0f0051, N=2048 c13e9e9bfc4eb051a80ad769d2b1fbc66e739d36efbf68e8e61d991117a13259, and N=4096 8be573cedb522eda86f3a0f69442b8c570ccd31320361474d84619b50cc87a8c.
+
+Function task order and variadic output were checked by pa7/tests/310-varargs.t, pa7/tests/360-function-typedef.t, and cppgm.tests/course/pa7/350-parenthesized-parameter-declarators.t; output preserves parameter order, nested function/array/pointer adjustment, and ... placement.
+
+Token-size check compiled the same sizeof_tokens.cpp against ae1d309b and the corrected source: sizeof(CppSyntaxToken) changed from 64 to 56 bytes; sizeof(CppSyntaxTokenCollector) is 40 vs 48 bytes because the latter now contains one optional observer pointer, not PA6 per-token fields. PA7 passes null, so the observer is cold and no compatibility facts are constructed.
+
+## PA6 reference provenance
+
+Before adding the four regressions, TESTING_AND_REFERENCES.md was read in full. The documented command was run exactly as make -C pa6 ref-test TEST='course/pa6/275-shared-*.t'. The pinned recog-ref reports OK for these four inputs, but the PA6 README's lexical-category rule and the direct repaired/legacy dev/recog result are BAD. The generated reference files are retained as provenance; their expected per-file output was corrected to BAD for this real late defect so the fixture cannot mask the earliest-owner regression. No unrelated test or reference was touched, and no reference binary is used by production code.
 
 ## Validation
 
-- Focused PA6/PA7 grammar, lookup, arrays, declarator, reference-collapse, and variadic checks passed.
-- `make test-pa7 CPPGM_TEST_RUNNER=0`: 41/41.
-- `make test-report-through-pa6 CPPGM_TEST_RUNNER=0`: 293/293.
-- Final required `make test-report-through-pa7`: 334/334.
-- Non-runner repeat `make test-report-through-pa7 CPPGM_TEST_RUNNER=0`: 334/334.
-- `perl scripts/cppgm_file_audit.pl --stage pa7 --paths dev/src`: passed, 32 files checked.
-- `git diff --check`: passed at each source checkpoint.
-- No tests or `.ref` files were changed.
+- make test-pa6: 52/52, including all four new earliest-owner regressions.
+- make test-pa7: 41/41.
+- Focused PA7 scope/ambiguity, array completion, reference collapse, function/parameter, and variadic cases passed through the existing pa7 test harness.
+- Required make test-report-through-pa7: 338/338.
+- Required perl scripts/cppgm_file_audit.pl --stage pa7 --paths dev/src: passed.
+- git diff --check: passed before staging.
+- No new dev/src/*.cpp file was added; dev/frontend_source_sets.mk therefore required no change.
 
 ## Checkpoint ledger
 
-1. c75b6088 baseline: PA7 behavior passed its existing gates, but the architecture still had parallel PA6/PA7 collectors and grammar implementations.
-2. Review repair: centralized typed posttoken facts, introduced the shared concrete declaration grammar/action boundary, reused it from PA6, and removed PA7's second parser.
-3. Measured correction: the first shared-tree version added material RSS at N=6400; it was replaced with streaming semantic actions. Final candidate RSS is within measurement noise of baseline.
-4. Final source audit: flat index invariants/storage, iterative lookup/render/merge, charged token movement, self-containment, and source-set ownership are complete. The worker commit and clean-status result are the final handoff gates.
+1. c75b6088c15eec119842e083ab23bbc8f10a6408: clean PA7 semantic model, but node maps, recursive lookup/render paths, and parallel PA6/PA7 collectors/parsers remained.
+2. ae1d309b20a2ac6261550fa2b3212b9a3cb5199d: reviewed intermediate; shared cursor and earlier iterative/flat repairs were accepted, but PA6 policy exactness, PA7 cold-sidecar discipline, scope soundness, and broad lookup scaling remained blockers.
+3. Corrective milestone: canonical observer-backed token owner, policy/action grammar boundary, semantic type queries, typed generation cache/invalidation, FlatHash guard, and four earliest-owner PA6 regressions.
+4. Final handoff: required validation, staging, one worker commit, and empty git status --short; the commit containing this audit is the correction commit whose exact hash is reported with the final handoff.
