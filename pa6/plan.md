@@ -1,72 +1,109 @@
-## Stage Design
+# PA6 full-stage architecture audit
 
-`PA6Recognizer` owns the stage boundary: `PPPreprocessingSession` produces the
-typed `PPTokenBuffer`, `posttokenize_cpp_tokens` feeds one
-`PA6TokenCollector`, and `pa6_internal::PA6Parser` consumes its canonical
-typed stream.  Fixed tokens use enums; identifiers retain only mock
-class/template/typedef/enum/namespace category bits; literals retain only
-grammar kind and the two PA6 special kinds.  The collector splits logical
-`OP_RSHIFT` into `ST_RSHIFT_1`/`ST_RSHIFT_2` and appends `ST_EOF`; it never
-renders or re-tokenizes.
+## Contract and ownership
 
-The parser is bounded predictive recursive descent with precedence parsing for
-expressions, explicit marks for alternatives, committed template angles, and
-grammar coverage for translation units, declarations/declarators, statements,
-expressions, templates, names, and mock lookup categories.  `recog` builds
-from `pp_tokenizer posttoken ctrlexpr macro preproc_session pa6_recognizer
-pa6_parser_declarations pa6_parser_expressions`.  This follows the PA6
-grammar and spec sections 1 (typed single pipeline), 2 (typed fact
-continuity), 4 (bounded storage/work), and 7 (performance/conformance).
+PA6 follows the typed single pipeline required by spec sections 1 and 2:
 
-## Failure Map
+`recog` source -> `PPPreprocessingSession` -> canonical `PPTokenBuffer` ->
+one `PA6TokenCollector` -> canonical `vector<PA6Token>` -> `PA6Parser`.
 
-- Baseline was 0/47: the `DoRecog` stub threw `NotImplementedException`, so
-  all 47 checked cases produced `EXIT_NOT_IMPLEMENTED` instead of the recap;
-  test coverage was unchanged.
-- The implemented recognizer handles the required BAD cases: invalid token,
-  bare label, empty `case`, handler-less `try`, malformed deep template,
-  committed incomplete template name, and both closing-angle cases.
-- Review corrections made conditional third operands mandatory, implemented
-  both `new-declarator` alternatives, made throw operands FIRST/FOLLOW-aware,
-  and implemented pointer-prefixed abstract-pack declarators with ordinary
-  suffixes.  No tests or reference fixtures were modified.
+The preprocessor owns spelling-table identities and typed PP facts.  The
+collector owns the PA6 boundary facts: fixed enum vocabulary, one-time mock
+name-category classification, literal coarsening plus `ST_EMPTYSTR`/`ST_ZERO`,
+`OP_RSHIFT` splitting, and `ST_EOF`.  The parser consumes only those typed
+facts; it does not render, re-tokenize, or shell out to any reference, prior
+solution, host compiler, assembler, or linker.
 
-## Active Checkpoint
+Representative ownership traces:
 
-`recog` reports one `OK`/`BAD` line per source, keeps translation,
-preprocessing, token, and syntax failures at tool exit success, and reserves
-nonzero exits for usage/output failures.  Focused non-repository probes passed:
-valid `new C*`, valid conditional, throw without an operand before `;` and
-`,`; and `using X = int *...;`; missing conditional third operand and malformed
-`throw +` were BAD.
+- `TC1<...>`: identifier spelling is classified once by the collector;
+  `PA6Parser::parse_type_name`/`parse_simple_template_id` owns the committed
+  angle state and consumes the typed close-angle stream.
+- `int const Yx` and `const C&`: `parse_type_specifier` publishes an explicit
+  cv/non-cv result to `parse_decl_specifier_seq`; the shared parameter path then
+  owns `parse_abstract_declarator`, rather than guessing from the next token.
+- Every parser advance, including balanced-token leaves and formerly direct
+  `position_` increments, goes through a charged consume helper.  Marks restore
+  position and angle/non-angle state for failed alternatives.
 
-Post-split validation: `make test-pa6` passed 47/47.  This checkpoint is
-committed.  Generated focused `.check`, `.check.exit_status`, and
-`.check.stdout` files were removed before commit; checked fixtures and `.ref`
-files remain unchanged.  The post-commit working tree was observed clean.
+## Findings and coherent repair milestone
 
-Remaining uncertainties are ordinary non-fixture C++ ambiguity breadth and
-future-stage consumers of the public PA6 token model.  The file audit reports
-one warning because `pa6_parser.h` contains substantial inline implementation
-body; it is non-fatal and the stage audit passes.
+The audit reduced the two independently observed correctness blockers:
 
-## Performance Evidence
+1. Parameter and exception declarations now try the shared abstract-declarator
+   grammar after a named declarator fails.  This accepts unnamed `int*`,
+   `const C&`, `int[]`, and catch `int*` forms without spelling-specific
+   branches.
+2. Decl-specifier sequencing now uses the consumed type-specifier’s explicit
+   classification.  A category-bearing identifier after a prior non-cv type
+   is left for the declarator, while cv qualifiers do not set that boundary.
 
-Recognizer work is bounded by `max(10000, 512 * token_count)` ticks and angle
-and non-angle nesting is capped at 1024.  After the final split/build, the
-checked deeply malformed template returned the expected BAD recap with tool
-exit 0; `/usr/bin/time` measured `elapsed=0.01s`, `rss_kb=4880`, `exit=0`, and
-the recognizer reported its work bound exceeded.
+The architecture audit also repaired the material structural findings:
 
-## Checkpoint Ledger
+- Parser state/work helpers moved from `pa6_parser.h` into the new
+  `pa6_parser.cpp`; `FRONTEND_OBJ_BASENAMES_recog` owns that source exactly
+  once.  The header is now declarations/state only and the file audit has no
+  bad-division warning.
+- The work limit remains `max(10000, 512 * token_count)` with overflow-safe
+  sizing.  Nesting and all token movement are bounded/charged, including
+  balanced scans; exhaustion becomes a deterministic per-source `BAD` reason.
+- Partial helpers and alternative paths repaired to restore their entry mark;
+  this includes expression operators, delimiters, jumps, namespace/member
+  lists, template arguments, abstract declarators, and handler paths.
+- Contiguous cast/unary prefixes now parse iteratively before the shared unary
+  base, preserving the grammar and mark ownership without recursive stack
+  growth on long valid unary chains.
+- Charged `override`/`final` suffix loops now propagate a failed consume, so
+  work exhaustion cannot leave a non-advancing loop.
 
-- 2026-08-22 — HEAD `2354eec9`: inherited PA6 stub baseline, 0/47; all
-  failures were `EXIT_NOT_IMPLEMENTED`.
-- 2026-08-22 — final committed PA6 increment: typed PA5 flow, bounded
-  recognizer, parser split, review corrections, recap policy, and source-set
-  integration complete.
-- Gates: `make test-pa6` = 47/47; `n=6 ... make test-report-through-pa5` =
-  245/245; `perl scripts/cppgm_file_audit.pl --stage pa6 --paths dev/src` =
-  pass with 1 warning; `make test-report-through-pa6` = 292/292.
-- Ledger status: committed checkpoint; post-commit `git status --short` was
-  observed empty.
+## Measurement and conformance evidence
+
+The baseline had the durable 47-test PA6 inventory and 292/292 through-stage
+result.  This audit adds the compact course regression
+`125-abstract-parameter-and-cv-declarator.t`; its reference sidecars were
+generated only by the documented `ref-test` target.
+
+Focused evidence:
+
+- `make -C dev recog -j2`: compile/link pass.
+- `make -C pa6 check TEST='course/pa6/125-abstract-parameter-and-cv-declarator.t tests/250-decl.t tests/260-declarator.t tests/400-exceptions.t course/pa6/500-deep-template-argument-failure-bad.t course/pa6/500-operator-template-angle-boundary.t'`: 6/6 pass.
+- Representative valid operator fixture: `OK`, tool exit 0,
+  `elapsed=0.00s`, `rss_kb=4076`.
+- Post-change valid-unary characterization, each one run of the final
+  executable (not a comparative speed claim):
+
+  | unary operators | result | elapsed | peak RSS |
+  | ---: | :--- | ---: | ---: |
+  | 1,000 | `OK`, exit 0 | 0.00s | 4,636 KiB |
+  | 16,000 | `OK`, exit 0 | 0.02s | 11,296 KiB |
+  | 128,000 | `OK`, exit 0 | 0.15s | 63,412 KiB |
+  | 256,000 | `OK`, exit 0 | 0.30s | 123,072 KiB |
+
+  Time and retained token storage scale linearly over this sample; the
+  iterative prefix path avoids the pre-repair stack fault at the large sizes.
+- Deep malformed-template fixture: `BAD`, tool exit 0, work-bound reason,
+  `elapsed=0.04s`, `rss_kb=5104`; the bounded hostile path did not crash or
+  time out.
+- PA6 terminates at syntax status and emits no object, generated program,
+  relocation, or optimizer IR; the section-7 generated-code measures therefore
+  have no PA6 consumer.  The parser's monotonic `work_` counter, explicit
+  nesting caps, and bounded hostile probe provide the stage-local structural
+  corroboration.
+- `perl scripts/cppgm_file_audit.pl --stage pa6 --paths dev/src`: pass,
+  26 files, zero warnings.
+- `make test-report-through-pa6`: all tests passed, `293 / 293`.
+- `git diff --check`: pass.
+
+## Checkpoint ledger
+
+- Baseline: HEAD `2f150101c53e1f3ef40095eaa2e1b81c994037fd`, clean, prior PA6
+  implementation and 292/292 through-stage evidence.
+- Final audit milestone, 2026-08-23, identified by this content/date: typed
+  grammar repair, parser ownership split, charged movement/work-budget audit,
+  iterative cast/unary prefix parsing, state-discipline repair, and the one
+  focused regression with documented reference provenance.
+- Final checks recorded for this tree: zero-warning PA6 file audit (26 files),
+  `293 / 293` through-stage tests, and clean `git diff --check`.
+- Commit-ready checkpoint: the scoped PA6 sources, plan, fixture, and three
+  generated reference sidecars are the complete intended change set; no final
+  commit hash is recorded here because this plan is part of that commit.

@@ -5,23 +5,25 @@ namespace pa6_internal
 
 bool PA6Parser::parse_expression()
 {
+	Mark saved = mark();
 	if (!parse_assignment_expression())
-		return false;
+		return restore_and_fail(saved);
 	while (fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!consume_fixed(SimpleTokenType::OP_COMMA) ||
 			!parse_assignment_expression())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
 
 bool PA6Parser::parse_assignment_expression()
 {
+	Mark saved = mark();
 	if (fixed(SimpleTokenType::KW_THROW))
 		return parse_throw_expression();
 	if (!parse_conditional_expression())
-		return false;
+		return restore_and_fail(saved);
 	const SimpleTokenType operators[] =
 	{
 		SimpleTokenType::OP_ASS, SimpleTokenType::OP_STARASS,
@@ -35,8 +37,9 @@ bool PA6Parser::parse_assignment_expression()
 	{
 		if (fixed(operators[i]))
 		{
-			consume_fixed(operators[i]);
-			return parse_initializer_clause();
+			if (!consume_fixed(operators[i]) || !parse_initializer_clause())
+				return restore_and_fail(saved);
+			return true;
 		}
 	}
 	return true;
@@ -44,23 +47,25 @@ bool PA6Parser::parse_assignment_expression()
 
 bool PA6Parser::parse_conditional_expression()
 {
+	Mark saved = mark();
 	if (!parse_binary_expression(10))
-		return false;
+		return restore_and_fail(saved);
 	if (!consume_fixed(SimpleTokenType::OP_QMARK))
 		return true;
 	if (!parse_expression() || !consume_fixed(SimpleTokenType::OP_COLON))
-		return false;
+		return restore_and_fail(saved);
 	if (!parse_assignment_expression())
-		return false;
+		return restore_and_fail(saved);
 	return true;
 }
 
 bool PA6Parser::parse_binary_expression(int level)
 {
+	Mark saved = mark();
 	if (level == 0)
 		return parse_pm_expression();
 	if (!parse_binary_expression(level - 1))
-		return false;
+		return restore_and_fail(saved);
 	while (tick())
 	{
 		bool is_operator = false;
@@ -97,28 +102,33 @@ bool PA6Parser::parse_binary_expression(int level)
 		if (level == 3)
 		{
 			if (!shift_operator())
-				return false;
+				return restore_and_fail(saved);
 		}
 		else
 		{
-			++position_;
+			if (!consume_current())
+				return restore_and_fail(saved);
 		}
 		if (!parse_binary_expression(level - 1))
-			return false;
+			return restore_and_fail(saved);
 	}
-	return !exhausted_;
+	if (exhausted_)
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_pm_expression()
 {
+	Mark saved = mark();
 	if (!parse_cast_expression())
-		return false;
+		return restore_and_fail(saved);
 	while (fixed(SimpleTokenType::OP_DOTSTAR) ||
 		fixed(SimpleTokenType::OP_ARROWSTAR))
 	{
-		++position_;
+		if (!consume_current())
+			return restore_and_fail(saved);
 		if (!parse_cast_expression())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
@@ -126,17 +136,45 @@ bool PA6Parser::parse_pm_expression()
 bool PA6Parser::parse_cast_expression()
 {
 	Mark saved = mark();
-	if (fixed(SimpleTokenType::OP_LPAREN))
+	const SimpleTokenType operators[] =
 	{
-		if (parse_cast_operator() && parse_cast_expression())
-			return true;
-		restore(saved);
+		SimpleTokenType::OP_INC, SimpleTokenType::OP_DEC,
+		SimpleTokenType::OP_STAR, SimpleTokenType::OP_AMP,
+		SimpleTokenType::OP_PLUS, SimpleTokenType::OP_MINUS,
+		SimpleTokenType::OP_LNOT, SimpleTokenType::OP_COMPL
+	};
+	while (true)
+	{
+		if (fixed(SimpleTokenType::OP_LPAREN))
+		{
+			Mark cast = mark();
+			if (parse_cast_operator())
+				continue;
+			restore(cast);
+		}
+		bool consumed_operator = false;
+		for (std::size_t i = 0;
+			i < sizeof(operators) / sizeof(operators[0]); ++i)
+		{
+			if (fixed(operators[i]))
+			{
+				if (!consume_current())
+					return restore_and_fail(saved);
+				consumed_operator = true;
+				break;
+			}
+		}
+		if (!consumed_operator)
+			break;
 	}
-	return parse_unary_expression();
+	if (!parse_unary_expression())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_unary_expression()
 {
+	Mark saved = mark();
 	const SimpleTokenType operators[] =
 	{
 		SimpleTokenType::OP_INC, SimpleTokenType::OP_DEC,
@@ -148,8 +186,9 @@ bool PA6Parser::parse_unary_expression()
 	{
 		if (fixed(operators[i]))
 		{
-			++position_;
-			return parse_cast_expression();
+			if (!consume_current() || !parse_cast_expression())
+				return restore_and_fail(saved);
+			return true;
 		}
 	}
 	if (consume_fixed(SimpleTokenType::KW_SIZEOF))
@@ -159,39 +198,41 @@ bool PA6Parser::parse_unary_expression()
 			if (!consume_fixed(SimpleTokenType::OP_LPAREN) ||
 				!begin_non_angle() || !consume_identifier() ||
 				!consume_fixed(SimpleTokenType::OP_RPAREN))
-				return false;
+				return restore_and_fail(saved);
 			end_non_angle();
 			return true;
 		}
 		if (consume_fixed(SimpleTokenType::OP_LPAREN))
 		{
-			Mark saved = mark();
+			Mark type = mark();
 			if (begin_non_angle() && parse_type_id() &&
 				consume_fixed(SimpleTokenType::OP_RPAREN))
 			{
 				end_non_angle();
 				return true;
 			}
-			restore(saved);
+			restore(type);
 			// The opening parenthesis was a grouping expression.
 			if (!begin_non_angle() || !parse_expression() ||
 				!consume_fixed(SimpleTokenType::OP_RPAREN))
-				return false;
+				return restore_and_fail(saved);
 			end_non_angle();
 			return true;
 		}
-		return parse_unary_expression();
+		if (!parse_unary_expression())
+			return restore_and_fail(saved);
+		return true;
 	}
 	if (consume_fixed(SimpleTokenType::KW_ALIGNOF))
 	{
 		if (!consume_fixed(SimpleTokenType::OP_LPAREN) || !begin_non_angle() ||
 			!parse_type_id() || !consume_fixed(SimpleTokenType::OP_RPAREN))
-			return false;
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
-	if (fixed(SimpleTokenType::KW_NOEXCEPT) && parse_noexcept_expression())
-		return true;
+	if (fixed(SimpleTokenType::KW_NOEXCEPT))
+		return parse_noexcept_expression();
 	if (fixed(SimpleTokenType::OP_COLON2) && fixed(SimpleTokenType::KW_NEW, 1))
 		return parse_new_expression();
 	if (fixed(SimpleTokenType::KW_NEW))
@@ -200,14 +241,19 @@ bool PA6Parser::parse_unary_expression()
 		return parse_delete_expression();
 	if (fixed(SimpleTokenType::KW_DELETE))
 		return parse_delete_expression();
-	return parse_postfix_expression();
+	if (!parse_postfix_expression())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_postfix_expression()
 {
+	Mark saved = mark();
 	if (!parse_postfix_root())
-		return false;
+		return restore_and_fail(saved);
 	while (parse_postfix_suffix()) {}
+	if (exhausted_)
+		return restore_and_fail(saved);
 	return true;
 }
 
@@ -309,7 +355,7 @@ bool PA6Parser::parse_postfix_suffix()
 	if (consume_fixed(SimpleTokenType::OP_LSQUARE))
 	{
 		if (!begin_non_angle())
-			return false;
+			return restore_and_fail(saved);
 		bool ok = fixed(SimpleTokenType::OP_LBRACE) ?
 			parse_braced_init_list() : parse_expression();
 		ok = ok && consume_fixed(SimpleTokenType::OP_RSQUARE);
@@ -395,17 +441,20 @@ bool PA6Parser::parse_lambda_expression()
 		return false;
 	}
 	parse_lambda_declarator();
-	return parse_compound_statement();
+	if (!parse_compound_statement())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_lambda_introducer()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LSQUARE) || !begin_non_angle())
-		return false;
+		return restore_and_fail(saved);
 	if (!fixed(SimpleTokenType::OP_RSQUARE) && !parse_lambda_capture())
-		return false;
+		return restore_and_fail(saved);
 	if (!consume_fixed(SimpleTokenType::OP_RSQUARE))
-		return false;
+		return restore_and_fail(saved);
 	end_non_angle();
 	return true;
 }
@@ -415,7 +464,8 @@ bool PA6Parser::parse_lambda_capture()
 	Mark saved = mark();
 	if (fixed(SimpleTokenType::OP_AMP) || fixed(SimpleTokenType::OP_ASS))
 	{
-		++position_;
+		if (!consume_current())
+			return restore_and_fail(saved);
 		if (fixed(SimpleTokenType::OP_RSQUARE))
 			return true;
 		if (!consume_fixed(SimpleTokenType::OP_COMMA) || !parse_capture_list())
@@ -425,19 +475,22 @@ bool PA6Parser::parse_lambda_capture()
 		}
 		return true;
 	}
-	return parse_capture_list();
+	if (!parse_capture_list())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_capture_list()
 {
+	Mark saved = mark();
 	if (!parse_capture())
-		return false;
+		return restore_and_fail(saved);
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_capture())
-			return false;
+			return restore_and_fail(saved);
 		if (fixed(SimpleTokenType::OP_DOTS))
 			consume_fixed(SimpleTokenType::OP_DOTS);
 	}
@@ -446,36 +499,47 @@ bool PA6Parser::parse_capture_list()
 
 bool PA6Parser::parse_capture()
 {
+	Mark saved = mark();
 	if (consume_fixed(SimpleTokenType::KW_THIS))
 		return true;
 	if (consume_fixed(SimpleTokenType::OP_AMP))
-		return consume_identifier();
-	return consume_identifier();
+	{
+		if (consume_identifier())
+			return true;
+		return restore_and_fail(saved);
+	}
+	if (!consume_identifier())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_lambda_declarator()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LPAREN))
-		return false;
+		return restore_and_fail(saved);
 	if (!begin_non_angle() || !parse_parameter_declaration_clause() ||
 		!consume_fixed(SimpleTokenType::OP_RPAREN))
-		return false;
+		return restore_and_fail(saved);
 	end_non_angle();
 	if (fixed(SimpleTokenType::KW_MUTABLE))
 		consume_fixed(SimpleTokenType::KW_MUTABLE);
 	parse_exception_specification();
 	parse_attribute_specifier_seq();
 	if (fixed(SimpleTokenType::OP_ARROW) && !parse_trailing_return_type())
-		return false;
+		return restore_and_fail(saved);
 	return true;
 }
 
 bool PA6Parser::parse_noexcept_expression()
 {
-	return consume_fixed(SimpleTokenType::KW_NOEXCEPT) &&
-		consume_fixed(SimpleTokenType::OP_LPAREN) && begin_non_angle() &&
-		parse_expression() && consume_fixed(SimpleTokenType::OP_RPAREN) &&
-		(end_non_angle(), true);
+	Mark saved = mark();
+	if (!consume_fixed(SimpleTokenType::KW_NOEXCEPT) ||
+		!consume_fixed(SimpleTokenType::OP_LPAREN) || !begin_non_angle() ||
+		!parse_expression() || !consume_fixed(SimpleTokenType::OP_RPAREN))
+		return restore_and_fail(saved);
+	end_non_angle();
+	return true;
 }
 
 bool PA6Parser::parse_new_expression()
@@ -509,7 +573,8 @@ bool PA6Parser::parse_new_expression()
 			return false;
 		}
 		end_non_angle();
-		parse_new_initializer();
+		if (!parse_new_initializer())
+			return restore_and_fail(saved);
 		return true;
 	}
 	if (!parse_new_type_id())
@@ -517,25 +582,31 @@ bool PA6Parser::parse_new_expression()
 		restore(saved);
 		return false;
 	}
-	parse_new_initializer();
+	if (!parse_new_initializer())
+		return restore_and_fail(saved);
 	return true;
 }
 
 bool PA6Parser::parse_new_placement()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LPAREN) || !begin_non_angle() ||
 		!parse_expression_list() || !consume_fixed(SimpleTokenType::OP_RPAREN))
-		return false;
+		return restore_and_fail(saved);
 	end_non_angle();
 	return true;
 }
 
 bool PA6Parser::parse_new_type_id()
 {
-	return parse_type_specifier_seq() &&
-		((fixed(SimpleTokenType::OP_STAR) || fixed(SimpleTokenType::OP_AMP) ||
-		  fixed(SimpleTokenType::OP_LAND) || fixed(SimpleTokenType::OP_LSQUARE)) ?
-			parse_new_declarator() : true);
+	Mark saved = mark();
+	if (!parse_type_specifier_seq())
+		return restore_and_fail(saved);
+	if ((fixed(SimpleTokenType::OP_STAR) || fixed(SimpleTokenType::OP_AMP) ||
+		 fixed(SimpleTokenType::OP_LAND) || fixed(SimpleTokenType::OP_LSQUARE)) &&
+		!parse_new_declarator())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_new_declarator()
@@ -553,9 +624,10 @@ bool PA6Parser::parse_new_declarator()
 
 bool PA6Parser::parse_noptr_new_declarator()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LSQUARE) || !begin_non_angle() ||
 		!parse_expression() || !consume_fixed(SimpleTokenType::OP_RSQUARE))
-		return false;
+		return restore_and_fail(saved);
 	end_non_angle();
 	parse_attribute_specifier_seq();
 	while (fixed(SimpleTokenType::OP_LSQUARE))
@@ -563,7 +635,7 @@ bool PA6Parser::parse_noptr_new_declarator()
 		consume_fixed(SimpleTokenType::OP_LSQUARE);
 		if (!begin_non_angle() || !parse_constant_expression() ||
 			!consume_fixed(SimpleTokenType::OP_RSQUARE))
-			return false;
+			return restore_and_fail(saved);
 		end_non_angle();
 		parse_attribute_specifier_seq();
 	}
@@ -572,13 +644,14 @@ bool PA6Parser::parse_noptr_new_declarator()
 
 bool PA6Parser::parse_new_initializer()
 {
+	Mark saved = mark();
 	if (fixed(SimpleTokenType::OP_LPAREN))
 	{
 		consume_fixed(SimpleTokenType::OP_LPAREN);
 		if (!begin_non_angle() ||
 			(!fixed(SimpleTokenType::OP_RPAREN) && !parse_expression_list()) ||
 			!consume_fixed(SimpleTokenType::OP_RPAREN))
-			return false;
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
@@ -589,23 +662,29 @@ bool PA6Parser::parse_new_initializer()
 
 bool PA6Parser::parse_delete_expression()
 {
+	Mark saved = mark();
 	if (fixed(SimpleTokenType::OP_COLON2))
 		consume_fixed(SimpleTokenType::OP_COLON2);
 	if (!consume_fixed(SimpleTokenType::KW_DELETE))
-		return false;
+		return restore_and_fail(saved);
 	if (consume_fixed(SimpleTokenType::OP_LSQUARE))
 	{
 		if (!consume_fixed(SimpleTokenType::OP_RSQUARE))
-			return false;
+			return restore_and_fail(saved);
 	}
-	return parse_cast_expression();
+	if (!parse_cast_expression())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_cast_operator()
 {
-	return consume_fixed(SimpleTokenType::OP_LPAREN) && begin_non_angle() &&
-		parse_type_id() && consume_fixed(SimpleTokenType::OP_RPAREN) &&
-		(end_non_angle(), true);
+	Mark saved = mark();
+	if (!consume_fixed(SimpleTokenType::OP_LPAREN) || !begin_non_angle() ||
+		!parse_type_id() || !consume_fixed(SimpleTokenType::OP_RPAREN))
+		return restore_and_fail(saved);
+	end_non_angle();
+	return true;
 }
 
 bool PA6Parser::can_start_assignment_expression() const
@@ -646,13 +725,16 @@ bool PA6Parser::can_start_assignment_expression() const
 
 bool PA6Parser::parse_throw_expression()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::KW_THROW))
-		return false;
+		return restore_and_fail(saved);
 	Mark operand = mark();
 	if (parse_assignment_expression())
 		return true;
 	restore(operand);
-	return !can_start_assignment_expression();
+	if (can_start_assignment_expression())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_attribute_specifier()
@@ -710,12 +792,13 @@ bool PA6Parser::parse_alignment_specifier()
 
 bool PA6Parser::parse_attribute_list()
 {
+	Mark saved = mark();
 	if (!parse_attribute_part())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_attribute_part())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
@@ -757,66 +840,76 @@ bool PA6Parser::parse_attribute_token()
 
 bool PA6Parser::parse_attribute_argument_clause()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LPAREN) || !begin_non_angle())
-		return false;
+		return restore_and_fail(saved);
 	while (!fixed(SimpleTokenType::OP_RPAREN))
 	{
 		if (eof() || !parse_balanced_token())
-			return false;
+			return restore_and_fail(saved);
 	}
-	consume_fixed(SimpleTokenType::OP_RPAREN);
+	if (!consume_fixed(SimpleTokenType::OP_RPAREN))
+		return restore_and_fail(saved);
 	end_non_angle();
 	return true;
 }
 
 bool PA6Parser::parse_balanced_token()
 {
+	Mark saved = mark();
 	if (fixed(SimpleTokenType::OP_LPAREN))
 	{
-		consume_fixed(SimpleTokenType::OP_LPAREN);
+		if (!consume_fixed(SimpleTokenType::OP_LPAREN))
+			return restore_and_fail(saved);
 		if (!begin_non_angle())
-			return false;
+			return restore_and_fail(saved);
 		while (!fixed(SimpleTokenType::OP_RPAREN))
 		{
 			if (eof() || !parse_balanced_token())
-				return false;
+				return restore_and_fail(saved);
 		}
-		consume_fixed(SimpleTokenType::OP_RPAREN);
+		if (!consume_fixed(SimpleTokenType::OP_RPAREN))
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
 	if (fixed(SimpleTokenType::OP_LSQUARE))
 	{
-		consume_fixed(SimpleTokenType::OP_LSQUARE);
+		if (!consume_fixed(SimpleTokenType::OP_LSQUARE))
+			return restore_and_fail(saved);
 		if (!begin_non_angle())
-			return false;
+			return restore_and_fail(saved);
 		while (!fixed(SimpleTokenType::OP_RSQUARE))
 		{
 			if (eof() || !parse_balanced_token())
-				return false;
+				return restore_and_fail(saved);
 		}
-		consume_fixed(SimpleTokenType::OP_RSQUARE);
+		if (!consume_fixed(SimpleTokenType::OP_RSQUARE))
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
 	if (fixed(SimpleTokenType::OP_LBRACE))
 	{
-		consume_fixed(SimpleTokenType::OP_LBRACE);
+		if (!consume_fixed(SimpleTokenType::OP_LBRACE))
+			return restore_and_fail(saved);
 		if (!begin_non_angle())
-			return false;
+			return restore_and_fail(saved);
 		while (!fixed(SimpleTokenType::OP_RBRACE))
 		{
 			if (eof() || !parse_balanced_token())
-				return false;
+				return restore_and_fail(saved);
 		}
-		consume_fixed(SimpleTokenType::OP_RBRACE);
+		if (!consume_fixed(SimpleTokenType::OP_RBRACE))
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
 	if (eof() || fixed(SimpleTokenType::OP_RPAREN) ||
 		fixed(SimpleTokenType::OP_RSQUARE) || fixed(SimpleTokenType::OP_RBRACE))
-		return false;
-	++position_;
+		return restore_and_fail(saved);
+	if (!consume_current())
+		return restore_and_fail(saved);
 	return true;
 }
 
@@ -845,12 +938,13 @@ bool PA6Parser::parse_class_member_declaration()
 
 bool PA6Parser::parse_member_declarator_list()
 {
+	Mark saved = mark();
 	if (!parse_member_declarator())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_member_declarator())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
@@ -861,7 +955,9 @@ bool PA6Parser::parse_member_declarator()
 	if (fixed(SimpleTokenType::OP_COLON))
 	{
 		consume_fixed(SimpleTokenType::OP_COLON);
-		return parse_constant_expression();
+		if (!parse_constant_expression())
+			return restore_and_fail(saved);
+		return true;
 	}
 	if (!parse_declarator())
 	{
@@ -869,33 +965,48 @@ bool PA6Parser::parse_member_declarator()
 		return false;
 	}
 	while (kind(PA6TokenKind::ST_OVERRIDE) || kind(PA6TokenKind::ST_FINAL))
-		consume_kind(tokens_[position_].kind);
+	{
+		const PA6TokenKind wanted = kind(PA6TokenKind::ST_OVERRIDE) ?
+			PA6TokenKind::ST_OVERRIDE : PA6TokenKind::ST_FINAL;
+		if (!consume_kind(wanted))
+			return restore_and_fail(saved);
+	}
 	if (fixed(SimpleTokenType::OP_ASS) && kind(PA6TokenKind::ST_ZERO, 1))
-		return parse_pure_specifier();
+	{
+		if (!parse_pure_specifier())
+			return restore_and_fail(saved);
+		return true;
+	}
 	if (fixed(SimpleTokenType::OP_COLON))
 	{
 		consume_fixed(SimpleTokenType::OP_COLON);
-		return parse_constant_expression();
+		if (!parse_constant_expression())
+			return restore_and_fail(saved);
+		return true;
 	}
 	if (fixed(SimpleTokenType::OP_ASS) || fixed(SimpleTokenType::OP_LBRACE))
-		return parse_brace_or_equal_initializer();
+	{
+		if (!parse_brace_or_equal_initializer())
+			return restore_and_fail(saved);
+	}
 	return true;
 }
 
 bool PA6Parser::parse_member_specification()
 {
+	Mark saved = mark();
 	while (!fixed(SimpleTokenType::OP_RBRACE))
 	{
 		if (eof() || !tick())
-			return false;
+			return restore_and_fail(saved);
 		if (parse_access_specifier())
 		{
 			if (!consume_fixed(SimpleTokenType::OP_COLON))
-				return false;
+				return restore_and_fail(saved);
 			continue;
 		}
 		if (!parse_class_member_declaration())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
@@ -904,10 +1015,7 @@ bool PA6Parser::parse_access_specifier()
 {
 	if (fixed(SimpleTokenType::KW_PRIVATE) || fixed(SimpleTokenType::KW_PROTECTED) ||
 		fixed(SimpleTokenType::KW_PUBLIC))
-	{
-		++position_;
-		return true;
-	}
+		return consume_current();
 	return false;
 }
 
@@ -918,25 +1026,31 @@ bool PA6Parser::parse_class_or_decltype()
 
 bool PA6Parser::parse_base_clause()
 {
-	return consume_fixed(SimpleTokenType::OP_COLON) && parse_base_specifier_list();
+	Mark saved = mark();
+	if (!consume_fixed(SimpleTokenType::OP_COLON) ||
+		!parse_base_specifier_list())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_base_specifier_list()
 {
+	Mark saved = mark();
 	if (!parse_base_specifier_dots())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_base_specifier_dots())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
 
 bool PA6Parser::parse_base_specifier_dots()
 {
+	Mark saved = mark();
 	if (!parse_base_specifier())
-		return false;
+		return restore_and_fail(saved);
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	return true;
@@ -944,6 +1058,7 @@ bool PA6Parser::parse_base_specifier_dots()
 
 bool PA6Parser::parse_base_specifier()
 {
+	Mark saved = mark();
 	parse_attribute_specifier_seq();
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
 		consume_fixed(SimpleTokenType::KW_VIRTUAL);
@@ -952,7 +1067,9 @@ bool PA6Parser::parse_base_specifier()
 		if (fixed(SimpleTokenType::KW_VIRTUAL))
 			consume_fixed(SimpleTokenType::KW_VIRTUAL);
 	}
-	return parse_base_type_specifier();
+	if (!parse_base_type_specifier())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_base_type_specifier()
@@ -963,38 +1080,53 @@ bool PA6Parser::parse_base_type_specifier()
 bool PA6Parser::parse_virt_specifier()
 {
 	while (kind(PA6TokenKind::ST_OVERRIDE) || kind(PA6TokenKind::ST_FINAL))
-		consume_kind(tokens_[position_].kind);
+	{
+		const PA6TokenKind wanted = kind(PA6TokenKind::ST_OVERRIDE) ?
+			PA6TokenKind::ST_OVERRIDE : PA6TokenKind::ST_FINAL;
+		if (!consume_kind(wanted))
+			return false;
+	}
 	return true;
 }
 
 bool PA6Parser::parse_pure_specifier()
 {
-	return consume_fixed(SimpleTokenType::OP_ASS) &&
-		consume_kind(PA6TokenKind::ST_ZERO);
+	Mark saved = mark();
+	if (!consume_fixed(SimpleTokenType::OP_ASS) ||
+		!consume_kind(PA6TokenKind::ST_ZERO))
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_ctor_initializer()
 {
-	return fixed(SimpleTokenType::OP_COLON) ?
-		(consume_fixed(SimpleTokenType::OP_COLON) && parse_mem_initializer_list()) : true;
+	Mark saved = mark();
+	if (!fixed(SimpleTokenType::OP_COLON))
+		return true;
+	if (!consume_fixed(SimpleTokenType::OP_COLON) ||
+		!parse_mem_initializer_list())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_mem_initializer_list()
 {
+	Mark saved = mark();
 	if (!parse_mem_initializer_dots())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_mem_initializer_dots())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
 
 bool PA6Parser::parse_mem_initializer_dots()
 {
+	Mark saved = mark();
 	if (!parse_mem_initializer())
-		return false;
+		return restore_and_fail(saved);
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	return true;
@@ -1002,18 +1134,21 @@ bool PA6Parser::parse_mem_initializer_dots()
 
 bool PA6Parser::parse_mem_initializer()
 {
+	Mark saved = mark();
 	if (!parse_mem_initializer_id())
-		return false;
+		return restore_and_fail(saved);
 	if (consume_fixed(SimpleTokenType::OP_LPAREN))
 	{
 		if (!begin_non_angle() ||
 			(!fixed(SimpleTokenType::OP_RPAREN) && !parse_expression_list()) ||
 			!consume_fixed(SimpleTokenType::OP_RPAREN))
-			return false;
+			return restore_and_fail(saved);
 		end_non_angle();
 		return true;
 	}
-	return parse_braced_init_list();
+	if (!parse_braced_init_list())
+		return restore_and_fail(saved);
+	return true;
 }
 
 bool PA6Parser::parse_mem_initializer_id()
@@ -1023,24 +1158,26 @@ bool PA6Parser::parse_mem_initializer_id()
 
 bool PA6Parser::parse_operator_template_suffix()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::OP_LT) || !begin_angle())
-		return false;
+		return restore_and_fail(saved);
 	if (!close_angle())
 	{
 		if (!parse_template_argument_list() || !close_angle())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
 
 bool PA6Parser::parse_template_parameter_list()
 {
+	Mark saved = mark();
 	if (!parse_template_parameter())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_template_parameter())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
@@ -1055,7 +1192,8 @@ bool PA6Parser::parse_type_parameter()
 	Mark saved = mark();
 	if (fixed(SimpleTokenType::KW_CLASS) || fixed(SimpleTokenType::KW_TYPENAME))
 	{
-		++position_;
+		if (!consume_current())
+			return restore_and_fail(saved);
 		if (fixed(SimpleTokenType::OP_DOTS))
 			consume_fixed(SimpleTokenType::OP_DOTS);
 		if (identifier())
@@ -1093,25 +1231,33 @@ bool PA6Parser::parse_type_parameter()
 
 bool PA6Parser::parse_function_body()
 {
+	Mark saved = mark();
 	if (fixed(SimpleTokenType::KW_TRY))
 		return parse_function_try_block();
 	if (fixed(SimpleTokenType::OP_COLON))
 		if (!parse_ctor_initializer())
-			return false;
+			return restore_and_fail(saved);
 	if (fixed(SimpleTokenType::OP_LBRACE))
 		return parse_compound_statement();
 	if (consume_fixed(SimpleTokenType::OP_ASS))
 	{
 		if (consume_fixed(SimpleTokenType::KW_DEFAULT) ||
 			consume_fixed(SimpleTokenType::KW_DELETE))
-			return consume_fixed(SimpleTokenType::OP_SEMICOLON);
+		{
+			if (consume_fixed(SimpleTokenType::OP_SEMICOLON))
+				return true;
+			return restore_and_fail(saved);
+		}
 	}
-	return false;
+	return restore_and_fail(saved);
 }
 
 bool PA6Parser::parse_exception_specification()
 {
-	return parse_dynamic_exception_specification() || parse_noexcept_specification();
+	Mark saved = mark();
+	if (parse_dynamic_exception_specification() || parse_noexcept_specification())
+		return true;
+	return restore_and_fail(saved);
 }
 
 bool PA6Parser::parse_dynamic_exception_specification()
@@ -1139,20 +1285,22 @@ bool PA6Parser::parse_dynamic_exception_specification()
 
 bool PA6Parser::parse_type_id_list()
 {
+	Mark saved = mark();
 	if (!parse_type_id_dots())
-		return false;
+		return restore_and_fail(saved);
 	while (consume_fixed(SimpleTokenType::OP_COMMA))
 	{
 		if (!parse_type_id_dots())
-			return false;
+			return restore_and_fail(saved);
 	}
 	return true;
 }
 
 bool PA6Parser::parse_type_id_dots()
 {
+	Mark saved = mark();
 	if (!parse_type_id())
-		return false;
+		return restore_and_fail(saved);
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	return true;
@@ -1160,13 +1308,14 @@ bool PA6Parser::parse_type_id_dots()
 
 bool PA6Parser::parse_noexcept_specification()
 {
+	Mark saved = mark();
 	if (!consume_fixed(SimpleTokenType::KW_NOEXCEPT))
-		return false;
+		return restore_and_fail(saved);
 	if (consume_fixed(SimpleTokenType::OP_LPAREN))
 	{
 		if (!begin_non_angle() || !parse_constant_expression() ||
 			!consume_fixed(SimpleTokenType::OP_RPAREN))
-			return false;
+			return restore_and_fail(saved);
 		end_non_angle();
 	}
 	return true;
