@@ -1,0 +1,56 @@
+1 translation units
+start translation unit 1
+translation-unit
+  class-specifier C
+    class-key KW_STRUCT:struct
+    special-member-declaration ~decltype(x)
+      declarator
+        identifier ~decltype(x)
+        parameter-clause
+  class-specifier Attr
+    class-key KW_STRUCT:struct
+    special-member-declaration ~Attr
+      member-specifiers
+        specifier KW_INLINE:inline
+        specifier KW_VIRTUAL:virtual
+      declarator
+        identifier ~Attr
+        parameter-clause
+  template-declaration
+    template-parameter-clause
+      template-parameter-list
+        type-parameter
+          parameter-key KW_CLASS:class
+          identifier T
+    class-specifier Box
+      class-key KW_STRUCT:struct
+      special-member-declaration ~Box<T>
+        declarator
+          identifier ~Box<T>
+          parameter-clause
+  function-definition
+    decl-specifier-seq
+      decl-specifier KW_INT:int
+    declarator
+      identifier ::operator+
+      parameter-clause
+        parameter-declaration
+          decl-specifier-seq
+            decl-specifier KW_INT:int
+          declarator
+            identifier value
+    compound-statement
+      return-statement
+        id-expression value
+  template-declaration
+    template-parameter-clause
+      template-parameter-list
+        type-parameter
+          parameter-key KW_CLASS:class
+          identifier T
+    class-specifier Holder
+      class-key KW_STRUCT:struct
+  explicit-instantiation-declaration
+    class-forward-declaration Holder<int>
+      class-key KW_STRUCT:struct
+end translation unit

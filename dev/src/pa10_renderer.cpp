@@ -148,6 +148,9 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output, std::size_t depth);
 
+void append_destructor_name(const PA10Ast& ast, const PA10AstNode& node,
+	std::ostream& output, std::size_t depth);
+
 void validate_node_sidecar_ranges(const PA10Ast& ast,
 	const PA10AstNode& node);
 
@@ -206,10 +209,7 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 {
 	if (depth >= PA10_MAX_AST_NESTING)
 		throw std::runtime_error("PA10 renderer name nesting limit reached");
-	if (node.name_prefix_begin > ast.name_prefix_nodes.size() ||
-		node.name_prefix_count > ast.name_prefix_nodes.size() -
-			node.name_prefix_begin)
-		throw std::runtime_error("invalid PA10 name prefix range");
+	validate_node_sidecar_ranges(ast, node);
 	if (node.global_name)
 		output << "::";
 	if (node.name_prefix_count != 0)
@@ -256,12 +256,7 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 		if (node.name_prefix_count != 0 || !node.name_parts.empty())
 			output << "::";
 		if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor)
-		{
-			if (node.unqualified_id_token_spelling != 0)
-				output << ast.spelling(node.unqualified_id_token_spelling);
-			if (node.unqualified_id_spelling != 0)
-				output << ast.producer_spelling(node.unqualified_id_spelling);
-		}
+			append_destructor_name(ast, node, output, depth + 1);
 		else if (node.operator_function_kind ==
 			PA10OperatorFunctionKind::Conversion &&
 			node.semantic_child_count == 1)
@@ -318,15 +313,13 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 		if (node.kind == PA10NodeKind::TypeName && node.has_token &&
 			node.token == SimpleTokenType::KW_TYPENAME)
 			output << ast.spelling(node.token_spelling) << ' ';
-		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+		if (node.global_name || node.name_prefix_count != 0 ||
+			!node.name_parts.empty())
 			append_name(ast, node, output, depth + 1);
 		else if (node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
 		{
 			if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor)
-			{
-				output << ast.spelling(node.unqualified_id_token_spelling);
-				output << ast.producer_spelling(node.unqualified_id_spelling);
-			}
+				append_destructor_name(ast, node, output, depth + 1);
 			else
 				for (std::size_t i = 0; i < node.operator_presentation_count; ++i)
 					output << ast.spelling(ast.operator_presentation_spellings[
@@ -513,6 +506,23 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	}
 }
 
+void append_destructor_name(const PA10Ast& ast, const PA10AstNode& node,
+	std::ostream& output, std::size_t depth)
+{
+	validate_node_sidecar_ranges(ast, node);
+	if (node.unqualified_id_token_spelling != 0)
+		output << ast.spelling(node.unqualified_id_token_spelling);
+	if (node.semantic_child_count != 0)
+	{
+		if (node.semantic_child_count != 1)
+			throw std::runtime_error("invalid PA10 destructor semantic range");
+		append_inline_node(ast,
+			ast.semantic_child_nodes[node.semantic_child_begin], output, depth + 1);
+	}
+	else if (node.unqualified_id_spelling != 0)
+		output << ast.producer_spelling(node.unqualified_id_spelling);
+}
+
 std::string join_name(const PA10Ast& ast, const PA10AstNode& node)
 {
 	std::ostringstream result;
@@ -568,8 +578,7 @@ void render_unqualified_id(const PA10Ast& ast, const PA10AstNode& node,
 	output << ' ';
 	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor)
 	{
-		output << ast.spelling(node.unqualified_id_token_spelling)
-			<< ast.producer_spelling(node.unqualified_id_spelling);
+		append_destructor_name(ast, node, output, 1);
 		return;
 	}
 	if (node.operator_presentation_begin >
@@ -595,7 +604,8 @@ void render_special_member_name(const PA10Ast& ast,
 	}
 	if (name == NULL)
 		return;
-	if (name->name_prefix_count != 0 || !name->name_parts.empty())
+	if (name->global_name || name->name_prefix_count != 0 ||
+		!name->name_parts.empty())
 		output << ' ' << join_name(ast, *name);
 	else if (name->unqualified_id_kind != PA10UnqualifiedIdKind::None)
 		render_unqualified_id(ast, *name, output);
@@ -680,7 +690,10 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::EnumSpecifier:
 	case PA10NodeKind::NamespaceAliasDefinition:
 	case PA10NodeKind::AliasDeclaration:
-		render_scalar_presentation(ast, node, output);
+		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+			output << ' ' << join_name(ast, node);
+		else
+			render_scalar_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::LinkageSpecification:
 		render_decoded_linkage_literal(node, output);
@@ -704,7 +717,8 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		output << ' ' << join_name(ast, node);
 		break;
 	case PA10NodeKind::Identifier:
-		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+		if (node.global_name || node.name_prefix_count != 0 ||
+			!node.name_parts.empty())
 			output << ' ' << join_name(ast, node);
 		else if (node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
 			render_unqualified_id(ast, node, output);

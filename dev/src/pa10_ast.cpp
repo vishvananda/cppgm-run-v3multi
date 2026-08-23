@@ -875,7 +875,7 @@ PA10Name PA10Parser::parse_name(bool template_expected,
 		result.global = true;
 		consume_fixed(SimpleTokenType::OP_COLON2);
 	}
-	else if (allow_unqualified_id &&
+	if (allow_unqualified_id &&
 		(fixed(SimpleTokenType::KW_OPERATOR) ||
 		 fixed(SimpleTokenType::OP_COMPL)))
 	{
@@ -929,7 +929,17 @@ PA10AstNode PA10Parser::parse_destructor_name()
 	if (identifier())
 	{
 		const PA10Token name = consume_identifier_token();
-		result.unqualified_id_spelling = name.spelling;
+		if (fixed(SimpleTokenType::OP_LT))
+		{
+			PA10NameComponent component;
+			component.spelling = name.spelling;
+			parse_template_arguments(component);
+			PA10AstNode template_name = node(PA10NodeKind::Identifier);
+			template_name.name_parts.push_back(component);
+			append_semantic_child(result, std::move(template_name));
+		}
+		else
+			result.unqualified_id_spelling = name.spelling;
 		return result;
 	}
 	if (fixed(SimpleTokenType::KW_DECLTYPE))
@@ -1199,7 +1209,12 @@ PA10AstNode PA10Parser::parse_explicit_instantiation()
 	consume_fixed(SimpleTokenType::KW_EXTERN);
 	consume_fixed(SimpleTokenType::KW_TEMPLATE);
 	PA10AstNode result = node(PA10NodeKind::ExplicitInstantiationDeclaration);
-	result.children.push_back(parse_decl_or_function());
+	if (fixed(SimpleTokenType::KW_CLASS) ||
+		fixed(SimpleTokenType::KW_STRUCT) ||
+		fixed(SimpleTokenType::KW_UNION))
+		result.children.push_back(parse_class_declaration());
+	else
+		result.children.push_back(parse_decl_or_function());
 	return result;
 }
 
@@ -2464,17 +2479,33 @@ PA10AstNode PA10Parser::parse_class_declaration(bool in_decl_specifier)
 {
 	(void)in_decl_specifier;
 	const SimpleTokenType key = look().fixed;
-	if ((fixed(key) && identifier(1) &&
-		fixed(SimpleTokenType::OP_SEMICOLON, 2)) ||
-		(fixed(key) && fixed(SimpleTokenType::OP_SEMICOLON, 1)))
+	bool forward_declaration = fixed(key) &&
+		(fixed(SimpleTokenType::OP_SEMICOLON, 1) ||
+		 (identifier(1) && fixed(SimpleTokenType::OP_SEMICOLON, 2)));
+	if (!forward_declaration && fixed(key) && identifier(1) &&
+		fixed(SimpleTokenType::OP_LT, 2))
+	{
+		std::size_t close = 0;
+		forward_declaration = find_template_close(position_ + 2, &close) &&
+			close < tokens_.size() && close + 1 < tokens_.size() &&
+			token_fixed_at(close + 1, 0, SimpleTokenType::OP_SEMICOLON);
+	}
+	if (forward_declaration)
 	{
 		PA10AstNode result = node(PA10NodeKind::ClassForwardDeclaration);
 		result.text = intern("<unnamed>");
 		result.children.push_back(fixed_node(PA10NodeKind::ClassKey));
 		if (identifier())
 		{
-			const PA10Token name = consume_identifier_token();
-			result.producer_spelling = name.spelling;
+			const PA10Name name = parse_name(true);
+			if (!name.global && name.parts.size() == 1 &&
+				!name.parts.front().has_template_id)
+				result.producer_spelling = name.parts.front().spelling;
+			else
+			{
+				result.global_name = name.global;
+				result.name_parts = name.parts;
+			}
 		}
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		return result;
@@ -2696,21 +2727,23 @@ void PA10Parser::skip_attribute_specifiers()
 PA10AstNode PA10Parser::parse_member_specifiers()
 {
 	PA10AstNode result = node(PA10NodeKind::MemberSpecifiers);
+	skip_attribute_specifiers();
 	while (fixed(SimpleTokenType::KW_INLINE) ||
 		fixed(SimpleTokenType::KW_VIRTUAL) ||
 		fixed(SimpleTokenType::KW_EXPLICIT) ||
 		fixed(SimpleTokenType::KW_CONSTEXPR) ||
 		fixed(SimpleTokenType::KW_FRIEND) ||
 		fixed(SimpleTokenType::KW_STATIC))
+	{
 		result.children.push_back(fixed_node(PA10NodeKind::MemberSpecifier));
+		skip_attribute_specifiers();
+	}
 	return result;
 }
 
 PA10AstNode PA10Parser::parse_special_member()
 {
-	skip_attribute_specifiers();
 	PA10AstNode member_specifiers = parse_member_specifiers();
-	skip_attribute_specifiers();
 	PA10AstNode declarator = parse_declarator(false, true);
 	PA10AstNode result = node(PA10NodeKind::SpecialMemberDeclaration);
 	if (!member_specifiers.children.empty())
