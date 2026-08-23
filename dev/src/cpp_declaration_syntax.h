@@ -23,6 +23,11 @@ struct CppSyntaxQualifiedName
 struct CppSyntaxDeclSpec
 {
 	bool is_typedef;
+	bool is_static;
+	bool is_thread_local;
+	bool is_extern;
+	bool is_constexpr;
+	bool is_inline;
 	bool has_named_type;
 	CppSyntaxQualifiedName named_type;
 	unsigned int cv;
@@ -41,11 +46,37 @@ struct CppSyntaxDeclSpec
 	bool has_void;
 
 	CppSyntaxDeclSpec()
-		: is_typedef(false), has_named_type(false), named_type(), cv(0),
+		: is_typedef(false), is_static(false), is_thread_local(false),
+		  is_extern(false), is_constexpr(false), is_inline(false),
+		  has_named_type(false), named_type(), cv(0),
 		  has_char(false), has_short(false), has_int(false), long_count(0),
 		  has_signed(false), has_unsigned(false), has_bool(false),
 		  has_wchar(false), has_char16(false), has_char32(false),
 		  has_float(false), has_double(false), has_void(false)
+	{}
+};
+
+enum class CppSyntaxExpressionKind
+{
+	True,
+	False,
+	Nullptr,
+	Literal,
+	Id
+};
+
+// Parenthesized expressions are normalized by the grammar owner because PA8
+// has no operator whose semantics depend on the parentheses.  The expression
+// remains typed: literals retain their decoded payload and ids retain their
+// spelling identities until the semantic owner resolves them.
+struct CppSyntaxExpression
+{
+	CppSyntaxExpressionKind kind;
+	LiteralData literal;
+	CppSyntaxQualifiedName id;
+
+	CppSyntaxExpression()
+		: kind(CppSyntaxExpressionKind::False), literal(), id()
 	{}
 };
 
@@ -66,8 +97,13 @@ struct CppSyntaxDeclarator
 	bool has_name;
 	CppSyntaxQualifiedName name;
 	std::vector<CppSyntaxDeclaratorOp> operations;
+	bool has_initializer;
+	CppSyntaxExpression initializer;
 
-	CppSyntaxDeclarator() : has_name(false), name(), operations() {}
+	CppSyntaxDeclarator()
+		: has_name(false), name(), operations(), has_initializer(false),
+		  initializer()
+	{}
 };
 
 struct CppSyntaxDeclaratorOp
@@ -157,6 +193,18 @@ public:
 	virtual void on_simple_declaration_end()
 	{
 	}
+	virtual void on_function_definition(const CppSyntaxDeclSpec& spec,
+		const CppSyntaxDeclarator& declarator)
+	{
+		(void)spec;
+		(void)declarator;
+	}
+	virtual void on_static_assert_declaration(
+		const CppSyntaxExpression& expression, const LiteralData& message)
+	{
+		(void)expression;
+		(void)message;
+	}
 
 	// These are policy queries at the point where the grammar needs a
 	// potentially ambiguous name category. PA6 answers from its lexical mock
@@ -244,7 +292,9 @@ private:
 	void parse_declaration();
 	void parse_namespace(bool inline_namespace);
 	void parse_using();
+	void parse_static_assert();
 	CppSyntaxQualifiedName parse_qualified_name();
+	CppSyntaxExpression parse_expression();
 	void parse_simple_declaration();
 	bool is_cv(SimpleTokenType type) const;
 	bool consume_decl_specifier(CppSyntaxDeclSpec* spec);

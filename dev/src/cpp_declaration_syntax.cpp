@@ -105,11 +105,12 @@ void CppDeclarationSyntaxParser::parse_declaration()
 	}
 	if (fixed(SimpleTokenType::KW_INLINE))
 	{
-		consume_fixed(SimpleTokenType::KW_INLINE);
-		if (!fixed(SimpleTokenType::KW_NAMESPACE))
-			throw std::runtime_error("inline declaration is not a namespace");
-		parse_namespace(true);
-		return;
+		if (fixed(SimpleTokenType::KW_NAMESPACE, 1))
+		{
+			consume_fixed(SimpleTokenType::KW_INLINE);
+			parse_namespace(true);
+			return;
+		}
 	}
 	if (fixed(SimpleTokenType::KW_NAMESPACE))
 	{
@@ -119,6 +120,11 @@ void CppDeclarationSyntaxParser::parse_declaration()
 	if (fixed(SimpleTokenType::KW_USING))
 	{
 		parse_using();
+		return;
+	}
+	if (fixed(SimpleTokenType::KW_STATIC_ASSERT))
+	{
+		parse_static_assert();
 		return;
 	}
 	parse_simple_declaration();
@@ -190,6 +196,18 @@ void CppDeclarationSyntaxParser::parse_using()
 	consumer_.on_using_declaration(name);
 }
 
+void CppDeclarationSyntaxParser::parse_static_assert()
+{
+	consume_fixed(SimpleTokenType::KW_STATIC_ASSERT);
+	consume_fixed(SimpleTokenType::OP_LPAREN);
+	CppSyntaxExpression expression = parse_expression();
+	consume_fixed(SimpleTokenType::OP_COMMA);
+	LiteralData message = consume_literal();
+	consume_fixed(SimpleTokenType::OP_RPAREN);
+	consume_fixed(SimpleTokenType::OP_SEMICOLON);
+	consumer_.on_static_assert_declaration(expression, message);
+}
+
 CppSyntaxQualifiedName CppDeclarationSyntaxParser::parse_qualified_name()
 {
 	CppSyntaxQualifiedName result;
@@ -214,17 +232,79 @@ CppSyntaxQualifiedName CppDeclarationSyntaxParser::parse_qualified_name()
 void CppDeclarationSyntaxParser::parse_simple_declaration()
 {
 	CppSyntaxDeclSpec spec = parse_decl_specifiers();
-	consumer_.on_simple_declaration_begin(spec);
-	do
+	CppSyntaxDeclarator first = parse_ptr_declarator(false);
+	if (fixed(SimpleTokenType::OP_LBRACE))
 	{
-		CppSyntaxDeclarator declarator = parse_ptr_declarator(false);
-		consumer_.on_simple_declarator(declarator);
-		if (!fixed(SimpleTokenType::OP_COMMA))
-			break;
+		consume_fixed(SimpleTokenType::OP_LBRACE);
+		consume_fixed(SimpleTokenType::OP_RBRACE);
+		consumer_.on_function_definition(spec, first);
+		return;
+	}
+	consumer_.on_simple_declaration_begin(spec);
+	if (fixed(SimpleTokenType::OP_ASS))
+	{
+		consume_fixed(SimpleTokenType::OP_ASS);
+		first.has_initializer = true;
+		first.initializer = parse_expression();
+	}
+	consumer_.on_simple_declarator(first);
+	while (fixed(SimpleTokenType::OP_COMMA))
+	{
 		consume_fixed(SimpleTokenType::OP_COMMA);
-	} while (true);
+		CppSyntaxDeclarator declarator = parse_ptr_declarator(false);
+		if (fixed(SimpleTokenType::OP_ASS))
+		{
+			consume_fixed(SimpleTokenType::OP_ASS);
+			declarator.has_initializer = true;
+			declarator.initializer = parse_expression();
+		}
+		consumer_.on_simple_declarator(declarator);
+	}
 	consume_fixed(SimpleTokenType::OP_SEMICOLON);
 	consumer_.on_simple_declaration_end();
+}
+
+CppSyntaxExpression CppDeclarationSyntaxParser::parse_expression()
+{
+	CppSyntaxExpression result;
+	if (fixed(SimpleTokenType::KW_TRUE))
+	{
+		consume_fixed(SimpleTokenType::KW_TRUE);
+		result.kind = CppSyntaxExpressionKind::True;
+		return result;
+	}
+	if (fixed(SimpleTokenType::KW_FALSE))
+	{
+		consume_fixed(SimpleTokenType::KW_FALSE);
+		result.kind = CppSyntaxExpressionKind::False;
+		return result;
+	}
+	if (fixed(SimpleTokenType::KW_NULLPTR))
+	{
+		consume_fixed(SimpleTokenType::KW_NULLPTR);
+		result.kind = CppSyntaxExpressionKind::Nullptr;
+		return result;
+	}
+	if (literal())
+	{
+		result.kind = CppSyntaxExpressionKind::Literal;
+		result.literal = consume_literal();
+		return result;
+	}
+	if (fixed(SimpleTokenType::OP_LPAREN))
+	{
+		consume_fixed(SimpleTokenType::OP_LPAREN);
+		result = parse_expression();
+		consume_fixed(SimpleTokenType::OP_RPAREN);
+		return result;
+	}
+	if (identifier() || fixed(SimpleTokenType::OP_COLON2))
+	{
+		result.kind = CppSyntaxExpressionKind::Id;
+		result.id = parse_qualified_name();
+		return result;
+	}
+	throw std::runtime_error("expected C++ expression");
 }
 
 bool CppDeclarationSyntaxParser::is_cv(SimpleTokenType type) const
@@ -240,6 +320,11 @@ bool CppDeclarationSyntaxParser::consume_decl_specifier(
 	{
 		spec->is_typedef = true;
 		consume_fixed(SimpleTokenType::KW_TYPEDEF);
+	}
+	else if (fixed(SimpleTokenType::KW_CONSTEXPR))
+	{
+		spec->is_constexpr = true;
+		consume_fixed(SimpleTokenType::KW_CONSTEXPR);
 	}
 	else if (fixed(SimpleTokenType::KW_CONST))
 	{
@@ -316,16 +401,25 @@ bool CppDeclarationSyntaxParser::consume_decl_specifier(
 		spec->has_void = true;
 		consume_fixed(SimpleTokenType::KW_VOID);
 	}
-	else if (fixed(SimpleTokenType::KW_STATIC) ||
-		fixed(SimpleTokenType::KW_THREAD_LOCAL) ||
-		fixed(SimpleTokenType::KW_EXTERN))
+	else if (fixed(SimpleTokenType::KW_STATIC))
 	{
-		if (fixed(SimpleTokenType::KW_STATIC))
-			consume_fixed(SimpleTokenType::KW_STATIC);
-		else if (fixed(SimpleTokenType::KW_THREAD_LOCAL))
-			consume_fixed(SimpleTokenType::KW_THREAD_LOCAL);
-		else
-			consume_fixed(SimpleTokenType::KW_EXTERN);
+		spec->is_static = true;
+		consume_fixed(SimpleTokenType::KW_STATIC);
+	}
+	else if (fixed(SimpleTokenType::KW_THREAD_LOCAL))
+	{
+		spec->is_thread_local = true;
+		consume_fixed(SimpleTokenType::KW_THREAD_LOCAL);
+	}
+	else if (fixed(SimpleTokenType::KW_EXTERN))
+	{
+		spec->is_extern = true;
+		consume_fixed(SimpleTokenType::KW_EXTERN);
+	}
+	else if (fixed(SimpleTokenType::KW_INLINE))
+	{
+		spec->is_inline = true;
+		consume_fixed(SimpleTokenType::KW_INLINE);
 	}
 	else
 		return false;
