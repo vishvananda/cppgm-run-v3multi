@@ -366,6 +366,13 @@ enum NewAbstractGroupKind
 	NewNestedParameter = 3
 };
 
+enum NewParameterClauseKind
+{
+	NewParameterNone = 0,
+	NewParameterAmbiguous = 1,
+	NewParameterDefinite = 2
+};
+
 void fact_step(std::size_t& work)
 {
 	++work;
@@ -409,7 +416,7 @@ bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
 	std::size_t begin, std::size_t end, std::size_t* after,
 	std::size_t& work);
 
-bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
+NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
 	const std::vector<unsigned char>& rshift_piece1_nested_close,
 	const std::vector<std::size_t>& delimiter_close_index,
@@ -419,16 +426,16 @@ bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
 	if (!fact_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN, work) ||
 		open >= delimiter_close_index.size() ||
 		delimiter_close_index[open] >= tokens.size())
-		return false;
+		return NewParameterNone;
 	if (delimiter_close_index[open] == open + 1 ||
 		fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_DOTS, work))
-		return true;
+		return NewParameterDefinite;
 	fact_step(work);
 	if (tokens[open + 1].kind == PA10TokenKind::Fixed)
 	{
 		const SimpleTokenType type = tokens[open + 1].fixed;
 		fact_step(work);
-		return is_type_keyword_impl(type) || is_cv_impl(type) ||
+		return (is_type_keyword_impl(type) || is_cv_impl(type) ||
 			type == SimpleTokenType::KW_TYPEDEF ||
 			type == SimpleTokenType::KW_EXTERN ||
 			type == SimpleTokenType::KW_STATIC ||
@@ -437,7 +444,8 @@ bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
 			type == SimpleTokenType::KW_CONSTEXPR ||
 			type == SimpleTokenType::KW_THREAD_LOCAL ||
 			type == SimpleTokenType::KW_TYPENAME ||
-			type == SimpleTokenType::KW_DECLTYPE;
+			type == SimpleTokenType::KW_DECLTYPE) ?
+			NewParameterDefinite : NewParameterNone;
 	}
 	if (fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_COLON2, work))
 	{
@@ -445,19 +453,20 @@ bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
 		if (member_pointer_end_at(tokens, template_close_index,
 			rshift_piece1_nested_close, open + 1,
 			delimiter_close_index[open], &after, work))
-			return false;
-		return fact_identifier_at(tokens, open, 2, work) ||
-			fact_fixed_at(tokens, open, 2, SimpleTokenType::KW_TEMPLATE, work);
+			return NewParameterNone;
+		return (fact_identifier_at(tokens, open, 2, work) ||
+			fact_fixed_at(tokens, open, 2, SimpleTokenType::KW_TEMPLATE, work)) ?
+			NewParameterAmbiguous : NewParameterNone;
 	}
 	if (!fact_identifier_at(tokens, open, 1, work))
-		return false;
+		return NewParameterNone;
 	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work))
 	{
 		std::size_t after = 0;
 		if (member_pointer_end_at(tokens, template_close_index,
 			rshift_piece1_nested_close, open + 1,
 			delimiter_close_index[open], &after, work))
-			return false;
+			return NewParameterNone;
 	}
 	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_LT, work))
 	{
@@ -482,27 +491,29 @@ bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
 					if (member_pointer_end_at(tokens, template_close_index,
 						rshift_piece1_nested_close, open + 1,
 						delimiter_close_index[open], &after, work))
-						return false;
+						return NewParameterNone;
 				}
 				fact_step(work);
-				return after == delimiter_close_index[open] ||
+				const bool parameter = after == delimiter_close_index[open] ||
 					fact_identifier_at(tokens, after, 0, work) ||
 					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_STAR, work) ||
 					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_AMP, work) ||
 					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_LAND, work) ||
 					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_COLON2, work) ||
 					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_COMMA, work);
+				return parameter ? NewParameterAmbiguous : NewParameterNone;
 			}
 		}
 	}
 	fact_step(work);
-	return delimiter_close_index[open] == open + 2 ||
+	const bool parameter = delimiter_close_index[open] == open + 2 ||
 		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_DOTS, work) ||
 		fact_identifier_at(tokens, open, 2, work) ||
 		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_STAR, work) ||
 		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_AMP, work) ||
 		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_LAND, work) ||
 		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work);
+	return parameter ? NewParameterAmbiguous : NewParameterNone;
 }
 
 bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
@@ -562,8 +573,9 @@ unsigned char new_abstract_group_at(const std::vector<PA10Token>& tokens,
 		delimiter_close_index[open] >= tokens.size())
 		return NewAbstractNone;
 	const std::size_t end = delimiter_close_index[open];
-	if (parameter_clause_start_at(tokens, template_close_index,
-		rshift_piece1_nested_close, delimiter_close_index, open, work))
+	if (parameter_clause_kind_at(tokens, template_close_index,
+		rshift_piece1_nested_close, delimiter_close_index, open, work) !=
+		NewParameterNone)
 		return NewParameterClause;
 	std::size_t cursor = open + 1;
 	bool pointer = false;
@@ -599,10 +611,13 @@ unsigned char new_abstract_group_at(const std::vector<PA10Token>& tokens,
 			return NewAbstractShape;
 		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN, work))
 		{
-			const bool parameter = parameter_clause_start_at(tokens, template_close_index,
+			const NewParameterClauseKind parameter = parameter_clause_kind_at(tokens, template_close_index,
 				rshift_piece1_nested_close, delimiter_close_index, cursor, work);
 			const unsigned char nested = fact_group_kind_at(groups, cursor, work);
-			if (parameter || nested == NewParameterClause ||
+			if (parameter == NewParameterDefinite)
+				return NewAbstractShape;
+			if (parameter == NewParameterAmbiguous ||
+				nested == NewParameterClause ||
 				nested == NewNestedParameter)
 				return NewNestedParameter;
 			if (nested == NewAbstractShape)

@@ -40,6 +40,16 @@ or consume a second production.  The canonical parser consumes the selected
 abstract-declarator production once, including the full suffix/function-
 suffix path.
 
+The corrected pointer/member-pointer handoff retains one additional typed
+distinction during that indexed classification: a nested parameter-clause
+fact is `definite` for empty, ellipsis, and fixed type-specifier starts, but
+`ambiguous` for identifier-led/mock-name starts.  A definite group following
+the pointer/member-pointer spine is classified as `NewAbstractShape`; the
+ambiguous `(*(p))` family remains initializer-biased.  This repairs the
+same-path forms `new int(*())`, `new int(*(int))`, `new int(*(...))`, and
+`new int(*() noexcept)` without changing top-level `new T()` initializer or
+explicit `new (T())` type-id selection.
+
 The AST and renderer retain explicit `GlobalScope`, `NewPlacement`,
 `NewExpression`, and `PackExpansionExpression` nodes.  Renderer validators
 continue to enforce child order, count, token identity, and sidecar bounds.
@@ -49,13 +59,16 @@ continue to enforce child order, count, token identity, and sidecar bounds.
 1. The d24 parenthesized classifier recognized only exact pointer/reference
    groups and one exact nested pointer group.  That left grammar-valid forms
    such as `new (int (*[3])())`, nested direct abstract declarators, and
-   qualified/member-pointer forms outside the required path.  The correction
-   replaces that narrow decision with an indexed group fact.  It recognizes
-   pointer/reference operators, cv qualifiers, array/function suffix starts,
-   nested group facts, and qualified member-pointer spines using the existing
-   template-close/RShift indexes.  It deliberately keeps the ambiguous
-   nested-parameter marker out of unparenthesized new type-id selection,
-   preserving identifier-led and parenthesized initializer siblings.
+   qualified/member-pointer forms outside the required path.  The indexed
+   group fact repairs that boundary by recognizing pointer/reference
+   operators, cv qualifiers, array/function suffix starts, nested group facts,
+   and qualified member-pointer spines using the existing template-close/RShift
+   indexes.  The follow-up review found one over-conservative handoff within
+   this same path: every nested parameter fact under a pointer was being
+   marked initializer-ambiguous.  The typed `definite`/`ambiguous` distinction
+   now makes empty, ellipsis, and fixed type-specifier starts abstract shapes,
+   while identifier-led/mock-name groups such as `(*(p))` remain
+   initializer-biased.
 
 2. The correction is not the removed recursive `new_abstract_declarator_at`
    support parser.  It is a precomputed typed ambiguity fact, built once for
@@ -94,7 +107,7 @@ The final focused checks on the corrected source state were:
 ```text
 make -C dev cppgm++ CXX=g++                                  exit 0
 four direct .t/.ref AST comparisons                          4/4 exact
-new-expression positive/sibling/negative/malformed matrix   32/32 expected statuses
+new-expression positive/sibling/negative/malformed matrix   55/55 expected statuses
 renderer malformed-sidecar invariant harness                 exit 0
 build_indexes reset/reuse/index harness                      exit 0
 g++ -Wall -Wextra -Werror syntax checks                      3/3 pass
@@ -109,10 +122,11 @@ pa10/tests/general/200-placement-new-pack-init.t
 pa10/tests/general/100-new-delete-traits.t
 ```
 
-The 32-case matrix covered initializer siblings, global and placement new,
+The 55-case matrix covered initializer siblings, global and placement new,
 direct/nested pointer/reference forms, array/function suffix structure,
 qualified/member-pointer and nested-template forms, and truncated/malformed
-groups.  It included `new int(*p)`, `new int((x))`, `new (int())`,
+groups.  It included the four repaired forms, `new int(*p)`,
+`new int(*(p))`, `new int()`, `new int((x))`, `new (int())`,
 `new (int (*[3])())`, `new (int (A<T>::*)())`, and global member-pointer
 forms.
 
@@ -174,7 +188,7 @@ For the corrected final executable, an immutable copy was hashed before and
 after the repeated runs with the same result:
 
 ```text
-SHA-256 bfc4058782989d23df54a173a9d7321facba3592c7176602dbd83759d9afa8c7
+SHA-256 23be0c746b108cd2e921880a410ce810f5a66f02ec4faed70a4642549782f8db
 ```
 
 Twenty repeated invocations per equivalent input, timed as one aggregate
@@ -182,16 +196,16 @@ loop on that immutable executable, produced this characterization:
 
 | input | runs | elapsed | user | sys | peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `200-placement-new-pack-init.t` | 20 | 0.06 s | 0.03 s | 0.02 s | 4364 KB |
-| `200-parenthesized-new-type-vs-placement.t` | 20 | 0.05 s | 0.02 s | 0.03 s | 4368 KB |
+| `200-placement-new-pack-init.t` | 20 | 0.06 s | 0.02 s | 0.03 s | 4440 KB |
+| `200-parenthesized-new-type-vs-placement.t` | 20 | 0.05 s | 0.02 s | 0.02 s | 4360 KB |
 
 These are process-launch-dominated characterization measurements, not a
 comparative performance claim.  Structurally, the new fact is one byte per
 token, is reset and produced in the one global index-building phase, and is
 consulted by the parser rather than recomputed for each new-expression.  The
 current-source reset/reuse harness returned identical counts on both builds;
-shape inputs grew from 6 tokens/43 work units to 641/4996, and member-pointer
-inputs from 10/92 to 1153/11268.  The delimiter-owned spine argument and
+shape inputs grew from 6 tokens/50 work units to 641/5892, and member-pointer
+inputs from 10/98 to 1153/12036.  The delimiter-owned spine argument and
 these bounded counters support amortized linear construction; every counted
 fact unit is charged to the global work limit.  There is no text retry or
 per-new-expression rescan.  The measurements do not claim more than these
@@ -201,7 +215,7 @@ Final affected-source line counts are:
 
 ```text
 dev/src/pa10_ast.cpp            2999 lines
-dev/src/pa10_parser_support.cpp  889 lines
+dev/src/pa10_parser_support.cpp  904 lines
 dev/src/pa10_parser_support.h     41 lines
 dev/src/pa10_renderer.cpp       1017 lines
 ```
@@ -211,11 +225,13 @@ criterion.
 
 ## Risks and next checkpoint
 
-The selected path now has no known relevant abstract-declarator correctness
-gap in the audited grammar family.  The remaining uncertainty is limited to
-the PA10 mock-name ambiguity policy outside this new-expression ownership
-trace; those decisions remain governed by their existing boundaries and the
-residual set above.  The file-audit warning is pre-existing and unrelated.
+This review found and repaired the pointer/member-pointer plus definite nested
+parameter-clause gap described above; the final focused and broad evidence
+show no known remaining correctness gap in the selected new-expression
+abstract-declarator family.  The remaining uncertainty is limited to the PA10
+mock-name ambiguity policy outside this new-expression ownership trace; those
+decisions remain governed by their existing boundaries and the residual set
+above.  The file-audit warning is pre-existing and unrelated.
 The next checkpoint is a separately assigned residual-family audit; it must
 not enter the 14 identities listed above or unrelated PA10 surfaces.
 
@@ -244,4 +260,4 @@ These records are retained as history, not current claims:
 | `b9b58b9c` declarator audit | historical | retain nearest-derived-operator and member-pointer bounds | historical 123/157; through-PA9 457/457 |
 | `08c38115` structured names/special members | historical | retain one typed name/special-member path and validated sidecars | historical local 135/157; course 1/1 |
 | `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | audited and committed | use one exact cast-keyword predicate, initialize indexes, route all RShift consumers through the marker, validate synthetic renderer nodes, and retain the 3000-line source bound | fresh 142/159 with exact original 17 failures; fresh through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 14/14 + 12/12 + regression 1/1; immutable performance characterization |
-| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | checkpoint audited; final gates pass | retain the typed indexed abstract-group fact, route complete abstract-declarator consumption through the canonical parser, validate inline initializer sidecars, and preserve global/placement/pack ownership | fresh 159/145 with exactly the original 14 residuals; through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 32/32 + exact refs 4/4 + warning/index/renderer harnesses; immutable final SHA-256 `bfc4058782989d23df54a173a9d7321facba3592c7176602dbd83759d9afa8c7`, aggregate 20-run characterization |
+| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | checkpoint audited; bounded same-path correction and final gates pass | retain the typed indexed abstract-group fact, distinguish definite from identifier-led nested parameter clauses under pointer/member-pointer spines, route complete abstract-declarator consumption through the canonical parser, validate inline initializer sidecars, and preserve global/placement/pack ownership | fresh 159/145 with exactly the original 14 residuals; through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 55/55 + exact refs 4/4 + warning/index/renderer harnesses; corrected-final immutable SHA-256 and aggregate 20-run characterization recorded above |

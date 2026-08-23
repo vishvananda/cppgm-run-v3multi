@@ -31,7 +31,10 @@ parameter clauses, and function suffixes while preserving `new T(*p)`,
 `new T((x))`, the unparenthesized `new T(int())` initializer, explicit
 parenthesized type-ids such as `new (int())`, placement/type-id selection,
 global scope, and pack ownership.  The canonical `parse_abstract_declarator`
-remains the sole AST-producing grammar path.
+remains the sole AST-producing grammar path.  Within the indexed fact,
+empty/ellipsis/fixed type-specifier parameter starts are definite under a
+pointer/member-pointer spine, while identifier-led/mock-name starts such as
+`(*(p))` remain initializer-biased; this is the corrected same-path boundary.
 
 ## Exact failure map
 
@@ -62,7 +65,7 @@ reduction, and no work entered any listed family.
 
 | checkpoint | status | compact evidence/state |
 | --- | --- | --- |
-| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | completed bounded correction; final gates pass | context-confined indexed abstract-declarator decision; exact charged index work; canonical parser consumption; renderer sidecar guard; focused 32/32 and exact refs 4/4; PA10 159/145 with exact original 14; through-PA9 457/457; file audit exit 0 with one pre-existing warning; immutable final SHA-256 `bfc4058782989d23df54a173a9d7321facba3592c7176602dbd83759d9afa8c7` |
+| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | completed bounded correction; final gates pass | context-confined indexed abstract-declarator decision with definite-vs-ambiguous nested parameter fact; exact charged index work; canonical parser consumption; renderer sidecar guard; focused 55/55 and exact refs 4/4; PA10 159/145 with exact original 14; through-PA9 457/457; file audit exit 0 with one pre-existing warning; corrected-final immutable SHA-256 and aggregate 20-run characterization recorded below |
 
 ## Focused and broad evidence
 
@@ -71,7 +74,7 @@ Final focused commands/results:
 ```text
 make -C dev cppgm++ CXX=g++                                  exit 0
 four direct .t/.ref AST comparisons                          4/4 exact
-positive/sibling/negative/malformed new matrix                32/32
+positive/sibling/negative/malformed new matrix                55/55
 renderer malformed-sidecar invariant harness                 exit 0
 build_indexes reset/reuse/index harness                      exit 0
 g++ -std=gnu++11 -Wall -Wextra -Werror syntax checks          3/3 pass
@@ -111,7 +114,7 @@ The corrected final executable was copied to an immutable path and hashed
 before and after the repeated runs.  Both hashes were:
 
 ```text
-bfc4058782989d23df54a173a9d7321facba3592c7176602dbd83759d9afa8c7
+23be0c746b108cd2e921880a410ce810f5a66f02ec4faed70a4642549782f8db
 ```
 
 Twenty invocations per equivalent input, timed as one aggregate loop,
@@ -119,16 +122,16 @@ produced:
 
 | input | elapsed | user | sys | peak RSS |
 | --- | ---: | ---: | ---: | ---: |
-| `200-placement-new-pack-init.t` | 0.06 s | 0.03 s | 0.02 s | 4364 KB |
-| `200-parenthesized-new-type-vs-placement.t` | 0.05 s | 0.02 s | 0.03 s | 4368 KB |
+| `200-placement-new-pack-init.t` | 0.06 s | 0.02 s | 0.03 s | 4440 KB |
+| `200-parenthesized-new-type-vs-placement.t` | 0.05 s | 0.02 s | 0.02 s | 4360 KB |
 
 These are single-executable, process-launch-dominated characterization
 measurements, not comparative claims.  Structurally, the abstract-group fact
 is reset and filled once per token buffer, is one byte per token, and is
 consumed by the parser rather than recomputed per new-expression.  A
 current-source reset/reuse harness returned identical counts; shape inputs
-grew from 6 tokens/43 work units to 641/4996, and member-pointer inputs from
-10/92 to 1153/11268.  The reverse delimiter-owned spine pass and its
+grew from 6 tokens/50 work units to 641/5892, and member-pointer inputs from
+10/98 to 1153/12036.  The reverse delimiter-owned spine pass and its
 charged work count support amortized linear construction; there is no text
 retry or per-new rescan.  The existing global work, recursion, delimiter,
 angle, and renderer limits remain in force.
@@ -137,7 +140,7 @@ Final affected-source counts observed before the final audit were:
 
 ```text
 dev/src/pa10_ast.cpp            2999 lines
-dev/src/pa10_parser_support.cpp  889 lines
+dev/src/pa10_parser_support.cpp  904 lines
 dev/src/pa10_parser_support.h     41 lines
 dev/src/pa10_renderer.cpp       1017 lines
 ```
