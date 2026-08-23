@@ -363,6 +363,7 @@ bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens)
 void build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
+	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index)
 {
 	std::vector<std::vector<std::size_t> > angle_stacks(1);
@@ -383,6 +384,9 @@ void build_indexes(const std::vector<PA10Token>& tokens,
 		{
 			if (!angle_stacks.back().empty())
 			{
+				if (token.kind == PA10TokenKind::RShiftPiece2 && i != 0 &&
+					tokens[i - 1].kind == PA10TokenKind::RShiftPiece1)
+					rshift_piece1_nested_close[i - 1] = 1;
 				const std::size_t open = angle_stacks.back().back();
 				angle_stacks.back().pop_back();
 				template_close_index[open] = i;

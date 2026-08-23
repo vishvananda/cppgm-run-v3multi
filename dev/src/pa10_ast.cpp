@@ -35,6 +35,7 @@ public:
 		  angle_bases_(),
 		  template_close_index_(tokens.size(), tokens.size()),
 		  template_top_level_or_(tokens.size(), 0),
+		  rshift_piece1_nested_close_(tokens.size(), 0),
 		  delimiter_close_index_(tokens.size(), tokens.size()),
 		  ast_(), presentation_ids_()
 	{
@@ -62,6 +63,7 @@ private:
 	std::vector<std::size_t> angle_bases_;
 	std::vector<std::size_t> template_close_index_;
 	std::vector<unsigned char> template_top_level_or_;
+	std::vector<unsigned char> rshift_piece1_nested_close_;
 	std::vector<std::size_t> delimiter_close_index_;
 	PA10Ast ast_;
 	std::unordered_map<std::string, PA10StringId> presentation_ids_;
@@ -535,6 +537,10 @@ private:
 	PA10AstNode parse_new_expression();
 	PA10AstNode parse_delete_expression();
 	PA10AstNode parse_postfix_expression();
+	PA10AstNode parse_postfix_expression_seed();
+	PA10AstNode parse_postfix_suffixes(PA10AstNode result);
+	bool builtin_function_style_cast_start() const;
+	PA10AstNode parse_builtin_function_style_cast();
 	PA10AstNode parse_primary_expression();
 	PA10AstNode parse_lambda_expression();
 	PA10AstNode parse_lambda_declarator();
@@ -672,7 +678,8 @@ private:
 void PA10Parser::build_template_indexes()
 {
 	PA10ParserSupport::build_indexes(tokens_, template_close_index_,
-		template_top_level_or_, delimiter_close_index_);
+		template_top_level_or_, rshift_piece1_nested_close_,
+		delimiter_close_index_);
 	for (std::size_t i = 0; i < tokens_.size(); ++i)
 		charge();
 }
@@ -694,13 +701,21 @@ bool PA10Parser::find_template_close(std::size_t absolute_lt,
 bool PA10Parser::template_follow_is_valid(std::size_t absolute_close)
 {
 	std::size_t next = absolute_close + 1;
-	if (next < tokens_.size())
-		charge();
 	if (absolute_close < tokens_.size() &&
 		tokens_[absolute_close].kind == PA10TokenKind::RShiftPiece1 &&
 		next < tokens_.size() &&
 		tokens_[next].kind == PA10TokenKind::RShiftPiece2)
-		return true;
+	{
+		charge();
+		// The index marks this pair when the second piece closed another
+		// template. Otherwise both pieces are a shift and the follower is
+		// the token after the pair.
+		if (rshift_piece1_nested_close_[absolute_close])
+			return true;
+		++next;
+	}
+	if (next < tokens_.size())
+		charge();
 	if (next >= tokens_.size() || tokens_[next].kind == PA10TokenKind::End)
 		return true;
 	const PA10Token& token = tokens_[next];
@@ -2013,8 +2028,6 @@ PA10AstNode PA10Parser::parse_unary_expression_base()
 		return parse_type_trait(SimpleTokenType::KW_ALIGNOF);
 	if (fixed(SimpleTokenType::KW_NOEXCEPT))
 		return parse_type_trait(SimpleTokenType::KW_NOEXCEPT);
-	if (fixed(SimpleTokenType::KW_TYPEID))
-		return parse_type_trait(SimpleTokenType::KW_TYPEID);
 	if (fixed(SimpleTokenType::KW_STATIC_CAST) ||
 		fixed(SimpleTokenType::KW_DYNAMIC_CAST) ||
 		fixed(SimpleTokenType::KW_CONST_CAST) ||
@@ -2091,9 +2104,39 @@ PA10AstNode PA10Parser::parse_delete_expression()
 	result.children.push_back(parse_unary_expression());
 	return result;
 }
-PA10AstNode PA10Parser::parse_postfix_expression()
+bool PA10Parser::builtin_function_style_cast_start() const
 {
-	PA10AstNode result = parse_primary_expression();
+	return look().kind == PA10TokenKind::Fixed &&
+		is_type_keyword(look().fixed) &&
+		fixed(SimpleTokenType::OP_LPAREN, 1);
+}
+
+PA10AstNode PA10Parser::parse_builtin_function_style_cast()
+{
+	if (!builtin_function_style_cast_start())
+		fail("expected built-in function-style cast");
+	const PA10Token type = consume_token();
+	PA10AstNode callee = node(PA10NodeKind::IdExpression);
+	callee.has_token = true;
+	callee.token = type.fixed;
+	callee.token_spelling = intern(type.source);
+	PA10AstNode result = node(PA10NodeKind::CallExpression);
+	result.children.push_back(std::move(callee));
+	result.children.push_back(parse_paren_argument_list());
+	return result;
+}
+
+PA10AstNode PA10Parser::parse_postfix_expression_seed()
+{
+	if (fixed(SimpleTokenType::KW_TYPEID))
+		return parse_type_trait(SimpleTokenType::KW_TYPEID);
+	if (builtin_function_style_cast_start())
+		return parse_builtin_function_style_cast();
+	return parse_primary_expression();
+}
+
+PA10AstNode PA10Parser::parse_postfix_suffixes(PA10AstNode result)
+{
 	while (true)
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN))
@@ -2145,6 +2188,11 @@ PA10AstNode PA10Parser::parse_postfix_expression()
 		break;
 	}
 	return result;
+}
+
+PA10AstNode PA10Parser::parse_postfix_expression()
+{
+	return parse_postfix_suffixes(parse_postfix_expression_seed());
 }
 PA10AstNode PA10Parser::parse_primary_expression()
 {

@@ -1,4 +1,5 @@
 #include "pa10_ast.h"
+#include "pa10_parser_support.h"
 
 #include <sstream>
 #include <stdexcept>
@@ -165,6 +166,24 @@ void append_fixed_presentation(const PA10Ast& ast, const PA10AstNode& node,
 	output << simple_token_type_name(node.token);
 }
 
+void append_fixed_id_expression(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output)
+{
+	if (!node.has_token || !PA10ParserSupport::is_type_keyword(node.token) ||
+		node.token_spelling == 0 || node.global_name ||
+		node.name_prefix_count != 0 || !node.name_parts.empty() ||
+		node.producer_spelling != 0 || node.unqualified_id_kind !=
+		PA10UnqualifiedIdKind::None || node.unqualified_id_spelling != 0 ||
+		node.operator_presentation_count != 0 ||
+		node.semantic_child_count != 0 || node.text != 0 ||
+		node.has_literal || !node.children.empty())
+		throw std::runtime_error("invalid PA10 fixed-token id-expression");
+	const std::string& spelling = ast.spelling(node.token_spelling);
+	if (spelling.empty())
+		throw std::runtime_error("empty PA10 fixed-token id-expression spelling");
+	output << spelling;
+}
+
 void append_inline_children(const PA10Ast& ast,
 	const std::vector<PA10AstNode>& children, std::ostream& output,
 	std::size_t depth, const char* separator)
@@ -310,6 +329,11 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::BaseName:
 	case PA10NodeKind::MemInitializerId:
 	case PA10NodeKind::Identifier:
+		if (node.kind == PA10NodeKind::IdExpression && node.has_token)
+		{
+			append_fixed_id_expression(ast, node, output);
+			break;
+		}
 		if (node.kind == PA10NodeKind::TypeName && node.has_token &&
 			node.token == SimpleTokenType::KW_TYPENAME)
 			output << ast.spelling(node.token_spelling) << ' ';
@@ -712,9 +736,21 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		break;
 	case PA10NodeKind::Target:
 	case PA10NodeKind::BaseName:
-	case PA10NodeKind::IdExpression:
 	case PA10NodeKind::MemInitializerId:
 		output << ' ' << join_name(ast, node);
+		break;
+	case PA10NodeKind::IdExpression:
+		if (node.has_token)
+		{
+			output << ' ';
+			append_fixed_id_expression(ast, node, output);
+		}
+		else if (node.global_name || node.name_prefix_count != 0 ||
+			!node.name_parts.empty() ||
+			node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
+			output << ' ' << join_name(ast, node);
+		else
+			render_scalar_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::Identifier:
 		if (node.global_name || node.name_prefix_count != 0 ||

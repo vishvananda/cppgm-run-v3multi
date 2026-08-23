@@ -16,6 +16,7 @@ bool is_operator_function_token(SimpleTokenType type);
 void build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
+	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index);
 
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,
