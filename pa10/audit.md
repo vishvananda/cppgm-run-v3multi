@@ -1,175 +1,220 @@
 # Current Checkpoint Review
 
 This is the bounded audit of landed checkpoint
-`08c38115a64397ae7170a53a81b74a1c36e0a9fb`, `PA10: route structured names and
-special members`, whose parent is `b9b58b9c`.  The reviewed landed increment
-is limited to `dev/frontend_source_sets.mk`, `dev/src/pa10_ast.{h,cpp}`,
-`dev/src/pa10_parser_support.{h,cpp}`, and `dev/src/pa10_renderer.cpp`.
-The final bounded repair remains within `pa10_ast.cpp` and
-`pa10_renderer.cpp`; no production owner, grammar, harness, or unrelated
-residual family was widened.
+`25f784873f2a852fd825316b2188d9f157f8eae5`, `PA10: unify typed expression
+postfix parsing`, whose parent is `017eb658f7c464c429fff858cbaae744c46fc01f`.
+The review covered the parent-to-commit diff, the current support/parser/AST/
+renderer sources, the five selected fixtures and their checked-in references,
+the RShift/template siblings, and the PA10 grammar boundary.  The bounded
+repairs below stay on that same ownership path and are included in the audited
+checkpoint commit.  No grammar, handout test, existing reference, harness, or
+residual-family implementation was widened.
 
 ## Contract and specification alignment
 
-The production path remains one forward flow:
+The production path remains one forward model:
 
 ```text
-phase-3 buffer -> posttoken facts -> typed PA10Token -> PA10Parser
-    -> PA10Ast typed names/declarators and cold sidecars -> renderer
+phase-3 source buffer -> typed posttoken stream and indexes
+    -> PA10Parser expression seed -> one postfix-suffix consumer
+    -> typed PA10Ast -> cold deterministic renderer
 ```
 
-This follows root `spec.md` Purpose and §§1-4 and §7.  The support translation
-unit owns posttoken collection, contextual classification, indexed template
-and delimiter facts, attribute balancing, and bounded special-member
-lookahead.  It does not own a second parser or AST.  `PA10Parser` remains the
-owner of canonical syntax nodes; the renderer is the sole requested text
-boundary and does not reparse its output.
+This matches the Purpose and §§1-4 and §7 of root `spec.md`: the support layer
+classifies tokens and owns indexed delimiter/template facts, the parser owns
+canonical syntax nodes, and the renderer is the requested text boundary.  No
+host compiler, reference binary, previous solution, text reparse, retry loop,
+or parallel AST/parser path is used.
 
-The collector preserves producer `PPSpellingId` identity, retains source text
-only for cold presentation, classifies `override`, `final`, and GNU attribute
-introducers once, and splits producer `OP_RSHIFT` into two logical close
-pieces.  `build_indexes` is a monotonic pass over the token vector.  Its angle
-close and delimiter tables are indexed by absolute token position, and every
-parser-side scan has bounds checks or the existing parser failure boundary.
+The new RShift fact is typed continuity rather than a spelling convention.
+The posttoken collector emits `OP_RSHIFT` as adjacent
+`RShiftPiece1`/`RShiftPiece2` tokens.  `build_indexes` now sizes and clears all
+four result arrays, marks Piece1 when the adjacent Piece2 closes another
+indexed angle, and leaves ordinary pairs unmarked.  This is a typed
+structural/index fact; it does not by itself settle template-id-versus-`<`
+semantic ambiguity, which remains outside PA10.  The parser constructor
+retains a token-indexed byte side array; `template_follow_is_valid`, template
+declaration lookahead, member-pointer lookahead, and special-member lookahead
+all consume the typed marker.  `close_angle` consumes one logical close, while
+binary-expression parsing consumes both pieces only as one shift operator.
 
-`parse_name` is now the shared route for identifier/template components and
-operator, conversion, literal-operator, destructor, and qualified finals.
-`name_node` copies typed unqualified-id facts while template arguments,
-decltype roots, conversion children, and operator presentation remain in
-validated cold ranges.  Special-member routing uses indexed, charged
-lookahead, then the normal declarator path consumes the name once.  Explicit
-instantiation uses that declaration path for functions and the class-forward
-path for class targets.
+## Ownership-path findings and bounded repairs
 
-## Findings and bounded repair
+The landed implementation had four same-path semantic gaps and one final
+file-audit size correction:
 
-The landed path passed its owned checkpoint identities, but focused boundary
-probes found four omissions in the same ownership path:
+1. `builtin_function_style_cast_start` and the renderer used the broad
+   `is_type_keyword` predicate.  That predicate includes `KW_AUTO` for
+   declaration-specifier parsing, but PA10’s authoritative
+   `simple-type-specifier` production admits exactly the 13 fixed keywords
+   `bool`, `char`, `char16_t`, `char32_t`, `double`, `float`, `int`, `long`,
+   `short`, `signed`, `unsigned`, `void`, and `wchar_t`; it excludes `auto`.
+   A shared typed `is_builtin_function_style_cast_keyword` predicate now owns
+   that exact domain.  `auto(1)` is fail-closed and has a reduced checked-in
+   status regression.
+2. `build_indexes` assumed all result vectors had already been allocated and
+   cleared.  An empty/reused support call could write out of bounds.  The
+   builder now initializes each index to the exact token domain and sentinel
+   state before its monotonic pass.  This adds no hot AST field and no storage
+   beyond the existing indexed tables plus the one byte-per-token RShift fact.
+3. The synthetic builtin callee is a typed `IdExpression` with
+   `SimpleTokenType` identity and cold `token_spelling`; it is not a generic
+   text node.  The renderer now validates the exact keyword domain, all
+   identity/default fields, sidecar range starts/counts, and nonempty cold
+   spelling before rendering it.  It never reparses the spelling.
+4. Three older bounded lookaheads still skipped Piece2 from adjacency alone.
+   They now require the typed indexed-angle marker, so an ordinary shift pair
+   cannot be treated as an indexed-angle close by a declaration or
+   member-pointer probe.
+5. The final file audit measured `pa10_ast.cpp` at 3003 lines after the bounded
+   routing changes.  The same calls and conditions were compacted without a
+   semantic change; the final source is exactly 3000 lines and passes the size
+   check.
 
-- A destructor parsed as `~decltype(x)` was stored in a semantic sidecar but
-  the renderer emitted only `~`.  Destructor template-ids likewise had no
-  structured final-name owner.  The repair stores a template or decltype final
-  as exactly one semantic child; an ordinary `~Identifier` keeps its
-  `unqualified_id_spelling`.  The tilde remains the presentation token, and
-  one fail-closed renderer helper validates and emits all three forms.
-- A leading-global final such as `int ::operator+(int)` reached `parse_name`
-  after consuming `::`, where the old loop still required an identifier.  The
-  unqualified-id route now applies after a global prefix too, and renderer
-  dispatch preserves `global_name` when a name has no component prefix.
-- The landed explicit-instantiation route always called
-  `parse_decl_or_function`, and class-forward detection did not recognize a
-  template-id.  Class targets now route through `parse_class_declaration`,
-  whose forward node owns structured template components and renders
-  `Holder<int>` without flattening it.
-- The support recognizer accepted alternating member-function-specifier and
-  attribute batches, while the consumer previously admitted only one batch
-  before and one after the specifiers.  Replaying the valid
-  `inline __attribute__((always_inline)) virtual
-  __attribute__((visibility("hidden"))) ~C();` probe against that consumer
-  failed with `expected declarator-id at token 10` (exit 1).  The typed
-  `parse_member_specifiers` path now consumes balanced attributes before the
-  first specifier and after every specifier, retaining the existing
-  attribute-skipping dump convention; the repaired probe exits 0 and emits
-  both `inline` and `virtual`.
+The landed seed/suffix split itself is sound: `typeid` is a seed, builtin
+function-style casts are a typed seed, and `parse_postfix_suffixes` is the sole
+owner for call, member, subscript, and post-increment/decrement ordering.  The
+typeid fixture reaches `typeid(int).name()[0]` through that one loop.  No
+placement-new, lambda, declaration/declarator, qualified-name, or other
+residual family was entered.
 
-The forward nested-template constructor remains the only failure in the
-21-case owned command.  Its current failure is at the constructor-body
-`typedef typename alloc<Y>::type alloc_t;` (`KW_TYPENAME` is not admitted by
-the existing non-type-context declaration-specifier route).  That behavior is
-outside this coherent increment and was not widened.
+## Representative evidence
 
-The repair adds no hot-record fields, no parser retry loop, and no production
-textual downgrade.  Current source/layout characterization is 2,950 lines
-for `pa10_ast.cpp`, 552 for `pa10_parser_support.cpp`, and 849 for
-`pa10_renderer.cpp`; `sizeof(PA10Token)=240`, `sizeof(PA10AstNode)=232`, and
-`sizeof(PA10Ast)=376` in the audit build.  The parser continues to charge the
-indexed pass, token consumption, balanced-attribute consumption, recursion,
-nesting, and bounded lookahead against its existing limits.
-
-## Focused evidence
-
-Observed results after the final repair and broad validation:
+The final focused support probe passed with empty and reused output vectors and
+printed:
 
 ```text
-make -C dev cppgm++ CXX=g++                                      exit 0
-g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_ast.cpp          exit 0
-g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_parser_support.cpp exit 0
-g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_renderer.cpp     exit 0
-make -C pa10 check [owned cluster plus 9 green siblings]        exit 2; 20 / 21
-make -C pa10 check [15 RShift/template/attribute siblings]      exit 0; 15 / 15
-make -C pa10 check [new course boundary fixture]                exit 0; 1 / 1
-valid interleaved attribute probe                               exit 0
-four mismatched/truncated /tmp probes                           exit 0; 4 / 4 rejected
-warning-clean compile of three affected translation units       exit 0 each
-final invalid sidecar-range renderer probe                      exit 0
-make test-pa10                                                   exit 2; 136 / 158
-make test-report-through-pa9                                     exit 0; 457 / 457
-perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src    exit 0; 1 warning
-git diff --check                                                  exit 0
+5 3 2 1
+4 1 0
+rshift probe exit=0
 ```
 
-The local PA10 directory still contains exactly 157 `.t` files.  The
-turn-start `last-test.log` baseline was 157 discovered, 135 passed, and 22
-failed.  The final local portion is still 157 discovered, 135 passed, and the
-same 22 failed.  The exact sorted identity comparison has zero turn-start-only
-and zero final-only identities.  The root PA10 report totals 158 because the
-one new course fixture is included there; it passes separately as 1/1 and does
-not compensate for any local failure.  No local test was removed, renamed, or
-replaced.
+The first line has two indexed angle closes: the outer open closes at Piece2
+(index 3), the inner open at Piece1 (index 2), and the Piece1 marker is set.
+The second line is an ordinary pair: the close index is Piece1 (index 1) and
+the marker is clear.  This structural result does not settle template-id-
+versus-`<` semantic ambiguity.  Representative expression parsing additionally
+passed the selected builtin/typeid/conditional fixtures, ordinary shift and
+relational/template siblings, and the member-pointer/special-member lookahead
+cluster.  The checked-in relational/ordinary-shift probe was four tests and
+passed 4/4 before the broad gate.
 
-The file audit's single warning is the pre-existing
-`dev/src/cpp_semantic_core.h:1` `bad-division` warning; no new warning was
-observed.
+The renderer invariant probe rejected both a synthetic `KW_AUTO` callee and a
+synthetic node with an invalid operator field (`1 1`, exit 0).  Four malformed
+or truncated stdin probes—nested template close, typeid suffix, builtin
+parentheses, and `auto(1)`—all exited 1.  The checked-in focused results were:
 
-The current executable hash is
-`2f8dd71adb596507f74a438c8056b1e946de9c65acbaea947d751c4ad12aeff9`.
-Using that immutable executable, 128 repeated invocations of each
-representative valid fixture measured:
+```text
+make -C dev cppgm++ CXX=g++                                  exit 0
+warning-clean syntax compiles of pa10_ast/parser_support/renderer  exit 0 each
+make -C pa10 check [14 postfix/RShift/typeid/malformed cases] exit 0; 14/14
+make -C pa10 check [12 template/member-pointer lookahead cases] exit 0; 12/12
+make -C pa10 check [new cast-domain regression]               exit 0; 1/1
+make -C pa10 check [relational/ordinary-shift siblings]       exit 0; 4/4
+git diff --check                                             exit 0
+```
 
-| input | elapsed | user | sys | peak RSS | exit |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| qualified conversion/template name | 0.33 s | 0.13 s | 0.19 s | 7664 KB | 0 |
-| nested GNU/standard attribute member path | 0.32 s | 0.13 s | 0.19 s | 7872 KB | 0 |
-| reduced structured-name boundary fixture | 0.34 s | 0.14 s | 0.19 s | 7428 KB | 0 |
+## Broad validation and final gate evidence
 
-These are repeated single-executable characterization runs, dominated by
-process launch; they are not a comparative performance claim.  The structural
-bound is one indexed token pass plus monotonic parsing, with no name
-reparse/backtracking or renderer round trip.
+Fresh final `make test-pa10` exited 2 with **159 discovered, 142 passed, and 17
+failed**.  The 159th test is the added status-only course regression, which
+passed; the original 158-test universe therefore remains 141/158 plus that
+new pass.  Extracting sorted failure identities from the turn-start log and
+the fresh final log produced 17 entries in each file and `diff -u` exited 0.
+The exact current residual set is the following, unchanged from the turn-start
+17:
+
+The 17 identities are:
+
+```text
+pa10/tests/general/200-elaborated-enum-member-declarators.t
+pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t
+pa10/tests/general/200-friend-function-template-declaration.t
+pa10/tests/general/200-friend-type-declaration.t
+pa10/tests/general/200-global-struct-paren-declaration.t
+pa10/tests/general/200-lambda-capture-forms.t
+pa10/tests/general/200-local-typedef-paren-declaration.t
+pa10/tests/general/200-member-template-parameter-value-vs-template-name.t
+pa10/tests/general/200-mock-type-declaration-ambiguity.t
+pa10/tests/general/200-parenthesized-new-type-vs-placement.t
+pa10/tests/general/200-placement-new-identifier-led-initializer.t
+pa10/tests/general/200-placement-new-pack-init.t
+pa10/tests/general/200-qualified-enumerator-call-argument.t
+pa10/tests/general/200-sizeof-elaborated-class-type-id.t
+pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t
+pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
+pa10/tests/general/200-trailing-parameter-vendor-attribute.t
+```
+
+Fresh execution of the exact `n=10` through-PA9 command exited 0 with
+**457/457**.  Fresh execution of
+`perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src` exited 0 and
+reported one pre-existing warning at `dev/src/cpp_semantic_core.h:1`; there
+were no fatal issues or new warnings.
+
+## Performance and bounded-work evidence
+
+The final focused executable was immutable during characterization and had
+SHA-256
+`e98aa88ab7f577b7b3435db10860e34c100bb2829854170d00800a898e91e863`.
+Thirty-two repeated invocations per representative input in the same
+environment measured:
+
+| input | elapsed | user | sys | peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| `200-typeid-postfix-member-suffix.t` | 0.10 s | 0.04 s | 0.05 s | 4428 KB |
+| `200-conditional-simple-type-shift-return.t` | 0.10 s | 0.03 s | 0.07 s | 4428 KB |
+
+These are reused single-executable characterization measurements dominated by
+process launch, not a comparative performance claim.  The final rebuild
+retained the same SHA-256, so the measurements apply to the committed
+executable.  Structurally, index construction
+is one monotonic O(n) pass; seed classification is constant-lookahead;
+postfix consumption is monotonic in suffix count; and all lookaheads are
+bounded by indexed ranges and the existing parser work, recursion, angle, and
+nested-delimiter limits.  There is no whole-program retry, text downgrade, or
+new recursive path.
+
+## Risks and next checkpoint
+
+The final full-stage and file-audit results are recorded above.  The existing
+residual families, including placement-new, lambda capture, declaration and
+qualified-name ambiguity, remain risks outside this checkpoint.  Multi-`<`
+relational/template ambiguity remains governed by the PA10 out-of-scope
+semantic-disambiguation boundary.  The current RShift fact is fail-closed for
+the audited indexed-angle and ordinary-pair cases; future changes must preserve
+the single typed marker owner.
+
+The next checkpoint is a supervisor-selected residual-family audit.  Do not
+widen into placement-new, lambda, general declaration/declarator, or qualified
+name work unless the supervisor selects that owner and the evidence proves the
+failure belongs there.
 
 ## Historical evidence
 
-The following material belongs to earlier checkpoints and is retained as
-history, not as current source or validation:
+The following values are retained as history, not current baseline claims:
 
-- `b9b58b9c` audited the unified declarator/member boundary and its private
-  `pa10_declarator_shape` helper.  Its handoff was 157 discovered, 123 passed,
-  and 34 failures, with through-PA9 457/457 and the pre-existing
-  `dev/src/cpp_semantic_core.h:1` file-audit warning.  That audit established
-  the nearest-derived-operator function boundary, one-shot member-pointer
-  qualification facts, and the existing work/nesting/recursion limits.
-- That audit also recorded handout/fixture extensions not represented by
-  named productions in `pa10.gram`: linkage specifications, qualified
-  member-pointer operators, and dynamic throw specifications.  Neither this
-  checkpoint nor this audit edits the grammar, existing fixtures, harness, or
-  existing references; the new reduced course fixture is the sole added test
-  material.
-- `a2b82dcb` was the earlier typed template-id/qualified-name checkpoint.  Its
-  historical result was 106/157 with 51 failures before later repairs; its
-  rejected RShiftPiece2 experiment, template-index characterization, and
-  prior storage measurements remain historical only.
+- `a2b82dcb` established typed template components/sidecars and bounded angle
+  ownership; its historical baseline was 106/157.
+- `27623d64` unified the declarator/member boundary and bounded declarator
+  shape.
+- `b9b58b9c` audited that boundary at 123/157 with 34 failures and retained
+  through-PA9 457/457 plus the pre-existing file-audit warning.
+- `08c38115` routed structured names and special members and removed 12 prior
+  residuals; its course boundary fixture remains in the suite.
+- `017eb658` was the clean turn-start at 158/136 with 22 failures before the
+  landed expression checkpoint.
+
+The historical through-PA9 and file-audit values above are retained as
+historical evidence; the fresh final results are recorded in the broad-gate
+section.
 
 ## Audit ledger
 
 | checkpoint | review result | owner action | validation state |
 | --- | --- | --- | --- |
-| `27623d646279d867e58039af60a1cc52e09e090e` declarator/member boundary | historical nearest-derived-operator and member-pointer audit | keep the private shape helper and unified declarator owner | historical focused 23/23; PA10 123/157; through-PA9 457/457 |
-| `08c38115a64397ae7170a53a81b74a1c36e0a9fb` structured names and special members | bounded audit complete; four ownership-path gaps repaired without widening residual families | retain one typed name/special-member path, validated sidecars, indexed facts, and class/function explicit-instantiation routing | local 135/157 with the exact unchanged 22 residuals; course 1/1; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
-
-## Next checkpoint
-
-The next checkpoint is a supervisor-selected residual-family audit.  Keep the
-forward nested-template constructor separate unless evidence shows that its
-`typename` failure belongs to this structured-name or special-member ownership
-path; the current failure is in the constructor-body declaration-specifier
-route and remains outside this increment.
+| `a2b82dcb` template/angle ownership | historical | retain typed template components and bounded close ownership | historical 106/157 baseline |
+| `27623d64` declarator/member boundary | historical | retain unified declarator/member path and bounded shape | historical focused evidence |
+| `b9b58b9c` declarator audit | historical | retain nearest-derived-operator and member-pointer bounds | historical 123/157; through-PA9 457/457 |
+| `08c38115` structured names/special members | historical | retain one typed name/special-member path and validated sidecars | historical local 135/157; course 1/1 |
+| `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | audited and committed | use one exact cast-keyword predicate, initialize indexes, route all RShift consumers through the marker, validate synthetic renderer nodes, and retain the 3000-line source bound | fresh 142/159 with exact original 17 failures; fresh through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 14/14 + 12/12 + regression 1/1; immutable performance characterization |

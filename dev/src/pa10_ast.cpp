@@ -980,8 +980,8 @@ bool PA10Parser::special_member_definition_start(bool in_class_member)
 {
 	std::size_t charged_work = 0;
 	const bool result = PA10ParserSupport::special_member_definition_start(
-		tokens_, template_close_index_, delimiter_close_index_, position_,
-		in_class_member, &charged_work);
+		tokens_, template_close_index_, rshift_piece1_nested_close_, delimiter_close_index_,
+		position_, in_class_member, &charged_work);
 	for (std::size_t i = 0; i < charged_work; ++i)
 		charge();
 	return result;
@@ -1006,7 +1006,8 @@ bool PA10Parser::template_declaration_start()
 			std::size_t next = close + 1;
 			if (tokens_[close].kind == PA10TokenKind::RShiftPiece1 &&
 				next < tokens_.size() &&
-				tokens_[next].kind == PA10TokenKind::RShiftPiece2)
+				tokens_[next].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close_.size() && rshift_piece1_nested_close_[close])
 			{
 				charge();
 				++next;
@@ -1417,7 +1418,8 @@ bool PA10Parser::member_pointer_operator_start()
 			cursor = close + 1;
 			if (tokens_[close].kind == PA10TokenKind::RShiftPiece1 &&
 				cursor < tokens_.size() &&
-				tokens_[cursor].kind == PA10TokenKind::RShiftPiece2)
+				tokens_[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close_.size() && rshift_piece1_nested_close_[close])
 				++cursor;
 		}
 		if (cursor >= tokens_.size() ||
@@ -2107,7 +2109,7 @@ PA10AstNode PA10Parser::parse_delete_expression()
 bool PA10Parser::builtin_function_style_cast_start() const
 {
 	return look().kind == PA10TokenKind::Fixed &&
-		is_type_keyword(look().fixed) &&
+		PA10ParserSupport::is_builtin_function_style_cast_keyword(look().fixed) &&
 		fixed(SimpleTokenType::OP_LPAREN, 1);
 }
 

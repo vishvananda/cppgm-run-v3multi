@@ -125,6 +125,29 @@ bool is_type_keyword_impl(SimpleTokenType type)
 	}
 }
 
+bool is_builtin_function_style_cast_keyword_impl(SimpleTokenType type)
+{
+	switch (type)
+	{
+	case SimpleTokenType::KW_BOOL:
+	case SimpleTokenType::KW_CHAR:
+	case SimpleTokenType::KW_CHAR16_T:
+	case SimpleTokenType::KW_CHAR32_T:
+	case SimpleTokenType::KW_DOUBLE:
+	case SimpleTokenType::KW_FLOAT:
+	case SimpleTokenType::KW_INT:
+	case SimpleTokenType::KW_LONG:
+	case SimpleTokenType::KW_SHORT:
+	case SimpleTokenType::KW_SIGNED:
+	case SimpleTokenType::KW_UNSIGNED:
+	case SimpleTokenType::KW_VOID:
+	case SimpleTokenType::KW_WCHAR_T:
+		return true;
+	default:
+		return false;
+	}
+}
+
 bool is_operator_function_token_impl(SimpleTokenType type)
 {
 	switch (type)
@@ -345,6 +368,11 @@ bool is_type_keyword(SimpleTokenType type)
 	return is_type_keyword_impl(type);
 }
 
+bool is_builtin_function_style_cast_keyword(SimpleTokenType type)
+{
+	return is_builtin_function_style_cast_keyword_impl(type);
+}
+
 bool is_operator_function_token(SimpleTokenType type)
 {
 	return is_operator_function_token_impl(type);
@@ -366,6 +394,10 @@ void build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index)
 {
+	template_close_index.assign(tokens.size(), tokens.size());
+	template_top_level_or.assign(tokens.size(), 0);
+	rshift_piece1_nested_close.assign(tokens.size(), 0);
+	delimiter_close_index.assign(tokens.size(), tokens.size());
 	std::vector<std::vector<std::size_t> > angle_stacks(1);
 	struct DelimiterFrame
 	{
@@ -446,6 +478,7 @@ void build_indexes(const std::vector<PA10Token>& tokens,
 
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
 	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, bool in_class_member, std::size_t* charged_work)
 {
@@ -504,7 +537,9 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 			if (close < tokens.size() &&
 				tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
 				cursor < tokens.size() &&
-				tokens[cursor].kind == PA10TokenKind::RShiftPiece2)
+				tokens[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close.size() &&
+				rshift_piece1_nested_close[close])
 			{
 				++work;
 				++cursor;

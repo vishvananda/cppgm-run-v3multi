@@ -1,94 +1,44 @@
 # PA10 Checkpoint Plan and Evidence
 
-## Stage Design
+## Spec alignment
 
-The production data flow is:
+The PA10 production flow is:
 
 ```text
-phase-3 source buffer -> typed posttoken stream and one-pass indexes
-    -> PA10Parser expression seed -> canonical postfix-suffix consumer
+phase-3 source -> typed posttoken facts/indexes
+    -> PA10Parser seed -> one canonical postfix-suffix loop
     -> typed PA10Ast -> cold deterministic renderer
 ```
 
-`PA10Parser` is the canonical AST owner.  `PA10ParserSupport` owns typed token
-classification and indexed delimiter/template facts; the new
-`rshift_piece1_nested_close` fact distinguishes nested template closes from a
-shift pair without retrying or rescanning.  `parse_postfix_expression_seed`
-owns ordinary primaries, `typeid` traits, and builtin function-style casts;
-`parse_postfix_suffixes` is the one owner for call, member, subscript, and
-postfix-increment/decrement suffixes.  Builtin keyword callees are
-`IdExpression` nodes whose semantic identity is the fixed `SimpleTokenType`
-and whose source spelling is a cold `token_spelling`; they do not use the
-generic text field.  The renderer renders that typed seed but never reparses
-text.  This keeps one parser/AST/renderer path, typed fact continuity, and the
-bounded forward design required by root `spec.md` Purpose and §§1-4 and §7.
+`PA10ParserSupport` owns fixed-token classification and indexed delimiter/
+template facts.  `PA10Parser` owns the AST.  Builtin function-style casts use
+one shared, exact `simple-type-specifier` keyword predicate; `typeid` is a
+postfix seed; call/member/subscript/post-inc/dec suffixes have one consumer.
+`RShiftPiece1/RShiftPiece2` remain typed facts: the indexed
+`rshift_piece1_nested_close` byte records that an adjacent Piece2 closed
+another indexed angle, and is consumed by every bounded template-follow
+lookahead.  It is a structural/index fact, not a complete semantic
+template-id-versus-`<` classification; that ambiguity remains outside PA10.
+The renderer validates
+the fixed synthetic `IdExpression` and renders its cold spelling once.  There
+is no host/reference shortcut, textual downgrade, parser retry, duplicate
+postfix path, or unbounded new recursion.
 
-## Failure Map
+## Exact failure map
 
-Turn-start authoritative baseline: **158 PA10 tests discovered, 136 passed,
-22 failed**; through PA9 was **457/457**.  The 22 exact failures are grouped
-by the current investigation owner:
+The turn-start baseline is reused evidence: **158 discovered, 141 passed, 17
+failed**.  The landed checkpoint started from 136/158 with 22 failures and
+removed exactly these five identities:
 
-Expression seed/postfix-suffix owner — selected checkpoint (5):
+```text
+pa10/tests/general/200-builtin-function-style-cast-expression.t
+pa10/tests/general/200-builtin-function-style-cast-member-body.t
+pa10/tests/general/200-conditional-simple-type-shift-return.t
+pa10/tests/general/200-template-conditional-simple-type-shift-return.t
+pa10/tests/general/200-typeid-postfix-member-suffix.t
+```
 
-- `pa10/tests/general/200-builtin-function-style-cast-expression.t`
-- `pa10/tests/general/200-builtin-function-style-cast-member-body.t`
-- `pa10/tests/general/200-conditional-simple-type-shift-return.t`
-- `pa10/tests/general/200-template-conditional-simple-type-shift-return.t`
-- `pa10/tests/general/200-typeid-postfix-member-suffix.t`
-
-Qualified-name, template-angle, and type-id disambiguation owner (9):
-
-- `pa10/tests/general/200-elaborated-enum-member-declarators.t`
-- `pa10/tests/general/200-friend-function-template-declaration.t`
-- `pa10/tests/general/200-friend-type-declaration.t`
-- `pa10/tests/general/200-member-template-parameter-value-vs-template-name.t`
-- `pa10/tests/general/200-mock-type-declaration-ambiguity.t`
-- `pa10/tests/general/200-qualified-enumerator-call-argument.t`
-- `pa10/tests/general/200-sizeof-elaborated-class-type-id.t`
-- `pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t`
-- `pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t`
-
-Declaration/declarator and parameter-suffix owner (4):
-
-- `pa10/tests/general/200-global-struct-paren-declaration.t`
-- `pa10/tests/general/200-local-typedef-paren-declaration.t`
-- `pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t`
-- `pa10/tests/general/200-trailing-parameter-vendor-attribute.t`
-
-New-expression placement/initializer owner (3):
-
-- `pa10/tests/general/200-parenthesized-new-type-vs-placement.t`
-- `pa10/tests/general/200-placement-new-identifier-led-initializer.t`
-- `pa10/tests/general/200-placement-new-pack-init.t`
-
-Lambda capture owner (1):
-
-- `pa10/tests/general/200-lambda-capture-forms.t`
-
-The grouping is an investigation boundary, not a claim that residual cases
-share one semantic cause.  Placement-new, lambda, declaration ambiguity, and
-the remaining residual families stay outside this checkpoint.
-
-## Active Checkpoint
-
-Scope is the typed expression-seed/postfix-suffix boundary only.  The parser
-now represents `bool(true)` and `unsigned(~0)` as the checked structural form
-`call-expression(id-expression, paren-argument-list)`, keeps `typeid(int)` as
-the typed trait seed, and applies the same suffix loop to `typeid(int).name()[0]`
-and ordinary primaries.  The existing shift/template index now rejects a
-single-angle `>>` shift as a template close while preserving nested template
-close pairs.
-
-Expected reduction was the five selected baseline identities, with no coverage
-reduction.  Final focused validation used 24 checked-in PA10 tests:
-the five selected failures plus passing call, member/subscript, type-trait,
-C-style/keyword-cast, RShift, and nested-template siblings; it passed **24/24**.
-No handout test, reference, or new regression fixture was added.  The current
-root `make test-pa10` result is **141/158** (exit 2 because 17 residual cases
-remain), with all 158 tests still discovered.  The current residual set is
-exactly the turn-start 22-item set minus the five selected identities, with no
-new identity:
+The original 158-test universe retains exactly this final residual set:
 
 ```text
 pa10/tests/general/200-elaborated-enum-member-declarators.t
@@ -110,46 +60,77 @@ pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
 pa10/tests/general/200-trailing-parameter-vendor-attribute.t
 ```
 
-The exact prior gate passed through PA9 at **457/457**.  File audit passed with
-one pre-existing warning at `dev/src/cpp_semantic_core.h:1`; `git diff --check`
-passed.  This checkpoint is landed in the coherent commit
-`PA10: unify typed expression postfix parsing`, containing only the five
-listed implementation/plan files.
+All original fixtures remain.  The added reduced course regression for invalid
+`auto(1)` cast classification passes independently.  Fresh final
+`make test-pa10` evidence is **159 discovered, 142 passed, 17 failed**; the
+added regression accounts for the extra discovered and passing test.  Sorted
+failure identities compare exactly to the turn-start 17 (`diff` exit 0), so no
+original identity was replaced or compensated away.
 
-Risks are limited to builtin type-keyword-plus-parenthesis recognition,
-renderer presentation of a fixed-keyword synthetic callee, and the indexed
-RShift ambiguity fact.  The implementation does not enter placement-new,
-lambda capture, or declaration parsing.
+## Checkpoint findings and focused evidence
 
-## Performance Evidence
+The bounded audit repaired the exact cast-keyword domain (`KW_AUTO` is a
+declaration specifier, not a PA10 simple-type-specifier), made `build_indexes`
+size/reset every output array, routed the three older bounded RShift lookaheads
+through the typed indexed-angle marker, and made renderer validation reject
+invalid synthetic-node identity/default fields.  No residual owner was
+entered.
 
-The index builder remains one monotonic O(n) pass and adds one byte-sized
-per-token side-index entry (one byte per token).  Seed selection uses constant
-lookahead; suffix consumption is one monotonic O(number of suffixes) loop.
-There is no text
-reparsing, speculative retry, duplicate suffix parser, or new recursion path;
-the existing parser work and nesting/recursion bounds remain in force.
+Current focused results:
 
-The final-source focused executable has SHA-256
-`aacb1b09e5cc16eeadd8e2b5a8ade09e52ea79f77bb695cf11d4cd3e3ece1162`.
-Characterization on that executable, 32 repeated invocations per input in the
-same environment, was:
+```text
+make -C dev cppgm++ CXX=g++                                  exit 0
+make -C pa10 check [14 postfix/RShift/typeid/malformed cases] exit 0; 14/14
+make -C pa10 check [12 template/member-pointer lookahead cases] exit 0; 12/12
+make -C pa10 check [new cast-domain regression]               exit 0; 1/1
+make -C pa10 check [relational/ordinary-shift siblings]       exit 0; 4/4
+warning-clean syntax compiles of three affected .cpp files   exit 0 each
+RShift empty/reused-vector probe                             exit 0
+renderer invalid-node probe                                  exit 0
+four malformed/truncated probes                              exit 1 each
+make test-report-through-pa9                                  exit 0; 457/457
+file audit --stage pa10 --paths dev/src                       exit 0; 1 pre-existing warning
+git diff --check                                             exit 0
+```
+
+The RShift probe observes two indexed angle closes as `5 3 2 1` and an ordinary
+pair as `4 1 0`.  The new regression is a status-only fixture, so its checked-in
+`EXIT_FAILURE` sidecar is the complete expected material under the PA10 test
+contract.
+
+## Performance evidence
+
+The final focused executable hash is
+`e98aa88ab7f577b7b3435db10860e34c100bb2829854170d00800a898e91e863`.
+Thirty-two repeated invocations per input, on that immutable executable,
+measured:
 
 | input | elapsed | user | sys | peak RSS |
 | --- | ---: | ---: | ---: | ---: |
-| `200-typeid-postfix-member-suffix.t` | 0.08 s | 0.04 s | 0.04 s | 4408 KB |
-| `200-conditional-simple-type-shift-return.t` | 0.08 s | 0.03 s | 0.04 s | 4424 KB |
+| `200-typeid-postfix-member-suffix.t` | 0.10 s | 0.04 s | 0.05 s | 4428 KB |
+| `200-conditional-simple-type-shift-return.t` | 0.10 s | 0.03 s | 0.07 s | 4428 KB |
 
-These are single-executable characterization measurements dominated by
-process launch, not comparative performance claims.
+These are single-executable characterization values, not a comparative claim.
+The measurements are reused from the focused audit; the final rebuild retained
+the same executable hash, so they apply to the committed executable.
+The structural bounds are one indexed O(n) pass, constant-lookahead seed
+selection, monotonic suffix consumption, typed bounded lookahead, and the
+existing work/recursion/nesting limits.  The new fact is one byte per token;
+no AST hot-record field was added.
 
-## Checkpoint Ledger
+## Next checkpoint
 
-| checkpoint | status | compact evidence / state |
+Supervisor-selected residual-family audit.  Keep placement-new, lambda,
+general declaration/declarator, and qualified-name work out of this path unless
+the next owner is explicitly selected and evidence proves ownership.
+
+## Checkpoint ledger
+
+| checkpoint | status | compact evidence/state |
 | --- | --- | --- |
-| `a2b82dcb` template/angle ownership | landed historical | typed template components/sidecars and bounded close ownership; 106/157 historical baseline |
-| `27623d64` declarator/member boundary | landed historical | unified declarator/member path and bounded declarator shape |
-| `b9b58b9c` declarator audit | landed historical | 157 discovered, 123/157 passed, exact 34-failure historical baseline; through PA9 457/457 |
-| `08c38115` structured names/special members | landed historical | removed 12 prior residuals; course fixture added; retained current residual families |
-| `017eb658` structured-name audit | starting HEAD | clean turn-start at 158/136 with 22 failures and one pre-existing audit warning |
-| typed expression-seed/postfix checkpoint | landed/committed | current 141/158 with exact baseline-minus-five residuals; focused 24/24; through PA9 457/457; audit passed with one pre-existing warning; committed under message `PA10: unify typed expression postfix parsing` |
+| `a2b82dcb` template/angle ownership | landed historical | typed components/sidecars and bounded close ownership; 106/157 historical |
+| `27623d64` declarator/member boundary | landed historical | unified declarator/member path and bounded shape |
+| `b9b58b9c` declarator audit | landed historical | 123/157 historical; through-PA9 457/457; one pre-existing audit warning |
+| `08c38115` structured names/special members | landed historical | removed 12 prior residuals; retained course boundary fixture |
+| `017eb658` structured-name audit | starting HEAD | clean at 158/136 with 22 failures |
+| `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | audited and committed | fresh 142/159 with exact original 17 failures; prior-through 457/457; file audit passed with one pre-existing warning; focused 14/14 + 12/12 + regression 1/1; immutable performance characterization above |

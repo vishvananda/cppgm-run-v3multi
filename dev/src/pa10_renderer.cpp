@@ -169,12 +169,18 @@ void append_fixed_presentation(const PA10Ast& ast, const PA10AstNode& node,
 void append_fixed_id_expression(const PA10Ast& ast,
 	const PA10AstNode& node, std::ostream& output)
 {
-	if (!node.has_token || !PA10ParserSupport::is_type_keyword(node.token) ||
-		node.token_spelling == 0 || node.global_name ||
+	if (!node.has_token ||
+		!PA10ParserSupport::is_builtin_function_style_cast_keyword(node.token) ||
+		node.token_spelling == 0 || node.identifier_declspecifier ||
+		node.global_name || node.name_prefix_begin != 0 ||
 		node.name_prefix_count != 0 || !node.name_parts.empty() ||
 		node.producer_spelling != 0 || node.unqualified_id_kind !=
-		PA10UnqualifiedIdKind::None || node.unqualified_id_spelling != 0 ||
-		node.operator_presentation_count != 0 ||
+		PA10UnqualifiedIdKind::None || node.unqualified_id_token !=
+		SimpleTokenType::OP_SEMICOLON || node.unqualified_id_token_spelling != 0 ||
+		node.unqualified_id_spelling != 0 || node.operator_function_kind !=
+		PA10OperatorFunctionKind::None || node.operator_token !=
+		SimpleTokenType::OP_SEMICOLON || node.operator_presentation_begin != 0 ||
+		node.operator_presentation_count != 0 || node.semantic_child_begin != 0 ||
 		node.semantic_child_count != 0 || node.text != 0 ||
 		node.has_literal || !node.children.empty())
 		throw std::runtime_error("invalid PA10 fixed-token id-expression");
