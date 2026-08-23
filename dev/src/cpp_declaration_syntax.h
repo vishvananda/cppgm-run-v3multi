@@ -109,15 +109,19 @@ struct CppSyntaxDeclarator
 struct CppSyntaxDeclaratorOp
 {
 	CppSyntaxDeclaratorOpKind kind;
+	bool is_prefix;
 	unsigned int cv;
 	bool unknown_bound;
 	std::size_t bound;
+	bool has_bound_expression;
+	CppSyntaxExpression bound_expression;
 	std::vector<CppSyntaxParameter> parameters;
 	bool variadic;
 
 	CppSyntaxDeclaratorOp(
 		CppSyntaxDeclaratorOpKind kind = CppSyntaxDeclaratorOpKind::Pointer)
-		: kind(kind), cv(0), unknown_bound(false), bound(0), parameters(),
+		: kind(kind), is_prefix(false), cv(0), unknown_bound(false), bound(0),
+		  has_bound_expression(false), bound_expression(), parameters(),
 		  variadic(false)
 	{}
 };

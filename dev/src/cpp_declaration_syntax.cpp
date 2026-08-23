@@ -591,10 +591,15 @@ CppDeclarationSyntaxParser::parse_noptr_declarator(bool allow_abstract)
 			consume_fixed(SimpleTokenType::OP_LSQUARE);
 			CppSyntaxDeclaratorOp operation(
 				CppSyntaxDeclaratorOpKind::Array);
-			if (literal())
+			if (fixed(SimpleTokenType::OP_RSQUARE))
+				operation.unknown_bound = true;
+			else if (literal())
 				operation.bound = parse_array_bound();
 			else
-				operation.unknown_bound = true;
+			{
+				operation.has_bound_expression = true;
+				operation.bound_expression = parse_expression();
+			}
 			consume_fixed(SimpleTokenType::OP_RSQUARE);
 			result.operations.push_back(operation);
 		}
@@ -612,6 +617,7 @@ CppDeclarationSyntaxParser::parse_ptr_declarator(bool allow_abstract)
 		fixed(SimpleTokenType::OP_LAND))
 	{
 		CppSyntaxDeclaratorOp operation;
+		operation.is_prefix = true;
 		if (fixed(SimpleTokenType::OP_STAR))
 		{
 			operation.kind = CppSyntaxDeclaratorOpKind::Pointer;

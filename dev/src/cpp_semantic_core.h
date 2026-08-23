@@ -468,7 +468,8 @@ enum class EntityKind
 {
 	Variable,
 	Function,
-	TypeAlias
+	TypeAlias,
+	Temporary
 };
 
 struct EntityRecord
@@ -626,6 +627,7 @@ enum class DeclaratorOpKind
 struct DeclaratorOp
 {
 	DeclaratorOpKind kind;
+	bool is_prefix;
 	unsigned int cv;
 	bool unknown_bound;
 	std::size_t bound;
@@ -633,8 +635,8 @@ struct DeclaratorOp
 	bool variadic;
 
 	DeclaratorOp(DeclaratorOpKind kind = DeclaratorOpKind::Pointer)
-		: kind(kind), cv(0), unknown_bound(false), bound(0), parameters(),
-		  variadic(false)
+		: kind(kind), is_prefix(false), cv(0), unknown_bound(false), bound(0),
+		  parameters(), variadic(false)
 	{}
 };
 
@@ -1037,6 +1039,9 @@ struct SemanticCore
 
 	TypeId pointer(TypeId child, unsigned int qualifiers = 0)
 	{
+		if (type_kind(child) == TypeKind::LvalueReference ||
+			type_kind(child) == TypeKind::RvalueReference)
+			throw std::runtime_error("cannot form pointer to reference type");
 		TypeKey key;
 		key.kind = TypeKind::Pointer;
 		key.child = child;
@@ -1057,6 +1062,10 @@ struct SemanticCore
 
 	TypeId reference(TypeId child, bool rvalue)
 	{
+		TypeId unqualified = remove_top_cv(child);
+		if (type_kind(unqualified) == TypeKind::Fundamental &&
+			types[unqualified.value].key.fundamental == FundamentalType::Void)
+			throw std::runtime_error("cannot form reference to void type");
 		if (type_kind(child) == TypeKind::LvalueReference)
 			return child;
 		if (type_kind(child) == TypeKind::RvalueReference)

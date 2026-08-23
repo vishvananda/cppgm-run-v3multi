@@ -29,12 +29,17 @@ struct PA8Value
 	bool lvalue;
 	bool null_pointer;
 	EntityId entity;
+	// `entity` is the declaration named by an id-expression.  For a
+	// reference id-expression, `referent` is the storage denoted after the
+	// language's implicit dereference; it is the identity used by a later
+	// reference binding or relocation.
+	EntityId referent;
 	std::size_t element_count;
 	std::vector<std::uint8_t> bytes;
 
 	PA8Value()
 		: type(), constant(false), lvalue(false), null_pointer(false),
-		  entity(), element_count(0), bytes()
+		  entity(), referent(), element_count(0), bytes()
 	{}
 };
 
@@ -106,13 +111,24 @@ struct PA8ProgramModel::Impl : CppSemantic::SemanticCore
 	TypeId type_id(const CppSyntaxTypeId& source, NamespaceId scope);
 
 	PA8Value evaluate(const CppSyntaxExpression& expression,
-		NamespaceId scope) const;
+		NamespaceId scope);
 	PA8Value literal_value(const LiteralData& literal) const;
+	unsigned int top_cv(TypeId type) const;
+	bool reference_types_compatible(TypeId destination,
+		TypeId source) const;
+	EntityId resolve_referent(EntityId entity) const;
+	EntityId materialize_temporary(TypeId type,
+		const std::vector<std::uint8_t>& bytes,
+		bool has_constant,
+		EntityId relocation = EntityId(), std::ptrdiff_t addend = 0);
+	bool bind_reference(TypeId destination, const PA8Value& source,
+		std::vector<std::uint8_t>* bytes, EntityId* relocation);
 	bool convert_value(TypeId destination, const PA8Value& source,
 		std::vector<std::uint8_t>* bytes, EntityId* relocation,
 		std::ptrdiff_t* addend) const;
 	bool convert_numeric(TypeId destination, const PA8Value& source,
 		std::vector<std::uint8_t>* bytes) const;
+	bool numeric_conversion_possible(TypeId destination, TypeId source) const;
 	long double numeric_value(const PA8Value& source) const;
 	std::uint64_t unsigned_numeric_value(const PA8Value& source) const;
 	bool is_integral(TypeId type) const;
@@ -388,9 +404,21 @@ DeclaratorShape PA8ProgramModel::Impl::declarator(
 	result.has_name = source.has_name;
 	result.name = qualified_name(source.name);
 	result.operations.reserve(source.operations.size());
+	bool direct_reference = false;
 	for (std::size_t i = 0; i < source.operations.size(); ++i)
 	{
 		const CppSyntaxDeclaratorOp& source_operation = source.operations[i];
+		if (source_operation.kind == CppSyntaxDeclaratorOpKind::LvalueReference ||
+			source_operation.kind == CppSyntaxDeclaratorOpKind::RvalueReference)
+		{
+			if (direct_reference)
+				throw std::runtime_error(
+					"direct reference-to-reference declarator");
+			direct_reference = true;
+		}
+		else if (source_operation.kind == CppSyntaxDeclaratorOpKind::Pointer &&
+			direct_reference)
+			throw std::runtime_error("pointer to reference declarator");
 		DeclaratorOp operation;
 		switch (source_operation.kind)
 		{
@@ -410,9 +438,24 @@ DeclaratorShape PA8ProgramModel::Impl::declarator(
 			operation.kind = DeclaratorOpKind::Function;
 			break;
 		}
+		operation.is_prefix = source_operation.is_prefix;
 		operation.cv = source_operation.cv;
 		operation.unknown_bound = source_operation.unknown_bound;
 		operation.bound = source_operation.bound;
+		if (source_operation.has_bound_expression)
+		{
+			const PA8Value bound = evaluate(source_operation.bound_expression,
+				scope);
+			if (!bound.constant || bound.element_count != 0 ||
+				!is_integral(bound.type))
+				throw std::runtime_error("PA8 array bound is not constant");
+			const std::uint64_t value = unsigned_numeric_value(bound);
+			if (value == 0 || value >
+				static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+				throw std::runtime_error("invalid PA8 array bound");
+			operation.unknown_bound = false;
+			operation.bound = static_cast<std::size_t>(value);
+		}
 		operation.variadic = source_operation.variadic;
 		if (source_operation.kind == CppSyntaxDeclaratorOpKind::Function)
 			operation.parameters = parameter_types(source_operation, scope);
@@ -425,10 +468,61 @@ TypeId PA8ProgramModel::Impl::apply_shape(TypeId base,
 	const DeclaratorShape& shape)
 {
 	TypeId result = base;
-	for (std::vector<DeclaratorOp>::const_reverse_iterator it =
-		shape.operations.rbegin(); it != shape.operations.rend(); ++it)
+	std::size_t cursor = shape.operations.size();
+	while (cursor != 0)
 	{
-		const DeclaratorOp& operation = *it;
+		const std::size_t end = cursor;
+		std::size_t begin = cursor - 1;
+		if (shape.operations[begin].is_prefix)
+		{
+			while (begin != 0 && shape.operations[begin - 1].is_prefix)
+				--begin;
+			bool has_reference = false;
+			for (std::size_t i = begin; i < end; ++i)
+				if (shape.operations[i].kind ==
+					DeclaratorOpKind::LvalueReference ||
+					shape.operations[i].kind ==
+					DeclaratorOpKind::RvalueReference)
+					has_reference = true;
+			if (has_reference)
+			{
+				for (std::size_t i = begin; i < end; ++i)
+				{
+					const DeclaratorOp& operation = shape.operations[i];
+					switch (operation.kind)
+					{
+					case DeclaratorOpKind::Pointer:
+						result = pointer(result, operation.cv);
+						break;
+					case DeclaratorOpKind::LvalueReference:
+						result = reference(result, false);
+						break;
+					case DeclaratorOpKind::RvalueReference:
+						result = reference(result, true);
+						break;
+					default:
+						throw std::runtime_error(
+							"invalid PA8 prefix declarator operation");
+					}
+				}
+			}
+			else
+			{
+				for (std::size_t i = end; i != begin; --i)
+				{
+					const DeclaratorOp& operation = shape.operations[i - 1];
+					if (operation.kind == DeclaratorOpKind::Pointer)
+						result = pointer(result, operation.cv);
+					else
+						throw std::runtime_error(
+							"invalid PA8 pointer prefix operation");
+				}
+			}
+			cursor = begin;
+			continue;
+		}
+		const DeclaratorOp& operation = shape.operations[cursor - 1];
+		--cursor;
 		switch (operation.kind)
 		{
 		case DeclaratorOpKind::Pointer:
@@ -580,8 +674,133 @@ PA8Value PA8ProgramModel::Impl::literal_value(const LiteralData& literal) const
 	return result;
 }
 
+unsigned int PA8ProgramModel::Impl::top_cv(TypeId type) const
+{
+	const TypeKind kind = type_kind(type);
+	if (kind == TypeKind::Cv || kind == TypeKind::Pointer)
+		return types[type.value].key.cv;
+	if (kind == TypeKind::Array)
+		return types[type.value].array_tail_cv;
+	return 0;
+}
+
+bool PA8ProgramModel::Impl::reference_types_compatible(TypeId destination,
+	TypeId source) const
+{
+	if (remove_top_cv(destination).value != remove_top_cv(source).value)
+		return false;
+	const unsigned int destination_cv = top_cv(destination);
+	const unsigned int source_cv = top_cv(source);
+	return (source_cv & ~destination_cv) == 0;
+}
+
+EntityId PA8ProgramModel::Impl::resolve_referent(EntityId entity) const
+{
+	if (!entity.valid() || entity.value >= entities.size())
+		return EntityId();
+	const EntityRecord& record = entities[entity.value];
+	const TypeKind kind = type_kind(record.type);
+	if (kind != TypeKind::LvalueReference &&
+		kind != TypeKind::RvalueReference)
+		return entity;
+	if (!record.relocation.valid() ||
+		record.relocation.value >= entities.size())
+		throw std::runtime_error("unresolved PA8 reference expression");
+	const EntityRecord& referent = entities[record.relocation.value];
+	const TypeKind referent_kind = type_kind(referent.type);
+	if (referent_kind == TypeKind::LvalueReference ||
+		referent_kind == TypeKind::RvalueReference)
+		throw std::runtime_error("noncanonical PA8 reference relocation");
+	return record.relocation;
+}
+
+EntityId PA8ProgramModel::Impl::materialize_temporary(TypeId type,
+	const std::vector<std::uint8_t>& bytes, bool has_constant,
+	EntityId relocation,
+	std::ptrdiff_t addend)
+{
+	const Layout object = layout(type);
+	if (bytes.size() != object.size)
+		throw std::runtime_error("PA8 temporary size mismatch");
+	EntityRecord temporary;
+	temporary.kind = EntityKind::Temporary;
+	temporary.owner = global;
+	temporary.translation_unit = current_translation_unit;
+	temporary.internal_linkage = true;
+	temporary.type = type;
+	temporary.is_const = is_const_qualified(type);
+	temporary.has_definition = true;
+	temporary.has_constant = has_constant;
+	if (has_constant)
+		temporary.constant_bytes = bytes;
+	temporary.has_relocation = relocation.valid();
+	temporary.relocation = relocation;
+	temporary.relocation_addend = addend;
+	const EntityId result(entities.size());
+	entities.push_back(temporary);
+	return result;
+}
+
+bool PA8ProgramModel::Impl::bind_reference(TypeId destination,
+	const PA8Value& source, std::vector<std::uint8_t>* bytes,
+	EntityId* relocation)
+{
+	*relocation = EntityId();
+	bytes->assign(8, 0);
+	const TypeKind destination_kind = type_kind(destination);
+	if (destination_kind != TypeKind::LvalueReference &&
+		destination_kind != TypeKind::RvalueReference)
+		return false;
+	const TypeId referred = types[destination.value].key.child;
+	const TypeId unqualified_referred = remove_top_cv(referred);
+	const unsigned int referred_cv = top_cv(referred);
+	const bool referred_const = (referred_cv & 1u) != 0;
+	const bool referred_volatile = (referred_cv & 2u) != 0;
+	const EntityId source_entity = source.referent.valid() ?
+		source.referent : source.entity;
+
+	if (source.lvalue)
+	{
+		if (!source_entity.valid())
+			return false;
+		if (destination_kind == TypeKind::RvalueReference)
+			return false;
+		if (reference_types_compatible(referred, source.type))
+		{
+			*relocation = source_entity;
+			return true;
+		}
+		// A const lvalue reference may bind a converted temporary.  A
+		// qualification drop for the same underlying type is never such a
+		// conversion; it is ill-formed and must stay rejected.
+		if (!referred_const || referred_volatile ||
+			remove_top_cv(source.type).value == unqualified_referred.value)
+			return false;
+	}
+	else if (destination_kind == TypeKind::LvalueReference &&
+		(!referred_const || referred_volatile))
+		return false;
+
+	std::vector<std::uint8_t> converted;
+	EntityId converted_relocation;
+	std::ptrdiff_t converted_addend = 0;
+	const bool has_constant = convert_value(unqualified_referred, source,
+		&converted, &converted_relocation, &converted_addend);
+	if (!has_constant)
+	{
+		if (!numeric_conversion_possible(unqualified_referred, source.type))
+			return false;
+		converted.assign(layout(unqualified_referred).size, 0);
+		converted_relocation = EntityId();
+		converted_addend = 0;
+	}
+	*relocation = materialize_temporary(referred, converted, has_constant,
+		converted_relocation, converted_addend);
+	return true;
+}
+
 PA8Value PA8ProgramModel::Impl::evaluate(
-	const CppSyntaxExpression& expression, NamespaceId scope) const
+	const CppSyntaxExpression& expression, NamespaceId scope)
 {
 	PA8Value result;
 	switch (expression.kind)
@@ -615,6 +834,7 @@ PA8Value PA8ProgramModel::Impl::evaluate(
 	const EntityId entity = found[0];
 	const EntityRecord& record = entities[entity.value];
 	result.entity = entity;
+	result.referent = entity;
 	result.type = record.type;
 	if (record.kind == EntityKind::Function)
 	{
@@ -625,7 +845,17 @@ PA8Value PA8ProgramModel::Impl::evaluate(
 	TypeId natural = record.type;
 	if (type_kind(natural) == TypeKind::LvalueReference ||
 		type_kind(natural) == TypeKind::RvalueReference)
+	{
 		result.type = types[natural.value].key.child;
+		result.referent = resolve_referent(entity);
+		const EntityRecord& referent = entities[result.referent.value];
+		if (referent.has_constant)
+		{
+			result.constant = true;
+			result.bytes = referent.constant_bytes;
+		}
+		return result;
+	}
 	if (record.has_constant)
 	{
 		result.constant = true;
@@ -685,6 +915,17 @@ bool PA8ProgramModel::Impl::convert_numeric(TypeId destination,
 	return true;
 }
 
+bool PA8ProgramModel::Impl::numeric_conversion_possible(TypeId destination,
+	TypeId source) const
+{
+	destination = remove_top_cv(destination);
+	source = remove_top_cv(source);
+	return type_kind(destination) == TypeKind::Fundamental &&
+		type_kind(source) == TypeKind::Fundamental &&
+		(is_integral(destination) || is_floating(destination)) &&
+		(is_integral(source) || is_floating(source));
+}
+
 bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 	const PA8Value& source, std::vector<std::uint8_t>* bytes,
 	EntityId* relocation, std::ptrdiff_t* addend) const
@@ -731,6 +972,8 @@ bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 	if (type_kind(destination) == TypeKind::Pointer)
 	{
 		const TypeKey& pointer_key = types[destination.value].key;
+		const EntityId source_entity = source.referent.valid() ?
+			source.referent : source.entity;
 		if (source.null_pointer)
 		{
 			bytes->assign(8, 0);
@@ -742,13 +985,13 @@ bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 			bytes->assign(8, 0);
 			return true;
 		}
-		if (source.entity.valid() && source.entity.value < entities.size() &&
-			entities[source.entity.value].kind == EntityKind::Function &&
+		if (source_entity.valid() && source_entity.value < entities.size() &&
+			entities[source_entity.value].kind == EntityKind::Function &&
 			type_kind(source.type) == TypeKind::Function &&
 			type_kind(pointer_key.child) == TypeKind::Function)
 		{
 			bytes->assign(8, 0);
-			*relocation = source.entity;
+			*relocation = source_entity;
 			return true;
 		}
 		if (type_kind(source.type) == TypeKind::Pointer && source.constant)
@@ -763,10 +1006,12 @@ bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 	if (type_kind(destination) == TypeKind::LvalueReference ||
 		type_kind(destination) == TypeKind::RvalueReference)
 	{
-		if (!source.lvalue || !source.entity.valid())
+		const EntityId target = source.referent.valid() ?
+			source.referent : source.entity;
+		if (!source.lvalue || !target.valid())
 			return false;
 		bytes->assign(8, 0);
-		*relocation = source.entity;
+		*relocation = target;
 		return true;
 	}
 	return convert_numeric(destination, source, bytes);
@@ -789,6 +1034,8 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 
 	const TypeKind raw_kind = type_kind(type);
 	const bool is_function = raw_kind == TypeKind::Function;
+	const bool is_reference = raw_kind == TypeKind::LvalueReference ||
+		raw_kind == TypeKind::RvalueReference;
 	if (function_definition && !is_function)
 		throw std::runtime_error("PA8 function definition has non-function type");
 	if (spec.is_inline && !is_function)
@@ -927,6 +1174,8 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 	}
 
 	bool definition = !spec.is_extern || source.has_initializer;
+	if (is_reference && definition && !source.has_initializer)
+		throw std::runtime_error("PA8 reference definition needs initializer");
 	if (spec.is_constexpr && !source.has_initializer)
 		throw std::runtime_error("constexpr PA8 variable needs initializer");
 	if (definition && const_object && !source.has_initializer)
@@ -946,6 +1195,26 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 	if (source.has_initializer)
 	{
 		PA8Value value = evaluate(source.initializer, scope);
+		if (is_reference)
+		{
+			if (spec.is_constexpr && !value.constant)
+				throw std::runtime_error(
+					"nonconstant constexpr PA8 reference initializer");
+			std::vector<std::uint8_t> bytes;
+			EntityId relocation;
+			if (!bind_reference(type, value, &bytes, &relocation))
+				throw std::runtime_error("invalid PA8 reference initializer");
+			// Materializing a temporary may grow the entity arena and invalidate
+			// the pre-existing record pointer.
+			record = &entities[entity.value];
+			record->has_constant = false;
+			record->constant_bytes.clear();
+			record->has_relocation = relocation.valid();
+			record->relocation = relocation;
+			record->relocation_addend = 0;
+		}
+		else
+		{
 		// An unknown-bound array obtains its bound from a string literal before
 		// conversion and layout.  This is still a typed LiteralData path.
 		if (type_kind(type) == TypeKind::Array && value.element_count != 0 &&
@@ -972,6 +1241,7 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 		}
 		else if (value.constant || spec.is_constexpr)
 			throw std::runtime_error("invalid PA8 initializer conversion");
+		}
 	}
 	record->has_definition = record->has_definition || definition;
 	record->is_const = record->is_const || const_object;
@@ -1199,9 +1469,14 @@ void PA8ProgramModel::Impl::build_image(std::vector<char>& image) const
 	image.push_back('\0');
 	std::vector<std::size_t> offsets(entities.size(),
 		std::numeric_limits<std::size_t>::max());
-	for (std::size_t i = 0; i < entities.size(); ++i)
+	for (std::size_t block = 0; block < 2; ++block)
 	{
+		for (std::size_t i = 0; i < entities.size(); ++i)
+		{
 		const EntityRecord& entity = entities[i];
+		if ((block == 0 && entity.kind == EntityKind::Temporary) ||
+			(block == 1 && entity.kind != EntityKind::Temporary))
+			continue;
 		const bool emit = entity.kind == EntityKind::Function ||
 			entity.has_definition;
 		if (!emit)
@@ -1231,6 +1506,7 @@ void PA8ProgramModel::Impl::build_image(std::vector<char>& image) const
 		for (std::vector<std::uint8_t>::const_iterator it = bytes.begin();
 			it != bytes.end(); ++it)
 			image.push_back(static_cast<char>(*it));
+		}
 	}
 	for (std::size_t i = 0; i < entities.size(); ++i)
 	{
