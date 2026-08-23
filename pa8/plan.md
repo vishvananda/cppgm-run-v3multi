@@ -1,95 +1,87 @@
 # Stage Design
 
-PA8 uses one typed production path.  `CppSyntaxDeclaratorOp` carries decoded
-array bounds and prefix/suffix structure into `DeclaratorShape` and
-`DeclaratorOp`; `SemanticCore` owns canonical `TypeId` formation, reference
-collapsing, pointer/reference/void/array-reference invariants, while the PA8
-adapter scopes forbidden direct prefix spelling checks to contiguous segments.
-PA8 also owns value category, cv-aware binding, referent identity, typed
-lifetime-extended temporaries, relocations, and image planning.  No fact is
-rendered, reparsed, duplicated, or selected by test spelling.
+PA8 uses one typed production path. `CppSyntaxDeclaratorOp` carries decoded
+bounds and declarator layers into canonical `TypeId` formation. `SemanticCore`
+owns O(1) canonical type identity, pointer cv representation, linkage buckets,
+and typed entity records. PA8 owns declaration-context scope, value category,
+cv-aware initialization, typed constant/relocation facts, string-literal
+storage, and deterministic image planning. Known bytes (`PA8Value::constant`)
+are distinct from `is_constant_expression`; no fact is rendered, reparsed,
+duplicated, or selected by test spelling.
 
 # Spec Alignment
 
-The path follows N3485 8.3.2 [dcl.ref] for reference kinds, forbidden direct
-forms, and typedef collapsing; 8.5.3 [dcl.init.ref] for direct versus converted
-binding, lvalue/rvalue category, and cv qualification; and 12.2
-[class.temporary] for reference-bound lifetime.  PA8's image contract keeps
-named entities in block 1, lifetime-extended temporaries in block 2, and applies
-typed relocations only after both orders are planned.
+The checkpoint follows N3485 8.5.2 for character-array completion, encoding
+compatibility, and per-element initialization; 5.19 and 7.1.5 for the
+distinction between known initializer bytes and constant-expression truth;
+3.4.3p3 for qualified declarator scope during bounds and initializer lookup;
+3.5 for declaration-owner linkage and redeclaration merging; and the
+function-definition restriction on typedef-name function types.
 
 # Failure Map
 
-The original turn-start broad result was **80/89** over **89 cases**, with
-exactly the nine failures listed below.  The final checked-in PA8 suite is
-**85/94**: all five durable course regressions pass, and the original 89-case
-set remains **80/89** with exactly the same nine failure identities and no new
-failure.  No handout test changed.  The final through-PA7 report is **339/339**;
-through-PA8 is **424/433**; and the file audit exits 0 with the existing header
-warning.
+Turn-start baseline at HEAD `97a0f724`: `make test-pa8` covered exactly 94
+cases and passed **85/94**, with exactly these nine failing identities. The
+94-case coverage is an invariant: progress requires strictly fewer failures
+with the same or greater coverage; handout tests and `.ref` fixtures remain
+unchanged. Final `make test-pa8` is **94/94**, so the complete map has zero
+remaining failures.
 
-Remaining failures:
-
-- `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`,
-  `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`;
-- `pa8/tests/600-qualified-redeclaration.t.1`,
-  `pa8/tests/600-qualified-redeclaration2.t.1`;
-- `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1`,
-  `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`,
-  `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`.
-
-The focused repaired identities and new cases pass: `300-bad-ref1`,
-`300-bad-ref2`, `300-bad-ref3`, `300-uninit-ref`, `450-reference`,
-`700-reference-to-reference`, `450-cv-dropping-reference-bad`,
-`450-lvalue-to-rvalue-reference-bad`, `300-cv-through-typedef-constant`,
-`430-array-reference-direct-bad`, `430-array-reference-typedef-bad`,
-`430-reference-to-array-valid`, `431-reference-function-layer-valid`, and
-`431-reference-array-function-layer-valid`.  The reference workflow accepts
-the grouped valid case and both new nested-layer cases with `EXIT_SUCCESS`.  It
-accepts the two standard-invalid array-of-reference cases; their checked-in
-`EXIT_FAILURE` sidecars pin the standard-required result and the divergence is
-recorded in `pa8/audit.md`.
+- **fixed** `pa8/tests/310-array-str-lit.t.1` — typed compatible string-array
+  completion and per-element conversion.
+- **fixed** `pa8/tests/340-array-const.t.1` — cv through typedef-mediated array.
+- **fixed** `pa8/tests/500-static-assert.t.1` — known bytes are not expression
+  truth.
+- **fixed** `pa8/tests/500-static-assert3.t.1` — pointer relocation is a
+  distinct constant expression.
+- **fixed** `pa8/tests/600-qualified-redeclaration.t.1` and `.t.2` — qualified
+  scope/linkage and cross-TU merge.
+- **fixed** `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1/.t.2`
+  — qualified pointer relocation across translation units.
+- **fixed** `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1` —
+  qualified definition and pointer cv identity.
+- **fixed** `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`
+  — typed function-typedef definition provenance.
 
 # Active Checkpoint
 
-The audit repaired the array-of-reference escape left by flattened declarator
-application and the re-review's nested-layer false positives.  Canonical
-`array(...)` solely rejects reference children, including typedef-mediated
-forms; the PA8 adapter scopes validation to forbidden direct prefix spellings
-within each contiguous segment, resetting across non-prefix layers.  Grouped
-reference-to-array, the two legal nested-layer function forms,
-reference-to-pointer/function, direct forbidden forms, and typedef reference
-collapsing remain distinct.  `PA8Value` keeps named and post-dereference
-identities.  Binding performs indexed type/category/cv checks; known
-conversions retain bytes, unknown arithmetic conversions create typed
-zero-initialized non-constant temporaries, and temporary/reference relocation
-facts are patched after deterministic block-1/block-2 layout.  Focused evidence
-is 14/14, with all five added regressions passing.
+String literals are typed arrays of const code units with their own
+`StringLiteral` entity and block-3 image order. Array initialization completes
+unknown bounds before layout, checks encoding-compatible element types, and
+converts one element at a time. Top-level constexpr cv is applied after the
+declarator, preserving pointer cv canonicality. `EntityRecord` and `PA8Value`
+carry separate known-byte, constant-expression, and relocation facts, so
+ordinary known bytes do not satisfy `static_assert`, while qualified and
+cross-TU constexpr pointer addresses do. Qualified definitions accept only
+`is_enclosing_namespace(target, current_)`; compatible array bounds inherit the
+same-TU declaration owner's linkage while functions retain exact signature
+identity. Incomplete array redeclarations merge typed bounds; named function
+typedef provenance rejects `F f {}`. Variable initializer publication is a
+separate helper to keep the audited declaration owner bounded.
 
 # Performance Evidence
 
-No timing claim is made.  Formation and segment validation are linear in the
-current declarator.  Binding uses indexed identity plus bounded type/category
-checks and one temporary append; it does not scan the entity arena.  Image
-planning is two linear entity passes plus the existing linear relocation pass.
-These are structural complexity statements only.
+No timing claim is made. The bounded supervisor probes exercised four namespace
+directions and three array-linkage cases: global→A 0, A→A 0,
+descendant-B→A 1, child→global 1, incomplete→unknown 0,
+incomplete→`[2]` 0, and mismatched known bounds 1; the checked non-enclosing
+case was 1/1. String construction appends one entity and array conversion is
+bounded by `source.element_count`, with each element sliced using canonical
+element layout. Array compatibility walks only parallel array-layer chains;
+linkage walks indexed bucket candidates; image planning is three linear entity
+passes plus one linear relocation pass. No whole-arena scan or retry loop was
+introduced.
 
 # Next Checkpoint
 
-Preserve the nine-item failure map and address array/string initialization and
-cv completion, static-assert evaluation, qualified/cross-TU pointer facts, and
-function-typedef definition rules separately.  The next checkpoint must retain
-the original 89-case comparison at 80/89, the final 94-case checked-in
-coverage at 85/94, focused 14/14 with five added regressions passing,
-through-PA7 339/339, through-PA8 424/433, and the existing file-audit warning
-result.
+PA8 is complete at this boundary with the verified 94-case coverage and clean
+repository gates. Future semantic work starts at PA9.
 
 # Checkpoint Ledger
 
 | checkpoint | result | evidence |
 | --- | --- | --- |
-| `pa8-baseline` at `affab90c` | 71/89, 18 failures, 89 cases covered | supervisor-provided baseline; prior through-PA7 and file audit passed |
-| `referenceFormationPhase1` | focused 8/8 pass; semantic edge probes pass | exact eight-case `make -C pa8 check TEST=...`; volatile/prvalue, converted-unknown, alias, and grouped-declarator probes |
-| `referenceFormationMeasured` | PA8 80/89; through-PA7 339/339; through-PA8 419/428 | `make test-pa8` exit 2 with only the nine mapped failures; `make test-report-through-pa7` exit 0; `make test-report-through-pa8` exit 2; 89 cases unchanged |
-| `pa8-file-audit` | pass with one existing warning | `perl scripts/cppgm_file_audit.pl --stage pa8 --paths dev/src` exit 0; warning is the existing header implementation-body division note |
-| `checkpointAudit` at `657e5559` + array/reference repair | completed bounded audit with segment-scoped nested-layer correction; PA8 85/94 and the original 89-case set remains 80/89 with exactly the same nine failures; through-PA7 339/339; through-PA8 424/433 | focused 14/14; five durable course regressions and prescribed fixtures; both new legal cross-layer function forms reference-pass with `EXIT_SUCCESS`; canonical array formation owns array-of-reference rejection, while adapter validation is limited to same-segment direct prefix spellings; all broad gates passed with no new failure and the existing file-audit warning; structural performance evidence only, no timing claim |
+| `pa8-baseline` at `97a0f724` | 85/94; 9 failures; exactly 94 cases covered | supervisor-provided `make test-pa8`; earlier-through-PA7 and file audit passed |
+| `typed-pa8-semantic-boundary` | affected 14/14; nearby 22/22; checked non-enclosing 1/1 | focused `make -C pa8 check` groups; `make -C pa8` exit 0 |
+| `qualified-containment-and-array-linkage` | all bounded edge probes matched; no fixtures changed | direct `dev/nsinit` probes: valid 0, invalid 1 as listed in Performance Evidence |
+| `pa8-final-gates` | PA8 94/94; through PA7 339/339; through PA8 433/433; audit exit 0; diff check exit 0 | `make test-pa8`; required `n=8` command; `perl scripts/cppgm_file_audit.pl --stage pa8 --paths dev/src`; `make test-report-through-pa8`; `git diff --check` |

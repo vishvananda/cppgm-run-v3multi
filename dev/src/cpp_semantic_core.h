@@ -469,7 +469,8 @@ enum class EntityKind
 	Variable,
 	Function,
 	TypeAlias,
-	Temporary
+	Temporary,
+	StringLiteral
 };
 
 struct EntityRecord
@@ -486,6 +487,7 @@ struct EntityRecord
 	bool is_extern;
 	bool is_const;
 	bool is_constexpr;
+	bool is_constant_expression;
 	bool is_inline;
 	bool has_definition;
 	std::size_t definition_translation_unit;
@@ -501,7 +503,8 @@ struct EntityRecord
 		  last_declaration_translation_unit(
 			std::numeric_limits<std::size_t>::max()), is_static(false),
 		  is_thread_local(false), is_extern(false), is_const(false),
-		  is_constexpr(false), is_inline(false), has_definition(false),
+		  is_constexpr(false), is_constant_expression(false), is_inline(false),
+		  has_definition(false),
 		  definition_translation_unit(std::numeric_limits<std::size_t>::max()),
 		  has_constant(false), constant_bytes(), has_relocation(false),
 		  relocation(), relocation_addend(0)
@@ -982,6 +985,12 @@ struct SemanticCore
 		if (existing.has_array_path &&
 			(existing.array_tail_cv & qualifiers) == qualifiers)
 			return child;
+		if (type_kind(child) == TypeKind::Pointer)
+		{
+			const TypeKey& pointer_type = types[child.value].key;
+			return pointer(pointer_type.child,
+				pointer_type.cv | qualifiers);
+		}
 		struct ArrayFrame
 		{
 			bool unknown_bound;
