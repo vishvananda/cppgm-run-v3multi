@@ -18,13 +18,17 @@ including call/subscript/conversion and scalar/array new/delete forms.
 Destructors retain the tilde marker and producer name ID. Conversion
 function-id type-ids are sparse semantic children of the identifier owner,
 not a copied field on the special-member wrapper. Operator presentation is
-an AST cold range of interned IDs and is composed only by the renderer.
+an AST cold range of interned IDs and is composed only by the renderer. A
+`LinkageSpecification` retains only the posttoken-decoded `LiteralData`; its
+ordinary character payload is rendered on demand at the dump boundary, with
+no `PA10LinkageKind` or other semantic linkage classification.
 
 The AST still has value-owned grammar children, but parser wrapper operands
 move into their owners. `SpecialInitializer` and `FunctionQualifier` retain
-their fixed token identity with cold spellings. Linkage labels are classified
-from decoded literal bytes and rendered from the typed C/C++ kind; source
-literal text is never reparsed. No parser retry or backtracking loop exists.
+their fixed token identity with cold spellings. Linkage syntax is not
+classified: decoded ordinary character bytes are rendered on demand and
+arbitrary linkage strings are neither rejected nor stored as derived labels.
+No parser retry or backtracking loop exists.
 Token consumption and structural entry are charged under
 `96 * token_count + 2048`; unary prefixes are folded iteratively.
 Declaration, expression, abstract-declarator, braced-initializer, and
@@ -46,8 +50,12 @@ probe over repeated `int xN = 42;` declarations reported:
 | 128 | 1810 | 1153 | 1153 | 1152/1152 | 128/512/512 | 611 |
 | 512 | 7570 | 4609 | 4609 | 4608/4608 | 512/2048/2048 | 2147 |
 
-The same final executable measured full-driver peak RSS/wall samples of
-`4148 KB/0.00s`, `4896 KB/0.00s`, and `6892 KB/0.01s` at 32, 128, and 512
+The parser-owned presentation interning index is destroyed with the parser;
+only the cold `presentation_spellings` vector survives in the returned AST.
+The probe reports `sizeof(PA10Ast)=312`, `sizeof(PA10AstNode)=216`, and
+presentation vector capacity 3 at all three samples. The same final
+executable measured full-driver peak RSS/wall samples of
+`4116 KB/0.00s`, `4848 KB/0.00s`, and `6736 KB/0.01s` at 32, 128, and 512
 declarations. These samples quantify the retained child-vector and literal
 byte ownership, while the collector-local `PA10Token::source` strings are
 discarded when `parse_pa10_ast` returns. They justify retaining the current
@@ -92,20 +100,20 @@ its own node kind. No residual family outside this map was changed.
   the only warning is the pre-existing
   `dev/src/cpp_semantic_core.h:1` bad-division warning.
 - Focused checked probes for namespace, C/C++ linkage, member declarations,
-  function qualifiers, and class bases: 6/6 pass. The producer/literal/fixed
-  fact probe reports `producer_text_duplicates=0`, decoded literals, one C++
-  linkage kind, one default initializer, one `noexcept`, three operator
-  nodes, one conversion `TypeId`, and `ranges_valid=1`.
+  function qualifiers, and class bases: 6/6 pass. The arbitrary ordinary
+  linkage probe exits 0 and renders `linkage-specification vendor`; the
+  ownership probe confirms decoded `LiteralData`, no node text label, no
+  derived `vendor` presentation entry, and no semantic linkage category.
 - The two-translation-unit output probe exits 0 with two wrappers. `/dev/full`
   exits 1 after finalization, and an output/input alias exits 1 before output
   truncation. A 1100-level abstract declarator fails at token 1025 with the
   nesting limit; a 1100-level parenthesized expression fails at token 261
   with the recursion limit.
 - Final executable hash for the measured samples:
-  `856d2c96d45332d7fbea31f408b8f6e67068ece78757bab2ce94c1f982348d0e`.
+  `609b858eefc27234820c3448486a588c66adafe2cd18959a41631d9c7dfbc939`.
   Unary-prefix inputs with 128/256/512/768 prefixes all exit 0; the
-  single-sample wall/RSS readings are respectively `0.00s/4228 KB`,
-  `0.00s/4116 KB`, `0.00s/4272 KB`, and `0.00s/4360 KB`. These are bounded
+  single-sample wall/RSS readings are respectively `0.00s/4024 KB`,
+  `0.00s/4136 KB`, `0.00s/4304 KB`, and `0.00s/4368 KB`. These are bounded
   characterization samples, not a general speed or asymptotic claim.
 
 # 4. Next checkpoint

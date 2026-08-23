@@ -41,9 +41,10 @@ changed.
   is copied into the literal AST owner. Its source spelling is a cold
   presentation ID used only for the exact dump. No literal is decoded again
   from rendered text. Linkage specifications retain this decoded payload and
-  render typed `C`/`C++` labels from it; they do not strip quotes from token
-  source text. User-defined literal input remains outside the focused
-  implemented slice and fails parsing rather than becoming an opaque node.
+  render its ordinary character bytes on demand; they do not classify C/C++,
+  strip quotes from token source text, or reject arbitrary linkage strings.
+  User-defined literal input remains outside the focused implemented slice and
+  fails parsing rather than becoming an opaque node.
 - `SpecialInitializer` and `FunctionQualifier` retain their consumed
   `SimpleTokenType` in the node and keep only the exact spelling as cold
   presentation data. Operator-function and destructor identity remains typed;
@@ -54,6 +55,8 @@ changed.
   every node. Ordinary grammar-child vectors, transient `PA10Token::source`
   strings, and per-literal byte vectors retain value ownership; their measured
   explicit-dump cost is recorded below rather than left as an uncertainty.
+  The string-to-ID interning map is parser-owned and dies with the parser;
+  only `presentation_spellings` remains in the returned AST.
 
 ## Boundedness and renderer audit
 
@@ -89,12 +92,12 @@ PA10 output.
 - `perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src` exited 0.
   Its sole warning is the pre-existing
   `dev/src/cpp_semantic_core.h:1` bad-division warning.
-- Focused checked probes for namespace, both linkage labels, member
-  declarations, function qualifiers, and class bases passed 6/6. The
-  temporary fact probe built and ran successfully and reported
-  `producer_text_duplicates=0`, decoded literal payloads, one C++ linkage
-  kind, one `default` initializer, one `noexcept`, three operator nodes, one
-  conversion `TypeId`, and `ranges_valid=1`.
+- Focused checked probes for namespace, both C/C++ linkage labels, member
+  declarations, function qualifiers, and class bases passed 6/6. A temporary
+  arbitrary ordinary-linkage probe exited 0 and rendered
+  `linkage-specification vendor` without a semantic linkage category. The
+  ownership probe found a decoded `LiteralData` owner, no node text label, and
+  no `vendor` entry in the returned presentation vector.
 - A two-translation-unit probe exited 0 with two wrappers. `/dev/full` exited 1
   after finalization, and an output/input alias exited 1 before truncation.
   The 1100-level abstract declarator exited 1 at token 1025 with the nesting
@@ -109,11 +112,13 @@ The explicit-dump storage probe reported these retained values:
 | 128 | 1810 | 1153 | 1153 | 1152/1152 | 128/512/512 | 611 |
 | 512 | 7570 | 4609 | 4609 | 4608/4608 | 512/2048/2048 | 2147 |
 
-The same final executable, hash
-`856d2c96d45332d7fbea31f408b8f6e67068ece78757bab2ce94c1f982348d0e`, measured
-full-driver peak RSS/wall samples of `4148 KB/0.00s`, `4896 KB/0.00s`, and
-`6892 KB/0.01s` at 32, 128, and 512 declarations. Unary-prefix samples at
-128/256/512/768 prefixes all exited 0 with `4228/4116/4272/4360 KB` peak RSS
+The parser-owned presentation index is absent from the returned layout:
+`sizeof(PA10Ast)=312`, `sizeof(PA10AstNode)=216`, and presentation vector
+capacity is 3 at all three samples. The same final executable, hash
+`609b858eefc27234820c3448486a588c66adafe2cd18959a41631d9c7dfbc939`, measured
+full-driver peak RSS/wall samples of `4116 KB/0.00s`, `4848 KB/0.00s`, and
+`6736 KB/0.01s` at 32, 128, and 512 declarations. Unary-prefix samples at
+128/256/512/768 prefixes all exited 0 with `4024/4136/4304/4368 KB` peak RSS
 and `0.00s` wall time. These are bounded characterization samples, not a
 general speed or asymptotic claim. The measured vectors are an explicit-dump
 exception justified here; hot-stage integration must re-evaluate them.

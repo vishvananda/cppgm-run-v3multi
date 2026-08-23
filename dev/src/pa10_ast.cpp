@@ -4,6 +4,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace
@@ -84,7 +85,7 @@ public:
 		const PPSpellingTable& producer_spellings)
 		: tokens_(tokens), position_(0), work_(0),
 		  work_limit_(work_limit_for(tokens.size())), nesting_(0),
-		  recursion_depth_(0), ast_()
+		  recursion_depth_(0), ast_(), presentation_ids_()
 	{
 		ast_.snapshot_producer_spellings(producer_spellings);
 	}
@@ -107,6 +108,7 @@ private:
 	std::size_t nesting_;
 	std::size_t recursion_depth_;
 	PA10Ast ast_;
+	std::unordered_map<std::string, PA10StringId> presentation_ids_;
 	static const std::size_t recursion_limit_ = PA10_MAX_AST_NESTING;
 
 	static std::size_t work_limit_for(std::size_t token_count)
@@ -226,7 +228,14 @@ private:
 
 	PA10StringId intern(const std::string& value)
 	{
-		return ast_.intern_presentation(value);
+		std::unordered_map<std::string, PA10StringId>::const_iterator found =
+			presentation_ids_.find(value);
+		if (found != presentation_ids_.end())
+			return found->second;
+		const PA10StringId id = ast_.presentation_spellings.size();
+		ast_.presentation_spellings.push_back(value);
+		presentation_ids_[value] = id;
+		return id;
 	}
 
 	void append_operator_presentation(PA10AstNode& owner,
@@ -294,33 +303,6 @@ private:
 	PPSpellingId consume_identifier()
 	{
 		return consume_identifier_token().spelling;
-	}
-
-	std::string decoded_linkage_label(const LiteralData& literal) const
-	{
-		if (literal.type != FundamentalType::Char ||
-			literal.element_count == 0)
-			return std::string();
-		std::size_t count = literal.element_count;
-		if (count > literal.bytes.size())
-			count = literal.bytes.size();
-		if (count != 0 && literal.bytes[count - 1] == 0)
-			--count;
-		std::string result;
-		result.reserve(count);
-		for (std::size_t i = 0; i < count; ++i)
-			result.push_back(static_cast<char>(literal.bytes[i]));
-		return result;
-	}
-
-	PA10LinkageKind linkage_kind(const LiteralData& literal) const
-	{
-		const std::string label = decoded_linkage_label(literal);
-		if (label == "C")
-			return PA10LinkageKind::C;
-		if (label == "C++")
-			return PA10LinkageKind::Cxx;
-		return PA10LinkageKind::Unknown;
 	}
 
 	PA10Name parse_name()
@@ -715,9 +697,6 @@ PA10AstNode PA10Parser::parse_linkage_specification()
 	PA10AstNode result = node(PA10NodeKind::LinkageSpecification);
 	result.has_literal = true;
 	result.literal = linkage.literal;
-	result.linkage_kind = linkage_kind(linkage.literal);
-	if (result.linkage_kind == PA10LinkageKind::Unknown)
-		result.text = intern(decoded_linkage_label(linkage.literal));
 	consume_fixed(SimpleTokenType::OP_LBRACE);
 	enter();
 	while (!fixed(SimpleTokenType::OP_RBRACE))
@@ -2356,6 +2335,22 @@ std::string node_text(const PA10Ast& ast, PA10StringId id)
 	return ast.spelling(id);
 }
 
+void render_decoded_linkage_literal(const PA10AstNode& node,
+	std::ostream& output)
+{
+	if (!node.has_literal || node.literal.type != FundamentalType::Char ||
+		node.literal.element_count == 0)
+		return;
+	std::size_t count = node.literal.element_count;
+	if (count > node.literal.bytes.size())
+		count = node.literal.bytes.size();
+	if (count != 0 && node.literal.bytes[count - 1] == 0)
+		--count;
+	output << ' ';
+	for (std::size_t i = 0; i < count; ++i)
+		output << static_cast<char>(node.literal.bytes[i]);
+}
+
 const PA10AstNode* find_declarator_name(const PA10AstNode& node,
 	std::size_t depth)
 {
@@ -2462,12 +2457,7 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		render_scalar_presentation(ast, node, output);
 		break;
 	case PA10NodeKind::LinkageSpecification:
-		if (node.linkage_kind == PA10LinkageKind::C)
-			output << " C";
-		else if (node.linkage_kind == PA10LinkageKind::Cxx)
-			output << " C++";
-		else
-			render_scalar_presentation(ast, node, output);
+		render_decoded_linkage_literal(node, output);
 		break;
 	case PA10NodeKind::SpecialMemberDeclaration:
 	case PA10NodeKind::SpecialMemberDefinition:

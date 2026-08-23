@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <ostream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "posttoken.h"
@@ -41,13 +40,6 @@ enum class PA10OperatorFunctionKind
 	Delete,
 	NewArray,
 	DeleteArray
-};
-
-enum class PA10LinkageKind
-{
-	Unknown,
-	C,
-	Cxx
 };
 
 struct PA10Token
@@ -227,9 +219,6 @@ struct PA10AstNode
 	std::size_t operator_presentation_count;
 	std::size_t semantic_child_begin;
 	std::size_t semantic_child_count;
-	// Linkage labels are classified from the posttoken-decoded literal.  The
-	// literal itself remains on this node as the typed payload owner.
-	PA10LinkageKind linkage_kind;
 	bool has_literal;
 	LiteralData literal;
 	std::vector<PA10AstNode> children;
@@ -246,7 +235,6 @@ struct PA10AstNode
 		  operator_token(SimpleTokenType::OP_SEMICOLON),
 		  operator_presentation_begin(0), operator_presentation_count(0),
 		  semantic_child_begin(0), semantic_child_count(0),
-		  linkage_kind(PA10LinkageKind::Unknown),
 		  has_literal(false), literal(),
 		  children()
 	{}
@@ -259,9 +247,8 @@ struct PA10Ast
 	// table and its IDs are never reused for synthetic text.
 	std::vector<std::string> producer_spellings;
 	// Cold renderer text (fixed-token spellings, labels, literal source, and
-	// derived operator/destructor labels) has its own expected-O(1) index.
+	// derived operator/destructor labels) survives as a deduplicated vector.
 	std::vector<std::string> presentation_spellings;
-	std::unordered_map<std::string, PA10StringId> presentation_ids;
 	// Cold operator labels are ranges of already-interned presentation IDs;
 	// conversion type-ids are sparse semantic children owned by the AST.
 	std::vector<PA10StringId> operator_presentation_spellings;
@@ -270,7 +257,7 @@ struct PA10Ast
 
 	PA10Ast()
 		: producer_spellings(1, std::string()),
-		  presentation_spellings(1, std::string()), presentation_ids(),
+		  presentation_spellings(1, std::string()),
 		  operator_presentation_spellings(), semantic_child_nodes(),
 		  root(PA10NodeKind::TranslationUnit)
 	{}
@@ -283,18 +270,6 @@ struct PA10Ast
 	const std::string& producer_spelling(PPSpellingId id) const
 	{
 		return producer_spellings.at(id);
-	}
-
-	PA10StringId intern_presentation(const std::string& value)
-	{
-		std::unordered_map<std::string, PA10StringId>::const_iterator found =
-			presentation_ids.find(value);
-		if (found != presentation_ids.end())
-			return found->second;
-		const PA10StringId id = presentation_spellings.size();
-		presentation_spellings.push_back(value);
-		presentation_ids[value] = id;
-		return id;
 	}
 
 	void snapshot_producer_spellings(const PPSpellingTable& source)
