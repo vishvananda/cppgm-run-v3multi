@@ -5,39 +5,28 @@
 #include <stdexcept>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 using namespace std;
 
 #include "exceptions.h"
+#include "pa7_semantic.h"
+#include "preproc_session.h"
 
-bool HasBatchStdinArg(int argc, char** argv)
+string ReadSource(const string& path)
 {
-	for (int i = 1; i < argc; i++)
-	{
-		if (string(argv[i]) == "--batch-stdin")
-			return true;
-	}
-	return false;
-}
-
-int RunNotImplementedBatchMode()
-{
-	string line;
-	while (getline(cin, line))
-	{
-		(void)line;
-		cout << "EXIT_NOT_IMPLEMENTED" << endl;
-	}
-	return EXIT_SUCCESS;
+	ifstream input(path.c_str(), ios::in | ios::binary);
+	if (!input)
+		throw runtime_error("unable to open source file: " + path);
+	ostringstream source;
+	source << input.rdbuf();
+	return source.str();
 }
 
 int main(int argc, char** argv)
 {
 	try
 	{
-		if (HasBatchStdinArg(argc, argv))
-			return RunNotImplementedBatchMode();
-
 		vector<string> args;
 
 		for (int i = 1; i < argc; i++)
@@ -49,9 +38,9 @@ int main(int argc, char** argv)
 		string outfile = args[1];
 		size_t nsrcfiles = args.size() - 2;
 
-		throw NotImplementedException();
-
 		ofstream out(outfile);
+		if (!out)
+			throw runtime_error("unable to open output file: " + outfile);
 
 		out << nsrcfiles << " translation units" << endl;
 
@@ -59,11 +48,15 @@ int main(int argc, char** argv)
 		{
 			string srcfile = args[i+2];
 
-			ifstream in(srcfile);
-
 			out << "start translation unit " << srcfile << endl;
 
-			out << "TODO" << endl;
+			PPPreprocessConfig config;
+			PPPreprocessingSession preprocessing(config);
+			const PPTokenBuffer& tokens = preprocessing.preprocess(srcfile,
+				ReadSource(srcfile));
+			PA7SemanticModel model(tokens);
+			model.analyze();
+			model.render(out);
 
 			out << "end translation unit" << endl;
 
@@ -79,4 +72,5 @@ int main(int argc, char** argv)
 		cerr << "ERROR: " << e.what() << endl;
 		return EXIT_FAILURE;
 	}
+	return EXIT_SUCCESS;
 }

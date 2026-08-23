@@ -1,0 +1,19 @@
+## Stage Design
+
+`PPPreprocessingSession::preprocess` produces the typed phase-3 buffer; `posttokenize_cpp_tokens` feeds one PA7 collector that retains `PPSpellingId` names and decoded `LiteralData`. The canonical PA7 owner interns typed `NameId`, `TypeId`, `EntityId`, and `NamespaceId` facts, parses `pa7.gram` declarations in one guarded cursor, and owns namespace/entity/type lookup and first-declaration order. Qualified names remain global flags plus component vectors. Namespace aliases, using declarations/directives, inline/unnamed injection, cycle-safe lookup, alias/reference canonicalization, parameter adjustment, array completion, and qualified declarator matching all resolve into that model. `dev/nsdecl.cpp` only reads files and renders it; the linked shared test runner owns `--batch-stdin`.
+
+## Failure Map
+
+Turn-start baseline: all 41 existing tests returned `EXIT_NOT_IMPLEMENTED` (0 passes, 41 failures). Families and final results: scaffold plus namespace/core slice (6/6): local `100-empty`, `100-empty-decl`, `110-namespace`, `120-namespace-special`, `130-simple-type-specifiers`, `140-declarators`; local lookup/namespace identity/aliases/using (11/11): `150-lookup`, `190-namespace`, `200-using-directives`, `220-namespace-alias`, `230-outer-inner`, `240-unnamed`, `250-outside-def`, `260-double-alias`, `270-using-declaration`, `280-inline-namespace`, `290-double-using`; course lookup/using/injection (8/8): `200-using-directive-anchor-nested`, `200-using-directive-anchor-sibling`, `200-using-directive-transitive-extension`, `220-namespace-name-lookup-shadowing`, `270-using-declaration-reuse`, `280-inline-namespace-alias-lookup`, `280-inline-namespace-qualified-lookup`, `280-inline-namespace-reopen-bad`; local functions/arrays (8/8): `300-fn-void`, `310-varargs`, `320-arrays`, `330-multid-array`, `340-array-const`, `350-function-adjust`, `360-function-typedef`, `370-ref-collapse`; course arrays/functions (6/6): `320-array-bound-literal-forms`, `320-array-completion`, `320-parenthesized-array-abstract`, `350-parenthesized-parameter-declarators`, `360-function-void-typedef`, `370-reference-collapse-alias-chain`; stress (2/2): `600-deep-parenthesized-declarator`, `600-deep-using-directive-chain`.
+
+## Active Checkpoint
+
+The PA7 checkpoint is complete across all checked-in behavior. The active owner uses typed path components, canonical type IDs, deterministic variable/function/namespace vectors, explicit namespace/type/entity lookup categories, deduplicated visited sets for using/injection cycles, and guarded declarator/namespace/type-rendering depth. Reopening inline identity is symmetric; cv/reference/array alias rules and redeclarations are normalized at the type/entity owner.
+
+## Performance Evidence
+
+Structural evidence is the single typed posttoken flow, retained `PPSpellingId`/`LiteralData`, vector-owned first-declaration order, canonical `TypeId` interning, one-pass cursor, and cycle-safe visited lookup. Focused family checks passed `6/6`, `11/11`, `8/8`, `8/8`, `6/6`, and `2/2`; the final guard/canonicalization focus passed `4/4`; `make test-pa7` passed `41/41`. Direct `/usr/bin/time` observations on the two 600 inputs were: `600-deep-parenthesized-declarator`: exit `0`, elapsed `0.00 s`, max RSS `5644 KB`; `600-deep-using-directive-chain`: exit `0`, elapsed `0.00 s`, max RSS `4868 KB`. These are exact single-run observations, not comparative performance claims.
+
+## Checkpoint Ledger
+
+State: complete and committed PA7 checkpoint handoff. Final `make test-pa7` is `41/41`; required through-PA6 validation is `293/293`; root `make test-report-through-pa7` is `334/334`; `perl scripts/cppgm_file_audit.pl --stage pa7 --paths dev/src` passes 28 files; `git diff --check` passes after the final source cleanup. No tests or refs were edited.
