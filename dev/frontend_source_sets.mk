@@ -16,7 +16,7 @@ FRONTEND_OBJ_BASENAMES_nsdecl := pp_tokenizer posttoken ctrlexpr macro preproc_s
 FRONTEND_OBJ_BASENAMES_nsinit := pp_tokenizer posttoken ctrlexpr macro preproc_session cpp_declaration_syntax pa8_semantic
 FRONTEND_OBJ_BASENAMES_cy86 := pp_tokenizer posttoken ctrlexpr macro preproc_session cy86_backend
 FRONTEND_OBJ_BASENAMES_cppgm++ := pp_tokenizer posttoken ctrlexpr macro \
-	preproc_session pa10_ast pa10_declarator_shape pa10_renderer
+	preproc_session pa10_ast pa10_declarator_shape pa10_parser_support pa10_renderer
 FRONTEND_OBJ_BASENAMES_lowiropt :=
 FRONTEND_OBJ_BASENAMES_lowir2cy86 :=
 FRONTEND_OBJ_BASENAMES_lowir2native :=

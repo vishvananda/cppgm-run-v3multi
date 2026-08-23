@@ -1,5 +1,6 @@
 #include "pa10_ast.h"
 #include "pa10_declarator_shape.h"
+#include "pa10_parser_support.h"
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -9,88 +10,17 @@
 
 namespace
 {
-PA10ContextualIdentifierKind classify_contextual_identifier(
-	const std::string& source)
-{
-	if (source == "override")
-		return PA10ContextualIdentifierKind::Override;
-	if (source == "final")
-		return PA10ContextualIdentifierKind::Final;
-	return PA10ContextualIdentifierKind::None;
-}
-
-class PA10PostTokenCollector : public IPostTokenOutput
-{
-public:
-	PA10PostTokenCollector() : tokens(), invalid(false) {}
-	void emit_invalid(const std::string& source)
-	{
-		(void)source;
-		invalid = true;
-	}
-	void emit_simple(const std::string& source, SimpleTokenType type)
-	{
-		if (type == SimpleTokenType::OP_RSHIFT)
-		{
-			// Keep the producer's single shift token as two logical `>` pieces.
-			// The parser consumes them as a shift outside an angle context and
-			// as one or two close angles inside nested template-ids.
-			tokens.push_back(PA10Token(PA10TokenKind::RShiftPiece1,
-				SimpleTokenType::OP_GT, 0, ">"));
-			tokens.push_back(PA10Token(PA10TokenKind::RShiftPiece2,
-				SimpleTokenType::OP_GT, 0, ">"));
-		}
-		else
-			tokens.push_back(PA10Token(PA10TokenKind::Fixed, type, 0, source));
-	}
-	void emit_identifier(const std::string& source)
-	{
-		emit_identifier_with_spelling(0, source);
-	}
-	void emit_simple_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source, SimpleTokenType type)
-	{
-		tokens.push_back(PA10Token(PA10TokenKind::Fixed, type, spelling, source));
-	}
-	void emit_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source)
-	{
-		PA10Token token(PA10TokenKind::Identifier,
-			SimpleTokenType::OP_SEMICOLON, spelling, source);
-		token.contextual_identifier = classify_contextual_identifier(source);
-		tokens.push_back(std::move(token));
-	}
-	void emit_literal(const std::string& source, const LiteralData& value)
-	{
-		PA10Token token(PA10TokenKind::Literal, SimpleTokenType::OP_SEMICOLON,
-			0, source);
-		token.literal = value;
-		tokens.push_back(token);
-	}
-	void emit_user_defined_literal(const UserDefinedLiteralData& value)
-	{
-		PA10Token token(PA10TokenKind::UserDefinedLiteral,
-			SimpleTokenType::OP_SEMICOLON, 0, value.source);
-		token.user_defined = value;
-		tokens.push_back(token);
-	}
-	void emit_eof()
-	{
-		if (tokens.empty() || tokens.back().kind != PA10TokenKind::End)
-			tokens.push_back(PA10Token(PA10TokenKind::End));
-	}
-	std::vector<PA10Token> tokens;
-	bool invalid;
-};
-
 struct PA10Name
 {
 	bool global;
 	bool has_decltype_root;
 	PA10AstNode decltype_root;
 	std::vector<PA10NameComponent> parts;
+	bool has_unqualified_id;
+	PA10AstNode unqualified_id;
 	PA10Name()
-		: global(false), has_decltype_root(false), decltype_root(), parts()
+		: global(false), has_decltype_root(false), decltype_root(), parts(),
+		  has_unqualified_id(false), unqualified_id()
 	{}
 };
 
@@ -389,6 +319,23 @@ private:
 		PA10AstNode result = node(kind);
 		result.global_name = name.global;
 		result.name_parts = name.parts;
+		if (name.has_unqualified_id)
+		{
+			const PA10AstNode& id = name.unqualified_id;
+			result.unqualified_id_kind = id.unqualified_id_kind;
+			result.unqualified_id_token = id.unqualified_id_token;
+			result.unqualified_id_token_spelling =
+				id.unqualified_id_token_spelling;
+			result.unqualified_id_spelling = id.unqualified_id_spelling;
+			result.operator_function_kind = id.operator_function_kind;
+			result.operator_token = id.operator_token;
+			result.operator_presentation_begin =
+				id.operator_presentation_begin;
+			result.operator_presentation_count =
+				id.operator_presentation_count;
+			result.semantic_child_begin = id.semantic_child_begin;
+			result.semantic_child_count = id.semantic_child_count;
+		}
 		if (name.has_decltype_root)
 		{
 			result.name_prefix_begin = ast_.name_prefix_nodes.size();
@@ -408,7 +355,12 @@ private:
 		return consume_identifier_token().spelling;
 	}
 	PA10Name parse_name(bool template_expected = false,
-		bool allow_standalone_decltype = false);
+		bool allow_standalone_decltype = false,
+		bool allow_unqualified_id = false);
+	PA10AstNode parse_id_expression_node(PA10NodeKind kind,
+		bool template_expected = true);
+	PA10AstNode parse_unqualified_id();
+	PA10AstNode parse_destructor_name();
 	PA10NameComponent parse_name_component(bool template_expected,
 		bool template_disambiguator);
 	void parse_template_arguments(PA10NameComponent& component);
@@ -423,6 +375,13 @@ private:
 	bool name_start(std::size_t offset = 0) const
 	{
 		return identifier(offset) || fixed(SimpleTokenType::OP_COLON2, offset);
+	}
+	bool id_expression_start(std::size_t offset = 0) const
+	{
+		return name_start(offset) ||
+			fixed(SimpleTokenType::KW_TEMPLATE, offset) ||
+			fixed(SimpleTokenType::KW_OPERATOR, offset) ||
+			fixed(SimpleTokenType::OP_COMPL, offset);
 	}
 	bool is_decl_specifier(SimpleTokenType type) const
 	{
@@ -461,31 +420,11 @@ private:
 	}
 	bool is_cv(SimpleTokenType type) const
 	{
-		return type == SimpleTokenType::KW_CONST ||
-			type == SimpleTokenType::KW_VOLATILE;
+		return PA10ParserSupport::is_cv(type);
 	}
 	bool is_type_keyword(SimpleTokenType type) const
 	{
-		switch (type)
-		{
-		case SimpleTokenType::KW_AUTO:
-		case SimpleTokenType::KW_BOOL:
-		case SimpleTokenType::KW_CHAR:
-		case SimpleTokenType::KW_CHAR16_T:
-		case SimpleTokenType::KW_CHAR32_T:
-		case SimpleTokenType::KW_DOUBLE:
-		case SimpleTokenType::KW_FLOAT:
-		case SimpleTokenType::KW_INT:
-		case SimpleTokenType::KW_LONG:
-		case SimpleTokenType::KW_SHORT:
-		case SimpleTokenType::KW_SIGNED:
-		case SimpleTokenType::KW_UNSIGNED:
-		case SimpleTokenType::KW_VOID:
-		case SimpleTokenType::KW_WCHAR_T:
-			return true;
-		default:
-			return false;
-		}
+		return PA10ParserSupport::is_type_keyword(type);
 	}
 	bool is_assignment_operator(SimpleTokenType type) const
 	{
@@ -509,51 +448,7 @@ private:
 	}
 	bool is_operator_function_token(SimpleTokenType type) const
 	{
-		switch (type)
-		{
-		case SimpleTokenType::KW_NEW:
-		case SimpleTokenType::KW_DELETE:
-		case SimpleTokenType::OP_PLUS:
-		case SimpleTokenType::OP_MINUS:
-		case SimpleTokenType::OP_STAR:
-		case SimpleTokenType::OP_DIV:
-		case SimpleTokenType::OP_MOD:
-		case SimpleTokenType::OP_XOR:
-		case SimpleTokenType::OP_AMP:
-		case SimpleTokenType::OP_BOR:
-		case SimpleTokenType::OP_COMPL:
-		case SimpleTokenType::OP_LNOT:
-		case SimpleTokenType::OP_ASS:
-		case SimpleTokenType::OP_LT:
-		case SimpleTokenType::OP_GT:
-		case SimpleTokenType::OP_PLUSASS:
-		case SimpleTokenType::OP_MINUSASS:
-		case SimpleTokenType::OP_STARASS:
-		case SimpleTokenType::OP_DIVASS:
-		case SimpleTokenType::OP_MODASS:
-		case SimpleTokenType::OP_XORASS:
-		case SimpleTokenType::OP_BANDASS:
-		case SimpleTokenType::OP_BORASS:
-		case SimpleTokenType::OP_LSHIFT:
-		case SimpleTokenType::OP_RSHIFT:
-		case SimpleTokenType::OP_LSHIFTASS:
-		case SimpleTokenType::OP_RSHIFTASS:
-		case SimpleTokenType::OP_EQ:
-		case SimpleTokenType::OP_NE:
-		case SimpleTokenType::OP_LE:
-		case SimpleTokenType::OP_GE:
-		case SimpleTokenType::OP_LAND:
-		case SimpleTokenType::OP_LOR:
-		case SimpleTokenType::OP_INC:
-		case SimpleTokenType::OP_DEC:
-		case SimpleTokenType::OP_COMMA:
-		case SimpleTokenType::OP_ARROWSTAR:
-		case SimpleTokenType::OP_ARROW:
-		case SimpleTokenType::OP_DOTSTAR:
-			return true;
-		default:
-			return false;
-		}
+		return PA10ParserSupport::is_operator_function_token(type);
 	}
 	bool binary_operator(int level, SimpleTokenType type) const
 	{
@@ -594,11 +489,13 @@ private:
 	PA10AstNode parse_enum_specifier();
 	PA10AstNode parse_base_specifier();
 	PA10AstNode parse_decl_or_function(bool in_class_member = false);
+	PA10AstNode parse_explicit_instantiation();
 	PA10AstNode parse_simple_declaration(PA10AstNode spec,
 		PA10AstNode declarator);
 	PA10AstNode parse_bit_field_declaration(PA10AstNode spec,
 		PA10AstNode first_declarator, bool has_first_declarator);
 	PA10AstNode parse_special_member();
+	PA10AstNode parse_member_specifiers();
 	PA10AstNode parse_operator_name();
 	PA10AstNode parse_ctor_initializer();
 	PA10AstNode parse_paren_argument_list();
@@ -653,6 +550,8 @@ private:
 	PA10AstNode parse_template_parameter_clause();
 	PA10AstNode parse_template_parameter();
 	void skip_class_key_attribute();
+	void skip_attribute_specifiers();
+	bool special_member_definition_start(bool in_class_member = false);
 	bool declarator_is_function(const PA10AstNode& declarator) const
 	{
 		return PA10DeclaratorShape::is_function(declarator);
@@ -667,6 +566,10 @@ private:
 		if (is_decl_specifier(look(1).fixed) &&
 			look(1).kind == PA10TokenKind::Fixed)
 			return true;
+		if ((fixed(SimpleTokenType::KW_DECLTYPE, 1) ||
+			 fixed(SimpleTokenType::KW_TYPENAME, 1)) &&
+			look(1).kind == PA10TokenKind::Fixed)
+			return true;
 		if (identifier(1))
 			return fixed(SimpleTokenType::OP_RPAREN, 2) ||
 				fixed(SimpleTokenType::OP_DOTS, 2) ||
@@ -679,8 +582,10 @@ private:
 	bool virt_specifier_start() const
 	{
 		return identifier() &&
-			look().contextual_identifier !=
-			PA10ContextualIdentifierKind::None;
+			(look().contextual_identifier ==
+				PA10ContextualIdentifierKind::Override ||
+			 look().contextual_identifier ==
+				PA10ContextualIdentifierKind::Final);
 	}
 	bool declaration_start()
 	{
@@ -766,86 +671,10 @@ private:
 
 void PA10Parser::build_template_indexes()
 {
-	std::vector<std::vector<std::size_t> > angle_stacks(1);
-	struct DelimiterFrame
-	{
-		SimpleTokenType kind;
-		std::size_t open;
-		DelimiterFrame(SimpleTokenType kind, std::size_t open)
-			: kind(kind), open(open)
-		{}
-	};
-	std::vector<DelimiterFrame> delimiters;
+	PA10ParserSupport::build_indexes(tokens_, template_close_index_,
+		template_top_level_or_, delimiter_close_index_);
 	for (std::size_t i = 0; i < tokens_.size(); ++i)
-	{
 		charge();
-		const PA10Token& token = tokens_[i];
-		if (token.kind == PA10TokenKind::RShiftPiece1 ||
-			token.kind == PA10TokenKind::RShiftPiece2)
-		{
-			if (!angle_stacks.back().empty())
-			{
-				const std::size_t open = angle_stacks.back().back();
-				angle_stacks.back().pop_back();
-				template_close_index_[open] = i;
-			}
-			continue;
-		}
-		if (token.kind != PA10TokenKind::Fixed)
-			continue;
-		switch (token.fixed)
-		{
-		case SimpleTokenType::OP_LPAREN:
-			delimiters.push_back(DelimiterFrame(token.fixed, i));
-			angle_stacks.push_back(std::vector<std::size_t>());
-			break;
-		case SimpleTokenType::OP_LSQUARE:
-			delimiters.push_back(DelimiterFrame(token.fixed, i));
-			angle_stacks.push_back(std::vector<std::size_t>());
-			break;
-		case SimpleTokenType::OP_LBRACE:
-			delimiters.push_back(DelimiterFrame(token.fixed, i));
-			angle_stacks.push_back(std::vector<std::size_t>());
-			break;
-		case SimpleTokenType::OP_RPAREN:
-		case SimpleTokenType::OP_RSQUARE:
-		case SimpleTokenType::OP_RBRACE:
-			if (!delimiters.empty())
-			{
-				const SimpleTokenType open = delimiters.back().kind;
-				const bool matching =
-					(open == SimpleTokenType::OP_LPAREN &&
-					 token.fixed == SimpleTokenType::OP_RPAREN) ||
-					(open == SimpleTokenType::OP_LSQUARE &&
-					 token.fixed == SimpleTokenType::OP_RSQUARE) ||
-					(open == SimpleTokenType::OP_LBRACE &&
-					 token.fixed == SimpleTokenType::OP_RBRACE);
-				if (!matching)
-					break;
-				delimiter_close_index_[delimiters.back().open] = i;
-				delimiters.pop_back();
-				angle_stacks.pop_back();
-			}
-			break;
-		case SimpleTokenType::OP_LT:
-			angle_stacks.back().push_back(i);
-			break;
-		case SimpleTokenType::OP_GT:
-			if (!angle_stacks.back().empty())
-			{
-				const std::size_t open = angle_stacks.back().back();
-				angle_stacks.back().pop_back();
-				template_close_index_[open] = i;
-			}
-			break;
-		case SimpleTokenType::OP_LOR:
-			if (!angle_stacks.back().empty())
-				template_top_level_or_[angle_stacks.back().back()] = 1;
-			break;
-		default:
-			break;
-		}
-	}
 }
 
 bool PA10Parser::find_template_close(std::size_t absolute_lt,
@@ -1027,7 +856,7 @@ PA10TemplateArgument PA10Parser::parse_template_argument()
 }
 
 PA10Name PA10Parser::parse_name(bool template_expected,
-	bool allow_standalone_decltype)
+	bool allow_standalone_decltype, bool allow_unqualified_id)
 {
 	PA10Name result;
 	if (fixed(SimpleTokenType::KW_DECLTYPE))
@@ -1046,6 +875,14 @@ PA10Name PA10Parser::parse_name(bool template_expected,
 		result.global = true;
 		consume_fixed(SimpleTokenType::OP_COLON2);
 	}
+	else if (allow_unqualified_id &&
+		(fixed(SimpleTokenType::KW_OPERATOR) ||
+		 fixed(SimpleTokenType::OP_COMPL)))
+	{
+		result.has_unqualified_id = true;
+		result.unqualified_id = parse_unqualified_id();
+		return result;
+	}
 	while (true)
 	{
 		bool template_disambiguator = false;
@@ -1059,11 +896,72 @@ PA10Name PA10Parser::parse_name(bool template_expected,
 		if (!fixed(SimpleTokenType::OP_COLON2))
 			break;
 		consume_fixed(SimpleTokenType::OP_COLON2);
+		if (allow_unqualified_id &&
+			(fixed(SimpleTokenType::KW_OPERATOR) ||
+			 fixed(SimpleTokenType::OP_COMPL)))
+		{
+			result.has_unqualified_id = true;
+			result.unqualified_id = parse_unqualified_id();
+			break;
+		}
 		if (!identifier() && !fixed(SimpleTokenType::KW_TEMPLATE))
 			fail("missing qualified-name component");
 	}
 	return result;
 }
+
+PA10AstNode PA10Parser::parse_id_expression_node(PA10NodeKind kind,
+	bool template_expected)
+{
+	return name_node(kind, parse_name(template_expected, false, true));
+}
+
+PA10AstNode PA10Parser::parse_destructor_name()
+{
+	const PA10Token tilde = consume_token();
+	if (tilde.kind != PA10TokenKind::Fixed ||
+		tilde.fixed != SimpleTokenType::OP_COMPL)
+		fail("expected destructor token");
+	PA10AstNode result = node(PA10NodeKind::Identifier);
+	result.unqualified_id_kind = PA10UnqualifiedIdKind::Destructor;
+	result.unqualified_id_token = tilde.fixed;
+	result.unqualified_id_token_spelling = intern(tilde.source);
+	if (identifier())
+	{
+		const PA10Token name = consume_identifier_token();
+		result.unqualified_id_spelling = name.spelling;
+		return result;
+	}
+	if (fixed(SimpleTokenType::KW_DECLTYPE))
+	{
+		append_semantic_child(result, parse_decltype_specifier());
+		return result;
+	}
+	fail("expected destructor name");
+	return result;
+}
+
+PA10AstNode PA10Parser::parse_unqualified_id()
+{
+	if (fixed(SimpleTokenType::KW_OPERATOR))
+		return parse_operator_name();
+	if (fixed(SimpleTokenType::OP_COMPL))
+		return parse_destructor_name();
+	fail("expected unqualified-id");
+	return node(PA10NodeKind::Identifier);
+}
+
+bool PA10Parser::special_member_definition_start(bool in_class_member)
+{
+	std::size_t charged_work = 0;
+	const bool result = PA10ParserSupport::special_member_definition_start(
+		tokens_, template_close_index_, delimiter_close_index_, position_,
+		in_class_member, &charged_work);
+	for (std::size_t i = 0; i < charged_work; ++i)
+		charge();
+	return result;
+}
+
 bool PA10Parser::template_declaration_start()
 {
 	if (!identifier())
@@ -1121,8 +1019,13 @@ PA10AstNode PA10Parser::parse_declaration()
 	}
 	if (fixed(SimpleTokenType::KW_NAMESPACE))
 		return parse_namespace(false);
+	if (special_member_definition_start())
+		return parse_special_member();
 	if (fixed(SimpleTokenType::KW_EXTERN) && literal(1))
 		return parse_linkage_specification();
+	if (fixed(SimpleTokenType::KW_EXTERN) &&
+		fixed(SimpleTokenType::KW_TEMPLATE, 1))
+		return parse_explicit_instantiation();
 	if (fixed(SimpleTokenType::KW_USING))
 		return parse_using();
 	if (fixed(SimpleTokenType::KW_STATIC_ASSERT))
@@ -1290,6 +1193,16 @@ PA10AstNode PA10Parser::parse_decl_or_function(bool in_class_member)
 	}
 	return parse_simple_declaration(spec, declarator);
 }
+
+PA10AstNode PA10Parser::parse_explicit_instantiation()
+{
+	consume_fixed(SimpleTokenType::KW_EXTERN);
+	consume_fixed(SimpleTokenType::KW_TEMPLATE);
+	PA10AstNode result = node(PA10NodeKind::ExplicitInstantiationDeclaration);
+	result.children.push_back(parse_decl_or_function());
+	return result;
+}
+
 PA10AstNode PA10Parser::parse_bit_field_declaration(PA10AstNode spec,
 	PA10AstNode first_declarator, bool has_first_declarator)
 {
@@ -1365,7 +1278,10 @@ PA10AstNode PA10Parser::parse_decl_specifier_seq(bool type_context)
 		}
 		if (fixed(SimpleTokenType::KW_DECLTYPE) && !saw_type)
 		{
-			result.children.push_back(parse_decltype_specifier());
+			PA10AstNode decltype_specifier = parse_decltype_specifier();
+			if (!type_context)
+				decltype_specifier.kind = PA10NodeKind::DeclSpecifier;
+			result.children.push_back(std::move(decltype_specifier));
 			consumed = true;
 			saw_type = true;
 			continue;
@@ -1740,27 +1656,8 @@ PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
 		while (is_cv(look().fixed) && look().kind == PA10TokenKind::Fixed)
 			result.children.push_back(fixed_node(PA10NodeKind::CvQualifier));
 	}
-	if (name_start())
-	{
-		result.children.push_back(name_node(PA10NodeKind::Identifier,
-			parse_name(true)));
-	}
-	else if (fixed(SimpleTokenType::KW_OPERATOR))
-	{
-		result.children.push_back(parse_operator_name());
-	}
-	else if (fixed(SimpleTokenType::OP_COMPL))
-	{
-		const PA10Token tilde = consume_token();
-		const PA10Token name = consume_identifier_token();
-		PA10AstNode identifier_node = node(PA10NodeKind::Identifier);
-		identifier_node.unqualified_id_kind =
-			PA10UnqualifiedIdKind::Destructor;
-		identifier_node.unqualified_id_token = tilde.fixed;
-		identifier_node.unqualified_id_token_spelling = intern(tilde.source);
-		identifier_node.unqualified_id_spelling = name.spelling;
-		result.children.push_back(std::move(identifier_node));
-	}
+	if (id_expression_start() || decltype_qualified_name_start())
+		result.children.push_back(parse_id_expression_node(PA10NodeKind::Identifier));
 	else if (fixed(SimpleTokenType::OP_LPAREN))
 	{
 		consume_fixed(SimpleTokenType::OP_LPAREN);
@@ -2211,10 +2108,11 @@ PA10AstNode PA10Parser::parse_postfix_expression()
 			member.token = op.fixed;
 			member.token_spelling = intern(op.source);
 			member.children.push_back(std::move(result));
-			if (!name_start() && !fixed(SimpleTokenType::KW_TEMPLATE))
+			if (!id_expression_start() &&
+				!decltype_qualified_name_start())
 				fail("expected member name");
 			member.children.push_back(name_node(PA10NodeKind::Identifier,
-				parse_name()));
+				parse_name(false, false, true)));
 			result = std::move(member);
 			continue;
 		}
@@ -2250,8 +2148,8 @@ PA10AstNode PA10Parser::parse_primary_expression()
 		result.token_spelling = intern(token.source);
 		return result;
 	}
-	if (name_start() || decltype_qualified_name_start())
-		return name_node(PA10NodeKind::IdExpression, parse_name());
+	if (id_expression_start() || decltype_qualified_name_start())
+		return parse_id_expression_node(PA10NodeKind::IdExpression, false);
 	if (fixed(SimpleTokenType::OP_LPAREN))
 	{
 		consume_fixed(SimpleTokenType::OP_LPAREN);
@@ -2634,21 +2532,7 @@ PA10AstNode PA10Parser::parse_class_specifier()
 }
 void PA10Parser::skip_class_key_attribute()
 {
-	if (!fixed(SimpleTokenType::KW_ALIGNAS))
-		return;
-	consume_fixed(SimpleTokenType::KW_ALIGNAS);
-	consume_fixed(SimpleTokenType::OP_LPAREN);
-	std::size_t depth = 1;
-	while (depth != 0)
-	{
-		if (at_end())
-			fail("unterminated class-key attribute");
-		if (fixed(SimpleTokenType::OP_LPAREN))
-			++depth;
-		else if (fixed(SimpleTokenType::OP_RPAREN))
-			--depth;
-		consume_token();
-	}
+	skip_attribute_specifiers();
 }
 PA10AstNode PA10Parser::parse_base_specifier()
 {
@@ -2736,6 +2620,12 @@ PA10AstNode PA10Parser::parse_operator_name()
 			append_operator_presentation(result, close.source);
 		}
 	}
+	else if (look().kind == PA10TokenKind::UserDefinedLiteral)
+	{
+		const PA10Token literal = consume_token();
+		result.operator_function_kind = PA10OperatorFunctionKind::Literal;
+		append_operator_presentation(result, literal.source);
+	}
 	else
 	{
 		const std::size_t begin = position_;
@@ -2790,10 +2680,41 @@ PA10AstNode PA10Parser::parse_ctor_initializer()
 	}
 	return result;
 }
+
+void PA10Parser::skip_attribute_specifiers()
+{
+	std::size_t after = 0;
+	std::size_t consumed = 0;
+	if (!PA10ParserSupport::skip_attribute_specifiers(tokens_, position_,
+			&after, &consumed))
+		fail("unterminated attribute");
+	for (std::size_t i = 0; i < consumed; ++i)
+		charge();
+	position_ = after;
+}
+
+PA10AstNode PA10Parser::parse_member_specifiers()
+{
+	PA10AstNode result = node(PA10NodeKind::MemberSpecifiers);
+	while (fixed(SimpleTokenType::KW_INLINE) ||
+		fixed(SimpleTokenType::KW_VIRTUAL) ||
+		fixed(SimpleTokenType::KW_EXPLICIT) ||
+		fixed(SimpleTokenType::KW_CONSTEXPR) ||
+		fixed(SimpleTokenType::KW_FRIEND) ||
+		fixed(SimpleTokenType::KW_STATIC))
+		result.children.push_back(fixed_node(PA10NodeKind::MemberSpecifier));
+	return result;
+}
+
 PA10AstNode PA10Parser::parse_special_member()
 {
+	skip_attribute_specifiers();
+	PA10AstNode member_specifiers = parse_member_specifiers();
+	skip_attribute_specifiers();
 	PA10AstNode declarator = parse_declarator(false, true);
 	PA10AstNode result = node(PA10NodeKind::SpecialMemberDeclaration);
+	if (!member_specifiers.children.empty())
+		result.children.push_back(std::move(member_specifiers));
 	result.children.push_back(std::move(declarator));
 	if (fixed(SimpleTokenType::OP_COLON))
 		result.children.push_back(parse_ctor_initializer());
@@ -2829,9 +2750,7 @@ PA10AstNode PA10Parser::parse_class_member()
 		return parse_class_declaration();
 	if (fixed(SimpleTokenType::KW_ENUM))
 		return parse_enum_declaration();
-	if (fixed(SimpleTokenType::KW_OPERATOR) ||
-		fixed(SimpleTokenType::OP_COMPL) ||
-		(identifier() && fixed(SimpleTokenType::OP_LPAREN, 1)))
+	if (special_member_definition_start(true))
 		return parse_special_member();
 	if (fixed(SimpleTokenType::KW_USING) ||
 		fixed(SimpleTokenType::KW_TEMPLATE) ||
@@ -2990,10 +2909,9 @@ PA10AstNode PA10Parser::parse_template_parameter()
 } // namespace
 PA10Ast parse_pa10_ast(const PPTokenBuffer& input)
 {
-	PA10PostTokenCollector collector;
-	posttokenize_cpp_tokens(input, collector);
-	if (collector.invalid)
+	std::vector<PA10Token> tokens;
+	if (!PA10ParserSupport::collect_tokens(input, tokens))
 		throw std::runtime_error("invalid phase-7 token");
-	PA10Parser parser(collector.tokens, input.spellings);
+	PA10Parser parser(tokens, input.spellings);
 	return parser.parse();
 }

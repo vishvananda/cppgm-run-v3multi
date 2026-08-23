@@ -107,6 +107,8 @@ const char* node_kind_name(PA10NodeKind kind)
 		return "special-member-declaration";
 	case PA10NodeKind::SpecialMemberDefinition:
 		return "special-member-definition";
+	case PA10NodeKind::MemberSpecifiers: return "member-specifiers";
+	case PA10NodeKind::MemberSpecifier: return "specifier";
 	case PA10NodeKind::ClassKey: return "class-key";
 	case PA10NodeKind::AccessSpecifier: return "access-specifier";
 	case PA10NodeKind::VirtualSpecifier: return "virtual";
@@ -249,6 +251,45 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 		}
 		output << '>';
 	}
+	if (node.unqualified_id_kind != PA10UnqualifiedIdKind::None)
+	{
+		if (node.name_prefix_count != 0 || !node.name_parts.empty())
+			output << "::";
+		if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor)
+		{
+			if (node.unqualified_id_token_spelling != 0)
+				output << ast.spelling(node.unqualified_id_token_spelling);
+			if (node.unqualified_id_spelling != 0)
+				output << ast.producer_spelling(node.unqualified_id_spelling);
+		}
+		else if (node.operator_function_kind ==
+			PA10OperatorFunctionKind::Conversion &&
+			node.semantic_child_count == 1)
+		{
+			if (node.operator_presentation_begin >=
+				ast.operator_presentation_spellings.size())
+				throw std::runtime_error("invalid PA10 conversion presentation range");
+			output << ast.spelling(ast.operator_presentation_spellings[
+				node.operator_presentation_begin]) << ' ';
+			if (node.semantic_child_begin >= ast.semantic_child_nodes.size())
+				throw std::runtime_error("invalid PA10 conversion semantic range");
+			append_inline_node(ast,
+				ast.semantic_child_nodes[node.semantic_child_begin], output,
+				depth + 1);
+		}
+		else
+		{
+			if (node.operator_presentation_begin >
+				ast.operator_presentation_spellings.size() ||
+				node.operator_presentation_count >
+				ast.operator_presentation_spellings.size() -
+					node.operator_presentation_begin)
+				throw std::runtime_error("invalid PA10 operator presentation range");
+			for (std::size_t i = 0; i < node.operator_presentation_count; ++i)
+				output << ast.spelling(ast.operator_presentation_spellings[
+					node.operator_presentation_begin + i]);
+		}
+	}
 }
 
 void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
@@ -299,6 +340,7 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::DeclSpecifier:
 	case PA10NodeKind::TypeSpecifier:
 	case PA10NodeKind::CvQualifier:
+	case PA10NodeKind::MemberSpecifier:
 	case PA10NodeKind::RefQualifier:
 	case PA10NodeKind::FunctionQualifier:
 	case PA10NodeKind::SpecialInitializer:
@@ -310,7 +352,23 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::ParameterKey:
 	case PA10NodeKind::LeafFixed:
 		if (node.has_token)
+		{
+			if (node.kind == PA10NodeKind::DeclSpecifier &&
+				node.token == SimpleTokenType::KW_DECLTYPE)
+			{
+				output << "decltype(";
+				if (!node.children.empty())
+					append_inline_node(ast, node.children.front(), output, depth + 1);
+				output << ')';
+			}
+			else if (node.kind == PA10NodeKind::MemberSpecifier &&
+				node.token == SimpleTokenType::KW_EXPLICIT)
+			{
+				output << ' ' << ast.spelling(node.token_spelling);
+				break;
+			}
 			append_fixed_presentation(ast, node, output);
+		}
 		break;
 	case PA10NodeKind::PtrOperator:
 		if (node.name_prefix_count != 0 || !node.name_parts.empty())
@@ -528,9 +586,13 @@ void render_unqualified_id(const PA10Ast& ast, const PA10AstNode& node,
 void render_special_member_name(const PA10Ast& ast,
 	const PA10AstNode& node, std::ostream& output)
 {
-	if (node.children.empty())
-		return;
-	const PA10AstNode* name = find_declarator_name(node.children.front(), 1);
+	const PA10AstNode* name = NULL;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		name = find_declarator_name(node.children[i], 1);
+		if (name != NULL)
+			break;
+	}
 	if (name == NULL)
 		return;
 	if (name->name_prefix_count != 0 || !name->name_parts.empty())
@@ -672,6 +734,19 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 				output << "TT_IDENTIFIER:";
 			output << join_name(ast, node);
 		}
+		else if (node.has_token && node.token == SimpleTokenType::KW_DECLTYPE)
+		{
+			output << " decltype(";
+			if (!node.children.empty())
+				append_inline_node(ast, node.children.front(), output, 1);
+			output << ')';
+		}
+		else if (node.has_token)
+			render_fixed_suffix(ast, node, output);
+		break;
+	case PA10NodeKind::MemberSpecifier:
+		if (node.has_token && node.token == SimpleTokenType::KW_EXPLICIT)
+			output << ' ' << ast.spelling(node.token_spelling);
 		else if (node.has_token)
 			render_fixed_suffix(ast, node, output);
 		break;
@@ -711,9 +786,13 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		break;
 	case PA10NodeKind::TypeName:
 		output << ' ';
-		if (node.has_token && node.token == SimpleTokenType::KW_TYPENAME)
-			output << ast.spelling(node.token_spelling) << ' ';
 		output << join_name(ast, node);
+		break;
+	case PA10NodeKind::DecltypeSpecifier:
+		output << " decltype(";
+		if (!node.children.empty())
+			append_inline_node(ast, node.children.front(), output, 1);
+		output << ')';
 		break;
 	case PA10NodeKind::TypeSpecifierSeq:
 		break;

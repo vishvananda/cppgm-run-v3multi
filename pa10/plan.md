@@ -1,113 +1,94 @@
 # PA10 Checkpoint Plan and Evidence
 
-## Current scope
+## Stage Design
 
-This bounded checkpoint audits landed commit
-`27623d646279d867e58039af60a1cc52e09e090e`, `PA10: unify declarator and
-member declaration parsing`. The owned flow is:
+The single production path is:
 
 ```text
 phase-3 buffer -> posttoken facts -> typed PA10Token -> PA10Parser
-    -> PA10Ast and sidecars -> deterministic cold renderer
+    -> PA10Ast typed names/declarators and cold presentation sidecars -> renderer
 ```
 
-The implementation scope is limited to `dev/src/pa10_ast.cpp`, the private
-typed `dev/src/pa10_declarator_shape.cpp`/`.h` helper, `dev/src/pa10_ast.h`,
-and `dev/src/pa10_renderer.cpp`; the helper is listed only for `cppgm++` in
-`dev/frontend_source_sets.mk`. Documentation is limited to this file and
-`pa10/audit.md`; no tests, refs, grammar, harness, or unrelated stage surface
-was edited.
+This follows root `spec.md` Purpose and §§1-4: one parser/model/renderer
+pipeline, typed fact continuity, component-owned qualified names, cold
+presentation only at the dump boundary, and bounded work.  The grammar owner
+is `declarator-id -> id-expression -> unqualified-id`, including qualified
+identifier/template/operator/conversion/literal/destructor finals, with the
+special-member/function-definition and postfix-suffix routes sharing it.
+`dev/src/pa10_parser_support.{h,cpp}` owns typed posttoken collection, indexed
+template/delimiter facts, generic attribute balancing, and bounded special-
+member lookahead; it is linked only into `cppgm++`.
 
-## Spec and grammar alignment
+## Failure Map
 
-The flow satisfies the applicable root `spec.md` §§1-4 and §7 obligations:
-one forward parser/model/renderer path; typed producer spelling and contextual
-facts; component-owned qualified names; typed template, literal, operator, and
-sidecar facts; bounded indexed lookahead; monotonic parser work; and a cold
-presentation boundary with no render/reparse path.
+Turn-start baseline: 157 discovered, 123 passed, 34 failed; through-PA9 was
+457/457.  The exact 34 identities were:
 
-The directly aligned `pa10/pa10.gram` productions are:
-
-- bit-field declaration/list and class-member consumption;
-- named/abstract declarators, parenthesized declarators, ptr operators,
-  arrays, function suffixes, parameters, and default arguments;
-- non-type and template-template parameter structure;
-- lambda-declarator pieces.
-
-The checked handout/ref contract additionally includes linkage
-specifications (`extern "C++"`/`extern "C"`), although the current grammar has
-no named linkage-specification production; it mentions `KW_EXTERN` only in
-decl-specifiers and extern-template syntax. It also requires qualified
-member-pointer ptr-operators (`C::*`, `n::C::*`, and qualified template forms),
-although the current grammar literally lists only `*`, `&`, and `&&`.
-Checked throw-specification refs likewise require dynamic `throw(...)`, absent
-from the current `function-suffix` production. These are explicit
-handout/ref-required extensions, not grammar edits.
-
-## Audit repairs and ownership result
-
-The former recursive `declarator_has_parameter()` test was incorrect at the
-function-definition/initializer boundary: it treated `(*p)()` and `(&r)()`
-as functions and could return at an identifier before seeing a later array
-layer. The public parser owner now uses a tri-state nearest-derived-operator
-walk in `declarator_is_function()`. Nested declarators recurse only when they
-contain an actual operator; parentheses defer to the enclosing layer. The
-first operator outward from the identifier decides: `ParameterClause` means
-function, while `PtrOperator`/reference or `ArraySuffix` means object. This
-keeps `f()` and `(f)()` definitions, makes pointer/reference and array shapes
-take their initializers, and keeps an inner `h()` parameter clause decisive
-for a function returning a pointer.
-
-`member_pointer_operator_start()` remains a bounded prefix scan using
-charged components and preindexed template closes. `parse_ptr_operator()`
-consumes the established qualifier without rescanning it. The type-id
-lookahead now passes a one-shot checked-prefix fact into
-`parse_abstract_declarator()`, removing that path's former duplicate
-qualification scan. Contextual `override`/`final` is classified once at
-the posttoken boundary. Bit-fields, suffixes, parameters, template
-parameters, linkage, lambda declarators, typed identities, sidecar ranges,
-recursion ceilings, and cold rendering remain on the unified landed path.
-The shape walk is conventionally formatted in its private helper; no source
-line packing or unrelated whitespace squeeze is used to meet an audit limit.
-
-## Coverage and exact failure identity
-
-The turn-start landed-checkpoint result was the no-regression broad baseline:
-all 157 PA10 tests were discovered, 123 passed, exit 2, with exactly 34
-failures. The final authorized run is identical: 157 discovered, 123 passed,
-exit 2, with 34 exact identities and no additions or removals.
-
-The earlier landed-checkpoint comparison was 106/157 with 51 failures. These
-17 identities were removed by the landed increment, with no newly failing
-identity:
-
-```text
-pa10/tests/general/200-extern-c-throw-empty-specification.t
-pa10/tests/general/200-function-throw-typed-specification.t
-pa10/tests/general/200-function-type-alias-declaration.t
-pa10/tests/general/200-function-virt-and-noexcept-suffixes.t
-pa10/tests/general/200-lambda-declarator.t
-pa10/tests/general/200-member-pointer-const-function-declarator.t
-pa10/tests/general/200-member-pointer-data-declarator.t
-pa10/tests/general/200-member-pointer-function-declarator.t
-pa10/tests/general/200-qualified-member-comparison-template-arg.t
-pa10/tests/general/200-qualified-result-parenthesized-member-pointer-declarator.t
-pa10/tests/general/200-template-function-type-alias-declaration.t
-pa10/tests/general/200-template-function-type-alias-pack-declaration.t
-pa10/tests/general/200-zero-width-bit-field-declaration.t
-pa10/tests/general/300-local-typedef-shadows-value-qualified-type.t
-pa10/tests/general/300-namespace-alias-shadow-qualified-type.t
-pa10/tests/spec/200-bit-field-declaration.t
-pa10/tests/spec/200-non-type-template-parameters.t
-```
-
-Exact remaining baseline/final failure map for the landed full result:
+Owned checkpoint cluster (12):
 
 ```text
 pa10/tests/general/100-member-operator-name-call.t
 pa10/tests/general/200-allocation-array-operator-ids.t
 pa10/tests/general/200-attributed-partial-specialization-current-class-constructor.t
 pa10/tests/general/200-attributed-virtual-destructor-member.t
+pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t
+pa10/tests/general/200-literal-operator-id.t
+pa10/tests/general/200-qualified-conversion-operator-definition.t
+pa10/tests/general/200-template-qualified-conversion-operator-dependent-result.t
+pa10/tests/general/200-template-qualified-inline-attribute-constructor-definition.t
+pa10/tests/general/200-template-qualified-inline-constructor-definition.t
+pa10/tests/spec/200-explicit-instantiation-declaration.t
+pa10/tests/spec/200-qualified-special-member-definition.t
+```
+
+Residual cluster (22):
+
+```text
+pa10/tests/general/200-builtin-function-style-cast-expression.t
+pa10/tests/general/200-builtin-function-style-cast-member-body.t
+pa10/tests/general/200-conditional-simple-type-shift-return.t
+pa10/tests/general/200-elaborated-enum-member-declarators.t
+pa10/tests/general/200-friend-function-template-declaration.t
+pa10/tests/general/200-friend-type-declaration.t
+pa10/tests/general/200-global-struct-paren-declaration.t
+pa10/tests/general/200-lambda-capture-forms.t
+pa10/tests/general/200-local-typedef-paren-declaration.t
+pa10/tests/general/200-member-template-parameter-value-vs-template-name.t
+pa10/tests/general/200-mock-type-declaration-ambiguity.t
+pa10/tests/general/200-parenthesized-new-type-vs-placement.t
+pa10/tests/general/200-partial-specialization-current-class-constructor.t
+pa10/tests/general/200-placement-new-identifier-led-initializer.t
+pa10/tests/general/200-placement-new-pack-init.t
+pa10/tests/general/200-qualified-enumerator-call-argument.t
+pa10/tests/general/200-sizeof-elaborated-class-type-id.t
+pa10/tests/general/200-template-conditional-simple-type-shift-return.t
+pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t
+pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
+pa10/tests/general/200-trailing-parameter-vendor-attribute.t
+pa10/tests/general/200-typeid-postfix-member-suffix.t
+```
+
+Final PA10 result: 157 discovered, 135 passed, 22 failed.  Removed identities
+(12, with no additions) were:
+
+```text
+pa10/tests/general/100-member-operator-name-call.t
+pa10/tests/general/200-allocation-array-operator-ids.t
+pa10/tests/general/200-attributed-partial-specialization-current-class-constructor.t
+pa10/tests/general/200-attributed-virtual-destructor-member.t
+pa10/tests/general/200-literal-operator-id.t
+pa10/tests/general/200-qualified-conversion-operator-definition.t
+pa10/tests/general/200-template-qualified-conversion-operator-dependent-result.t
+pa10/tests/general/200-template-qualified-inline-attribute-constructor-definition.t
+pa10/tests/general/200-template-qualified-inline-constructor-definition.t
+pa10/tests/general/200-partial-specialization-current-class-constructor.t
+pa10/tests/spec/200-explicit-instantiation-declaration.t
+pa10/tests/spec/200-qualified-special-member-definition.t
+```
+
+The exact final residual set is:
+
+```text
 pa10/tests/general/200-builtin-function-style-cast-expression.t
 pa10/tests/general/200-builtin-function-style-cast-member-body.t
 pa10/tests/general/200-conditional-simple-type-shift-return.t
@@ -117,89 +98,75 @@ pa10/tests/general/200-friend-function-template-declaration.t
 pa10/tests/general/200-friend-type-declaration.t
 pa10/tests/general/200-global-struct-paren-declaration.t
 pa10/tests/general/200-lambda-capture-forms.t
-pa10/tests/general/200-literal-operator-id.t
 pa10/tests/general/200-local-typedef-paren-declaration.t
 pa10/tests/general/200-member-template-parameter-value-vs-template-name.t
 pa10/tests/general/200-mock-type-declaration-ambiguity.t
 pa10/tests/general/200-parenthesized-new-type-vs-placement.t
-pa10/tests/general/200-partial-specialization-current-class-constructor.t
 pa10/tests/general/200-placement-new-identifier-led-initializer.t
 pa10/tests/general/200-placement-new-pack-init.t
-pa10/tests/general/200-qualified-conversion-operator-definition.t
 pa10/tests/general/200-qualified-enumerator-call-argument.t
 pa10/tests/general/200-sizeof-elaborated-class-type-id.t
 pa10/tests/general/200-template-conditional-simple-type-shift-return.t
 pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t
-pa10/tests/general/200-template-qualified-conversion-operator-dependent-result.t
-pa10/tests/general/200-template-qualified-inline-attribute-constructor-definition.t
-pa10/tests/general/200-template-qualified-inline-constructor-definition.t
 pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
 pa10/tests/general/200-trailing-parameter-vendor-attribute.t
 pa10/tests/general/200-typeid-postfix-member-suffix.t
-pa10/tests/spec/200-explicit-instantiation-declaration.t
-pa10/tests/spec/200-qualified-special-member-definition.t
 ```
 
-These residual identities are outside this audit's declared family and were
-not broadened. Historical focused evidence before this repair included the
-changed 16/16 cluster, a 14/14 first-stop former-failure rerun, and a 32/32
-sample; those counts are retained as historical handoff evidence. Current
-focused checked-in evidence is 23/23 after the repair, with direct,
-parenthesized, pointer/reference, function-returning-pointer, nested-array,
-array-of-function-pointer, member-pointer-template, and truncation `/tmp`
-probes exercised.
+There is no discovery or coverage loss: the final set is a strict subset of
+the turn-start set.
 
-The final through-PA9 command passed 457/457. The final file audit exited 0
-with only the pre-existing `dev/src/cpp_semantic_core.h:1` `bad-division`
-warning. The final source sizes are 2999 lines for `dev/src/pa10_ast.cpp`,
-53 for `dev/src/pa10_declarator_shape.cpp`, 16 for its declaration-only
-private header, 361 for `dev/src/pa10_ast.h`, and 756 for
-`dev/src/pa10_renderer.cpp`; the helper files are below their audit limits.
+## Active Checkpoint
 
-## Performance evidence
+Scope is complete: one structured name/declarator-id route now carries typed
+unqualified-id, operator, conversion, literal, destructor, and name-component
+facts into the existing renderer; special-member routing is contextual;
+attributes use generic balanced delimiters; member specifiers are typed; and
+explicit instantiation uses the existing declaration route.  The forward
+nested-template constructor remains red at its constructor-body
+`typedef typename alloc<Y>::type alloc_t;` declaration, outside this coherent
+name/special-member increment.
 
-The current repaired executable is SHA-256
-`13e4d2f60d7bf1a19599d69d55a61bf958cf3af720aa9153e6695a4f168268b6`.
-Single bounded runs, not interleaved comparisons, were below the 0.01-second
-timer resolution:
+Non-goals remain lookup, deduction, unrelated cast/new/lambda/declaration
+ambiguity residuals, grammar/fixture/harness changes, and any parallel
+parse/render representation.  The focused command was:
 
-| input | result | elapsed | peak RSS |
-| --- | --- | ---: | ---: |
-| qualified member-pointer edge probe | success | 0.00 s | 4116 KB |
-| nearest-operator boundary probe | success | 0.00 s | 4116 KB |
-| checked qualified-member input | success | 0.00 s | 4116 KB |
+```text
+make -C pa10 check TEST='tests/general/100-member-operator-name-call.t tests/general/200-allocation-array-operator-ids.t tests/general/200-attributed-partial-specialization-current-class-constructor.t tests/general/200-attributed-virtual-destructor-member.t tests/general/200-forward-unknown-nested-template-in-ctor-body.t tests/general/200-literal-operator-id.t tests/general/200-qualified-conversion-operator-definition.t tests/general/200-template-qualified-conversion-operator-dependent-result.t tests/general/200-template-qualified-inline-attribute-constructor-definition.t tests/general/200-template-qualified-inline-constructor-definition.t tests/spec/200-explicit-instantiation-declaration.t tests/spec/200-qualified-special-member-definition.t tests/general/100-special-member-definitions.t tests/general/100-member-declarations.t tests/general/100-operators-pm.t tests/general/200-global-qualified-pointer-conversion.t tests/general/200-member-pointer-data-declarator.t tests/general/200-member-pointer-function-declarator.t tests/general/200-member-pointer-const-function-declarator.t tests/spec/100-nested-declarator.t tests/spec/100-array-declarator.t'
+```
 
-The structural evidence is one linear prefix scan per consumed
-member-pointer form, O(1) preindexed template-close lookup, one-shot
-type-id lookahead ownership, and no retry/backtracking. No timing comparison
-is claimed.
+It reported `FAIL (20/21)`: the 11 repaired owned identities had expected
+`EXIT_SUCCESS` and exact output, the forward identity had expected success but
+actual failure, and all nine named regression siblings were exact green.
 
-Historical performance characterization from the prior template/angle
-checkpoint is retained but is not a current binary/layout claim:
+## Performance Evidence
 
-| components | bytes | expected | exit | elapsed | peak RSS |
-| ---: | ---: | --- | ---: | ---: | ---: |
-| 32 | 166 | success | 0 | 0.00 s | 4184 KB |
-| 128 | 674 | success | 0 | 0.00 s | 4060 KB |
-| 256 | 1442 | success | 0 | 0.00 s | 4444 KB |
-| 256 truncated | 1439 | failure | 1 | 0.00 s | 4596 KB |
+The structural bound is one charged monotonic pass over the indexed token
+stream for template/delimiter facts; special-member prefix lookahead advances
+once, balanced attributes consume each token once, and template closes are
+indexed.  No qualified name or conversion type-id is reparsed or backtracked.
+The final parser source is 2917 lines; the private support implementation is
+552 lines.
 
-The prior 140-argument, nested-angle, relational, sibling-scope, and renderer
-depth probes remain historical evidence only; no unverified comparison is
-made.
+Measured with `/usr/bin/time` and `/tmp` outputs, repeating each valid fixture
+256 times to avoid timer granularity:
 
-## Checkpoint ledger
+```text
+qualified Box<T>::operator Val<Box::value_type>() x256: elapsed=0.02s, peak RSS=4064 KB, exit=0
+inline __attribute__((visibility("hidden"))) C<T>::C(C&&) x256: elapsed=0.02s, peak RSS=4300 KB, exit=0
+C::operator+(int) const { return 0; } (malformed boundary): elapsed=0.00s, peak RSS=4432 KB, exit=1
+```
+
+Required gates: exact `n=10` through-PA9 command passed `457 / 457` with exit
+0; `perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src` passed with
+one pre-existing warning for `dev/src/cpp_semantic_core.h:1`; and
+`git diff --check` passed.
+
+## Checkpoint Ledger
 
 | checkpoint | status | evidence / intent |
 | --- | --- | --- |
-| `27623d646279d867e58039af60a1cc52e09e090e` declarator/member-declaration boundary | completed bounded audit and clean helper extraction | 23/23 focused; required valid and malformed `/tmp` probes; private shape helper linked to `cppgm++`; PA10 123/157 with exact 34-identity baseline and 157 discovery; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
-
-Historical ledger context: `a2b82dcb` template/angle ownership is landed and
-closed; its typed sidecars, historical through-PA9 457/457, and prior
-file-audit warning record are not reopened here.
-
-## Next checkpoint
-
-The next checkpoint is a supervisor-selected family from the exact 34 residual
-identities. Keep this declarator/member boundary closed and do not broaden the
-implementation without a separately bounded audit.
+| `a2b82dcb` template/angle ownership | landed | typed template components/sidecars and bounded close ownership |
+| `27623d64` declarator/member-declaration boundary | landed | unified declarator/member path; historical focused and through-PA9 evidence |
+| `b9b58b9c` declarator-boundary audit | landed baseline | 157 discovered, 123/157 pass, exact 34 failures; through-PA9 457/457; one pre-existing audit warning |
+| `PA10: route structured names and special members` | committed by subject | 157/157 discovered, 135 pass, exact 12 removed and 22 residual; focused 20/21; through-PA9 457/457; file audit pass; measured probes above |

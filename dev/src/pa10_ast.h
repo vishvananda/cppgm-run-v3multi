@@ -30,7 +30,8 @@ enum class PA10ContextualIdentifierKind
 {
 	None,
 	Override,
-	Final
+	Final,
+	AttributeIntroducer
 };
 
 // These facts describe the grammar's unqualified-id alternatives without
@@ -50,6 +51,7 @@ enum class PA10OperatorFunctionKind
 	Subscript,
 	Call,
 	Conversion,
+	Literal,
 	New,
 	Delete,
 	NewArray,
@@ -198,6 +200,8 @@ enum class PA10NodeKind
 	ClassForwardDeclaration,
 	SpecialMemberDeclaration,
 	SpecialMemberDefinition,
+	MemberSpecifiers,
+	MemberSpecifier,
 	ClassKey,
 	AccessSpecifier,
 	VirtualSpecifier,
