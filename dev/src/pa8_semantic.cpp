@@ -1076,11 +1076,21 @@ bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 		if (source_element_layout.size == 0 ||
 			source.bytes.size() < source.element_count * source_element_layout.size)
 			return false;
+		// Reuse one typed scalar view and one conversion buffer.  Copying
+		// `source` here would copy the complete string-literal aggregate for
+		// every element before the slice below replaced its bytes.
+		PA8Value element;
+		element.type = source_element_type;
+		element.constant = source.constant;
+		element.is_constant_expression = source.is_constant_expression;
+		element.lvalue = false;
+		element.null_pointer = false;
+		element.element_count = 0;
+		element.bytes.reserve(source_element_layout.size);
+		std::vector<std::uint8_t> converted;
+		converted.reserve(element_layout.size);
 		for (std::size_t i = 0; i < source.element_count; ++i)
 		{
-			PA8Value element = source;
-			element.type = source_element_type;
-			element.element_count = 0;
 			element.entity = EntityId();
 			element.referent = EntityId();
 			element.relocation = EntityId();
@@ -1088,7 +1098,6 @@ bool PA8ProgramModel::Impl::convert_value(TypeId destination,
 			element.bytes.assign(source.bytes.begin() +
 				i * source_element_layout.size, source.bytes.begin() +
 				(i + 1) * source_element_layout.size);
-			std::vector<std::uint8_t> converted;
 			if (!convert_numeric(element_type, element, &converted) ||
 				converted.size() != element_layout.size)
 				return false;
