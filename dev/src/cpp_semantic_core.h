@@ -654,6 +654,12 @@ enum class LookupCategory
 	Entity
 };
 
+enum class NamespaceDeclarationKind
+{
+	Definition,
+	Alias
+};
+
 struct LookupResult
 {
 	LookupCategory category;
@@ -1143,6 +1149,9 @@ struct SemanticCore
 	NamespaceId named_namespace(NamespaceId parent, NameId name,
 		bool inline_namespace)
 	{
+		if (namespace_name_conflicts(parent, name,
+			NamespaceDeclarationKind::Definition))
+			throw std::runtime_error("namespace name conflicts with declaration");
 		NamespaceRecord& scope = namespaces[parent.value];
 		const NamespaceId* found = scope.named_children.find(name);
 		if (found != NULL)
@@ -1198,6 +1207,28 @@ struct SemanticCore
 		const NamespaceRecord& record = namespaces[id.value];
 		return record.last_declaration_translation_unit ==
 			current_translation_unit;
+	}
+
+	bool namespace_name_conflicts(NamespaceId scope, NameId name,
+		NamespaceDeclarationKind declaration_kind) const
+	{
+		const NamespaceRecord& record = namespaces[scope.value];
+		const SourceNameKey source_key(name, current_translation_unit);
+		if (record.source_entities.find(source_key) != NULL ||
+			record.aliases.find(source_key) != NULL ||
+			record.using_entities.find(source_key) != NULL ||
+			record.using_types.find(source_key) != NULL)
+			return true;
+
+		if (declaration_kind == NamespaceDeclarationKind::Definition)
+			// Repeated namespace aliases are a PA7 compatibility case; a
+			// namespace definition must nevertheless not take that name.
+			return record.namespace_aliases.find(source_key) != NULL;
+
+		// Namespace aliases are intentionally replaceable in the same
+		// current-TU source slot.  A directly declared namespace is not.
+		const NamespaceId* direct = record.named_children.find(name);
+		return direct != NULL && namespace_visible(*direct);
 	}
 
 	EntityBucketId ensure_source_entity_bucket(NamespaceId scope, NameId name,
@@ -1684,6 +1715,9 @@ struct SemanticCore
 	void declare_namespace_alias(NamespaceId scope, NameId name,
 		NamespaceId target)
 	{
+		if (namespace_name_conflicts(scope, name,
+			NamespaceDeclarationKind::Alias))
+			throw std::runtime_error("namespace alias misuse");
 		NamespaceRecord& record = namespaces[scope.value];
 		record.namespace_aliases.set(
 			SourceNameKey(name, current_translation_unit), target);

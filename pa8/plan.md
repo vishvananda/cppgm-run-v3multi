@@ -1,81 +1,79 @@
 # Stage Design
 
-PA8 uses one production path: preprocessing produces one `PPTokenBuffer` per
-TU, `cpp_declaration_syntax` publishes typed actions, and
+PA8 keeps one production path: preprocessing emits typed syntax actions and
 `CppSemantic::SemanticCore` owns canonical `NameId`, `TypeId`, `NamespaceId`,
-`EntityId`, `TypeKey`, namespace/entity identity, lookup, and flat indexes.
-PA7 is a rendering adapter over that core; PA8 adds typed expression/value,
-linkage, layout, relocation, and image facts.  `nsinit` owns only CLI,
-preprocessing, model invocation, and binary I/O.  This aligns with
-`pa8/README.md` and `spec.md` Purpose/§§1-4: one pipeline, typed fact
-continuity, stable IDs, deterministic order, and compact hot storage.
-
-## Current Checkpoint
-
-The landed typed slice covers real `nsinit` preprocessing and action flow,
-empty declarations and function stubs, scalar zero/constant initialization,
-fundamental literal conversion, alignment/order, PA8 magic, and initial
-cross-TU/linkage records.  This checkpoint retains namespace
-first-declaration ownership and entity-cache invalidation, adds
-declaration-owned same-TU linkage inheritance, and separates program
-identity/link buckets from current-TU source visibility for
-entities/namespaces/aliases/using facts.
-
-The compact representation is now explicit: declaration records retain a
-sentinel-aware last-declaration TU scalar; external link buckets are indexed
-by `NameId`; TU-local link and source buckets are indexed by `(NameId, TU)`;
-typed aliases/using facts use the same composite key; and anonymous/inline
-children plus using directives use per-TU occurrence ranges.  Uncached entity
-lookup uses reusable generation marks and deterministic current-TU ranges.
-Declaration-name conflicts use current-TU-visible namespace/type facts while
-redeclaration matching may still use program-wide external identity.  Its LIFO
-worklist pushes directives before children so child traversal precedes
-using-directive traversal.
-The PA7 adapter and PA8 value/layout/relocation/image path remain on this
-shared typed core.
-
-The checkpoint adds course probes for valid static-to-unspecified linkage
-inheritance, the invalid external-to-static inverse, TU2 entity
-declaration visibility/merging, namespace visibility, and non-leaking
-typedef, namespace-alias, using-declaration, and using-directive facts.  The
-10 new probes remain documented as such; the generation-reuse and cross-TU
-linkage regressions are additional guards.  No existing PA8 fixture was
-edited; both inverse failure sidecars are standard-informed after the
-documented reference path exposed reference divergences.
+`EntityId`, namespace/entity identity, lookup, and open-addressed indexes.
+PA7 and PA8 are adapters over that core; `nsinit` owns only orchestration and
+image I/O.  This follows `pa8/README.md` and `spec.md` Purpose/§§1-4:
+stable IDs, typed fact continuity, deterministic order, and compact storage.
+Existing linkage, current-TU visibility, lookup, layout, and image behavior is
+retained; this checkpoint adds only the shared namespace-name boundary.
 
 ## Failure Map
 
-The authoritative turn-start full gate is 34/60, with exactly 26 failures;
-the final full gate is 46/72 with exactly the same 26 failure identities and
-no additional failure.  Its preserved map is:
+Turn-start baseline is PA8 **46/72**, with exactly these 26 failures; added
+tests are not counted as progress:
 
-- References/conversions: `300-bad-ref1/2/3`, `300-uninit-ref`,
-  `450-reference`, `450-cv-dropping-reference-bad`,
+- References/conversions: `300-bad-ref1`, `300-bad-ref2`, `300-bad-ref3`,
+  `300-uninit-ref`, `450-reference`, `450-cv-dropping-reference-bad`,
   `450-lvalue-to-rvalue-reference-bad`, `700-reference-to-reference`.
 - Arrays/cv/static assertions: `310-array-str-lit`, `340-array-const`,
   `500-static-assert`, `500-static-assert3`,
   `300-cv-through-typedef-constant`.
 - Namespace/linkage validation: `400-namespace-alias-misuse`,
-  `400-namespace-alias-to-self`, `410-namespace-conflict1` through
+  `400-namespace-alias-to-self`, `410-namespace-conflict1`,
+  `410-namespace-conflict2`, `410-namespace-conflict3`,
+  `410-namespace-conflict4`, `410-namespace-conflict5`,
   `410-namespace-conflict6`, and `300-function-typedef-definition-bad`.
 - Qualified/cross-TU pointer work: `600-qualified-redeclaration`,
   `600-qualified-redeclaration2`, `120-constexpr-pointer-cross-tu`, and
   `120-constexpr-qualified-pointer`.
 
-The exact through-PA7 gate passed at 339/339.  All 12 new focused PA8 tests
-passed in the expanded denominator; no original passing test regressed.
-The file audit passed with one existing `bad-division` warning for the
-substantial implementation body in `dev/src/cpp_semantic_core.h`.
+The prior through-PA7 gate was 339/339.  The file audit passed with its one
+existing `bad-division` warning in `dev/src/cpp_semantic_core.h`.  No added
+test is treated as progress.
+
+Final validation for this checkpoint is PA8 **54/72**, with coverage unchanged
+at 72 and exactly these 18 remaining failures:
+
+- References/conversions: `300-bad-ref1`, `300-bad-ref2`, `300-bad-ref3`,
+  `300-uninit-ref`, `450-reference`, `450-cv-dropping-reference-bad`,
+  `450-lvalue-to-rvalue-reference-bad`, `700-reference-to-reference`.
+- Arrays/cv/static assertions: `310-array-str-lit`, `340-array-const`,
+  `500-static-assert`, `500-static-assert3`,
+  `300-cv-through-typedef-constant`.
+- Qualified/cross-TU work: `600-qualified-redeclaration`,
+  `600-qualified-redeclaration2`, `120-constexpr-pointer-cross-tu`,
+  `120-constexpr-qualified-pointer`.
+- Function typedef: `300-function-typedef-definition-bad`.
+
+The exact through-PA8 report is **393/411**, with the same 18 PA8 failures;
+the through-PA7 result remains 339/339.  The PA8 file audit passed with the
+same one existing `bad-division` warning.
+
+## Active Checkpoint
+
+`on_namespace_begin` and `on_namespace_alias` reach the shared typed
+`namespace_name_conflicts` helper before `named_namespace` and
+`declare_namespace_alias` mutate canonical state.  The helper probes current-TU
+`(NameId, TU)` source entity, type-alias, using-entity, using-type, and
+namespace-alias indexes.  Definitions allow the canonical `named_children`
+namespace to be reopened, but reject a current-TU alias/entity/type/using
+occupant.  Aliases reject a current-TU directly declared namespace or any
+entity/type/using occupant, while preserving PA7’s repeated namespace-alias
+source-slot behavior.  Thus current-TU source occupancy is separate from
+program-wide namespace identity and cross-TU reopening remains valid.
 
 ## Performance Evidence
 
-The core uses open-addressed typed indexes, insertion-order ownership vectors,
-per-TU occurrence ranges, and reusable generation-marked dense lookup scratch.
-An uncached entity-set lookup visits reachable current-TU namespaces and
-candidate buckets, with O(1)-expected entity/namespace dedup marks and
-deterministic source order.  Link matching consults the external `NameId`
-bucket and only the current TU's internal `(NameId, TU)` bucket; no prior-TU
-internal occurrence scan or speculative overload-set cache is claimed.
+Each validation is a fixed set of expected-O(1) probes into five typed
+open-addressed `(NameId, TU)` indexes, plus the existing `NameId` namespace
+index for alias-vs-direct-namespace checking.  There are no spelling
+render/reparse operations, whole-scope scans, or new caches; total work is
+ordinary O(n) expected over declarations.  No new timing measurement was run
+for this first focused milestone; the prior checkpoint’s scale probe below
+remains the only timing evidence, and this bounded-probe change adds no
+material complexity/cache risk.
 
 The representative cross-TU scale probe used immutable rebuilt `dev/nsinit`
 sha256 `d3f51f3235139285af129e3698118ba73b714ab6d5b0b03345c9372d711f94aa`.
@@ -95,14 +93,9 @@ and is not a formal asymptotic proof.  The earlier single-TU deep-namespace
 measurement is retained only as context; the table is the material cross-TU
 evidence for this checkpoint.
 
-## Next Checkpoint
-
-For the next checkpoint, select one smallest remaining failure
-cluster—reference/array/value or the existing namespace/linkage diagnostics—
-without expanding this completed audit into those deferred clusters.
-
 ## Checkpoint Ledger
 
 | checkpoint | result | evidence |
 | --- | --- | --- |
-| `checkpointAudit` at `8b56021c` | completed coherent bounded audit/repair/documentation milestone; final gates passed | focused ref provenance and 10 new probes plus two guards; PA8 12/12 focused, final PA8 46/72 with the same 26 failure identities, representative PA8 5/5, PA7 9/9 focused and 339/339 through-PA7, file audit passed with one existing warning, typed compact-index/traversal review, and many-TU scale evidence |
+| `checkpointAudit` at `8ee86ae7` | completed prior bounded audit/repair milestone | turn-start PA8 46/72; through-PA7 339/339 and file audit passed with one existing warning |
+| `namespaceNameOccupancy` | completed; committed after broad validation | PA8 54/72 with all eight target identities removed and no regression; coverage 72; through-PA7 339/339; file audit passed with one existing warning; through-PA8 393/411 with the same 18 deferred failures; no fresh timing claim |
