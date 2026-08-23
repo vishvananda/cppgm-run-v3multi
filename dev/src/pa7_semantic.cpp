@@ -348,6 +348,10 @@ typedef FlatHashIndex<TypeKey, TypeId, TypeKeyHash> CanonicalTypeIndex;
 struct TypeRecord
 {
 	TypeKey key;
+	unsigned int array_tail_cv;
+	bool has_array_path;
+
+	TypeRecord() : key(), array_tail_cv(0), has_array_path(false) {}
 };
 
 enum class EntityKind
@@ -719,6 +723,18 @@ struct PA7SemanticModel::Impl
 		const TypeId result(types.size());
 		TypeRecord record;
 		record.key = key;
+		if (key.kind == TypeKind::Cv)
+		{
+			const TypeRecord& child = types[key.child.value];
+			record.array_tail_cv = child.array_tail_cv | key.cv;
+			record.has_array_path = child.has_array_path;
+		}
+		else if (key.kind == TypeKind::Array)
+		{
+			const TypeRecord& child = types[key.child.value];
+			record.array_tail_cv = child.array_tail_cv;
+			record.has_array_path = true;
+		}
 		types.push_back(record);
 		canonical_types.set(key, result);
 		return result;
@@ -746,26 +762,63 @@ struct PA7SemanticModel::Impl
 	{
 		if (qualifiers == 0)
 			return child;
-		if (type_kind(child) == TypeKind::LvalueReference ||
-			type_kind(child) == TypeKind::RvalueReference)
+		const TypeRecord& existing = types[child.value];
+		if (existing.has_array_path &&
+			(existing.array_tail_cv & qualifiers) == qualifiers)
 			return child;
-		if (type_kind(child) == TypeKind::Cv)
+		struct ArrayFrame
 		{
-			const TypeKey& old = types[child.value].key;
-			qualifiers |= old.cv;
-			child = old.child;
+			bool unknown_bound;
+			std::size_t bound;
+
+			ArrayFrame(bool unknown_bound, std::size_t bound)
+				: unknown_bound(unknown_bound), bound(bound)
+			{}
+		};
+
+		// Sequential aliases can make an owned type path deeper than the
+		// parser's per-declaration nesting bound. Walk that path iteratively;
+		// the vector is bounded by the number of array facts already owned by
+		// this model, rather than by an unrelated syntax-depth constant.
+		std::vector<ArrayFrame> arrays;
+		TypeId current = child;
+		for (;;)
+		{
+			const TypeKind kind = type_kind(current);
+			if (kind == TypeKind::Cv)
+			{
+				const TypeKey& old = types[current.value].key;
+				qualifiers |= old.cv;
+				current = old.child;
+				continue;
+			}
+			if (kind == TypeKind::Array)
+			{
+				const TypeKey& array_type = types[current.value].key;
+				arrays.push_back(ArrayFrame(array_type.unknown_bound,
+					array_type.bound));
+				current = array_type.child;
+				continue;
+			}
+			break;
 		}
-		if (type_kind(child) == TypeKind::Array)
+		if (type_kind(current) == TypeKind::LvalueReference ||
+			type_kind(current) == TypeKind::RvalueReference)
 		{
-			const TypeKey& array_type = types[child.value].key;
-			return array(cv(array_type.child, qualifiers),
-				array_type.unknown_bound, array_type.bound);
+			for (std::vector<ArrayFrame>::const_reverse_iterator it =
+				arrays.rbegin(); it != arrays.rend(); ++it)
+				current = array(current, it->unknown_bound, it->bound);
+			return current;
 		}
 		TypeKey key;
 		key.kind = TypeKind::Cv;
-		key.child = child;
+		key.child = current;
 		key.cv = qualifiers;
-		return intern_type(key);
+		TypeId result = intern_type(key);
+		for (std::vector<ArrayFrame>::const_reverse_iterator it =
+			arrays.rbegin(); it != arrays.rend(); ++it)
+			result = array(result, it->unknown_bound, it->bound);
+		return result;
 	}
 
 	TypeId pointer(TypeId child, unsigned int qualifiers = 0)
@@ -1320,12 +1373,13 @@ struct PA7SemanticModel::Impl
 		std::string result;
 		std::vector<RenderTask> tasks;
 		tasks.push_back(RenderTask(RenderTask::Type, type, NULL, depth));
+		const std::size_t type_walk_limit = types.size();
 		while (!tasks.empty())
 		{
 			const RenderTask task = tasks.back();
 			tasks.pop_back();
-			if (task.depth > 4096)
-				throw std::runtime_error("type rendering nesting limit reached");
+			if (task.depth > type_walk_limit)
+				throw std::runtime_error("type rendering cycle detected");
 			if (task.kind == RenderTask::Text)
 			{
 				result += task.text;
@@ -1519,7 +1573,8 @@ class PA7SemanticActions : public CppDeclarationSyntaxConsumer
 {
 public:
 	explicit PA7SemanticActions(PA7SemanticModel::Impl& model)
-		: model_(model), current_(model.global), namespace_parents_()
+		: model_(model), current_(model.global), namespace_parents_(),
+		  active_spec_(), declaration_active_(false)
 	{}
 
 	bool accept_type_name(const CppSyntaxQualifiedName& name) const
@@ -1605,56 +1660,71 @@ public:
 			type_id(source, current_));
 	}
 
-	void on_simple_declaration(const CppSyntaxDeclSpec& source,
-		const std::vector<CppSyntaxDeclarator>& declarators)
+	void on_simple_declaration_begin(const CppSyntaxDeclSpec& source)
 	{
-		BaseSpec spec = decl_spec(source, current_);
-		for (std::size_t i = 0; i < declarators.size(); ++i)
+		if (declaration_active_)
+			throw std::runtime_error("nested PA7 declaration action");
+		active_spec_ = decl_spec(source, current_);
+		declaration_active_ = true;
+	}
+
+	void on_simple_declarator(
+		const CppSyntaxDeclarator& declarator_source)
+	{
+		if (!declaration_active_)
+			throw std::runtime_error("PA7 declaration action without begin");
+		DeclaratorShape shape = declarator(declarator_source, current_);
+		if (!shape.has_name)
+			throw std::runtime_error("unnamed PA7 declaration");
+		const TypeId type = apply_shape(active_spec_.resolved_type, shape);
+		const NameId name = shape.name.last();
+		const bool qualified = shape.name.global ||
+			shape.name.components.size() > 1;
+		const NamespaceId target =
+			model_.resolve_declaration_target(shape.name, current_);
+		if (active_spec_.is_typedef)
+			model_.declare_alias(target, name, type);
+		else
 		{
-			DeclaratorShape shape = declarator(declarators[i], current_);
-			if (!shape.has_name)
-				throw std::runtime_error("unnamed PA7 declaration");
-			const TypeId type = apply_shape(spec.resolved_type, shape);
-			const NameId name = shape.name.last();
-			const bool qualified = shape.name.global ||
-				shape.name.components.size() > 1;
-			const NamespaceId target =
-				model_.resolve_declaration_target(shape.name, current_);
-			if (spec.is_typedef)
-				model_.declare_alias(target, name, type);
-			else
+			const bool is_function =
+				model_.type_kind(type) == TypeKind::Function;
+			if (qualified)
 			{
-				const bool is_function =
-					model_.type_kind(type) == TypeKind::Function;
-				if (qualified)
+				LookupResult existing = model_.lookup_qualified(target, name,
+					LookupCategory::Entity);
+				if (existing.found())
 				{
-					LookupResult existing = model_.lookup_qualified(target, name,
-						LookupCategory::Entity);
-					if (existing.found())
-					{
-						if ((is_function &&
-							model_.entities[existing.entity.value].kind !=
-								EntityKind::Function) ||
-							(!is_function &&
-							model_.entities[existing.entity.value].kind !=
-								EntityKind::Variable))
-							throw std::runtime_error(
-								"qualified declaration kind conflict");
-						model_.update_entity(existing.entity, type);
-					}
-					else
-						model_.declare_value(target, name, type, is_function);
+					if ((is_function &&
+						model_.entities[existing.entity.value].kind !=
+							EntityKind::Function) ||
+						(!is_function &&
+						model_.entities[existing.entity.value].kind !=
+							EntityKind::Variable))
+						throw std::runtime_error(
+							"qualified declaration kind conflict");
+					model_.update_entity(existing.entity, type);
 				}
 				else
-					model_.declare_value(current_, name, type, is_function);
+					model_.declare_value(target, name, type, is_function);
 			}
+			else
+				model_.declare_value(current_, name, type, is_function);
 		}
+	}
+
+	void on_simple_declaration_end()
+	{
+		if (!declaration_active_)
+			throw std::runtime_error("PA7 declaration action without begin");
+		declaration_active_ = false;
 	}
 
 private:
 	PA7SemanticModel::Impl& model_;
 	NamespaceId current_;
 	std::vector<NamespaceId> namespace_parents_;
+	BaseSpec active_spec_;
+	bool declaration_active_;
 
 	QualifiedName qualified_name(const CppSyntaxQualifiedName& source)
 	{

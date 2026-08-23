@@ -214,16 +214,17 @@ CppSyntaxQualifiedName CppDeclarationSyntaxParser::parse_qualified_name()
 void CppDeclarationSyntaxParser::parse_simple_declaration()
 {
 	CppSyntaxDeclSpec spec = parse_decl_specifiers();
-	std::vector<CppSyntaxDeclarator> declarators;
+	consumer_.on_simple_declaration_begin(spec);
 	do
 	{
-		declarators.push_back(parse_ptr_declarator(false));
+		CppSyntaxDeclarator declarator = parse_ptr_declarator(false);
+		consumer_.on_simple_declarator(declarator);
 		if (!fixed(SimpleTokenType::OP_COMMA))
 			break;
 		consume_fixed(SimpleTokenType::OP_COMMA);
 	} while (true);
 	consume_fixed(SimpleTokenType::OP_SEMICOLON);
-	consumer_.on_simple_declaration(spec, declarators);
+	consumer_.on_simple_declaration_end();
 }
 
 bool CppDeclarationSyntaxParser::is_cv(SimpleTokenType type) const

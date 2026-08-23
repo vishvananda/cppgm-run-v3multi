@@ -1,0 +1,6 @@
+1 translation units
+start translation unit course/pa7/380-typedef-point-of-declaration.t
+start unnamed namespace
+function f function of (int) returning int
+end namespace
+end translation unit

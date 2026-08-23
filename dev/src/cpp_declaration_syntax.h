@@ -141,11 +141,21 @@ public:
 		(void)name;
 		(void)type;
 	}
-	virtual void on_simple_declaration(const CppSyntaxDeclSpec& spec,
-		const std::vector<CppSyntaxDeclarator>& declarators)
+	// A declaration specifier is published before its first declarator. Each
+	// declarator is then published as soon as its own syntax is complete, so a
+	// semantic owner can apply point-of-declaration before the next comma
+	// declarator is parsed. The end hook closes that streaming action scope.
+	virtual void on_simple_declaration_begin(const CppSyntaxDeclSpec& spec)
 	{
 		(void)spec;
-		(void)declarators;
+	}
+	virtual void on_simple_declarator(
+		const CppSyntaxDeclarator& declarator)
+	{
+		(void)declarator;
+	}
+	virtual void on_simple_declaration_end()
+	{
 	}
 
 	// These are policy queries at the point where the grammar needs a
