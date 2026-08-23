@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
+#include <iostream>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include "posttoken.h"
+#include "cpp_declaration_syntax.h"
 
 namespace
 {
@@ -83,100 +83,6 @@ struct NamespaceId
 	}
 };
 
-enum class PA7TokenKind
-{
-	Fixed,
-	Identifier,
-	Literal,
-	End
-};
-
-struct PA7Token
-{
-	PA7TokenKind kind;
-	SimpleTokenType fixed;
-	PPSpellingId spelling;
-	LiteralData literal;
-
-	PA7Token(PA7TokenKind kind = PA7TokenKind::End,
-		SimpleTokenType fixed = SimpleTokenType::OP_SEMICOLON,
-		PPSpellingId spelling = 0)
-		: kind(kind), fixed(fixed), spelling(spelling), literal()
-	{}
-};
-
-class PA7TokenCollector : public IPostTokenOutput
-{
-public:
-	PA7TokenCollector() : tokens(), invalid(false) {}
-
-	void emit_invalid(const std::string& source)
-	{
-		(void)source;
-		invalid = true;
-	}
-
-	void emit_simple(const std::string& source, SimpleTokenType type)
-	{
-		(void)source;
-		tokens.push_back(PA7Token(PA7TokenKind::Fixed, type));
-	}
-
-	void emit_simple_identifier(const std::string& source,
-		SimpleTokenType type)
-	{
-		(void)source;
-		tokens.push_back(PA7Token(PA7TokenKind::Fixed, type));
-	}
-
-	void emit_simple_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source, SimpleTokenType type)
-	{
-		(void)source;
-		PA7Token token(PA7TokenKind::Fixed, type, spelling);
-		tokens.push_back(token);
-	}
-
-	void emit_identifier(const std::string& source)
-	{
-		(void)source;
-		// The typed posttoken path calls the spelling-aware overload below.
-		// This fallback is retained for legacy direct callers only.
-		tokens.push_back(PA7Token(PA7TokenKind::Identifier));
-	}
-
-	void emit_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source)
-	{
-		(void)source;
-		tokens.push_back(PA7Token(PA7TokenKind::Identifier,
-			SimpleTokenType::OP_SEMICOLON, spelling));
-	}
-
-	void emit_literal(const std::string& source, const LiteralData& value)
-	{
-		(void)source;
-		PA7Token token(PA7TokenKind::Literal);
-		token.literal = value;
-		tokens.push_back(token);
-	}
-
-	void emit_user_defined_literal(const UserDefinedLiteralData& value)
-	{
-		(void)value;
-		invalid = true;
-	}
-
-	void emit_eof()
-	{
-		if (tokens.empty() || tokens.back().kind != PA7TokenKind::End)
-			tokens.push_back(PA7Token(PA7TokenKind::End));
-	}
-
-	std::vector<PA7Token> tokens;
-	bool invalid;
-};
-
 enum class TypeKind
 {
 	Fundamental,
@@ -228,6 +134,205 @@ struct TypeKey
 		return parameters < other.parameters;
 	}
 };
+
+struct NameIdHash
+{
+	std::size_t operator()(const NameId& value) const
+	{
+		std::size_t result = value.value;
+		result ^= result >> 17;
+		result *= static_cast<std::size_t>(0xed5ad4bbU);
+		result ^= result >> 11;
+		return result;
+	}
+};
+
+struct SizeHash
+{
+	std::size_t operator()(std::size_t value) const
+	{
+		value ^= value >> 17;
+		value *= static_cast<std::size_t>(0xed5ad4bbU);
+		value ^= value >> 11;
+		return value;
+	}
+};
+
+struct TypeKeyHash
+{
+	static std::size_t combine(std::size_t seed, std::size_t value)
+	{
+		value += static_cast<std::size_t>(0x9e3779b9U) +
+			(seed << 6) + (seed >> 2);
+		return seed ^ value;
+	}
+
+	std::size_t operator()(const TypeKey& key) const
+	{
+		std::size_t result = static_cast<std::size_t>(key.kind);
+		result = combine(result, static_cast<std::size_t>(key.fundamental));
+		result = combine(result, key.child.value);
+		result = combine(result, key.cv);
+		result = combine(result, key.unknown_bound ? 1u : 0u);
+		result = combine(result, key.bound);
+		result = combine(result, key.result.value);
+		result = combine(result, key.variadic ? 1u : 0u);
+		result = combine(result, key.parameters.size());
+		for (std::size_t i = 0; i < key.parameters.size(); ++i)
+			result = combine(result, key.parameters[i].value);
+		return result;
+	}
+};
+
+template <typename Key, typename Value, typename Hash>
+class FlatHashIndex
+{
+private:
+	struct Entry
+	{
+		Key key;
+		Value value;
+
+		Entry(const Key& key, const Value& value) : key(key), value(value) {}
+	};
+
+	static std::size_t empty_slot()
+	{
+		return std::numeric_limits<std::size_t>::max();
+	}
+
+	std::vector<std::size_t> slots_;
+	std::vector<Entry> entries_;
+
+	static bool equal_key(const Key& left, const Key& right)
+	{
+		return !(left < right) && !(right < left);
+	}
+
+	static bool power_of_two(std::size_t value)
+	{
+		return value != 0 && (value & (value - 1)) == 0;
+	}
+
+	std::size_t slot_for_key(const Key& key) const
+	{
+		const std::size_t mask = slots_.size() - 1;
+		std::size_t slot = Hash()(key) & mask;
+		for (std::size_t probes = 0; probes < slots_.size(); ++probes)
+		{
+			const std::size_t entry = slots_[slot];
+			if (entry == empty_slot() || equal_key(entries_[entry].key, key))
+				return slot;
+			slot = (slot + 1) & mask;
+		}
+		throw std::runtime_error("PA7 flat index probe exhausted");
+	}
+
+	std::size_t slot_for_entry(std::size_t entry) const
+	{
+		const std::size_t mask = slots_.size() - 1;
+		std::size_t slot = Hash()(entries_[entry].key) & mask;
+		for (std::size_t probes = 0; probes < slots_.size(); ++probes)
+		{
+			if (slots_[slot] == empty_slot())
+				return slot;
+			slot = (slot + 1) & mask;
+		}
+		throw std::runtime_error("PA7 flat index rehash probe exhausted");
+	}
+
+	void rehash(std::size_t capacity)
+	{
+		const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+		if (!power_of_two(capacity) || capacity < 8 ||
+			capacity > maximum / sizeof(std::size_t))
+			throw std::runtime_error("PA7 flat index capacity overflow");
+		std::vector<std::size_t> slots(capacity, empty_slot());
+		slots_.swap(slots);
+		for (std::size_t i = 0; i < entries_.size(); ++i)
+		{
+			const std::size_t slot = slot_for_entry(i);
+			slots_[slot] = i;
+		}
+	}
+
+	void ensure_capacity()
+	{
+		const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+		if (slots_.empty())
+		{
+			rehash(8);
+			return;
+		}
+		const std::size_t capacity = slots_.size();
+		const std::size_t limit = capacity / 10 * 7 +
+			(capacity % 10) * 7 / 10;
+		if (entries_.size() + 1 > limit)
+		{
+			if (capacity > maximum / 2)
+				throw std::runtime_error("PA7 flat index growth overflow");
+			rehash(capacity * 2);
+		}
+	}
+
+public:
+	FlatHashIndex() : slots_(), entries_() {}
+
+	std::size_t slot_count() const
+	{
+		return slots_.size();
+	}
+
+	std::size_t entry_count() const
+	{
+		return entries_.size();
+	}
+
+	const Value* find(const Key& key) const
+	{
+		if (slots_.empty())
+			return NULL;
+		const std::size_t mask = slots_.size() - 1;
+		std::size_t slot = Hash()(key) & mask;
+		for (std::size_t probes = 0; probes < slots_.size(); ++probes)
+		{
+			const std::size_t entry = slots_[slot];
+			if (entry == empty_slot())
+				return NULL;
+			if (equal_key(entries_[entry].key, key))
+				return &entries_[entry].value;
+			slot = (slot + 1) & mask;
+		}
+		return NULL;
+	}
+
+	Value* find(const Key& key)
+	{
+		return const_cast<Value*>(
+			static_cast<const FlatHashIndex*>(this)->find(key));
+	}
+
+	void set(const Key& key, const Value& value)
+	{
+		Value* existing = find(key);
+		if (existing != NULL)
+		{
+			*existing = value;
+			return;
+		}
+		ensure_capacity();
+		entries_.push_back(Entry(key, value));
+		const std::size_t entry = entries_.size() - 1;
+		const std::size_t slot = slot_for_key(key);
+		slots_[slot] = entry;
+	}
+};
+
+typedef FlatHashIndex<NameId, NamespaceId, NameIdHash> NamespaceIndex;
+typedef FlatHashIndex<NameId, EntityId, NameIdHash> EntityIndex;
+typedef FlatHashIndex<NameId, TypeId, NameIdHash> TypeIndex;
+typedef FlatHashIndex<PPSpellingId, NameId, SizeHash> SpellingIndex;
+typedef FlatHashIndex<TypeKey, TypeId, TypeKeyHash> CanonicalTypeIndex;
 
 struct TypeRecord
 {
@@ -293,12 +398,12 @@ struct NamespaceRecord
 	std::vector<EntityId> variables;
 	std::vector<EntityId> functions;
 	std::vector<NamespaceId> children;
-	std::map<NameId, NamespaceId> named_children;
-	std::map<NameId, NamespaceId> namespace_aliases;
-	std::map<NameId, EntityId> entities;
-	std::map<NameId, TypeId> aliases;
-	std::map<NameId, EntityId> using_entities;
-	std::map<NameId, TypeId> using_types;
+	NamespaceIndex named_children;
+	NamespaceIndex namespace_aliases;
+	EntityIndex entities;
+	TypeIndex aliases;
+	EntityIndex using_entities;
+	TypeIndex using_types;
 	std::vector<NamespaceId> using_directives;
 
 	NamespaceRecord(NamespaceId id = NamespaceId(),
@@ -431,18 +536,42 @@ struct LookupResult
 struct PA7SemanticModel::Impl
 {
 	const PPTokenBuffer& input;
-	std::vector<PA7Token> tokens;
+	std::vector<CppSyntaxToken> tokens;
 	std::vector<PPSpellingId> names;
-	std::map<PPSpellingId, NameId> names_by_spelling;
+	SpellingIndex names_by_spelling;
 	std::vector<TypeRecord> types;
-	std::map<TypeKey, TypeId> canonical_types;
+	CanonicalTypeIndex canonical_types;
 	std::vector<NamespaceRecord> namespaces;
 	std::vector<EntityRecord> entities;
 	NamespaceId global;
 
+	struct LookupFrame
+	{
+		NamespaceId id;
+		std::size_t child_index;
+		std::size_t directive_index;
+		bool entered;
+
+		LookupFrame(NamespaceId id = NamespaceId())
+			: id(id), child_index(0), directive_index(0), entered(false)
+		{}
+	};
+
+	mutable std::vector<std::uint32_t> lookup_marks;
+	mutable std::uint32_t lookup_generation;
+	mutable std::vector<LookupFrame> lookup_work;
+#ifdef PA7_AUDIT_COUNTERS
+	std::size_t lookup_queries;
+	std::size_t lookup_namespace_visits;
+#endif
+
 	explicit Impl(const PPTokenBuffer& input)
 		: input(input), tokens(), names(), names_by_spelling(), types(),
-		  canonical_types(), namespaces(), entities(), global()
+		  canonical_types(), namespaces(), entities(), global(), lookup_marks(),
+		  lookup_generation(0), lookup_work()
+#ifdef PA7_AUDIT_COUNTERS
+		  , lookup_queries(0), lookup_namespace_visits(0)
+#endif
 	{
 		global = create_namespace(NamespaceId(), NameId(), true, false);
 		for (int i = static_cast<int>(FundamentalType::SignedChar);
@@ -457,13 +586,12 @@ struct PA7SemanticModel::Impl
 
 	NameId intern_name(PPSpellingId spelling)
 	{
-		std::map<PPSpellingId, NameId>::const_iterator found =
-			names_by_spelling.find(spelling);
-		if (found != names_by_spelling.end())
-			return found->second;
+		const NameId* found = names_by_spelling.find(spelling);
+		if (found != NULL)
+			return *found;
 		const NameId result(names.size());
 		names.push_back(spelling);
-		names_by_spelling[spelling] = result;
+		names_by_spelling.set(spelling, result);
 		return result;
 	}
 
@@ -476,15 +604,14 @@ struct PA7SemanticModel::Impl
 
 	TypeId intern_type(const TypeKey& key)
 	{
-		std::map<TypeKey, TypeId>::const_iterator found =
-			canonical_types.find(key);
-		if (found != canonical_types.end())
-			return found->second;
+		const TypeId* found = canonical_types.find(key);
+		if (found != NULL)
+			return *found;
 		const TypeId result(types.size());
 		TypeRecord record;
 		record.key = key;
 		types.push_back(record);
-		canonical_types[key] = result;
+		canonical_types.set(key, result);
 		return result;
 	}
 
@@ -493,11 +620,10 @@ struct PA7SemanticModel::Impl
 		TypeKey key;
 		key.kind = TypeKind::Fundamental;
 		key.fundamental = type;
-		std::map<TypeKey, TypeId>::const_iterator found =
-			canonical_types.find(key);
-		if (found == canonical_types.end())
+		const TypeId* found = canonical_types.find(key);
+		if (found == NULL)
 			throw std::runtime_error("missing fundamental type identity");
-		return found->second;
+		return *found;
 	}
 
 	TypeKind type_kind(TypeId type) const
@@ -611,18 +737,17 @@ struct PA7SemanticModel::Impl
 		bool inline_namespace)
 	{
 		NamespaceRecord& scope = namespaces[parent.value];
-		std::map<NameId, NamespaceId>::const_iterator found =
-			scope.named_children.find(name);
-		if (found != scope.named_children.end())
+		const NamespaceId* found = scope.named_children.find(name);
+		if (found != NULL)
 		{
-			NamespaceRecord& existing = namespaces[found->second.value];
+			NamespaceRecord& existing = namespaces[found->value];
 			if (inline_namespace != existing.inline_namespace)
 				throw std::runtime_error("inline namespace reopening mismatch");
-			return found->second;
+			return *found;
 		}
 		const NamespaceId result = create_namespace(parent, name, false,
 			inline_namespace);
-		namespaces[parent.value].named_children[name] = result;
+		namespaces[parent.value].named_children.set(name, result);
 		return result;
 	}
 
@@ -644,72 +769,109 @@ struct PA7SemanticModel::Impl
 		return result;
 	}
 
+	void begin_lookup() const
+	{
+#ifdef PA7_AUDIT_COUNTERS
+		++const_cast<Impl*>(this)->lookup_queries;
+#endif
+		if (lookup_marks.size() < namespaces.size())
+			lookup_marks.resize(namespaces.size(), 0);
+		++lookup_generation;
+		if (lookup_generation == 0)
+		{
+			std::fill(lookup_marks.begin(), lookup_marks.end(), 0);
+			lookup_generation = 1;
+		}
+		lookup_work.clear();
+	}
+
+	bool mark_lookup_namespace(NamespaceId id) const
+	{
+		if (!id.valid() || id.value >= namespaces.size())
+			return false;
+		if (lookup_marks[id.value] == lookup_generation)
+			return false;
+		lookup_marks[id.value] = lookup_generation;
+		return true;
+	}
+
+	LookupResult lookup_marked(NameId name, LookupCategory category) const
+	{
+		while (!lookup_work.empty())
+		{
+			const std::size_t frame_index = lookup_work.size() - 1;
+			LookupFrame& frame = lookup_work[frame_index];
+			const NamespaceRecord& record = namespaces[frame.id.value];
+			if (!frame.entered)
+			{
+				frame.entered = true;
+#ifdef PA7_AUDIT_COUNTERS
+				++const_cast<Impl*>(this)->lookup_namespace_visits;
+#endif
+				if (category == LookupCategory::Namespace)
+				{
+					const NamespaceId* direct =
+						record.named_children.find(name);
+					if (direct != NULL)
+						return LookupResult::namespace_result(*direct);
+					const NamespaceId* alias =
+						record.namespace_aliases.find(name);
+					if (alias != NULL)
+						return LookupResult::namespace_result(*alias);
+				}
+				else if (category == LookupCategory::Type)
+				{
+					const TypeId* direct = record.aliases.find(name);
+					if (direct != NULL)
+						return LookupResult::type_result(*direct);
+					const TypeId* imported = record.using_types.find(name);
+					if (imported != NULL)
+						return LookupResult::type_result(*imported);
+				}
+				else
+				{
+					const EntityId* direct = record.entities.find(name);
+					if (direct != NULL)
+						return LookupResult::entity_result(*direct);
+					const EntityId* imported =
+						record.using_entities.find(name);
+					if (imported != NULL)
+						return LookupResult::entity_result(*imported);
+				}
+			}
+
+			if (frame.child_index < record.children.size())
+			{
+				const NamespaceId child_id =
+					record.children[frame.child_index++];
+				const NamespaceRecord& child = namespaces[child_id.value];
+				if ((child.anonymous || child.inline_namespace) &&
+					mark_lookup_namespace(child_id))
+					lookup_work.push_back(LookupFrame(child_id));
+				continue;
+			}
+			if (frame.directive_index < record.using_directives.size())
+			{
+				const NamespaceId target =
+					record.using_directives[frame.directive_index++];
+				if (mark_lookup_namespace(target))
+					lookup_work.push_back(LookupFrame(target));
+				continue;
+			}
+			lookup_work.pop_back();
+		}
+		return LookupResult();
+	}
+
 	LookupResult lookup_in_namespace(NamespaceId scope, NameId name,
-		LookupCategory category, std::vector<unsigned char>* visited) const
+		LookupCategory category) const
 	{
 		if (!scope.valid() || scope.value >= namespaces.size())
 			return LookupResult();
-		if (scope.value >= visited->size())
-			visited->resize(namespaces.size(), 0);
-		if ((*visited)[scope.value] != 0)
-			return LookupResult();
-		(*visited)[scope.value] = 1;
-		const NamespaceRecord& record = namespaces[scope.value];
-		if (category == LookupCategory::Namespace)
-		{
-			std::map<NameId, NamespaceId>::const_iterator direct =
-				record.named_children.find(name);
-			if (direct != record.named_children.end())
-				return LookupResult::namespace_result(direct->second);
-			std::map<NameId, NamespaceId>::const_iterator alias =
-				record.namespace_aliases.find(name);
-			if (alias != record.namespace_aliases.end())
-				return LookupResult::namespace_result(alias->second);
-		}
-		else if (category == LookupCategory::Type)
-		{
-			std::map<NameId, TypeId>::const_iterator direct =
-				record.aliases.find(name);
-			if (direct != record.aliases.end())
-				return LookupResult::type_result(direct->second);
-			std::map<NameId, TypeId>::const_iterator imported =
-				record.using_types.find(name);
-			if (imported != record.using_types.end())
-				return LookupResult::type_result(imported->second);
-		}
-		else
-		{
-			std::map<NameId, EntityId>::const_iterator direct =
-				record.entities.find(name);
-			if (direct != record.entities.end())
-				return LookupResult::entity_result(direct->second);
-			std::map<NameId, EntityId>::const_iterator imported =
-				record.using_entities.find(name);
-			if (imported != record.using_entities.end())
-				return LookupResult::entity_result(imported->second);
-		}
-
-		// Anonymous and inline namespaces inject their declarations into the
-		// enclosing namespace.  Children remain in first-declaration order;
-		// this loop is also the deterministic tie-break for valid inputs.
-		for (std::size_t i = 0; i < record.children.size(); ++i)
-		{
-			const NamespaceRecord& child = namespaces[record.children[i].value];
-			if (!child.anonymous && !child.inline_namespace)
-				continue;
-			LookupResult injected = lookup_in_namespace(child.id, name,
-				category, visited);
-			if (injected.found())
-				return injected;
-		}
-		for (std::size_t i = 0; i < record.using_directives.size(); ++i)
-		{
-			LookupResult imported = lookup_in_namespace(
-				record.using_directives[i], name, category, visited);
-			if (imported.found())
-				return imported;
-		}
-		return LookupResult();
+		begin_lookup();
+		mark_lookup_namespace(scope);
+		lookup_work.push_back(LookupFrame(scope));
+		return lookup_marked(name, category);
 	}
 
 	LookupResult lookup_unqualified(NamespaceId start, NameId name,
@@ -718,9 +880,7 @@ struct PA7SemanticModel::Impl
 		NamespaceId scope = start;
 		while (scope.valid())
 		{
-			std::vector<unsigned char> visited(namespaces.size(), 0);
-			LookupResult found = lookup_in_namespace(scope, name, category,
-				&visited);
+			LookupResult found = lookup_in_namespace(scope, name, category);
 			if (found.found())
 				return found;
 			if (scope.value == global.value)
@@ -733,8 +893,7 @@ struct PA7SemanticModel::Impl
 	LookupResult lookup_qualified(NamespaceId scope, NameId name,
 		LookupCategory category) const
 	{
-		std::vector<unsigned char> visited(namespaces.size(), 0);
-		return lookup_in_namespace(scope, name, category, &visited);
+		return lookup_in_namespace(scope, name, category);
 	}
 
 	NamespaceId resolve_namespace_path(const QualifiedName& path,
@@ -815,15 +974,15 @@ struct PA7SemanticModel::Impl
 	void declare_alias(NamespaceId scope, NameId name, TypeId type)
 	{
 		NamespaceRecord& record = namespaces[scope.value];
-		if (record.entities.find(name) != record.entities.end())
+		if (record.entities.find(name) != NULL)
 			throw std::runtime_error("typedef conflicts with value declaration");
-		record.aliases[name] = type;
+		record.aliases.set(name, type);
 	}
 
 	void declare_namespace_alias(NamespaceId scope, NameId name,
 		NamespaceId target)
 	{
-		namespaces[scope.value].namespace_aliases[name] = target;
+		namespaces[scope.value].namespace_aliases.set(name, target);
 	}
 
 	void add_using_directive(NamespaceId scope, NamespaceId target)
@@ -838,33 +997,57 @@ struct PA7SemanticModel::Impl
 
 	void add_using_type(NamespaceId scope, NameId name, TypeId type)
 	{
-		namespaces[scope.value].using_types[name] = type;
+		namespaces[scope.value].using_types.set(name, type);
 	}
 
 	void add_using_entity(NamespaceId scope, NameId name, EntityId entity)
 	{
-		namespaces[scope.value].using_entities[name] = entity;
+		namespaces[scope.value].using_entities.set(name, entity);
 	}
 
 	TypeId merge_types(TypeId old_type, TypeId new_type)
 	{
-		if (old_type.value == new_type.value)
-			return old_type;
-		const TypeKey& old_key = types[old_type.value].key;
-		const TypeKey& new_key = types[new_type.value].key;
-		if (old_key.kind != TypeKind::Array ||
-			new_key.kind != TypeKind::Array)
-			return new_type;
-		const TypeId child = merge_types(old_key.child, new_key.child);
-		if (old_key.unknown_bound && !new_key.unknown_bound)
-			return array(child, false, new_key.bound);
-		if (!old_key.unknown_bound && new_key.unknown_bound)
-			return array(child, false, old_key.bound);
-		if (old_key.unknown_bound && new_key.unknown_bound)
-			return array(child, true, 0);
-		if (old_key.bound == new_key.bound)
-			return array(child, false, old_key.bound);
-		return new_type;
+		struct ArrayMerge
+		{
+			bool old_unknown;
+			std::size_t old_bound;
+			bool new_unknown;
+			std::size_t new_bound;
+			TypeId new_value;
+		};
+		std::vector<ArrayMerge> stack;
+		TypeId old_cursor = old_type;
+		TypeId new_cursor = new_type;
+		while (old_cursor.value != new_cursor.value)
+		{
+			const TypeKey& old_key = types[old_cursor.value].key;
+			const TypeKey& new_key = types[new_cursor.value].key;
+			if (old_key.kind != TypeKind::Array ||
+				new_key.kind != TypeKind::Array)
+			break;
+			ArrayMerge merge = {old_key.unknown_bound, old_key.bound,
+				new_key.unknown_bound, new_key.bound, new_cursor};
+			stack.push_back(merge);
+			old_cursor = old_key.child;
+			new_cursor = new_key.child;
+		}
+		TypeId result = old_cursor.value == new_cursor.value ? old_cursor :
+			new_cursor;
+		for (std::vector<ArrayMerge>::const_reverse_iterator it = stack.rbegin();
+			it != stack.rend(); ++it)
+		{
+			if (it->old_unknown && !it->new_unknown)
+				result = array(result, false, it->new_bound);
+			else if (!it->old_unknown && it->new_unknown)
+				result = array(result, false, it->old_bound);
+			else if (it->old_unknown && it->new_unknown)
+				result = array(result, true, 0);
+			else if (it->old_bound == it->new_bound)
+				result = array(result, false, it->old_bound);
+			else
+				result = it->new_value;
+		}
+		return result;
 	}
 
 	void update_entity(EntityId id, TypeId type)
@@ -878,10 +1061,10 @@ struct PA7SemanticModel::Impl
 		NamespaceRecord& record = namespaces[scope.value];
 		const EntityKind kind = is_function ? EntityKind::Function :
 			EntityKind::Variable;
-		std::map<NameId, EntityId>::iterator found = record.entities.find(name);
-		if (found != record.entities.end())
+		EntityId* found = record.entities.find(name);
+		if (found != NULL)
 		{
-			EntityRecord& existing = entities[found->second.value];
+			EntityRecord& existing = entities[found->value];
 			if (existing.kind != kind)
 				throw std::runtime_error("declaration kind conflict");
 			existing.type = merge_types(existing.type, type);
@@ -894,7 +1077,7 @@ struct PA7SemanticModel::Impl
 		entity.type = type;
 		entity.owner = scope;
 		entities.push_back(entity);
-		record.entities[name] = id;
+		record.entities.set(name, id);
 		if (is_function)
 			record.functions.push_back(id);
 		else
@@ -913,476 +1096,332 @@ struct PA7SemanticModel::Impl
 
 	std::string render_type(TypeId type, std::size_t depth = 0) const
 	{
-		if (depth > 4096)
-			throw std::runtime_error("type rendering nesting limit reached");
-		const TypeKey& key = types[type.value].key;
-		if (key.kind == TypeKind::Fundamental)
-			return fundamental_type_name(key.fundamental);
-		if (key.kind == TypeKind::Cv)
+		struct RenderTask
 		{
-			std::string result;
-			if ((key.cv & 1u) != 0)
-				result += "const ";
-			if ((key.cv & 2u) != 0)
-				result += "volatile ";
-			return result + render_type(key.child, depth + 1);
-		}
-		if (key.kind == TypeKind::Pointer)
+			enum Kind { Type, Text } kind;
+			TypeId type;
+			const char* text;
+			std::size_t depth;
+
+			RenderTask(Kind kind, TypeId type, const char* text,
+				std::size_t depth)
+				: kind(kind), type(type), text(text), depth(depth)
+			{}
+		};
+
+		std::string result;
+		std::vector<RenderTask> tasks;
+		tasks.push_back(RenderTask(RenderTask::Type, type, NULL, depth));
+		while (!tasks.empty())
 		{
-			std::string result;
-			if ((key.cv & 1u) != 0)
-				result += "const ";
-			if ((key.cv & 2u) != 0)
-				result += "volatile ";
-			return result + "pointer to " + render_type(key.child,
-				depth + 1);
+			const RenderTask task = tasks.back();
+			tasks.pop_back();
+			if (task.depth > 4096)
+				throw std::runtime_error("type rendering nesting limit reached");
+			if (task.kind == RenderTask::Text)
+			{
+				result += task.text;
+				continue;
+			}
+			if (!task.type.valid() || task.type.value >= types.size())
+				throw std::runtime_error("invalid PA7 type for rendering");
+			const TypeKey& key = types[task.type.value].key;
+			if (key.kind == TypeKind::Fundamental)
+			{
+				result += fundamental_type_name(key.fundamental);
+				continue;
+			}
+			if (key.kind == TypeKind::Cv)
+			{
+				if ((key.cv & 1u) != 0)
+					result += "const ";
+				if ((key.cv & 2u) != 0)
+					result += "volatile ";
+				tasks.push_back(RenderTask(RenderTask::Type, key.child, NULL,
+					task.depth + 1));
+				continue;
+			}
+			if (key.kind == TypeKind::Pointer)
+			{
+				if ((key.cv & 1u) != 0)
+					result += "const ";
+				if ((key.cv & 2u) != 0)
+					result += "volatile ";
+				result += "pointer to ";
+				tasks.push_back(RenderTask(RenderTask::Type, key.child, NULL,
+					task.depth + 1));
+				continue;
+			}
+			if (key.kind == TypeKind::LvalueReference)
+			{
+				result += "lvalue-reference to ";
+				tasks.push_back(RenderTask(RenderTask::Type, key.child, NULL,
+					task.depth + 1));
+				continue;
+			}
+			if (key.kind == TypeKind::RvalueReference)
+			{
+				result += "rvalue-reference to ";
+				tasks.push_back(RenderTask(RenderTask::Type, key.child, NULL,
+					task.depth + 1));
+				continue;
+			}
+			if (key.kind == TypeKind::Array)
+			{
+				result += "array of ";
+				if (key.unknown_bound)
+					result += "unknown bound of ";
+				else
+				{
+					std::ostringstream bound;
+					bound << key.bound;
+					result += bound.str();
+					result += " ";
+				}
+				tasks.push_back(RenderTask(RenderTask::Type, key.child, NULL,
+					task.depth + 1));
+				continue;
+			}
+
+			result += "function of (";
+			tasks.push_back(RenderTask(RenderTask::Type, key.result, NULL,
+				task.depth + 1));
+			tasks.push_back(RenderTask(RenderTask::Text, TypeId(),
+				") returning ", task.depth));
+			if (key.variadic)
+			{
+				tasks.push_back(RenderTask(RenderTask::Text, TypeId(),
+					"...", task.depth));
+				if (!key.parameters.empty())
+					tasks.push_back(RenderTask(RenderTask::Text, TypeId(),
+						", ", task.depth));
+			}
+			for (std::size_t i = key.parameters.size(); i != 0; --i)
+			{
+				tasks.push_back(RenderTask(RenderTask::Type,
+					key.parameters[i - 1], NULL, task.depth + 1));
+				if (i > 1)
+					tasks.push_back(RenderTask(RenderTask::Text, TypeId(),
+						", ", task.depth));
+			}
 		}
-		if (key.kind == TypeKind::LvalueReference)
-			return "lvalue-reference to " + render_type(key.child, depth + 1);
-		if (key.kind == TypeKind::RvalueReference)
-			return "rvalue-reference to " + render_type(key.child, depth + 1);
-		if (key.kind == TypeKind::Array)
-		{
-			std::ostringstream bound;
-			if (key.unknown_bound)
-				return "array of unknown bound of " +
-					render_type(key.child, depth + 1);
-			else
-				bound << key.bound;
-			return "array of " + bound.str() + " " +
-				render_type(key.child, depth + 1);
-		}
-		std::string result = "function of (";
-		for (std::size_t i = 0; i < key.parameters.size(); ++i)
-		{
-			if (i != 0)
-				result += ", ";
-			result += render_type(key.parameters[i], depth + 1);
-		}
-		if (key.variadic)
-		{
-			if (!key.parameters.empty())
-				result += ", ";
-			result += "...";
-		}
-		return result + ") returning " + render_type(key.result,
-			depth + 1);
+		return result;
 	}
 
 	void render_namespace(std::ostream& output, NamespaceId id,
 		std::size_t depth = 0) const
 	{
-		if (depth > 4096)
-			throw std::runtime_error("namespace rendering nesting limit reached");
-		const NamespaceRecord& record = namespaces[id.value];
-		if (record.anonymous)
-			output << "start unnamed namespace\n";
-		else
-			output << "start namespace " << name_text(record.name) << "\n";
-		if (record.inline_namespace)
-			output << "inline namespace\n";
-		for (std::size_t i = 0; i < record.variables.size(); ++i)
+		struct NamespaceTask
 		{
-			const EntityRecord& entity = entities[record.variables[i].value];
-			output << "variable " << name_text(entity.name) << " " <<
-				render_type(entity.type) << "\n";
-		}
-		for (std::size_t i = 0; i < record.functions.size(); ++i)
+			NamespaceId id;
+			std::size_t depth;
+			bool closing;
+
+			NamespaceTask(NamespaceId id, std::size_t depth, bool closing)
+				: id(id), depth(depth), closing(closing)
+			{}
+		};
+
+		std::vector<NamespaceTask> tasks;
+		tasks.push_back(NamespaceTask(id, depth, false));
+		while (!tasks.empty())
 		{
-			const EntityRecord& entity = entities[record.functions[i].value];
-			output << "function " << name_text(entity.name) << " " <<
-				render_type(entity.type) << "\n";
+			const NamespaceTask task = tasks.back();
+			tasks.pop_back();
+			if (task.depth > 4096)
+				throw std::runtime_error("namespace rendering nesting limit reached");
+			const NamespaceRecord& record = namespaces[task.id.value];
+			if (task.closing)
+			{
+				output << "end namespace\n";
+				continue;
+			}
+			if (record.anonymous)
+				output << "start unnamed namespace\n";
+			else
+				output << "start namespace " << name_text(record.name) << "\n";
+			if (record.inline_namespace)
+				output << "inline namespace\n";
+			for (std::size_t i = 0; i < record.variables.size(); ++i)
+			{
+				const EntityRecord& entity = entities[record.variables[i].value];
+				output << "variable " << name_text(entity.name) << " " <<
+					render_type(entity.type) << "\n";
+			}
+			for (std::size_t i = 0; i < record.functions.size(); ++i)
+			{
+				const EntityRecord& entity = entities[record.functions[i].value];
+				output << "function " << name_text(entity.name) << " " <<
+					render_type(entity.type) << "\n";
+			}
+			tasks.push_back(NamespaceTask(task.id, task.depth, true));
+			for (std::size_t i = record.children.size(); i != 0; --i)
+				tasks.push_back(NamespaceTask(record.children[i - 1],
+					task.depth + 1, false));
 		}
-		for (std::size_t i = 0; i < record.children.size(); ++i)
-			render_namespace(output, record.children[i], depth + 1);
-		output << "end namespace\n";
 	}
+
+#ifdef PA7_AUDIT_COUNTERS
+	void audit_report() const
+	{
+		std::size_t namespace_slots = 0;
+		std::size_t namespace_entries = 0;
+		for (std::size_t i = 0; i < namespaces.size(); ++i)
+		{
+			const NamespaceRecord& record = namespaces[i];
+			namespace_slots += record.named_children.slot_count();
+			namespace_slots += record.namespace_aliases.slot_count();
+			namespace_slots += record.entities.slot_count();
+			namespace_slots += record.aliases.slot_count();
+			namespace_slots += record.using_entities.slot_count();
+			namespace_slots += record.using_types.slot_count();
+			namespace_entries += record.named_children.entry_count();
+			namespace_entries += record.namespace_aliases.entry_count();
+			namespace_entries += record.entities.entry_count();
+			namespace_entries += record.aliases.entry_count();
+			namespace_entries += record.using_entities.entry_count();
+			namespace_entries += record.using_types.entry_count();
+		}
+		std::size_t parameter_ids = 0;
+		for (std::size_t i = 0; i < types.size(); ++i)
+			parameter_ids += types[i].key.parameters.size();
+		std::cerr << "PA7_AUDIT lookup_queries=" << lookup_queries
+			<< " namespace_visits=" << lookup_namespace_visits
+			<< " namespaces=" << namespaces.size()
+			<< " names=" << names.size()
+			<< " types=" << types.size()
+			<< " type_parameter_ids=" << parameter_ids
+			<< " canonical_slots=" << canonical_types.slot_count()
+			<< " canonical_entries=" << canonical_types.entry_count()
+			<< " namespace_index_slots=" << namespace_slots
+			<< " namespace_index_entries=" << namespace_entries << "\n";
+	}
+#endif
 };
 
-class PA7Parser
+class PA7SemanticActions : public CppDeclarationSyntaxConsumer
 {
 public:
-	PA7Parser(PA7SemanticModel::Impl& model,
-		const std::vector<PA7Token>& tokens)
-		: model_(model), tokens_(tokens), position_(0), current_(model.global),
-		  work_(0), work_limit_(tokens.size() >
-			std::numeric_limits<std::size_t>::max() / 64 ?
-			std::numeric_limits<std::size_t>::max() :
-			tokens.size() * 64 + 1024), nesting_(0)
+	explicit PA7SemanticActions(PA7SemanticModel::Impl& model)
+		: model_(model), current_(model.global), namespace_parents_()
 	{}
 
-	void parse()
+	void on_namespace_begin(bool inline_namespace, bool anonymous_namespace,
+		PPSpellingId name)
 	{
-		while (!at_end())
-			parse_declaration(current_);
-		if (!at_end())
-			throw std::runtime_error("PA7 parser did not consume translation unit");
+		NamespaceId child;
+		if (anonymous_namespace)
+			child = model_.anonymous_namespace(current_, inline_namespace);
+		else
+			child = model_.named_namespace(current_, model_.intern_name(name),
+				inline_namespace);
+		namespace_parents_.push_back(current_);
+		current_ = child;
+	}
+
+	void on_namespace_end()
+	{
+		if (namespace_parents_.empty())
+			throw std::runtime_error("PA7 namespace action underflow");
+		current_ = namespace_parents_.back();
+		namespace_parents_.pop_back();
+	}
+
+	void on_namespace_alias(PPSpellingId name,
+		const CppSyntaxQualifiedName& target)
+	{
+		model_.declare_namespace_alias(current_, model_.intern_name(name),
+			model_.resolve_namespace_path(qualified_name(target), current_));
+	}
+
+	void on_using_directive(const CppSyntaxQualifiedName& target)
+	{
+		model_.add_using_directive(current_,
+			model_.resolve_namespace_path(qualified_name(target), current_));
+	}
+
+	void on_using_declaration(const CppSyntaxQualifiedName& source)
+	{
+		QualifiedName introduced = qualified_name(source);
+		LookupResult type = model_.lookup_path(introduced, current_,
+			LookupCategory::Type);
+		if (type.found())
+		{
+			model_.add_using_type(current_, introduced.last(), type.type);
+			return;
+		}
+		LookupResult entity = model_.lookup_path(introduced, current_,
+			LookupCategory::Entity);
+		if (!entity.found())
+			throw std::runtime_error("unresolved PA7 using declaration");
+		model_.add_using_entity(current_, introduced.last(), entity.entity);
+	}
+
+	void on_alias_declaration(PPSpellingId name,
+		const CppSyntaxTypeId& source)
+	{
+		model_.declare_alias(current_, model_.intern_name(name),
+			type_id(source, current_));
+	}
+
+	void on_simple_declaration(const CppSyntaxDeclSpec& source,
+		const std::vector<CppSyntaxDeclarator>& declarators)
+	{
+		BaseSpec spec = decl_spec(source, current_);
+		for (std::size_t i = 0; i < declarators.size(); ++i)
+		{
+			DeclaratorShape shape = declarator(declarators[i], current_);
+			if (!shape.has_name)
+				throw std::runtime_error("unnamed PA7 declaration");
+			const TypeId type = apply_shape(spec.resolved_type, shape);
+			const NameId name = shape.name.last();
+			const bool qualified = shape.name.global ||
+				shape.name.components.size() > 1;
+			const NamespaceId target =
+				model_.resolve_declaration_target(shape.name, current_);
+			if (spec.is_typedef)
+				model_.declare_alias(target, name, type);
+			else
+			{
+				const bool is_function =
+					model_.type_kind(type) == TypeKind::Function;
+				if (qualified)
+				{
+					LookupResult existing = model_.lookup_qualified(target, name,
+						LookupCategory::Entity);
+					if (existing.found())
+					{
+						if ((is_function &&
+							model_.entities[existing.entity.value].kind !=
+								EntityKind::Function) ||
+							(!is_function &&
+							model_.entities[existing.entity.value].kind !=
+								EntityKind::Variable))
+							throw std::runtime_error(
+								"qualified declaration kind conflict");
+						model_.update_entity(existing.entity, type);
+					}
+					else
+						model_.declare_value(target, name, type, is_function);
+				}
+				else
+					model_.declare_value(current_, name, type, is_function);
+			}
+		}
 	}
 
 private:
 	PA7SemanticModel::Impl& model_;
-	const std::vector<PA7Token>& tokens_;
-	std::size_t position_;
 	NamespaceId current_;
-	std::size_t work_;
-	std::size_t work_limit_;
-	std::size_t nesting_;
+	std::vector<NamespaceId> namespace_parents_;
 
-	static const std::size_t kMaxNesting = 4096;
-
-	void tick()
-	{
-		if (++work_ > work_limit_)
-			throw std::runtime_error("PA7 parser work limit reached");
-	}
-
-	bool at_end() const
-	{
-		return position_ >= tokens_.size() ||
-			tokens_[position_].kind == PA7TokenKind::End;
-	}
-
-	const PA7Token& look(std::size_t offset = 0) const
-	{
-		const std::size_t at = position_ + offset;
-		if (at >= tokens_.size())
-			throw std::runtime_error("PA7 parser read past end");
-		return tokens_[at];
-	}
-
-	bool fixed(SimpleTokenType type, std::size_t offset = 0) const
-	{
-		return look(offset).kind == PA7TokenKind::Fixed &&
-			look(offset).fixed == type;
-	}
-
-	bool identifier(std::size_t offset = 0) const
-	{
-		return look(offset).kind == PA7TokenKind::Identifier;
-	}
-
-	bool literal(std::size_t offset = 0) const
-	{
-		return look(offset).kind == PA7TokenKind::Literal;
-	}
-
-	void consume_fixed(SimpleTokenType type)
-	{
-		tick();
-		if (!fixed(type))
-			throw std::runtime_error("unexpected PA7 fixed token");
-		++position_;
-	}
-
-	NameId consume_identifier()
-	{
-		tick();
-		if (!identifier())
-			throw std::runtime_error("expected PA7 identifier");
-		const NameId result = model_.intern_name(look().spelling);
-		++position_;
-		return result;
-	}
-
-	void enter_nesting()
-	{
-		if (++nesting_ > kMaxNesting)
-			throw std::runtime_error("PA7 nesting limit reached");
-	}
-
-	void leave_nesting()
-	{
-		if (nesting_ == 0)
-			throw std::runtime_error("PA7 nesting underflow");
-		--nesting_;
-	}
-
-	void parse_declaration(NamespaceId scope)
-	{
-		current_ = scope;
-		if (fixed(SimpleTokenType::OP_SEMICOLON))
-		{
-			consume_fixed(SimpleTokenType::OP_SEMICOLON);
-			return;
-		}
-		if (fixed(SimpleTokenType::KW_NAMESPACE))
-		{
-			parse_namespace_definition(scope, false);
-			return;
-		}
-		if (fixed(SimpleTokenType::KW_INLINE))
-		{
-			consume_fixed(SimpleTokenType::KW_INLINE);
-			parse_namespace_definition(scope, true);
-			return;
-		}
-		if (fixed(SimpleTokenType::KW_USING))
-		{
-			parse_using_declaration_or_alias(scope);
-			return;
-		}
-		parse_simple_declaration(scope);
-	}
-
-	void parse_namespace_definition(NamespaceId parent, bool inline_namespace)
-	{
-		consume_fixed(SimpleTokenType::KW_NAMESPACE);
-		NameId name;
-		bool anonymous = true;
-		if (identifier())
-		{
-			name = consume_identifier();
-			anonymous = false;
-		}
-		if (fixed(SimpleTokenType::OP_ASS))
-		{
-			consume_fixed(SimpleTokenType::OP_ASS);
-			QualifiedName target = parse_qualified_name();
-			consume_fixed(SimpleTokenType::OP_SEMICOLON);
-			if (anonymous)
-				throw std::runtime_error("unnamed namespace alias");
-			model_.declare_namespace_alias(parent, name,
-				model_.resolve_namespace_path(target, parent));
-			return;
-		}
-		consume_fixed(SimpleTokenType::OP_LBRACE);
-		NamespaceId child;
-		if (anonymous)
-			child = model_.anonymous_namespace(parent, inline_namespace);
-		else
-			child = model_.named_namespace(parent, name, inline_namespace);
-		enter_nesting();
-		while (!fixed(SimpleTokenType::OP_RBRACE))
-		{
-			if (at_end())
-				throw std::runtime_error("unterminated PA7 namespace");
-			parse_declaration(child);
-		}
-		consume_fixed(SimpleTokenType::OP_RBRACE);
-		leave_nesting();
-		current_ = parent;
-	}
-
-	QualifiedName parse_qualified_name()
+	QualifiedName qualified_name(const CppSyntaxQualifiedName& source)
 	{
 		QualifiedName result;
-		if (fixed(SimpleTokenType::OP_COLON2))
-		{
-			result.global = true;
-			consume_fixed(SimpleTokenType::OP_COLON2);
-		}
-		if (!identifier())
-			throw std::runtime_error("expected PA7 qualified-name component");
-		result.components.push_back(consume_identifier());
-		while (fixed(SimpleTokenType::OP_COLON2))
-		{
-			consume_fixed(SimpleTokenType::OP_COLON2);
-			if (!identifier())
-				throw std::runtime_error("missing PA7 qualified-name component");
-			result.components.push_back(consume_identifier());
-		}
-		return result;
-	}
-
-	void parse_using_declaration_or_alias(NamespaceId scope)
-	{
-		consume_fixed(SimpleTokenType::KW_USING);
-		if (fixed(SimpleTokenType::KW_NAMESPACE))
-		{
-			consume_fixed(SimpleTokenType::KW_NAMESPACE);
-			QualifiedName target = parse_qualified_name();
-			consume_fixed(SimpleTokenType::OP_SEMICOLON);
-			model_.add_using_directive(scope,
-				model_.resolve_namespace_path(target, scope));
-			return;
-		}
-		QualifiedName introduced = parse_qualified_name();
-		if (fixed(SimpleTokenType::OP_ASS))
-		{
-			if (introduced.global || introduced.components.size() != 1)
-				throw std::runtime_error("qualified PA7 alias declaration");
-			consume_fixed(SimpleTokenType::OP_ASS);
-			TypeId type = parse_type_id(scope);
-			consume_fixed(SimpleTokenType::OP_SEMICOLON);
-			model_.declare_alias(scope, introduced.last(), type);
-			return;
-		}
-		consume_fixed(SimpleTokenType::OP_SEMICOLON);
-		if (introduced.components.empty())
-			throw std::runtime_error("empty PA7 using declaration");
-		LookupResult type = model_.lookup_path(introduced, scope,
-			LookupCategory::Type);
-		if (type.found())
-		{
-			model_.add_using_type(scope, introduced.last(), type.type);
-			return;
-		}
-		LookupResult entity = model_.lookup_path(introduced, scope,
-			LookupCategory::Entity);
-		if (!entity.found())
-			throw std::runtime_error("unresolved PA7 using declaration");
-		model_.add_using_entity(scope, introduced.last(), entity.entity);
-	}
-
-	bool is_cv(SimpleTokenType type) const
-	{
-		return type == SimpleTokenType::KW_CONST ||
-			type == SimpleTokenType::KW_VOLATILE;
-	}
-
-	bool consume_decl_specifier(BaseSpec* spec)
-	{
-		if (!fixed(SimpleTokenType::KW_TYPEDEF) &&
-			!fixed(SimpleTokenType::KW_CONST) &&
-			!fixed(SimpleTokenType::KW_VOLATILE) &&
-			!fixed(SimpleTokenType::KW_CHAR) &&
-			!fixed(SimpleTokenType::KW_CHAR16_T) &&
-			!fixed(SimpleTokenType::KW_CHAR32_T) &&
-			!fixed(SimpleTokenType::KW_WCHAR_T) &&
-			!fixed(SimpleTokenType::KW_BOOL) &&
-			!fixed(SimpleTokenType::KW_SHORT) &&
-			!fixed(SimpleTokenType::KW_INT) &&
-			!fixed(SimpleTokenType::KW_LONG) &&
-			!fixed(SimpleTokenType::KW_SIGNED) &&
-			!fixed(SimpleTokenType::KW_UNSIGNED) &&
-			!fixed(SimpleTokenType::KW_FLOAT) &&
-			!fixed(SimpleTokenType::KW_DOUBLE) &&
-			!fixed(SimpleTokenType::KW_VOID) &&
-			!fixed(SimpleTokenType::KW_STATIC) &&
-			!fixed(SimpleTokenType::KW_THREAD_LOCAL) &&
-			!fixed(SimpleTokenType::KW_EXTERN))
-			return false;
-		if (fixed(SimpleTokenType::KW_TYPEDEF))
-		{
-			spec->is_typedef = true;
-			consume_fixed(SimpleTokenType::KW_TYPEDEF);
-		}
-		else if (fixed(SimpleTokenType::KW_CONST))
-		{
-			spec->cv |= 1u;
-			consume_fixed(SimpleTokenType::KW_CONST);
-		}
-		else if (fixed(SimpleTokenType::KW_VOLATILE))
-		{
-			spec->cv |= 2u;
-			consume_fixed(SimpleTokenType::KW_VOLATILE);
-		}
-		else if (fixed(SimpleTokenType::KW_CHAR))
-		{
-			spec->has_char = true;
-			consume_fixed(SimpleTokenType::KW_CHAR);
-		}
-		else if (fixed(SimpleTokenType::KW_CHAR16_T))
-		{
-			spec->has_char16 = true;
-			consume_fixed(SimpleTokenType::KW_CHAR16_T);
-		}
-		else if (fixed(SimpleTokenType::KW_CHAR32_T))
-		{
-			spec->has_char32 = true;
-			consume_fixed(SimpleTokenType::KW_CHAR32_T);
-		}
-		else if (fixed(SimpleTokenType::KW_WCHAR_T))
-		{
-			spec->has_wchar = true;
-			consume_fixed(SimpleTokenType::KW_WCHAR_T);
-		}
-		else if (fixed(SimpleTokenType::KW_BOOL))
-		{
-			spec->has_bool = true;
-			consume_fixed(SimpleTokenType::KW_BOOL);
-		}
-		else if (fixed(SimpleTokenType::KW_SHORT))
-		{
-			spec->has_short = true;
-			consume_fixed(SimpleTokenType::KW_SHORT);
-		}
-		else if (fixed(SimpleTokenType::KW_INT))
-		{
-			spec->has_int = true;
-			consume_fixed(SimpleTokenType::KW_INT);
-		}
-		else if (fixed(SimpleTokenType::KW_LONG))
-		{
-			++spec->long_count;
-			consume_fixed(SimpleTokenType::KW_LONG);
-		}
-		else if (fixed(SimpleTokenType::KW_SIGNED))
-		{
-			spec->has_signed = true;
-			consume_fixed(SimpleTokenType::KW_SIGNED);
-		}
-		else if (fixed(SimpleTokenType::KW_UNSIGNED))
-		{
-			spec->has_unsigned = true;
-			consume_fixed(SimpleTokenType::KW_UNSIGNED);
-		}
-		else if (fixed(SimpleTokenType::KW_FLOAT))
-		{
-			spec->has_float = true;
-			consume_fixed(SimpleTokenType::KW_FLOAT);
-		}
-		else if (fixed(SimpleTokenType::KW_DOUBLE))
-		{
-			spec->has_double = true;
-			consume_fixed(SimpleTokenType::KW_DOUBLE);
-		}
-		else if (fixed(SimpleTokenType::KW_VOID))
-		{
-			spec->has_void = true;
-			consume_fixed(SimpleTokenType::KW_VOID);
-		}
-		else
-		{
-			consume_fixed(fixed(SimpleTokenType::KW_STATIC) ?
-				SimpleTokenType::KW_STATIC :
-				fixed(SimpleTokenType::KW_THREAD_LOCAL) ?
-				SimpleTokenType::KW_THREAD_LOCAL : SimpleTokenType::KW_EXTERN);
-		}
-		return true;
-	}
-
-	BaseSpec parse_decl_specifiers(NamespaceId scope)
-	{
-		BaseSpec result;
-		bool consumed = false;
-		while (true)
-		{
-			if (identifier() || fixed(SimpleTokenType::OP_COLON2))
-			{
-				if (result.has_named_type || result.has_char ||
-					result.has_short || result.has_int || result.long_count != 0 ||
-					result.has_signed || result.has_unsigned || result.has_bool ||
-					result.has_wchar || result.has_char16 || result.has_char32 ||
-					result.has_float || result.has_double || result.has_void)
-					break;
-				result.has_named_type = true;
-				result.named_type = parse_qualified_name();
-				consumed = true;
-				continue;
-			}
-			if (!consume_decl_specifier(&result))
-				break;
-			consumed = true;
-		}
-		if (!consumed)
-			throw std::runtime_error("missing PA7 declaration specifier");
-
-		TypeId base;
-		if (result.has_named_type)
-		{
-			if (result.has_char || result.has_short || result.has_int ||
-				result.long_count != 0 || result.has_signed ||
-				result.has_unsigned || result.has_bool || result.has_wchar ||
-				result.has_char16 || result.has_char32 || result.has_float ||
-				result.has_double || result.has_void)
-				throw std::runtime_error("mixed PA7 type specifiers");
-			base = model_.lookup_type_path(result.named_type, scope);
-			base = model_.cv(base, result.cv);
-		}
-		else
-			base = fundamental_from_spec(result);
-		result.resolved_type = base;
+		result.global = source.global;
+		result.components.reserve(source.components.size());
+		for (std::size_t i = 0; i < source.components.size(); ++i)
+			result.components.push_back(model_.intern_name(source.components[i]));
 		return result;
 	}
 
@@ -1422,6 +1461,7 @@ private:
 				FundamentalType::LongInt;
 		else if (spec.has_short)
 			type = spec.has_unsigned ? FundamentalType::UnsignedShortInt :
+				spec.has_signed ? FundamentalType::ShortInt :
 				FundamentalType::ShortInt;
 		else if (spec.has_unsigned)
 			type = FundamentalType::UnsignedInt;
@@ -1429,219 +1469,116 @@ private:
 			type = FundamentalType::Int;
 		else
 			type = FundamentalType::Int;
-		TypeId result = model_.fundamental(type);
-		return model_.cv(result, spec.cv);
+		return model_.cv(model_.fundamental(type), spec.cv);
 	}
 
-	std::size_t parse_array_bound()
+	BaseSpec decl_spec(const CppSyntaxDeclSpec& source, NamespaceId scope)
 	{
-		if (!literal())
-			throw std::runtime_error("PA7 array bound is not a literal");
-		const std::uint64_t value = model_.literal_value(look().literal);
-		if (value == 0 || value > std::numeric_limits<std::size_t>::max())
-			throw std::runtime_error("invalid PA7 array bound");
-		++position_;
-		return static_cast<std::size_t>(value);
+		BaseSpec result;
+		result.is_typedef = source.is_typedef;
+		result.has_named_type = source.has_named_type;
+		result.named_type = qualified_name(source.named_type);
+		result.cv = source.cv;
+		result.has_char = source.has_char;
+		result.has_short = source.has_short;
+		result.has_int = source.has_int;
+		result.long_count = source.long_count;
+		result.has_signed = source.has_signed;
+		result.has_unsigned = source.has_unsigned;
+		result.has_bool = source.has_bool;
+		result.has_wchar = source.has_wchar;
+		result.has_char16 = source.has_char16;
+		result.has_char32 = source.has_char32;
+		result.has_float = source.has_float;
+		result.has_double = source.has_double;
+		result.has_void = source.has_void;
+
+		if (result.has_named_type)
+		{
+			if (result.has_char || result.has_short || result.has_int ||
+				result.long_count != 0 || result.has_signed ||
+				result.has_unsigned || result.has_bool || result.has_wchar ||
+				result.has_char16 || result.has_char32 || result.has_float ||
+				result.has_double || result.has_void)
+				throw std::runtime_error("mixed PA7 type specifiers");
+			result.resolved_type = model_.cv(
+				model_.lookup_type_path(result.named_type, scope), result.cv);
+		}
+		else
+			result.resolved_type = fundamental_from_spec(result);
+		return result;
 	}
 
-	std::vector<TypeId> parse_parameter_clause(bool* variadic)
+	std::vector<TypeId> parameters(const CppSyntaxDeclaratorOp& source,
+		NamespaceId scope)
 	{
-		consume_fixed(SimpleTokenType::OP_LPAREN);
-		std::vector<TypeId> parameters;
-		*variadic = false;
-		if (fixed(SimpleTokenType::OP_RPAREN))
+		std::vector<TypeId> result;
+		if (source.parameters.size() == 1 &&
+			!source.parameters[0].has_declarator)
 		{
-			consume_fixed(SimpleTokenType::OP_RPAREN);
-			return parameters;
+			BaseSpec only = decl_spec(source.parameters[0].spec, scope);
+			if (model_.type_kind(only.resolved_type) == TypeKind::Fundamental &&
+				model_.types[only.resolved_type.value].key.fundamental ==
+					FundamentalType::Void)
+				return result;
 		}
-		if (fixed(SimpleTokenType::KW_VOID, 0) &&
-			fixed(SimpleTokenType::OP_RPAREN, 1))
+		result.reserve(source.parameters.size());
+		for (std::size_t i = 0; i < source.parameters.size(); ++i)
 		{
-			consume_fixed(SimpleTokenType::KW_VOID);
-			consume_fixed(SimpleTokenType::OP_RPAREN);
-			return parameters;
-		}
-		while (true)
-		{
-			if (fixed(SimpleTokenType::OP_DOTS))
-			{
-				consume_fixed(SimpleTokenType::OP_DOTS);
-				*variadic = true;
-				break;
-			}
-			BaseSpec spec = parse_decl_specifiers(current_);
-			TypeId base = spec.resolved_type;
+			const CppSyntaxParameter& parameter = source.parameters[i];
+			BaseSpec spec = decl_spec(parameter.spec, scope);
 			DeclaratorShape shape;
-			if (!fixed(SimpleTokenType::OP_COMMA) &&
-				!fixed(SimpleTokenType::OP_RPAREN) &&
-				!fixed(SimpleTokenType::OP_DOTS))
-				shape = parse_ptr_declarator(true);
-			TypeId type = apply_shape(base, shape);
-			if (!shape.has_name && shape.operations.empty() &&
-				model_.type_kind(type) == TypeKind::Fundamental &&
-				model_.types[type.value].key.fundamental == FundamentalType::Void &&
-				fixed(SimpleTokenType::OP_RPAREN) && parameters.empty())
-				break;
+			if (parameter.has_declarator)
+				shape = declarator(parameter.declarator, scope);
+			TypeId type = apply_shape(spec.resolved_type, shape);
 			type = model_.remove_top_cv(type);
 			if (model_.type_kind(type) == TypeKind::Array)
 				type = model_.pointer(model_.types[type.value].key.child);
 			else if (model_.type_kind(type) == TypeKind::Function)
 				type = model_.pointer(type);
-			parameters.push_back(type);
-			if (fixed(SimpleTokenType::OP_DOTS))
-			{
-				consume_fixed(SimpleTokenType::OP_DOTS);
-				*variadic = true;
-				break;
-			}
-			if (fixed(SimpleTokenType::OP_RPAREN))
-				break;
-			consume_fixed(SimpleTokenType::OP_COMMA);
-		}
-		consume_fixed(SimpleTokenType::OP_RPAREN);
-		return parameters;
-	}
-
-	bool abstract_parenthesis_is_grouped()
-	{
-		if (!fixed(SimpleTokenType::OP_LPAREN))
-			return false;
-		const SimpleTokenType next = look(1).fixed;
-		if (next == SimpleTokenType::OP_STAR ||
-			next == SimpleTokenType::OP_AMP ||
-			next == SimpleTokenType::OP_LAND ||
-			next == SimpleTokenType::OP_LSQUARE)
-			return true;
-		if (next == SimpleTokenType::OP_LPAREN)
-		{
-			const SimpleTokenType nested = look(2).fixed;
-			return nested == SimpleTokenType::OP_STAR ||
-				nested == SimpleTokenType::OP_AMP ||
-				nested == SimpleTokenType::OP_LAND ||
-				nested == SimpleTokenType::OP_LSQUARE;
-		}
-		if (look(1).kind == PA7TokenKind::Identifier)
-		{
-			QualifiedName candidate;
-			candidate.components.push_back(
-				model_.intern_name(look(1).spelling));
-			return !model_.lookup_path(candidate, current_,
-				LookupCategory::Type).found();
-		}
-		return false;
-	}
-
-	DeclaratorShape parse_noptr_declarator(bool allow_abstract)
-	{
-		DeclaratorShape result;
-		if (identifier() || fixed(SimpleTokenType::OP_COLON2))
-		{
-			result.has_name = true;
-			result.name = parse_qualified_name();
-		}
-		else if (fixed(SimpleTokenType::OP_LPAREN) && allow_abstract &&
-			!abstract_parenthesis_is_grouped())
-		{
-			// In an abstract-declarator, an initial `()` or `(...)` is the
-			// function suffix itself, not a parenthesized empty declarator.
-		}
-		else if (fixed(SimpleTokenType::OP_LPAREN))
-		{
-			consume_fixed(SimpleTokenType::OP_LPAREN);
-			result = parse_ptr_declarator(allow_abstract);
-			consume_fixed(SimpleTokenType::OP_RPAREN);
-		}
-		else if (!allow_abstract)
-			throw std::runtime_error("expected PA7 declarator-id");
-
-		while (fixed(SimpleTokenType::OP_LPAREN) ||
-			fixed(SimpleTokenType::OP_LSQUARE))
-		{
-			if (fixed(SimpleTokenType::OP_LPAREN))
-			{
-				DeclaratorOp operation(DeclaratorOpKind::Function);
-				operation.parameters = parse_parameter_clause(
-					&operation.variadic);
-				result.operations.push_back(operation);
-			}
-			else
-			{
-				consume_fixed(SimpleTokenType::OP_LSQUARE);
-				DeclaratorOp operation(DeclaratorOpKind::Array);
-				if (literal())
-					operation.bound = parse_array_bound();
-				else
-					operation.unknown_bound = true;
-				consume_fixed(SimpleTokenType::OP_RSQUARE);
-				result.operations.push_back(operation);
-			}
+			result.push_back(type);
 		}
 		return result;
 	}
 
-	TypeId parse_type_id(NamespaceId scope)
+	DeclaratorShape declarator(const CppSyntaxDeclarator& source,
+		NamespaceId scope)
 	{
-		BaseSpec spec = parse_decl_specifiers(scope);
-		TypeId base = spec.resolved_type;
-		if (fixed(SimpleTokenType::OP_STAR) ||
-			fixed(SimpleTokenType::OP_AMP) ||
-			fixed(SimpleTokenType::OP_LAND) ||
-			fixed(SimpleTokenType::OP_LPAREN) ||
-			fixed(SimpleTokenType::OP_LSQUARE))
+		DeclaratorShape result;
+		result.has_name = source.has_name;
+		result.name = qualified_name(source.name);
+		result.operations.reserve(source.operations.size());
+		for (std::size_t i = 0; i < source.operations.size(); ++i)
 		{
-			DeclaratorShape shape = parse_ptr_declarator(true);
-			base = apply_shape(base, shape);
-		}
-		return base;
-	}
-
-	DeclaratorShape parse_ptr_declarator(bool allow_abstract)
-	{
-		enter_nesting();
-		std::vector<DeclaratorOp> prefixes;
-		while (fixed(SimpleTokenType::OP_STAR) ||
-			fixed(SimpleTokenType::OP_AMP) ||
-			fixed(SimpleTokenType::OP_LAND))
-		{
+			const CppSyntaxDeclaratorOp& source_operation =
+				source.operations[i];
 			DeclaratorOp operation;
-			if (fixed(SimpleTokenType::OP_STAR))
+			switch (source_operation.kind)
 			{
+			case CppSyntaxDeclaratorOpKind::Pointer:
 				operation.kind = DeclaratorOpKind::Pointer;
-				consume_fixed(SimpleTokenType::OP_STAR);
-				while (is_cv(look().fixed))
-				{
-					if (fixed(SimpleTokenType::KW_CONST))
-					{
-						operation.cv |= 1u;
-						consume_fixed(SimpleTokenType::KW_CONST);
-					}
-					else
-					{
-						operation.cv |= 2u;
-						consume_fixed(SimpleTokenType::KW_VOLATILE);
-					}
-				}
-			}
-			else if (fixed(SimpleTokenType::OP_AMP))
-			{
+				break;
+			case CppSyntaxDeclaratorOpKind::LvalueReference:
 				operation.kind = DeclaratorOpKind::LvalueReference;
-				consume_fixed(SimpleTokenType::OP_AMP);
-			}
-			else
-			{
+				break;
+			case CppSyntaxDeclaratorOpKind::RvalueReference:
 				operation.kind = DeclaratorOpKind::RvalueReference;
-				consume_fixed(SimpleTokenType::OP_LAND);
+				break;
+			case CppSyntaxDeclaratorOpKind::Array:
+				operation.kind = DeclaratorOpKind::Array;
+				break;
+			case CppSyntaxDeclaratorOpKind::Function:
+				operation.kind = DeclaratorOpKind::Function;
+				break;
 			}
-			prefixes.push_back(operation);
+			operation.cv = source_operation.cv;
+			operation.unknown_bound = source_operation.unknown_bound;
+			operation.bound = source_operation.bound;
+			operation.variadic = source_operation.variadic;
+			if (source_operation.kind == CppSyntaxDeclaratorOpKind::Function)
+				operation.parameters = parameters(source_operation, scope);
+			result.operations.push_back(operation);
 		}
-		DeclaratorShape result = parse_noptr_declarator(allow_abstract);
-		// Prefix operators are inserted at the declarator hole after the
-		// direct-declarator suffixes.  This preserves C++ binding:
-		// `*f()` is a function returning pointer, while `(*f)()` is a
-		// pointer to function.
-		result.operations.insert(result.operations.end(), prefixes.begin(),
-			prefixes.end());
-		leave_nesting();
 		return result;
 	}
 
@@ -1676,51 +1613,13 @@ private:
 		return result;
 	}
 
-	void parse_simple_declaration(NamespaceId scope)
+	TypeId type_id(const CppSyntaxTypeId& source, NamespaceId scope)
 	{
-		BaseSpec spec = parse_decl_specifiers(scope);
-		TypeId base = spec.resolved_type;
-		while (true)
-		{
-			DeclaratorShape shape = parse_ptr_declarator(false);
-			if (!shape.has_name)
-				throw std::runtime_error("unnamed PA7 declaration");
-			const TypeId type = apply_shape(base, shape);
-			const NameId name = shape.name.last();
-			const bool qualified = shape.name.global ||
-				shape.name.components.size() > 1;
-			const NamespaceId target = model_.resolve_declaration_target(
-				shape.name, scope);
-			if (spec.is_typedef)
-				model_.declare_alias(target, name, type);
-			else
-			{
-				const bool is_function =
-					model_.type_kind(type) == TypeKind::Function;
-				if (qualified)
-				{
-					LookupResult existing = model_.lookup_qualified(target, name,
-						LookupCategory::Entity);
-					if (existing.found())
-					{
-						if ((is_function && model_.entities[existing.entity.value].kind !=
-							EntityKind::Function) ||
-							(!is_function && model_.entities[existing.entity.value].kind !=
-							EntityKind::Variable))
-							throw std::runtime_error("qualified declaration kind conflict");
-						model_.update_entity(existing.entity, type);
-					}
-					else
-						model_.declare_value(target, name, type, is_function);
-				}
-				else
-					model_.declare_value(scope, name, type, is_function);
-			}
-			if (!fixed(SimpleTokenType::OP_COMMA))
-				break;
-			consume_fixed(SimpleTokenType::OP_COMMA);
-		}
-		consume_fixed(SimpleTokenType::OP_SEMICOLON);
+		BaseSpec spec = decl_spec(source.spec, scope);
+		if (!source.has_declarator)
+			return spec.resolved_type;
+		return apply_shape(spec.resolved_type,
+			declarator(source.declarator, scope));
 	}
 };
 
@@ -1735,16 +1634,23 @@ PA7SemanticModel::~PA7SemanticModel()
 
 void PA7SemanticModel::analyze()
 {
-	PA7TokenCollector collector;
+	CppSyntaxTokenCollector collector;
 	posttokenize_cpp_tokens(impl_->input, collector);
 	if (collector.invalid)
 		throw std::runtime_error("invalid PA7 posttoken stream");
 	if (collector.tokens.empty() ||
-		collector.tokens.back().kind != PA7TokenKind::End)
-		throw std::runtime_error("PA7 token stream has no EOF");
+		collector.tokens.back().kind != CppSyntaxTokenKind::End)
+			throw std::runtime_error("PA7 token stream has no EOF");
 	impl_->tokens.swap(collector.tokens);
-	PA7Parser parser(*impl_, impl_->tokens);
-	parser.parse();
+	PA7SemanticActions actions(*impl_);
+	{
+		CppDeclarationSyntaxParser parser(impl_->tokens, actions);
+		parser.parse();
+	}
+	std::vector<CppSyntaxToken>().swap(impl_->tokens);
+#ifdef PA7_AUDIT_COUNTERS
+	impl_->audit_report();
+#endif
 }
 
 void PA7SemanticModel::render(std::ostream& output) const

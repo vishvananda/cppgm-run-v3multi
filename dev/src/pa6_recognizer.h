@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "posttoken.h"
+#include "cpp_syntax_tokens.h"
 
 // PA6's parser consumes this canonical token model.  Fixed vocabulary is
 // represented by enums; arbitrary identifier spelling is reduced to the mock

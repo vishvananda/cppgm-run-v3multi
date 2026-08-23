@@ -1,5 +1,6 @@
 #include "pa6_recognizer.h"
 #include "pa6_parser.h"
+#include "cpp_declaration_syntax.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -11,110 +12,53 @@
 namespace
 {
 
-class PA6TokenCollector : public IPostTokenOutput
+PA6Token adapt_pa6_token(const CppSyntaxToken& token)
 {
-public:
-	PA6TokenCollector() : tokens(), invalid(false) {}
-
-	void emit_invalid(const std::string& source)
+switch (token.kind)
 	{
-		(void)source;
-		invalid = true;
+	case CppSyntaxTokenKind::Fixed:
+		return PA6Token(PA6TokenKind::Fixed, token.fixed);
+	case CppSyntaxTokenKind::Identifier:
+		return PA6Token(PA6TokenKind::Identifier,
+			SimpleTokenType::OP_SEMICOLON, token.name_categories);
+	case CppSyntaxTokenKind::Literal:
+		return PA6Token(PA6TokenKind::Literal);
+	case CppSyntaxTokenKind::UserDefinedLiteral:
+		// PA6's posttoken contract treats a UDL as its literal mock token.
+		return PA6Token(PA6TokenKind::Literal);
+	case CppSyntaxTokenKind::EmptyString:
+		return PA6Token(PA6TokenKind::ST_EMPTYSTR);
+	case CppSyntaxTokenKind::Zero:
+		return PA6Token(PA6TokenKind::ST_ZERO);
+	case CppSyntaxTokenKind::Override:
+		return PA6Token(PA6TokenKind::ST_OVERRIDE);
+	case CppSyntaxTokenKind::Final:
+		return PA6Token(PA6TokenKind::ST_FINAL);
+	case CppSyntaxTokenKind::Rshift1:
+		return PA6Token(PA6TokenKind::ST_RSHIFT_1);
+	case CppSyntaxTokenKind::Rshift2:
+		return PA6Token(PA6TokenKind::ST_RSHIFT_2);
+	case CppSyntaxTokenKind::End:
+		return PA6Token(PA6TokenKind::ST_EOF);
 	}
+	return PA6Token(PA6TokenKind::ST_EOF);
+}
 
-	void emit_simple(const std::string& source, SimpleTokenType type)
-	{
-		(void)source;
-		if (type == SimpleTokenType::OP_RSHIFT)
-		{
-			tokens.push_back(PA6Token(PA6TokenKind::ST_RSHIFT_1));
-			tokens.push_back(PA6Token(PA6TokenKind::ST_RSHIFT_2));
-			return;
-		}
-		tokens.push_back(PA6Token(PA6TokenKind::Fixed, type));
-	}
-
-	void emit_simple_identifier(const std::string& source,
-		SimpleTokenType type)
-	{
-		(void)source;
-		tokens.push_back(PA6Token(PA6TokenKind::Fixed, type));
-	}
-
-	void emit_simple_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source, SimpleTokenType type)
-	{
-		(void)spelling;
-		(void)source;
-		tokens.push_back(PA6Token(PA6TokenKind::Fixed, type));
-	}
-
-	void emit_identifier(const std::string& source)
-	{
-		emit_identifier_with_spelling(0, source);
-	}
-
-	void emit_identifier_with_spelling(PPSpellingId spelling,
-		const std::string& source)
-	{
-		(void)spelling;
-		if (source == "override")
-		{
-			tokens.push_back(PA6Token(PA6TokenKind::ST_OVERRIDE));
-			return;
-		}
-		if (source == "final")
-		{
-			tokens.push_back(PA6Token(PA6TokenKind::ST_FINAL));
-			return;
-		}
-		unsigned int categories = 0;
-		if (source.find('C') != std::string::npos)
-			categories |= PA6_NAME_CLASS;
-		if (source.find('T') != std::string::npos)
-			categories |= PA6_NAME_TEMPLATE;
-		if (source.find('Y') != std::string::npos)
-			categories |= PA6_NAME_TYPEDEF;
-		if (source.find('E') != std::string::npos)
-			categories |= PA6_NAME_ENUM;
-		if (source.find('N') != std::string::npos)
-			categories |= PA6_NAME_NAMESPACE;
-		tokens.push_back(PA6Token(PA6TokenKind::Identifier,
-			SimpleTokenType::OP_SEMICOLON, categories));
-	}
-
-	void emit_literal(const std::string& source, const LiteralData& value)
-	{
-		(void)value;
-		if (source == "\"\"")
-			tokens.push_back(PA6Token(PA6TokenKind::ST_EMPTYSTR));
-		else if (source == "0")
-			tokens.push_back(PA6Token(PA6TokenKind::ST_ZERO));
-		else
-			tokens.push_back(PA6Token(PA6TokenKind::Literal));
-	}
-
-	void emit_user_defined_literal(const UserDefinedLiteralData& value)
-	{
-		(void)value;
-		tokens.push_back(PA6Token(PA6TokenKind::Literal));
-	}
-
-	void emit_eof()
-	{
-		if (tokens.empty() || tokens.back().kind != PA6TokenKind::ST_EOF)
-			tokens.push_back(PA6Token(PA6TokenKind::ST_EOF));
-	}
-
-	std::vector<PA6Token> tokens;
-	bool invalid;
-};
+std::vector<PA6Token> adapt_pa6_tokens(
+	const std::vector<CppSyntaxToken>& canonical)
+{
+	std::vector<PA6Token> result;
+	result.reserve(canonical.size());
+	for (std::size_t i = 0; i < canonical.size(); ++i)
+		result.push_back(adapt_pa6_token(canonical[i]));
+	return result;
+}
 
 } // namespace
 
 bool PA6Recognizer::recognize(const PPTokenBuffer& input, std::string* reason) const
 {
-	PA6TokenCollector collector;
+	CppSyntaxTokenCollector collector;
 	posttokenize_cpp_tokens(input, collector);
 	if (collector.invalid)
 	{
@@ -122,6 +66,22 @@ bool PA6Recognizer::recognize(const PPTokenBuffer& input, std::string* reason) c
 			*reason = "invalid posttoken";
 		return false;
 	}
-	pa6_internal::PA6Parser parser(collector.tokens);
+	// The PA7 declaration grammar is a real shared production syntax owner.
+	// PA6 uses it directly for the common subset; its existing parser remains
+	// the extension path for constructs outside that subset.  A failed shared
+	// parse is therefore not a second parse of ordinary PA7 input.
+	try
+	{
+		CppDeclarationSyntaxConsumer consumer;
+		CppDeclarationSyntaxParser parser(collector.tokens, consumer, true);
+		parser.parse();
+		return true;
+	}
+	catch (const std::runtime_error&)
+	{
+		// Continue to PA6's broader grammar below.
+	}
+	std::vector<PA6Token> tokens = adapt_pa6_tokens(collector.tokens);
+	pa6_internal::PA6Parser parser(tokens);
 	return parser.parse(reason);
 }

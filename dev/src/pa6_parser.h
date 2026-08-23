@@ -1,15 +1,60 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <vector>
 
+#include "cpp_syntax_core.h"
 #include "pa6_recognizer.h"
 
 namespace pa6_internal
 {
 
-class PA6Parser
+struct PA6SyntaxTraits
+{
+	static bool is_end(const PA6Token& token)
+	{
+		return token.kind == PA6TokenKind::ST_EOF;
+	}
+
+	static bool is_fixed(const PA6Token& token, SimpleTokenType wanted)
+	{
+		return token.kind == PA6TokenKind::Fixed && token.fixed == wanted;
+	}
+
+	static bool is_identifier(const PA6Token& token)
+	{
+		return token.kind == PA6TokenKind::Identifier ||
+			token.kind == PA6TokenKind::ST_OVERRIDE ||
+			token.kind == PA6TokenKind::ST_FINAL;
+	}
+
+	static bool is_literal(const PA6Token& token)
+	{
+		return token.kind == PA6TokenKind::Literal ||
+			token.kind == PA6TokenKind::ST_EMPTYSTR ||
+			token.kind == PA6TokenKind::ST_ZERO;
+	}
+
+	static std::size_t max_nesting()
+	{
+		return 1024;
+	}
+
+	static std::size_t work_limit_for(std::size_t token_count)
+	{
+		const std::size_t minimum = 10000;
+		const std::size_t per_token = 512;
+		const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+		if (token_count > maximum / per_token)
+			return maximum;
+		const std::size_t scaled = token_count * per_token;
+		return scaled < minimum ? minimum : scaled;
+	}
+};
+
+class PA6Parser : private CppSyntaxCore<PA6Token, PA6SyntaxTraits>
 {
 public:
 	explicit PA6Parser(const std::vector<PA6Token>& tokens);
@@ -31,28 +76,15 @@ private:
 		std::size_t angle_base_count;
 	};
 
-	const std::vector<PA6Token>& tokens_;
-	std::size_t position_;
 	std::size_t angle_depth_;
-	std::size_t non_angle_depth_;
 	std::vector<std::size_t> angle_bases_;
-	std::size_t work_;
-	std::size_t work_limit_;
-	bool exhausted_;
-
-	static const std::size_t kMaxNesting = 1024;
 
 	bool fail(std::string* reason, const char* message) const;
 	bool restore_and_fail(const Mark& saved);
 	bool tick();
 	Mark mark() const;
 	void restore(const Mark& saved);
-	bool eof() const;
-	const PA6Token* look(std::size_t offset = 0) const;
 	bool kind(PA6TokenKind wanted, std::size_t offset = 0) const;
-	bool fixed(SimpleTokenType wanted, std::size_t offset = 0) const;
-	bool identifier(std::size_t offset = 0) const;
-	bool literal(std::size_t offset = 0) const;
 	bool category(unsigned int wanted, std::size_t offset = 0) const;
 	bool consume_kind(PA6TokenKind wanted);
 	bool consume_fixed(SimpleTokenType wanted);
