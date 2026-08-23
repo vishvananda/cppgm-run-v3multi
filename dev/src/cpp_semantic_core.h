@@ -1,9 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -184,6 +187,49 @@ struct SizeHash
 		value ^= value >> 11;
 		return value;
 	}
+};
+
+struct SourceNameKey
+{
+	NameId name;
+	std::size_t translation_unit;
+
+	SourceNameKey(NameId name = NameId(),
+		std::size_t translation_unit = 0)
+		: name(name), translation_unit(translation_unit)
+	{}
+
+	bool operator<(const SourceNameKey& other) const
+	{
+		if (name.value != other.name.value)
+			return name.value < other.name.value;
+		return translation_unit < other.translation_unit;
+	}
+};
+
+struct SourceNameKeyHash
+{
+	static std::size_t combine(std::size_t seed, std::size_t value)
+	{
+		value += static_cast<std::size_t>(0x9e3779b9U) +
+			(seed << 6) + (seed >> 2);
+		return seed ^ value;
+	}
+
+	std::size_t operator()(const SourceNameKey& key) const
+	{
+		return combine(key.name.value, key.translation_unit);
+	}
+};
+
+struct OccurrenceRange
+{
+	std::size_t begin;
+	std::size_t count;
+
+	OccurrenceRange(std::size_t begin = 0, std::size_t count = 0)
+		: begin(begin), count(count)
+	{}
 };
 
 struct StringHash
@@ -397,7 +443,14 @@ struct EntityBucketId
 };
 
 typedef FlatHashIndex<NameId, EntityBucketId, NameIdHash> EntityBucketIndex;
-typedef FlatHashIndex<NameId, TypeId, NameIdHash> TypeIndex;
+typedef FlatHashIndex<SourceNameKey, EntityBucketId,
+	SourceNameKeyHash> SourceEntityBucketIndex;
+typedef FlatHashIndex<SourceNameKey, TypeId, SourceNameKeyHash>
+	SourceTypeIndex;
+typedef FlatHashIndex<SourceNameKey, NamespaceId, SourceNameKeyHash>
+	SourceNamespaceIndex;
+typedef FlatHashIndex<std::size_t, OccurrenceRange, SizeHash>
+	TranslationUnitRangeIndex;
 typedef FlatHashIndex<PPSpellingId, NameId, SizeHash> SpellingIndex;
 typedef FlatHashIndex<std::string, NameId, StringHash> NameTextIndex;
 typedef FlatHashIndex<TypeKey, TypeId, TypeKeyHash> CanonicalTypeIndex;
@@ -426,6 +479,7 @@ struct EntityRecord
 	NamespaceId owner;
 	std::size_t translation_unit;
 	bool internal_linkage;
+	std::size_t last_declaration_translation_unit;
 	bool is_static;
 	bool is_thread_local;
 	bool is_extern;
@@ -442,7 +496,9 @@ struct EntityRecord
 
 	EntityRecord()
 		: kind(EntityKind::Variable), name(), type(), owner(),
-		  translation_unit(0), internal_linkage(false), is_static(false),
+		  translation_unit(0), internal_linkage(false),
+		  last_declaration_translation_unit(
+			std::numeric_limits<std::size_t>::max()), is_static(false),
 		  is_thread_local(false), is_extern(false), is_const(false),
 		  is_constexpr(false), is_inline(false), has_definition(false),
 		  definition_translation_unit(std::numeric_limits<std::size_t>::max()),
@@ -493,16 +549,22 @@ struct NamespaceRecord
 	bool inline_namespace;
 	bool internal_scope;
 	std::size_t translation_unit;
+	std::size_t last_declaration_translation_unit;
 	std::vector<EntityId> variables;
 	std::vector<EntityId> functions;
 	std::vector<NamespaceId> children;
 	NamespaceIndex named_children;
-	NamespaceIndex namespace_aliases;
-	EntityBucketIndex entities;
-	TypeIndex aliases;
-	EntityBucketIndex using_entities;
-	TypeIndex using_types;
-	std::vector<NamespaceId> using_directives;
+	EntityBucketIndex external_entities;
+	SourceEntityBucketIndex internal_entities;
+	SourceEntityBucketIndex source_entities;
+	SourceNamespaceIndex namespace_aliases;
+	SourceTypeIndex aliases;
+	SourceEntityBucketIndex using_entities;
+	SourceTypeIndex using_types;
+	std::vector<NamespaceId> lookup_children;
+	TranslationUnitRangeIndex lookup_child_ranges;
+	std::vector<NamespaceId> lookup_directive_targets;
+	TranslationUnitRangeIndex lookup_directive_ranges;
 
 	NamespaceRecord(NamespaceId id = NamespaceId(),
 		NamespaceId parent = NamespaceId(), NameId name = NameId(),
@@ -510,9 +572,14 @@ struct NamespaceRecord
 		bool internal_scope = false, std::size_t translation_unit = 0)
 		: id(id), parent(parent), name(name), anonymous(anonymous),
 		  inline_namespace(inline_namespace), internal_scope(internal_scope),
-		  translation_unit(translation_unit), variables(), functions(),
-		  children(), named_children(), namespace_aliases(), entities(),
-		  aliases(), using_entities(), using_types(), using_directives()
+		  translation_unit(translation_unit),
+		  last_declaration_translation_unit(
+			std::numeric_limits<std::size_t>::max()),
+		  variables(), functions(),
+		  children(), named_children(), external_entities(), internal_entities(),
+		  source_entities(), namespace_aliases(), aliases(), using_entities(),
+		  using_types(), lookup_children(), lookup_child_ranges(),
+		  lookup_directive_targets(), lookup_directive_ranges()
 	{}
 };
 
@@ -712,17 +779,27 @@ struct SemanticCore
 	{
 		NamespaceId id;
 		std::size_t child_index;
+		std::size_t child_begin;
+		std::size_t child_count;
 		std::size_t directive_index;
+		std::size_t directive_begin;
+		std::size_t directive_count;
 		bool entered;
 
 		LookupFrame(NamespaceId id = NamespaceId())
-			: id(id), child_index(0), directive_index(0), entered(false)
+			: id(id), child_index(0), child_begin(0), child_count(0),
+			  directive_index(0), directive_begin(0), directive_count(0),
+			  entered(false)
 		{}
 	};
 
 	mutable std::vector<std::uint32_t> lookup_marks;
 	mutable std::uint32_t lookup_generation;
 	mutable std::vector<LookupFrame> lookup_work;
+	mutable std::vector<std::uint32_t> entity_lookup_namespace_marks;
+	mutable std::vector<std::uint32_t> entity_lookup_entity_marks;
+	mutable std::uint32_t entity_lookup_generation;
+	mutable std::vector<NamespaceId> entity_lookup_work;
 	mutable LookupCacheIndex namespace_cache;
 	mutable LookupCacheIndex type_cache;
 	mutable LookupCacheIndex entity_cache;
@@ -740,8 +817,10 @@ struct SemanticCore
 		: input(NULL), current_translation_unit(0), name_texts(),
 		  names_by_spelling(), names_by_text(), types(), canonical_types(),
 		  namespaces(), entities(), entity_buckets(), global(), lookup_marks(),
-		  lookup_generation(0), lookup_work(), namespace_cache(), type_cache(),
-		  entity_cache(), namespace_epoch(1), type_epoch(1), entity_epoch(1)
+		  lookup_generation(0), lookup_work(), entity_lookup_namespace_marks(),
+		  entity_lookup_entity_marks(), entity_lookup_generation(0),
+		  entity_lookup_work(), namespace_cache(), type_cache(), entity_cache(),
+		  namespace_epoch(1), type_epoch(1), entity_epoch(1)
 #ifdef PA7_AUDIT_COUNTERS
 		  , lookup_queries(0), lookup_namespace_visits(0), lookup_cache_hits(0),
 		  lookup_cache_misses(0)
@@ -770,6 +849,10 @@ struct SemanticCore
 		lookup_marks.clear();
 		lookup_work.clear();
 		lookup_generation = 0;
+		// Entity lookup marks are reusable across TUs.  Do not reset their
+		// generation here: begin_entity_lookup() advances it before the first
+		// later-TU query and owns the wraparound clear of both mark arrays.
+		entity_lookup_work.clear();
 	}
 
 	void end_translation_unit()
@@ -1010,16 +1093,50 @@ struct SemanticCore
 		return intern_type(key);
 	}
 
+	void append_lookup_child(NamespaceRecord& scope, NamespaceId child)
+	{
+		OccurrenceRange* range = scope.lookup_child_ranges.find(
+			current_translation_unit);
+		if (range == NULL)
+		{
+			scope.lookup_child_ranges.set(current_translation_unit,
+				OccurrenceRange(scope.lookup_children.size(), 0));
+			range = scope.lookup_child_ranges.find(current_translation_unit);
+		}
+		scope.lookup_children.push_back(child);
+		++range->count;
+	}
+
+	void append_lookup_directive(NamespaceRecord& scope, NamespaceId target)
+	{
+		OccurrenceRange* range = scope.lookup_directive_ranges.find(
+			current_translation_unit);
+		if (range == NULL)
+		{
+			scope.lookup_directive_ranges.set(current_translation_unit,
+				OccurrenceRange(scope.lookup_directive_targets.size(), 0));
+			range = scope.lookup_directive_ranges.find(current_translation_unit);
+		}
+		scope.lookup_directive_targets.push_back(target);
+		++range->count;
+	}
+
 	NamespaceId create_namespace(NamespaceId parent, NameId name,
 		bool anonymous, bool inline_namespace)
 	{
 		const NamespaceId id(namespaces.size());
 		namespaces.push_back(NamespaceRecord(id, parent, name, anonymous,
 			inline_namespace, id.value != 0 &&
-				(anonymous || namespaces[parent.value].internal_scope),
+			(anonymous || namespaces[parent.value].internal_scope),
 			current_translation_unit));
+		namespaces.back().last_declaration_translation_unit =
+			current_translation_unit;
 		if (id.value != 0)
+		{
 			namespaces[parent.value].children.push_back(id);
+			if (anonymous || inline_namespace)
+				append_lookup_child(namespaces[parent.value], id);
+		}
 		return id;
 	}
 
@@ -1033,6 +1150,11 @@ struct SemanticCore
 			NamespaceRecord& existing = namespaces[found->value];
 			if (inline_namespace && !existing.inline_namespace)
 				throw std::runtime_error("inline namespace reopening mismatch");
+			existing.last_declaration_translation_unit =
+				current_translation_unit;
+			if (existing.inline_namespace)
+				append_lookup_child(scope, *found);
+			invalidate_topology();
 			return *found;
 		}
 		const NamespaceId result = create_namespace(parent, name, false,
@@ -1046,16 +1168,19 @@ struct SemanticCore
 		bool inline_namespace)
 	{
 		NamespaceRecord& scope = namespaces[parent.value];
-		for (std::vector<NamespaceId>::const_iterator it = scope.children.begin();
-			it != scope.children.end(); ++it)
+		const OccurrenceRange* range = scope.lookup_child_ranges.find(
+			current_translation_unit);
+		if (range != NULL)
 		{
-			const NamespaceRecord& existing = namespaces[it->value];
-			if (existing.anonymous && existing.translation_unit ==
-				current_translation_unit)
+			for (std::size_t i = 0; i < range->count; ++i)
 			{
+				const NamespaceId id = scope.lookup_children[range->begin + i];
+				const NamespaceRecord& existing = namespaces[id.value];
+				if (!existing.anonymous)
+					continue;
 				if (inline_namespace != existing.inline_namespace)
 					throw std::runtime_error("inline namespace reopening mismatch");
-				return *it;
+				return id;
 			}
 		}
 		const NamespaceId result = create_namespace(parent, NameId(), true,
@@ -1071,17 +1196,46 @@ struct SemanticCore
 		if (id.value == global.value)
 			return true;
 		const NamespaceRecord& record = namespaces[id.value];
-		return !record.anonymous ||
-			record.translation_unit == current_translation_unit;
+		return record.last_declaration_translation_unit ==
+			current_translation_unit;
 	}
 
-	bool entity_visible(EntityId id) const
+	EntityBucketId ensure_source_entity_bucket(NamespaceId scope, NameId name,
+		std::size_t translation_unit, bool using_entity = false)
+	{
+		SourceEntityBucketIndex& index = using_entity ?
+			namespaces[scope.value].using_entities :
+			namespaces[scope.value].source_entities;
+		const SourceNameKey key(name, translation_unit);
+		EntityBucketId* found = index.find(key);
+		if (found != NULL)
+			return *found;
+		const EntityBucketId result(entity_buckets.size());
+		entity_buckets.push_back(std::vector<EntityId>());
+		index.set(key, result);
+		return result;
+	}
+
+	bool direct_entity_here(NamespaceId scope, NameId name) const
+	{
+		if (!scope.valid() || scope.value >= namespaces.size())
+			return false;
+		return namespaces[scope.value].source_entities.find(
+			SourceNameKey(name, current_translation_unit)) != NULL;
+	}
+
+	void mark_entity_declaration(EntityId id)
 	{
 		if (!id.valid() || id.value >= entities.size())
-			return false;
-		const EntityRecord& record = entities[id.value];
-		return !record.internal_linkage ||
-			record.translation_unit == current_translation_unit;
+			throw std::runtime_error("invalid entity declaration occurrence");
+		EntityRecord& entity = entities[id.value];
+		if (entity.last_declaration_translation_unit ==
+			current_translation_unit)
+			return;
+		entity.last_declaration_translation_unit = current_translation_unit;
+		const EntityBucketId bucket = ensure_source_entity_bucket(entity.owner,
+			entity.name, current_translation_unit);
+		entity_buckets[bucket.value].push_back(id);
 	}
 
 	LookupCacheIndex& cache_for(LookupCategory category) const
@@ -1149,6 +1303,46 @@ struct SemanticCore
 		return true;
 	}
 
+	void begin_entity_lookup() const
+	{
+		if (entity_lookup_namespace_marks.size() < namespaces.size())
+			entity_lookup_namespace_marks.resize(namespaces.size(), 0);
+		if (entity_lookup_entity_marks.size() < entities.size())
+			entity_lookup_entity_marks.resize(entities.size(), 0);
+		++entity_lookup_generation;
+		if (entity_lookup_generation == 0)
+		{
+			std::fill(entity_lookup_namespace_marks.begin(),
+				entity_lookup_namespace_marks.end(), 0);
+			std::fill(entity_lookup_entity_marks.begin(),
+				entity_lookup_entity_marks.end(), 0);
+			entity_lookup_generation = 1;
+		}
+		entity_lookup_work.clear();
+	}
+
+	bool mark_entity_lookup_namespace(NamespaceId id) const
+	{
+		if (!id.valid() || id.value >= namespaces.size())
+			return false;
+		if (entity_lookup_namespace_marks[id.value] ==
+			entity_lookup_generation)
+			return false;
+		entity_lookup_namespace_marks[id.value] = entity_lookup_generation;
+		return true;
+	}
+
+	bool mark_entity_lookup_entity(EntityId id) const
+	{
+		if (!id.valid() || id.value >= entities.size())
+			return false;
+		if (entity_lookup_entity_marks[id.value] ==
+			entity_lookup_generation)
+			return false;
+		entity_lookup_entity_marks[id.value] = entity_lookup_generation;
+		return true;
+	}
+
 	LookupResult lookup_marked(NameId name, LookupCategory category) const
 	{
 		while (!lookup_work.empty())
@@ -1159,6 +1353,23 @@ struct SemanticCore
 			if (!frame.entered)
 			{
 				frame.entered = true;
+				const SourceNameKey source_key(name,
+					current_translation_unit);
+				const OccurrenceRange* child_range =
+					record.lookup_child_ranges.find(current_translation_unit);
+				if (child_range != NULL)
+				{
+					frame.child_begin = child_range->begin;
+					frame.child_count = child_range->count;
+				}
+				const OccurrenceRange* directive_range =
+					record.lookup_directive_ranges.find(
+						current_translation_unit);
+				if (directive_range != NULL)
+				{
+					frame.directive_begin = directive_range->begin;
+					frame.directive_count = directive_range->count;
+				}
 #ifdef PA7_AUDIT_COUNTERS
 				++const_cast<SemanticCore*>(this)->lookup_namespace_visits;
 #endif
@@ -1169,60 +1380,58 @@ struct SemanticCore
 					if (direct != NULL && namespace_visible(*direct))
 						return LookupResult::namespace_result(*direct);
 					const NamespaceId* alias =
-						record.namespace_aliases.find(name);
+						record.namespace_aliases.find(source_key);
 					if (alias != NULL && namespace_visible(*alias))
 						return LookupResult::namespace_result(*alias);
 				}
 				else if (category == LookupCategory::Type)
 				{
-					const TypeId* direct = record.aliases.find(name);
+					const TypeId* direct = record.aliases.find(source_key);
 					if (direct != NULL)
 						return LookupResult::type_result(*direct);
-					const TypeId* imported = record.using_types.find(name);
+					const TypeId* imported = record.using_types.find(source_key);
 					if (imported != NULL)
 						return LookupResult::type_result(*imported);
 				}
 				else
 				{
-					const EntityBucketId* direct = record.entities.find(name);
+					const EntityBucketId* direct =
+						record.source_entities.find(source_key);
 					if (direct != NULL)
 					{
 						const std::vector<EntityId>& candidates =
 							entity_buckets[direct->value];
 						for (std::vector<EntityId>::const_iterator it =
 							candidates.begin(); it != candidates.end(); ++it)
-							if (entity_visible(*it))
-								return LookupResult::entity_result(*it);
+							return LookupResult::entity_result(*it);
 					}
 					const EntityBucketId* imported =
-						record.using_entities.find(name);
+						record.using_entities.find(source_key);
 					if (imported != NULL)
 					{
 						const std::vector<EntityId>& candidates =
 							entity_buckets[imported->value];
 						for (std::vector<EntityId>::const_iterator it =
 							candidates.begin(); it != candidates.end(); ++it)
-							if (entity_visible(*it))
-								return LookupResult::entity_result(*it);
+							return LookupResult::entity_result(*it);
 					}
 				}
 			}
 
-			if (frame.child_index < record.children.size())
+			if (frame.child_index < frame.child_count)
 			{
 				const NamespaceId child_id =
-					record.children[frame.child_index++];
-				const NamespaceRecord& child = namespaces[child_id.value];
-				if ((child.anonymous || child.inline_namespace) &&
-					namespace_visible(child_id) &&
+					record.lookup_children[frame.child_begin +
+					frame.child_index++];
+				if (namespace_visible(child_id) &&
 					mark_lookup_namespace(child_id))
 					lookup_work.push_back(LookupFrame(child_id));
 				continue;
 			}
-			if (frame.directive_index < record.using_directives.size())
+			if (frame.directive_index < frame.directive_count)
 			{
-				const NamespaceId target =
-					record.using_directives[frame.directive_index++];
+				const NamespaceId target = record.lookup_directive_targets[
+					frame.directive_begin + frame.directive_index++];
 				if (namespace_visible(target) && mark_lookup_namespace(target))
 					lookup_work.push_back(LookupFrame(target));
 				continue;
@@ -1461,9 +1670,9 @@ struct SemanticCore
 	void declare_alias(NamespaceId scope, NameId name, TypeId type)
 	{
 		NamespaceRecord& record = namespaces[scope.value];
-		if (record.entities.find(name) != NULL)
+		if (direct_entity_here(scope, name))
 			throw std::runtime_error("typedef conflicts with value declaration");
-		record.aliases.set(name, type);
+		record.aliases.set(SourceNameKey(name, current_translation_unit), type);
 		invalidate(LookupCategory::Type);
 	}
 
@@ -1475,35 +1684,30 @@ struct SemanticCore
 	void declare_namespace_alias(NamespaceId scope, NameId name,
 		NamespaceId target)
 	{
-		namespaces[scope.value].namespace_aliases.set(name, target);
+		NamespaceRecord& record = namespaces[scope.value];
+		record.namespace_aliases.set(
+			SourceNameKey(name, current_translation_unit), target);
 		invalidate_topology();
 	}
 
 	void add_using_directive(NamespaceId scope, NamespaceId target)
 	{
-		std::vector<NamespaceId>& directives =
-			namespaces[scope.value].using_directives;
-		if (std::find_if(directives.begin(), directives.end(),
-			[target](NamespaceId value) { return value.value == target.value; }) ==
-			directives.end())
-		{
-			directives.push_back(target);
-			invalidate_topology();
-		}
+		append_lookup_directive(namespaces[scope.value], target);
+		invalidate_topology();
 	}
 
 	void add_using_type(NamespaceId scope, NameId name, TypeId type)
 	{
-		namespaces[scope.value].using_types.set(name, type);
+		NamespaceRecord& record = namespaces[scope.value];
+		record.using_types.set(SourceNameKey(name, current_translation_unit),
+			type);
 		invalidate(LookupCategory::Type);
 	}
 
-	EntityBucketId ensure_entity_bucket(NamespaceId scope, NameId name,
-		bool using_entities = false)
+	EntityBucketId ensure_external_entity_bucket(NamespaceId scope,
+		NameId name)
 	{
-		EntityBucketIndex& index = using_entities ?
-			namespaces[scope.value].using_entities :
-			namespaces[scope.value].entities;
+		EntityBucketIndex& index = namespaces[scope.value].external_entities;
 		EntityBucketId* found = index.find(name);
 		if (found != NULL)
 			return *found;
@@ -1513,28 +1717,42 @@ struct SemanticCore
 		return result;
 	}
 
-	std::vector<EntityId>& entity_bucket(NamespaceId scope, NameId name,
-		bool using_entities = false)
+	EntityBucketId ensure_internal_entity_bucket(NamespaceId scope, NameId name,
+		std::size_t translation_unit)
 	{
-		return entity_buckets[ensure_entity_bucket(scope, name,
-			using_entities).value];
+		SourceEntityBucketIndex& index =
+			namespaces[scope.value].internal_entities;
+		const SourceNameKey key(name, translation_unit);
+		EntityBucketId* found = index.find(key);
+		if (found != NULL)
+			return *found;
+		const EntityBucketId result(entity_buckets.size());
+		entity_buckets.push_back(std::vector<EntityId>());
+		index.set(key, result);
+		return result;
 	}
 
-	const std::vector<EntityId>* find_entity_bucket(NamespaceId scope,
-		NameId name, bool using_entities = false) const
+	std::vector<EntityId> link_candidates(NamespaceId scope, NameId name) const
 	{
-		const EntityBucketIndex& index = using_entities ?
-			namespaces[scope.value].using_entities :
-			namespaces[scope.value].entities;
-		const EntityBucketId* found = index.find(name);
-		if (found == NULL)
-			return NULL;
-		return &entity_buckets[found->value];
+		std::vector<EntityId> result;
+		const NamespaceRecord& record = namespaces[scope.value];
+		const EntityBucketId* external = record.external_entities.find(name);
+		if (external != NULL)
+			result.insert(result.end(), entity_buckets[external->value].begin(),
+				entity_buckets[external->value].end());
+		const EntityBucketId* internal = record.internal_entities.find(
+			SourceNameKey(name, current_translation_unit));
+		if (internal != NULL)
+			result.insert(result.end(), entity_buckets[internal->value].begin(),
+				entity_buckets[internal->value].end());
+		return result;
 	}
 
 	void add_using_entity(NamespaceId scope, NameId name, EntityId entity)
 	{
-		std::vector<EntityId>& bucket = entity_bucket(scope, name, true);
+		const EntityBucketId bucket_id = ensure_source_entity_bucket(scope, name,
+			current_translation_unit, true);
+		std::vector<EntityId>& bucket = entity_buckets[bucket_id.value];
 		if (std::find_if(bucket.begin(), bucket.end(),
 			[entity](EntityId value) { return value.value == entity.value; }) ==
 			bucket.end())
@@ -1598,13 +1816,16 @@ struct SemanticCore
 		NamespaceRecord& record = namespaces[scope.value];
 		const EntityKind kind = is_function ? EntityKind::Function :
 			EntityKind::Variable;
-		EntityBucketId* found = record.entities.find(name);
+		EntityBucketId* found = record.external_entities.find(name);
 		if (found != NULL && !entity_buckets[found->value].empty())
 		{
 			EntityRecord& existing = entities[entity_buckets[found->value][0].value];
 			if (existing.kind != kind)
 				throw std::runtime_error("declaration kind conflict");
 			existing.type = merge_types(existing.type, type);
+			mark_entity_declaration(EntityId(
+				entity_buckets[found->value][0].value));
+			invalidate(LookupCategory::Entity);
 			return;
 		}
 		const EntityId id(entities.size());
@@ -1614,11 +1835,13 @@ struct SemanticCore
 		entity.type = type;
 		entity.owner = scope;
 		entities.push_back(entity);
-		entity_bucket(scope, name).push_back(id);
+		entity_buckets[ensure_external_entity_bucket(scope, name).value].push_back(
+			id);
 		if (is_function)
 			record.functions.push_back(id);
 		else
 			record.variables.push_back(id);
+		mark_entity_declaration(id);
 		invalidate(LookupCategory::Entity);
 	}
 
@@ -1626,55 +1849,59 @@ struct SemanticCore
 		NameId name) const
 	{
 		std::vector<EntityId> result;
-		if (!scope.valid() || scope.value >= namespaces.size())
+		if (!scope.valid() || scope.value >= namespaces.size() ||
+			!namespace_visible(scope))
 			return result;
-		std::vector<std::uint32_t> marks(namespaces.size(), 0);
-		std::vector<NamespaceId> work(1, scope);
-		while (!work.empty())
+		begin_entity_lookup();
+		entity_lookup_work.push_back(scope);
+		while (!entity_lookup_work.empty())
 		{
-			const NamespaceId current = work.back();
-			work.pop_back();
-			if (!current.valid() || current.value >= namespaces.size() ||
-				marks[current.value] != 0)
+			const NamespaceId current = entity_lookup_work.back();
+			entity_lookup_work.pop_back();
+			if (!mark_entity_lookup_namespace(current))
 				continue;
-			marks[current.value] = 1;
 			const NamespaceRecord& record = namespaces[current.value];
-			const EntityBucketId* direct = record.entities.find(name);
-				if (direct != NULL)
-					for (std::vector<EntityId>::const_iterator it =
-						entity_buckets[direct->value].begin();
-						it != entity_buckets[direct->value].end(); ++it)
-						if (entity_visible(*it))
-							result.push_back(*it);
-			const EntityBucketId* imported = record.using_entities.find(name);
+			const SourceNameKey source_key(name, current_translation_unit);
+			const EntityBucketId* direct =
+				record.source_entities.find(source_key);
+			if (direct != NULL)
+				for (std::vector<EntityId>::const_iterator it =
+					entity_buckets[direct->value].begin();
+					it != entity_buckets[direct->value].end(); ++it)
+					if (mark_entity_lookup_entity(*it))
+						result.push_back(*it);
+			const EntityBucketId* imported =
+				record.using_entities.find(source_key);
 			if (imported != NULL)
 				for (std::vector<EntityId>::const_iterator it =
 					entity_buckets[imported->value].begin();
 					it != entity_buckets[imported->value].end(); ++it)
-					if (entity_visible(*it))
+					if (mark_entity_lookup_entity(*it))
 						result.push_back(*it);
-			for (std::vector<NamespaceId>::const_reverse_iterator it =
-				record.children.rbegin(); it != record.children.rend(); ++it)
-			{
-				const NamespaceRecord& child = namespaces[it->value];
-				if ((child.anonymous || child.inline_namespace) &&
-					namespace_visible(*it))
-					work.push_back(*it);
-			}
-			for (std::vector<NamespaceId>::const_reverse_iterator it =
-				record.using_directives.rbegin();
-				it != record.using_directives.rend(); ++it)
-				if (namespace_visible(*it))
-					work.push_back(*it);
+			const OccurrenceRange* directive_range =
+				record.lookup_directive_ranges.find(current_translation_unit);
+			if (directive_range != NULL)
+				for (std::size_t i = directive_range->count; i != 0; --i)
+				{
+					const NamespaceId target = record.lookup_directive_targets[
+						directive_range->begin + i - 1];
+					if (namespace_visible(target))
+						entity_lookup_work.push_back(target);
+				}
+			// The worklist is LIFO: directives are pushed first so child
+			// namespaces are popped and visited before using-directive targets.
+			const OccurrenceRange* child_range =
+				record.lookup_child_ranges.find(current_translation_unit);
+			if (child_range != NULL)
+				for (std::size_t i = child_range->count; i != 0; --i)
+				{
+					const NamespaceId child = record.lookup_children[
+						child_range->begin + i - 1];
+					if (namespace_visible(child))
+						entity_lookup_work.push_back(child);
+				}
 		}
-		std::vector<EntityId> unique;
-		for (std::vector<EntityId>::const_iterator it = result.begin();
-			it != result.end(); ++it)
-			if (std::find_if(unique.begin(), unique.end(),
-				[it](EntityId value) { return value.value == it->value; }) ==
-				unique.end())
-				unique.push_back(*it);
-		return unique;
+		return result;
 	}
 
 	std::vector<EntityId> lookup_entities(const QualifiedName& path,
@@ -1913,17 +2140,25 @@ struct SemanticCore
 		{
 			const NamespaceRecord& record = namespaces[i];
 			namespace_slots += record.named_children.slot_count();
+			namespace_slots += record.external_entities.slot_count();
+			namespace_slots += record.internal_entities.slot_count();
+			namespace_slots += record.source_entities.slot_count();
 			namespace_slots += record.namespace_aliases.slot_count();
-			namespace_slots += record.entities.slot_count();
 			namespace_slots += record.aliases.slot_count();
 			namespace_slots += record.using_entities.slot_count();
 			namespace_slots += record.using_types.slot_count();
+			namespace_slots += record.lookup_child_ranges.slot_count();
+			namespace_slots += record.lookup_directive_ranges.slot_count();
 			namespace_entries += record.named_children.entry_count();
+			namespace_entries += record.external_entities.entry_count();
+			namespace_entries += record.internal_entities.entry_count();
+			namespace_entries += record.source_entities.entry_count();
 			namespace_entries += record.namespace_aliases.entry_count();
-			namespace_entries += record.entities.entry_count();
 			namespace_entries += record.aliases.entry_count();
 			namespace_entries += record.using_entities.entry_count();
 			namespace_entries += record.using_types.entry_count();
+			namespace_entries += record.lookup_child_ranges.entry_count();
+			namespace_entries += record.lookup_directive_ranges.entry_count();
 		}
 		std::size_t parameter_ids = 0;
 		for (std::size_t i = 0; i < types.size(); ++i)

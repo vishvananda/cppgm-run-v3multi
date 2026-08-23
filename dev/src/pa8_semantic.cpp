@@ -778,9 +778,12 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 {
 	if (!scope.valid() || scope.value >= namespaces.size())
 		throw std::runtime_error("invalid PA8 declaration scope");
-	if (namespaces[scope.value].named_children.find(name) != NULL ||
-		namespaces[scope.value].namespace_aliases.find(name) != NULL ||
-		namespaces[scope.value].aliases.find(name) != NULL)
+	const SourceNameKey source_key(name, current_translation_unit);
+	const NamespaceId* named_namespace =
+		namespaces[scope.value].named_children.find(name);
+	if ((named_namespace != NULL && namespace_visible(*named_namespace)) ||
+		namespaces[scope.value].namespace_aliases.find(source_key) != NULL ||
+		namespaces[scope.value].aliases.find(source_key) != NULL)
 		throw std::runtime_error("PA8 entity conflicts with namespace or type");
 
 	const TypeKind raw_kind = type_kind(type);
@@ -795,9 +798,28 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 		throw std::runtime_error("PA8 function initializer");
 
 	const bool const_object = spec.is_constexpr || is_const_qualified(type);
-	const bool internal = namespaces[scope.value].internal_scope ||
+	bool internal = namespaces[scope.value].internal_scope ||
 		spec.is_static || (!spec.is_extern && !is_function && const_object);
-	std::vector<EntityId>& same_name = entity_bucket(scope, name);
+	std::vector<EntityId> same_name = link_candidates(scope, name);
+	for (std::vector<EntityId>::const_iterator it = same_name.begin();
+		it != same_name.end(); ++it)
+	{
+		const EntityRecord& candidate = entities[it->value];
+		if (candidate.last_declaration_translation_unit ==
+			current_translation_unit &&
+			candidate.kind == (is_function ? EntityKind::Function :
+				EntityKind::Variable) && candidate.type.value == type.value)
+		{
+			if (spec.is_static && !candidate.internal_linkage)
+				throw std::runtime_error("inconsistent PA8 entity linkage");
+			// A declaration owner supplies the linkage for later declarations
+			// of the same entity.  This includes a no-storage-class function
+			// declaration following static, and avoids inventing a second
+			// cross-linkage candidate for the valid direction.
+			internal = candidate.internal_linkage;
+			break;
+		}
+	}
 	EntityId matching;
 	for (std::vector<EntityId>::const_iterator it = same_name.begin();
 		it != same_name.end(); ++it)
@@ -809,7 +831,8 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 		{
 			if (candidate.kind != (is_function ? EntityKind::Function :
 				EntityKind::Variable) &&
-				(candidate.translation_unit == current_translation_unit ||
+				(candidate.last_declaration_translation_unit ==
+					current_translation_unit ||
 					(!candidate.internal_linkage && !internal)))
 				throw std::runtime_error("PA8 declaration kind conflict");
 			continue;
@@ -835,7 +858,7 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 			if (candidate.kind != (is_function ? EntityKind::Function :
 				EntityKind::Variable))
 				throw std::runtime_error("PA8 declaration kind conflict");
-			if (!is_function && candidate.translation_unit ==
+			if (!is_function && candidate.last_declaration_translation_unit ==
 				current_translation_unit)
 				throw std::runtime_error("incompatible PA8 variable linkage");
 		}
@@ -877,9 +900,19 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 		fresh.is_constexpr = spec.is_constexpr;
 		fresh.is_inline = spec.is_inline;
 		entities.push_back(fresh);
-		same_name.push_back(entity);
+		const EntityBucketId link_bucket = internal ?
+			ensure_internal_entity_bucket(scope, name,
+				current_translation_unit) :
+			ensure_external_entity_bucket(scope, name);
+		entity_buckets[link_bucket.value].push_back(entity);
+		if (is_function)
+			namespaces[scope.value].functions.push_back(entity);
+		else
+			namespaces[scope.value].variables.push_back(entity);
 		record = &entities.back();
 	}
+	mark_entity_declaration(entity);
+	invalidate(LookupCategory::Entity);
 
 	if (is_function)
 	{
