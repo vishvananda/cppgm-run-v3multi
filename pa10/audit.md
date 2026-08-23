@@ -1,175 +1,202 @@
 # Current Checkpoint Review
 
 This is the bounded audit of landed checkpoint
-`a2b82dcb56245406f695c271a44ca55ca82f3949` and its final repair in the same
-template-id, qualified-name, angle-token, decltype-prefix, and exact-renderer
-ownership path. It does not attempt the remaining PA10 grammar families.
+`27623d646279d867e58039af60a1cc52e09e090e`, `PA10: unify declarator and
+member declaration parsing`. It reviews only the declarator/member boundary
+owned by `dev/src/pa10_ast.cpp`, the private typed
+`dev/src/pa10_declarator_shape.cpp`/`.h` owner, `dev/src/pa10_ast.h`, and
+`dev/src/pa10_renderer.cpp`. The audit repair and final broad gates preserve
+the turn-start 123/157 result and its exact 34-identity no-regression failure
+set.
 
 ## Contract and specification alignment
 
-The production path remains one forward flow:
+The reviewed production flow is one forward path:
 
 ```text
-PPTokenBuffer -> posttoken facts -> PA10Token -> PA10 parser -> PA10Ast -> dump renderer
+phase-3 buffer -> posttoken facts -> PA10Token -> PA10Parser
+    -> PA10Ast and sidecars -> cold deterministic renderer
 ```
 
-Identifiers retain producer `PPSpellingId` identity through the posttoken
-collector and AST sidecars. The renderer is the requested text boundary; it
-does not reparse joined names, invoke a host compiler or reference binary, or
-recognize test names. `pa10_renderer.cpp` is already in
-`dev/frontend_source_sets.mk`; this audit added no source file.
+This matches root `spec.md` §§1-4 and §7. Phase-3 identifiers carry
+`PPSpellingId` through the posttoken boundary; the collector classifies the
+contextual `override`/`final` vocabulary once into an enum while retaining
+source spelling only for the requested dump. Fixed syntax remains
+`SimpleTokenType`; names remain component records; template arguments,
+decltype prefixes, operator labels, and semantic conversion children use
+typed nodes or bounded sidecar ranges. The renderer consumes that model and
+does not reparse, invoke a host/reference tool, or recognize test names.
 
-The reviewed productions are the qualified-id and nested-name-specifier,
-simple-template-id and template-argument, template-disambiguator, and
-decltype paths in `pa10/pa10.gram`, plus base and mem-initializer consumers.
-The operator decision follows `pa10/pa10.gram:474-488,706-709`: relational
-operators include `OP_GT`, while right shift is exactly
-`ST_RSHIFT_1 ST_RSHIFT_2`; close-angle-bracket accepts either logical piece.
-This is also the PA6 handout rule at `pa6/README.md:124-143`. The design
-therefore aligns with root `spec.md` §§1-4 and §7: one production path, typed
-fact continuity, canonical component/range ownership, bounded ordinary work,
-compact hot records with cold presentation, and characterization without an
-unverified performance comparison.
+The directly aligned `pa10/pa10.gram` productions are the bit-field list,
+declarator and abstract-declarator composition, declarator suffixes,
+parameters, non-type/template-template parameter forms, ordinary function
+suffixes, lambda-declarator structure, and their declaration/member consumers.
+The checked handout/ref contract also includes linkage
+specifications such as `extern "C++"` and `extern "C"`, although the current
+grammar has no named linkage-specification production (only `KW_EXTERN` in
+decl-specifiers and extern-template syntax). It also requires qualified
+member-pointer operators such as `C::*` and `n::C::*`, while the current
+grammar's `ptr-operator` production literally lists only `*`, `&`, and `&&`.
+Likewise the checked throw-specification refs require `throw(...)`, while the
+current `function-suffix` text does not list dynamic throw specifications.
+These are documented handout/ref extensions, not claims that the grammar was
+changed; neither `pa10.gram` nor fixtures was edited.
 
-## Ownership trace
+## Ownership and correctness trace
 
-- The producer emits identifiers with `PPSpellingId`; `PA10Ast` snapshots the
-  producer spelling table before the preprocessing session ends. A qualified
-  name stores components, disambiguator state, and template-argument ranges,
-  not a joined string. Fixed tokens remain `SimpleTokenType`; decoded literal
-  data remains typed, with source spelling only as cold presentation.
-- The posttoken collector splits one producer `OP_RSHIFT` into typed
-  `RShiftPiece1` and `RShiftPiece2`, each presented as `OP_GT`. The parser uses
-  one piece per nested close angle and recognizes a real shift only when the
-  two pieces are adjacent. A lone `RShiftPiece2` is not relational `>` and it
-  is not combined with a following ordinary `OP_GT`.
-- `build_template_indexes()` makes one charged pass over the logical token
-  stream. Each `(`, `[`, or `{` pushes a delimiter frame and a fresh angle
-  stack; only a matching close pops that frame. Both RShift pieces are
-  processed independently for close-index construction, so nested closes do
-  not revisit or pair a piece incorrectly. Candidate lookup is indexed and
-  the follow check is bounded lookahead.
-- `PA10NameComponent` owns producer identity and a `(begin,count)` range into
-  typed `PA10TemplateArgument` sidecars. Arguments preserve `TypeId`,
-  `Expression`, or `Unresolved` kind. Direct arguments are moved into the
-  arena only after nested parsing completes, and nodes retain indices rather
-  than addresses, so vector growth does not invalidate an owner.
-- A decltype root is one typed `DecltypeSpecifier` in the name-prefix
-  sidecar. There is no standalone-decltype boolean in either `PA10Name` or
-  `PA10AstNode`. The structural invariant is: a prefix with no name
-  components is standalone; a prefix with one or more components is a
-  qualified decltype root. `append_name()` emits `::` only in the latter
-  case. The parser's `allow_standalone_decltype` parameter controls grammar
-  admission but is not persisted as a second fact, so trailing-return copies
-  copy only canonical prefix ranges and components.
-- The same name path is used by namespace aliases, using declarations,
-  declaration/type specifiers, declarators, member access, base names,
-  constructor mem-initializer ids, and trailing-return presentation. Template
-  disambiguators and conversion-function type-ids remain typed sidecar facts.
+- The posttoken collector turns one producer `OP_RSHIFT` into two typed close
+  pieces, classifies contextual identifiers, and preserves producer spelling
+  identity. `PA10Ast` snapshots that producer table before the input session
+  ends.
+- `parse_decl_or_function` and `parse_class_member` share the declarator path.
+  Named and abstract declarators, parenthesized declarators, pointer/reference
+  operators, arrays, parameter clauses, default arguments, bit-field lists,
+  and member declarations are represented as AST structure rather than source
+  spans. Named, unnamed, and zero-width bit-fields take the same checked list
+  path.
+- `member_pointer_operator_start()` scans only the qualified prefix from the
+  current cursor. It bounds every absolute access, uses the existing indexed
+  template-close lookup, and charges each material component. The consumer
+  `parse_ptr_operator()` consumes the established form directly, so direct
+  declarator paths do not rescan the qualifier. The type-id lookahead now
+  passes a one-shot `first_member_pointer_checked` fact into
+  `parse_abstract_declarator`, removing its former second scan before
+  consumption. Nested `C<int>`, `C<C<int>>`, leading-global, and
+  `template`-disambiguated qualifiers were exercised; malformed and truncated
+  prefixes fail rather than read outside the token vector.
+- The former recursive `declarator_has_parameter()` predicate was not a
+  correct function-definition/initializer boundary: it could classify the
+  parameter clause in `(*p)()` or `(&r)()` as a function and its early
+  `Identifier`/nested return could miss an intervening array. The repaired
+  `declarator_is_function()` uses a tri-state nearest-derived-operator walk.
+  It recurses through a nested declarator only when that layer has an actual
+  operator; parentheses alone defer to the enclosing declarator. The first
+  operator outward from the identifier decides: `ParameterClause` is a
+  function, while `PtrOperator`/reference or `ArraySuffix` is an object.
+  Therefore `f()` and `(f)()` with bodies remain function definitions,
+  `(*p)()`/`(&r)()` and parenthesized array layers take braced/paren
+  initialization, and an inner `h()` parameter clause still identifies a
+  function returning a pointer.
+- The nearest-operator traversal is now a private typed helper in
+  `pa10_declarator_shape.cpp`, declared by its implementation-only header and
+  linked only into `cppgm++` through `frontend_source_sets.mk`. The parser
+  retains the owning function-definition/initializer decision; no second AST,
+  textual boundary, or render/reparse path was introduced.
+- Function suffixes have one central path for cv/ref, `noexcept`, dynamic
+  `throw(...)`, contextual virt specifiers, and trailing returns. Parameters,
+  non-type packs, template-template parameters, linkage declarations, and
+  lambda mutable/noexcept/trailing-return pieces retain their checked AST
+  nodes. The renderer has explicit output cases for the new qualifier,
+  lambda, virtual, and qualified-pointer nodes.
+- Renderer entry points validate name-prefix, template-argument,
+  operator-presentation, and semantic-child ranges before traversal. Nested
+  sidecar nodes re-enter the same validation, and `.at()` access remains a
+  fail-closed boundary for invalid spelling IDs. Parser work is one indexed
+  pass plus monotonic consumption under the existing work, nesting, and
+  recursion ceilings; no whole-input retry, duplicate parser/model, or
+  render-and-reparse path was added.
 
-## Correctness, boundedness, and repair disposition
+The current source sizes are 2999 lines (`pa10_ast.cpp`), 53
+(`pa10_declarator_shape.cpp`), 16 (`pa10_declarator_shape.h`), 361
+(`pa10_ast.h`), and 756 (`pa10_renderer.cpp`). The helper is conventionally
+formatted and the implementation files remain within their audit limits; the
+layout is an ownership decision, not a source-minification target.
 
-The audit found two in-scope repairs:
+## Focused evidence
 
-1. Base-specifier and constructor mem-initializer entry predicates now admit
-   standalone `decltype(...)` names. Their nodes use the structural invariant
-   above, so standalone output has no manufactured trailing `::`.
-2. The renderer validates name-prefix, template-argument,
-   operator-presentation, and semantic-child ranges before every inline or
-   full-node traversal, and retains the shared recursion limit.
+The focused build and warning checks passed:
 
-The provisional RShiftPiece2 repair was explicitly rejected after checking the
-authoritative grammar and handout. Its acceptance of a leftover second piece
-as relational `>` and its cross-boundary `RShiftPiece2 + OP_GT` shift were
-reverted. The remaining angle behavior is limited to the checked logical
-piece/close-angle rules and the exact adjacent two-piece shift production.
-Synthetic probes that depended on the rejected transitions are not evidence.
+```text
+make -C dev cppgm++ CXX=g++                              exit 0
+g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_ast.cpp       exit 0
+g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_declarator_shape.cpp exit 0
+g++ -std=gnu++11 -Wall -Wextra -Werror ... pa10_renderer.cpp  exit 0
+```
 
-Parser consumption is monotonic. The existing work budget is
-`96 * token_count + 2048`, with nesting and recursion guards; index construction
-charges each token and does not retry or backtrack. Angle and non-angle depth
-updates have paired successful paths, and RAII recursion guards unwind on
-parse exceptions. A malformed delimiter probe exits 1, and 1100 nested
-parentheses stop at the existing recursion limit rather than exhausting the
-stack.
+The checked-in owner set plus nearby function-pointer/declarator cases passed
+23/23 after the repair. The final `/tmp` nearest-operator probe passed and
+rendered direct `f()`, plain `(f)()`, and the inner-parameter
+function-returning-pointer form as function definitions; `(*p)()`, `(&r)()`,
+parenthesized arrays, and arrays of function pointers were simple declarations
+with braced or paren initializers. Qualified member-pointer edges, nested
+template closes, and `template` disambiguation passed. The two truncated
+member-pointer probes plus truncated declarator, `noexcept`, bit-field, class,
+and template probes all exited 1 without an out-of-bounds read.
 
-The current source sizes are 2741 lines (`pa10_ast.cpp`), 346
-(`pa10_ast.h`), and 700 (`pa10_renderer.cpp`), within the PA10 file-audit
-limits. No shortcut, duplicate parser/model, render-and-reparse path, or
-test-name recognition was found.
+The repaired executable has SHA-256
+`13e4d2f60d7bf1a19599d69d55a61bf958cf3af720aa9153e6695a4f168268b6`.
+Single bounded characterization runs, not interleaved performance
+comparisons, were below the timer resolution:
 
-## Historical evidence retained from the landed checkpoint
-
-The following measurements are explicitly pre-repair evidence from the landed
-`a2b82dcb` checkpoint, not measurements of the final executable:
-
-- The parent `43703613` record was 77/157. The landed handoff record was
-  105/157 with 52 failures, 28 removed identities, and zero new identities.
-- The focused owner set was 11/11; the warning-clean build passed; through-PA9
-  was 457/457; and the file audit exited 0 with the sole warning
-  `dev/src/cpp_semantic_core.h:1` (`bad-division`, substantial header body).
-- Bounded landed probes measured: 140 template arguments at
-  `0.00s/4340 KB`; triple adjacent closes plus a separate `x >> 1` at
-  `0.00s/4120 KB`; sibling `()`, `[]`, and `{}` scopes at `0.00s/4352 KB`;
-  relational chains of 32/128/256 at `0.00s/4372 KB`, `0.00s/4812 KB`, and
-  `0.02s/5816 KB`; and the 512-pair case at the existing renderer depth guard,
-  `0.02s/7980 KB`.
-- Earlier retained storage characterization (also not current layout) was:
-
-  | declarations | source bytes | PP tokens | AST nodes | child edges/capacity | literal nodes/bytes/capacity | producer bytes |
-  | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-  | 32 | 438 | 289 | 289 | 288/288 | 32/128/128 | 295 |
-  | 128 | 1810 | 1153 | 1153 | 1152/1152 | 128/512/512 | 611 |
-  | 512 | 7570 | 4609 | 4609 | 4608/4608 | 512/2048/2048 | 2147 |
-
-  The same earlier record measured `sizeof(PA10Ast)=312`,
-  `sizeof(PA10AstNode)=216`, presentation capacity 3, and full-driver RSS
-  samples of 4116/4848/6736 KB at 32/128/512 declarations. Those values are
-  preserved for history only; removing the duplicate decltype flag means they
-  are not a current layout claim.
-
-## Final validation and performance evidence
-
-- The warning-clean PA10 build with `-Wextra -Werror` exited 0.
-- `make test-pa10` discovered all 157 tests and exited 2 with 106 passing and
-  51 failing. Compared with the preserved turn-start set of 52, exactly
-  `general/200-decltype-base-and-mem-initializer.t` was removed and no
-  identity was added.
-- The required through-PA9 command exited 0 with `457 / 457` passing.
-- `perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src` exited 0:
-  one warning, the pre-existing `dev/src/cpp_semantic_core.h:1` bad-division
-  warning.
-- `git diff --check` exited 0. Current malformed-input and depth probes exit
-  1 with the expected parser diagnostics.
-
-The current executable is `dev/cppgm++`, SHA-256
-`6cf44a43a293399ec829c6423526516cb502ec3b198b74c30209589922d665df`. These
-are single bounded characterization runs, not a §7 median/interleaved
-comparison:
-
-| probe | result | wall | peak RSS |
+| input | result | elapsed | peak RSS |
 | --- | --- | ---: | ---: |
-| 140 template arguments | success | 0.00 s | 4328 KB |
-| nested `foo<bar<int>>` closes | success | 0.00 s | 4076 KB |
-| real `(x >> 8)` shift | success | 0.00 s | 4148 KB |
-| relational pairs 32 / 128 / 256 | success | 0.00 / 0.00 / 0.00 s | 4124 / 4124 / 4308 KB |
-| 1100 parenthesized expressions | bounded failure at recursion guard | 0.01 s | 8812 KB |
+| qualified member-pointer edge probe | success | 0.00 s | 4116 KB |
+| nearest-operator boundary probe | success | 0.00 s | 4116 KB |
+| checked qualified-member input | success | 0.00 s | 4116 KB |
 
-The residual failures are unrelated PA10 families, including operator names,
-attributes, lambdas, declarators, explicit instantiation, and template
-parameters. The indexed candidate heuristic and cold-dump storage should be
-re-measured when a later hot consumer uses this AST; no such performance claim
-is made here.
+These samples support the structural boundedness review only; they make no
+timing comparison claim.
+
+## Final validation evidence
+
+The authorized broad commands were rerun against the final source form:
+
+```text
+make test-pa10                                      exit 2
+===== TEST SUMMARY: 123 / 157 TESTS PASSED =====
+n=10; ... make test-report-through-pa9              exit 0
+===== ALL TESTS PASSED SUCCESSFULLY! (457 / 457) =====
+perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src  exit 0
+git diff --check                                    exit 0
+```
+
+The PA10 directory contains 157 `.t` files, and the runner reported all 157
+discovered. Sorted exact-identity comparison against the turn-start
+`last-test.log` found 34 baseline identities, zero added identities, and zero
+removed identities. The file audit reported only the pre-existing
+`dev/src/cpp_semantic_core.h:1` `bad-division` warning.
+
+## Historical evidence
+
+The following evidence belongs to the earlier
+`a2b82dcb56245406f695c271a44ca55ca82f3949` template-id/qualified-name
+checkpoint and is retained only as history:
+
+- Its typed angle/name ownership path was closed with historical through-PA9
+  457/457 and a file-audit exit 0 carrying the pre-existing
+  `cpp_semantic_core.h:1` `bad-division` warning.
+- Its old PA10 handoff was 106/157 with 51 failures; that identity set is
+  superseded by the landed checkpoint's 123/157 and 34 residual identities.
+- That historical audit repaired standalone `decltype` base/mem-initializer
+  admission and renderer sidecar-range validation, and retained the rejected
+  RShiftPiece2 experiment as a negative result. Its then-current source sizes
+  were 2741/346/700 lines for `pa10_ast.cpp`, `pa10_ast.h`, and
+  `pa10_renderer.cpp`; those are not current layout claims.
+- Its warning-clean `-Wextra -Werror` build passed; the historical focused
+  owner set was 11/11, through-PA9 was 457/457, and the file audit exited 0
+  with only the same pre-existing warning. Its executable hash was
+  `6cf44a43a293399ec829c6423526516cb502ec3b198b74c30209589922d665df`.
+- Historical template-index characterization covered 32/128/256 component
+  prefixes and malformed truncation; all measured elapsed values were below
+  the display resolution except the retained 256-component relational and
+  512-pair depth samples. Those values are not measurements of this repaired
+  executable.
+- Earlier storage characterization measured `sizeof(PA10Ast)=312`,
+  `sizeof(PA10AstNode)=216`, presentation capacity 3, and full-driver RSS of
+  4116/4848/6736 KB at 32/128/512 declarations. These values describe the
+  prior layout only.
+- The earlier RShiftPiece2 acceptance experiment was rejected after grammar
+  and handout review. The current checkpoint retains the authoritative logical
+  close/shift behavior and does not reopen that path.
 
 ## Audit ledger
 
 | checkpoint | review result | owner action | validation state |
 | --- | --- | --- | --- |
-| `a2b82dcb56245406f695c271a44ca55ca82f3949` template-id / qualified-name checkpoint | bounded ownership audit complete; standalone decltype is structural, authoritative RShift behavior is preserved, and renderer sidecar ranges are checked | retain typed producer/name/argument ownership and defer unrelated PA10 families | final 106/157, 51 residuals, one removed identity and zero added identities; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
+| `27623d646279d867e58039af60a1cc52e09e090e` declarator/member boundary | bounded audit and repair complete; nearest-derived-operator function boundary is precise and member-pointer qualification scan is one-shot | retain the unified typed AST flow; keep grammar/ref extensions documented and defer the 34 unrelated PA10 identities | focused 23/23 plus boundary/truncation probes; private shape helper linked only to `cppgm++`; PA10 123/157 with the exact 34-identity baseline; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
 
-## Next implementation checkpoint
+## Next checkpoint
 
-Select one remaining PA10 grammar family under supervisor direction, add only
-its public-owner repair in `dev/`, and rerun the same PA10 identity gate before
-expanding scope. The template-id/qualified-name ownership path audited here is
-closed for this checkpoint.
+The next checkpoint is a supervisor-selected family from the exact 34 residual
+PA10 identities. Keep this declarator/member boundary closed and do not widen
+the implementation or failure set without a separately bounded audit.

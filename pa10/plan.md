@@ -1,48 +1,87 @@
 # PA10 Checkpoint Plan and Evidence
 
-## Stage Design
+## Current scope
 
-The owned flow is:
+This bounded checkpoint audits landed commit
+`27623d646279d867e58039af60a1cc52e09e090e`, `PA10: unify declarator and
+member declaration parsing`. The owned flow is:
 
-~~~text
+```text
 phase-3 buffer -> posttoken facts -> typed PA10Token -> PA10Parser
-    -> PA10Ast -> cold deterministic renderer
-~~~
+    -> PA10Ast and sidecars -> deterministic cold renderer
+```
 
-This checkpoint owns the declarator/member-declaration boundary in
-`dev/src/pa10_ast.cpp`, its typed vocabulary in `dev/src/pa10_ast.h`, and
-presentation-only additions in `dev/src/pa10_renderer.cpp`. Names remain
-`PA10Name` components and declarators remain AST structure; parsing does not
-flatten either to source text.
+The implementation scope is limited to `dev/src/pa10_ast.cpp`, the private
+typed `dev/src/pa10_declarator_shape.cpp`/`.h` helper, `dev/src/pa10_ast.h`,
+and `dev/src/pa10_renderer.cpp`; the helper is listed only for `cppgm++` in
+`dev/frontend_source_sets.mk`. Documentation is limited to this file and
+`pa10/audit.md`; no tests, refs, grammar, harness, or unrelated stage surface
+was edited.
 
-`pa10/pa10.gram` directly backs the bit-field list, declarator and
-abstract-declarator composition, declarator suffix, parameter, non-type
-template-parameter, and ordinary function-suffix productions. In the checked
-handout/ref contract, qualified member-pointer operators (`C::*`, `n::C::*`)
-extend the grammar's `ptr-operator` production, which currently names only
-`*`, `&`, and `&&`. Likewise, checked throw-specification refs require
-`throw(...)`, although the current `function-suffix` production lists cv/ref,
-noexcept, virt, and trailing-return syntax but not dynamic `throw(...)`.
-These are explicitly handout/ref-required syntax extensions, not claims about
-the current grammar text. Lambda mutable/noexcept structure follows its
-grammar production and checked AST shape. `override`/`final` are classified
-once at the posttoken-to-`PA10Token` boundary; their producer spelling stays
-cold for rendering.
+## Spec and grammar alignment
 
-The prior template-name/angle checkpoint is closed. Its landed typed
-template-index/qualified-name path (`a2b82dcb`), historical 457/457
-through-PA9 gate, and historical file-audit exit 0 with the one pre-existing
-warning remain evidence only; this checkpoint does not reopen that path.
+The flow satisfies the applicable root `spec.md` §§1-4 and §7 obligations:
+one forward parser/model/renderer path; typed producer spelling and contextual
+facts; component-owned qualified names; typed template, literal, operator, and
+sidecar facts; bounded indexed lookahead; monotonic parser work; and a cold
+presentation boundary with no render/reparse path.
 
-## Failure Map
+The directly aligned `pa10/pa10.gram` productions are:
 
-The turn-start baseline was 106/157 passing with 51 failures. The final full
-PA10 run discovered all 157 tests and passed 123/157: 17 baseline identities
-were removed, no new identity appeared, and 34 baseline identities remain.
+- bit-field declaration/list and class-member consumption;
+- named/abstract declarators, parenthesized declarators, ptr operators,
+  arrays, function suffixes, parameters, and default arguments;
+- non-type and template-template parameter structure;
+- lambda-declarator pieces.
 
-Exact removed identities:
+The checked handout/ref contract additionally includes linkage
+specifications (`extern "C++"`/`extern "C"`), although the current grammar has
+no named linkage-specification production; it mentions `KW_EXTERN` only in
+decl-specifiers and extern-template syntax. It also requires qualified
+member-pointer ptr-operators (`C::*`, `n::C::*`, and qualified template forms),
+although the current grammar literally lists only `*`, `&`, and `&&`.
+Checked throw-specification refs likewise require dynamic `throw(...)`, absent
+from the current `function-suffix` production. These are explicit
+handout/ref-required extensions, not grammar edits.
 
-~~~text
+## Audit repairs and ownership result
+
+The former recursive `declarator_has_parameter()` test was incorrect at the
+function-definition/initializer boundary: it treated `(*p)()` and `(&r)()`
+as functions and could return at an identifier before seeing a later array
+layer. The public parser owner now uses a tri-state nearest-derived-operator
+walk in `declarator_is_function()`. Nested declarators recurse only when they
+contain an actual operator; parentheses defer to the enclosing layer. The
+first operator outward from the identifier decides: `ParameterClause` means
+function, while `PtrOperator`/reference or `ArraySuffix` means object. This
+keeps `f()` and `(f)()` definitions, makes pointer/reference and array shapes
+take their initializers, and keeps an inner `h()` parameter clause decisive
+for a function returning a pointer.
+
+`member_pointer_operator_start()` remains a bounded prefix scan using
+charged components and preindexed template closes. `parse_ptr_operator()`
+consumes the established qualifier without rescanning it. The type-id
+lookahead now passes a one-shot checked-prefix fact into
+`parse_abstract_declarator()`, removing that path's former duplicate
+qualification scan. Contextual `override`/`final` is classified once at
+the posttoken boundary. Bit-fields, suffixes, parameters, template
+parameters, linkage, lambda declarators, typed identities, sidecar ranges,
+recursion ceilings, and cold rendering remain on the unified landed path.
+The shape walk is conventionally formatted in its private helper; no source
+line packing or unrelated whitespace squeeze is used to meet an audit limit.
+
+## Coverage and exact failure identity
+
+The turn-start landed-checkpoint result was the no-regression broad baseline:
+all 157 PA10 tests were discovered, 123 passed, exit 2, with exactly 34
+failures. The final authorized run is identical: 157 discovered, 123 passed,
+exit 2, with 34 exact identities and no additions or removals.
+
+The earlier landed-checkpoint comparison was 106/157 with 51 failures. These
+17 identities were removed by the landed increment, with no newly failing
+identity:
+
+```text
 pa10/tests/general/200-extern-c-throw-empty-specification.t
 pa10/tests/general/200-function-throw-typed-specification.t
 pa10/tests/general/200-function-type-alias-declaration.t
@@ -60,11 +99,11 @@ pa10/tests/general/300-local-typedef-shadows-value-qualified-type.t
 pa10/tests/general/300-namespace-alias-shadow-qualified-type.t
 pa10/tests/spec/200-bit-field-declaration.t
 pa10/tests/spec/200-non-type-template-parameters.t
-~~~
+```
 
-No newly failing identity was observed. Exact remaining identities:
+Exact remaining baseline/final failure map for the landed full result:
 
-~~~text
+```text
 pa10/tests/general/100-member-operator-name-call.t
 pa10/tests/general/200-allocation-array-operator-ids.t
 pa10/tests/general/200-attributed-partial-specialization-current-class-constructor.t
@@ -99,68 +138,68 @@ pa10/tests/general/200-trailing-parameter-vendor-attribute.t
 pa10/tests/general/200-typeid-postfix-member-suffix.t
 pa10/tests/spec/200-explicit-instantiation-declaration.t
 pa10/tests/spec/200-qualified-special-member-definition.t
-~~~
+```
 
-The focused checked-in cluster after the audit corrections passed 16/16.
-The supervisor's first-stop rerun also passed the 14 former failures 14/14;
-the earlier first-stop sample passed 32/32 before this final broad gate.
+These residual identities are outside this audit's declared family and were
+not broadened. Historical focused evidence before this repair included the
+changed 16/16 cluster, a 14/14 first-stop former-failure rerun, and a 32/32
+sample; those counts are retained as historical handoff evidence. Current
+focused checked-in evidence is 23/23 after the repair, with direct,
+parenthesized, pointer/reference, function-returning-pointer, nested-array,
+array-of-function-pointer, member-pointer-template, and truncation `/tmp`
+probes exercised.
 
-## Active Checkpoint
+The final through-PA9 command passed 457/457. The final file audit exited 0
+with only the pre-existing `dev/src/cpp_semantic_core.h:1` `bad-division`
+warning. The final source sizes are 2999 lines for `dev/src/pa10_ast.cpp`,
+53 for `dev/src/pa10_declarator_shape.cpp`, 16 for its declaration-only
+private header, 361 for `dev/src/pa10_ast.h`, and 756 for
+`dev/src/pa10_renderer.cpp`; the helper files are below their audit limits.
 
-The shared owner/data flow implements:
+## Performance evidence
 
-- named and abstract declarator composition, parenthesized declarators,
-  function-type suffixes, and one central cv/ref/noexcept/virt/trailing-return
-  suffix path;
-- structured qualified member-pointer ptr-operators and their function/data
-  uses;
-- non-type/template-template parameter packs and checked defaults;
-- named, unnamed, and unnamed zero-width class bit-fields;
-- checked dynamic throw type-id suffixes, linkage declarations, and lambda
-  mutable/noexcept nodes.
+The current repaired executable is SHA-256
+`13e4d2f60d7bf1a19599d69d55a61bf958cf3af720aa9153e6695a4f168268b6`.
+Single bounded runs, not interleaved comparisons, were below the 0.01-second
+timer resolution:
 
-`member_pointer_operator_start()` scans only the qualified prefix from the
-current position. Every absolute access is size-checked; template closing is
-looked up through the existing prebuilt index; each material component costs a
-`charge()`. The consumer uses the already-established form, avoiding another
-qualified-prefix scan. `declaration_start()` uses bounded absolute helpers,
-one qualified-prefix scan, charged component work, and deterministic false
-results for truncated/malformed prefixes. Ordinary work is linear in the
-tokens/components of a declaration (with the existing linear template-index
-prepass), bounded by the parser work and recursion ceilings; no backtracking or
-whole-input retry loop was added. The closed template-angle path was not
-rewritten.
+| input | result | elapsed | peak RSS |
+| --- | --- | ---: | ---: |
+| qualified member-pointer edge probe | success | 0.00 s | 4116 KB |
+| nearest-operator boundary probe | success | 0.00 s | 4116 KB |
+| checked qualified-member input | success | 0.00 s | 4116 KB |
 
-## Performance Evidence
+The structural evidence is one linear prefix scan per consumed
+member-pointer form, O(1) preindexed template-close lookup, one-shot
+type-id lookahead ownership, and no retry/backtracking. No timing comparison
+is claimed.
 
-The final implementation binary used for the bounded characterization had
-SHA-256 `39157089d24a0a1d7a42a867cb67aee606b983ddc1bf0ba036fce63d6f2ba892`.
-Inputs were temporary files under `/tmp`; each valid input was
-`typedef int C0::C1::...::C(n-1)::\*p;`, and the malformed input truncated
-after the final `::`.
+Historical performance characterization from the prior template/angle
+checkpoint is retained but is not a current binary/layout claim:
 
-~~~text
-components  bytes  expected  exit  elapsed  peak-RSS
-32           166    success   0     0.00s    4184 KB
-128          674    success   0     0.00s    4060 KB
-256          1442   success   0     0.00s    4444 KB
-256          1439   failure   1     0.00s    4596 KB  (truncated boundary case)
-~~~
+| components | bytes | expected | exit | elapsed | peak RSS |
+| ---: | ---: | --- | ---: | ---: | ---: |
+| 32 | 166 | success | 0 | 0.00 s | 4184 KB |
+| 128 | 674 | success | 0 | 0.00 s | 4060 KB |
+| 256 | 1442 | success | 0 | 0.00 s | 4444 KB |
+| 256 truncated | 1439 | failure | 1 | 0.00 s | 4596 KB |
 
-All elapsed values were below `/usr/bin/time`'s 0.01-second display
-resolution, so no general performance comparison is claimed. The structural
-evidence is that the component prefix grows from 32 to 256 while the bounded
-lookahead charges once per component, uses O(1) preindexed template-close
-lookups, and does not rescan the consumed qualifier in `parse_ptr_operator`.
+The prior 140-argument, nested-angle, relational, sibling-scope, and renderer
+depth probes remain historical evidence only; no unverified comparison is
+made.
 
-## Checkpoint Ledger
+## Checkpoint ledger
 
 | checkpoint | status | evidence / intent |
 | --- | --- | --- |
-| `a2b82dcb` template/angle ownership | landed and closed | typed sidecars; historical 457/457 through PA9; historical audit exit 0 with one pre-existing warning |
-| declarator/member-declaration boundary | validated | 16/16 focused; full 123/157; 17 baseline failures removed; zero new identities |
-| through-PA9 gate | passed | exact `n=10` command returned `ALL TESTS PASSED SUCCESSFULLY! (457 / 457)` |
-| file audit / diff check | passed | audit passed with only pre-existing `cpp_semantic_core.h:1` warning; `git diff --check` passed |
-| commit | authorized | one coherent PA10 commit containing exactly the four intended files; subject is recorded below |
+| `27623d646279d867e58039af60a1cc52e09e090e` declarator/member-declaration boundary | completed bounded audit and clean helper extraction | 23/23 focused; required valid and malformed `/tmp` probes; private shape helper linked to `cppgm++`; PA10 123/157 with exact 34-identity baseline and 157 discovery; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
 
-Commit intent: `PA10: unify declarator and member declaration parsing`.
+Historical ledger context: `a2b82dcb` template/angle ownership is landed and
+closed; its typed sidecars, historical through-PA9 457/457, and prior
+file-audit warning record are not reopened here.
+
+## Next checkpoint
+
+The next checkpoint is a supervisor-selected family from the exact 34 residual
+identities. Keep this declarator/member boundary closed and do not broaden the
+implementation without a separately bounded audit.

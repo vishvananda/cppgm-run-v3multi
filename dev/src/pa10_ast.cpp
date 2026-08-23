@@ -1,4 +1,5 @@
 #include "pa10_ast.h"
+#include "pa10_declarator_shape.h"
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -606,7 +607,8 @@ private:
 	PA10AstNode parse_decltype_specifier();
 	PA10AstNode parse_type_id(bool conversion_target = false);
 	PA10AstNode parse_abstract_declarator(
-		bool stop_at_empty_parameter_clause = false);
+		bool stop_at_empty_parameter_clause = false,
+		bool first_member_pointer_checked = false);
 	PA10AstNode parse_declarator(bool allow_abstract = false,
 		bool force_parameter_suffix = false);
 	PA10AstNode parse_ptr_operator();
@@ -651,14 +653,9 @@ private:
 	PA10AstNode parse_template_parameter_clause();
 	PA10AstNode parse_template_parameter();
 	void skip_class_key_attribute();
-	bool declarator_has_parameter(const PA10AstNode& declarator) const
+	bool declarator_is_function(const PA10AstNode& declarator) const
 	{
-		if (declarator.kind == PA10NodeKind::ParameterClause)
-			return true;
-		for (std::size_t i = 0; i < declarator.children.size(); ++i)
-			if (declarator_has_parameter(declarator.children[i]))
-				return true;
-		return false;
+		return PA10DeclaratorShape::is_function(declarator);
 	}
 	bool looks_like_parameter_clause() const
 	{
@@ -1281,9 +1278,9 @@ PA10AstNode PA10Parser::parse_decl_or_function(bool in_class_member)
 	if (in_class_member && fixed(SimpleTokenType::OP_COLON))
 		return parse_bit_field_declaration(std::move(spec),
 			std::move(declarator), true);
-	const bool has_parameter = declarator_has_parameter(declarator);
+	const bool is_function = declarator_is_function(declarator);
 	if (fixed(SimpleTokenType::OP_LBRACE) &&
-		has_parameter)
+		is_function)
 	{
 		PA10AstNode result = node(PA10NodeKind::FunctionDefinition);
 		result.children.push_back(std::move(spec));
@@ -1324,10 +1321,10 @@ PA10AstNode PA10Parser::parse_simple_declaration(PA10AstNode spec,
 	result.children.push_back(std::move(spec));
 	PA10AstNode list = node(PA10NodeKind::InitDeclaratorList);
 	PA10AstNode init = node(PA10NodeKind::InitDeclarator);
-	const bool has_parameter = declarator_has_parameter(declarator);
+	const bool is_function = declarator_is_function(declarator);
 	init.children.push_back(std::move(declarator));
 	if (fixed(SimpleTokenType::OP_ASS) || fixed(SimpleTokenType::OP_LBRACE) ||
-		(fixed(SimpleTokenType::OP_LPAREN) && !has_parameter))
+		(fixed(SimpleTokenType::OP_LPAREN) && !is_function))
 		init.children.push_back(parse_initializer());
 	list.children.push_back(std::move(init));
 	while (fixed(SimpleTokenType::OP_COMMA))
@@ -1337,7 +1334,7 @@ PA10AstNode PA10Parser::parse_simple_declaration(PA10AstNode spec,
 		next.children.push_back(parse_declarator(false));
 		if (fixed(SimpleTokenType::OP_ASS) || fixed(SimpleTokenType::OP_LBRACE) ||
 			(fixed(SimpleTokenType::OP_LPAREN) &&
-			 !declarator_has_parameter(next.children.back())))
+			 !declarator_is_function(next.children.back())))
 			next.children.push_back(parse_initializer());
 		list.children.push_back(std::move(next));
 	}
@@ -1548,9 +1545,10 @@ PA10AstNode PA10Parser::parse_type_id(bool conversion_target)
 {
 	PA10AstNode result = node(PA10NodeKind::TypeId);
 	result.children.push_back(parse_type_specifier_seq());
+	bool member_abstract_start = false;
 	if (fixed(SimpleTokenType::OP_STAR) || fixed(SimpleTokenType::OP_AMP) ||
 		fixed(SimpleTokenType::OP_LAND) || fixed(SimpleTokenType::OP_LSQUARE) ||
-		member_pointer_operator_start() ||
+		(member_abstract_start = member_pointer_operator_start()) ||
 		(fixed(SimpleTokenType::OP_LPAREN) &&
 		 (fixed(SimpleTokenType::OP_STAR, 1) ||
 		  fixed(SimpleTokenType::OP_AMP, 1) ||
@@ -1558,7 +1556,7 @@ PA10AstNode PA10Parser::parse_type_id(bool conversion_target)
 		  fixed(SimpleTokenType::OP_LPAREN, 1) ||
 		  (looks_like_parameter_clause() &&
 			(!conversion_target || !fixed(SimpleTokenType::OP_RPAREN, 1))))))
-		result.children.push_back(parse_abstract_declarator(conversion_target));
+		result.children.push_back(parse_abstract_declarator(conversion_target, member_abstract_start));
 	return result;
 }
 PA10AstNode PA10Parser::parse_noexcept_function_qualifier()
@@ -1673,15 +1671,16 @@ void PA10Parser::parse_function_suffixes(PA10AstNode& result)
 	}
 }
 PA10AstNode PA10Parser::parse_abstract_declarator(
-	bool stop_at_empty_parameter_clause)
+	bool stop_at_empty_parameter_clause, bool first_member_pointer_checked)
 {
 	RecursionGuard recursion(*this);
 	PA10AstNode result = node(PA10NodeKind::AbstractDeclarator);
 	while (fixed(SimpleTokenType::OP_STAR) ||
 		fixed(SimpleTokenType::OP_AMP) || fixed(SimpleTokenType::OP_LAND) ||
-		member_pointer_operator_start())
+		first_member_pointer_checked || member_pointer_operator_start())
 	{
 		PA10AstNode pointer = parse_ptr_operator();
+		first_member_pointer_checked = false;
 		result.children.push_back(std::move(pointer));
 		while (is_cv(look().fixed) && look().kind == PA10TokenKind::Fixed)
 			result.children.push_back(fixed_node(PA10NodeKind::CvQualifier));
