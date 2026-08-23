@@ -1089,6 +1089,11 @@ struct SemanticCore
 
 	TypeId array(TypeId child, bool unknown_bound, std::size_t bound)
 	{
+		const TypeId unqualified = remove_top_cv(child);
+		const TypeKind child_kind = type_kind(unqualified);
+		if (child_kind == TypeKind::LvalueReference ||
+			child_kind == TypeKind::RvalueReference)
+			throw std::runtime_error("cannot form array of reference type");
 		TypeKey key;
 		key.kind = TypeKind::Array;
 		key.child = child;

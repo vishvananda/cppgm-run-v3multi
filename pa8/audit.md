@@ -2,90 +2,80 @@
 
 ## Current Checkpoint Review
 
-This review is bounded to landed commit `bf249b24` (parent
-`8ee86ae7`), **PA8: validate namespace name occupancy**, and this
-`checkpointAudit` only.  The 18 pre-existing PA8 failures remain outside the
-slice; no broad PA8 feature repair is claimed here.
+This review is bounded to landed commit `657e5559` (parent `affab90c`),
+**PA8: implement reference semantics**, and its completed array/reference
+repair.  It audits only the reference-semantics ownership path; the nine
+turn-start PA8 failures remain outside the slice unless a failure is directly
+caused by that path.
 
-The complete typed ownership path is intact: `cpp_declaration_syntax` emits
-typed namespace, alias, using, and declaration actions; the PA7/PA8 actions
-intern `NameId` and resolve the current `NamespaceId`; `SemanticCore` owns the
-`NamespaceRecord` indexes; and PA7 rendering plus PA8 image/exit behavior
-consume those facts without spelling reconstruction.  The shared conflict
-boundary and its typed writers are the repair points.  Namespace definitions
-and aliases call `namespace_name_conflicts` before mutation, reverse alias and
-using-type writers use `namespace_name_declared_here`, and entity writers use
-the current-TU typed entity buckets.
+The typed fact flow is continuous.  Preprocessing and posttokenization carry
+decoded literals, spelling IDs, and declaration syntax into
+`CppSyntaxDeclaratorOp`; prefix markers, suffix operations, and bound
+expressions are copied into `DeclaratorShape`/`DeclaratorOp` without rendering.
+`SemanticCore` then interns canonical `TypeId`s and owns reference collapsing,
+pointer-to-reference rejection, reference-to-void rejection, and (after this
+repair) array-of-reference rejection.  PA8 evaluates each expression into a
+`PA8Value` that retains both the named `EntityId` and the post-dereference
+referent.  Binding applies C++11 lvalue/rvalue and cv rules, appends a typed
+lifetime-extended `Temporary` record for converted bindings, and records a
+typed relocation.  Image planning emits named entities in block 1 and
+temporaries in block 2, then patches relocations after all offsets are known.
 
-The reviewed occupancy facts are:
+The audit found one real formation defect.  `array(...)` accepted a reference
+child, and flattened prefix application could turn `int& a[2]` or `int*& a[2]`
+into an apparently legal outer reference instead of diagnosing an array of
+references.  The repair has two bounded ownership points: canonical array
+formation rejects reference children (covering typedefs and all downstream
+callers), while the PA8 declarator adapter rejects the typed array-before-
+reference shape that flattening otherwise hides.  Grouped reference-to-array
+declarators such as `int (&r)[2]`, reference-to-pointer/function forms, direct
+pointer-to-reference rejection, direct reference-to-reference rejection, and
+typedef reference collapsing remain distinct and valid where required.
 
-1. `named_children` is the compact program-identity index for direct named
-   namespaces.  A definition can reopen its canonical namespace, but a
-   current-TU entity, type alias, using-entity, using-type, or namespace-alias
-   source fact blocks the definition.  An alias rejects a current-TU direct
-   namespace.  `declare_namespace_alias` separately checks the existing
-   current-TU alias slot: a different canonical `NamespaceId` is rejected,
-   while a same-target duplicate, including the PA7 self-alias spelling that
-   resolves to that target, remains accepted.
-2. `source_entities`, `aliases`, `using_entities`, `using_types`, and
-   `namespace_aliases` are all probed by typed `(NameId, translation-unit)`
-   keys.  Reverse namespace/namespace-alias then typedef/alias and using
-   declarations now fail at their canonical writers.  `add_using_entity`
-   compares the incoming canonical `EntityId` with direct and imported
-   same-name current-TU buckets: distinct non-functions conflict; a direct
-   function with the same canonical function `TypeId` conflicts; distinct
-   function overloads and repeated/same-entity using-declarations remain
-   representable; and multiple using-declarations may introduce same-signature
-   functions as permitted by N3485 7.3.3p14.
-   Every incoming direct value declaration also inspects the imported same-name
-   bucket, so an earlier direct overload cannot hide a later matching
-   imported-function conflict.  Valid direct redeclarations and distinct
-   imported/direct overloads remain allowed.
-3. Each mutation keeps its existing category/topology invalidation: namespace
-   changes invalidate all lookup categories, type aliases/using-types
-   invalidate type lookup, and entity/using-entity changes invalidate entity
-   lookup.  Typed index probes are expected O(1), but using-entity compatibility
-   inspects only the relevant same-name candidate buckets in O(k), where k is
-   the language-relevant direct/imported candidate count.  There is no
-   whole-scope scan and no new cache.
-4. Nested scopes retain independent occupancy records.  Repeated namespace
-   reopening is accepted, inline reopening keeps the existing mismatch check,
-   and using-directives remain lookup edges rather than declarations that
-   occupy a local name.  Current-TU visibility still separates source facts
-   from cross-TU canonical identity: hidden prior-TU occupants do not become
-   current-TU diagnostic facts, while a namespace reopened in the current TU
-   is visible and checked.  This also keeps alias occupancy and entity buckets
-   deterministic across namespace reopening and translation-unit order.
+Binding and lifetime facts were traced through direct referent identity,
+known scalar conversions, unknown arithmetic conversions, and relocation/image
+order.  Direct compatible lvalue bindings preserve the referent; rvalue
+references reject lvalues; non-const or volatile-qualified lvalue references
+reject prvalues/conversion temporaries; and compatible cv additions bind
+directly.  Known conversions retain bytes, while unknown arithmetic
+conversions create a zero-initialized, non-constant temporary.  Temporary
+append order is first-use order, and the two image passes prevent a temporary
+from changing block-1 declaration order.
 
-Focused evidence after supervisor review is PA8 **36/36** on the affected
-namespace, reverse-order, using-entity, cross-TU, hidden-occupant, and inline
-probes; PA7 **9/9** on namespace, alias, using, reopening, and rendering
-probes; and `make -C dev -B nsinit nsdecl -j2` passed.  The seven supervisor
-guards plus `410-using-entity-direct-overload-order-bad` are included in the
-17 added cases and all pass.  Existing handout tests and fixtures were not
-edited.
+Focused evidence is `make -C dev nsinit -j2` and the exact repaired,
+representative, and durable-regression set at `make -C pa8 check TEST='...'`
+(12/12).  It covers both array-of-reference forms, grouped
+reference-to-array, reference-to-pointer/function, typedef collapse,
+reference-to-void, referent identity, and known/unknown temporary relocation.
+The reduced probes produced the expected success/failure statuses and
+deterministic images.  The documented reference workflow generated the three
+new fixtures; the reference accepts the two standard-invalid array-of-reference
+cases, so their checked-in exit sidecars pin `EXIT_FAILURE` and their failed
+payloads are not retained, while the grouped valid fixture is retained exactly.
+No handout test changed.  The original turn-start broad measurement was PA8
+**80/89** over **89 cases**, with exactly these nine failures:
 
-The documented reference workflow ran for the new guards.  The reference
-agrees with the alias-rebind failure, direct-variable failure, and all three
-valid using-entity cases.  It accepts the standard-invalid direct
-same-signature-function, distinct-imported-variable, and direct-overload-then-
-matching-declaration (`410-using-entity-direct-overload-order-bad`) cases;
-those three checked-in sidecars remain
-intentionally `EXIT_FAILURE`.  The three earlier reduced standard-informed
-divergences (direct namespace then typedef, using-type then entity, and
-using-entity then alias) remain likewise pinned.
-Generated invalid-case output artifacts were removed; the three valid cases
-retain the required checked-in binary/stdout reference fixtures.
+- `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`,
+  `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`;
+- `pa8/tests/600-qualified-redeclaration.t.1`,
+  `pa8/tests/600-qualified-redeclaration2.t.1`;
+- `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1`,
+  `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`,
+  `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`.
 
-Final gates are exact: the original 72-case PA8 baseline remains **54/72**
-with the same 18 failure identities; the 17 added reduced cases all pass, so
-the expanded PA8 gate is **71/89** with no new failure identity.  The exact
-through-PA7 gate is **339/339**, and through-PA8 is **410/428**.  The file
-audit passes with one pre-existing warning,
-`dev/src/cpp_semantic_core.h:1 [bad-division]` (substantial implementation
-body in a header).  The PA8 feature failures and reference divergences above,
-plus the absence of phase/allocation counters for a fresh performance claim,
-are the remaining uncertainties; no deferred PA8 feature was expanded here.
+The final checked-in PA8 suite is **83/92**: the three added regressions pass,
+and the original 89-case set remains **80/89** with exactly the same nine
+failure identities and no new failure.  `make test-pa8` exits 2 for those
+deferred cases; the exact through-PA7 report is **339/339**; and
+`make test-report-through-pa8` is **422/431** with the same nine identities.
+The file audit exits 0 with the existing single header warning recorded below.
+Performance evidence is structural only: formation and validation are linear
+in the current declarator, binding uses indexed identity plus bounded
+type/category checks and one temporary append, and image planning remains two
+entity passes plus the existing relocation pass.  There is no whole-arena hot
+scan, textual downgrade, duplicate semantic model, whole-program retry,
+test-spelling shortcut, or compiler/reference shell-out in this path.  No
+timing claim is made.
 
 ## Prior Checkpoint Review
 
@@ -211,3 +201,4 @@ uncertainties.
 | --- | --- | --- |
 | `checkpointAudit` at `8b56021c` | coherent bounded repair/documentation milestone complete; final gates passed | typed ownership trace; current-TU declaration-owned linkage inheritance; scalar TU ownership; typed `(NameId, TU)` source/link indexes and per-TU ranges; monotonic entity scratch and child-before-directive traversal; 10 new focused PA8 probes plus two guards; final PA8 46/72 with the same 26 failure identities, through-PA7 339/339, file audit passed with one existing warning, and many-TU scale evidence above |
 | `checkpointAudit` at `bf249b24` | completed after final order-dependent using-entity repair; final amended commit carries the bounded result | typed `cpp_declaration_syntax` -> PA7/PA8 actions -> interned `NameId`/current-TU `NamespaceId` -> `NamespaceRecord` indexes -> invalidating writers -> PA7 rendering/PA8 image and exit behavior; same-target-only namespace-alias redefinition; direct/imported using-entity bucket compatibility with O(k) candidate inspection; both direct-declaration adapters always inspect imported candidates; PA8 focused 36/36, PA7 focused 9/9; original baseline 54/72 and expanded gate 71/89 with exactly the original 18 identities; through-PA7 339/339, through-PA8 410/428; file audit passed with one pre-existing header warning; six standard-informed reference divergences pinned by failure sidecars and valid reference fixtures retained |
+| `checkpointAudit` at `657e5559` + array/reference repair | completed bounded ownership-path audit; final PA8 83/92, with the original 89-case set still 80/89 and exactly the same nine failures; through-PA7 339/339; through-PA8 422/431 | typed `CppSyntaxDeclaratorOp` -> `DeclaratorShape` -> canonical reference/array invariants -> `PA8Value` entity/referent -> cv/category binding -> typed lifetime-extended temporaries -> block-1/block-2 image relocation; focused 12/12; three durable course regressions and prescribed fixtures; reference accepts the two standard-invalid array-of-reference cases, whose sidecars pin `EXIT_FAILURE`, while the grouped valid fixture is retained; the unchanged exact nine identities are `pa8/tests/310-array-str-lit.t.1`, `pa8/tests/340-array-const.t.1`, `pa8/tests/500-static-assert.t.1`, `pa8/tests/500-static-assert3.t.1`, `pa8/tests/600-qualified-redeclaration.t.1`, `pa8/tests/600-qualified-redeclaration2.t.1`, `cppgm.tests/course/pa8/120-constexpr-pointer-cross-tu.t.1`, `cppgm.tests/course/pa8/120-constexpr-qualified-pointer.t.1`, and `cppgm.tests/course/pa8/300-function-typedef-definition-bad.t.1`; all broad gates passed with no new failure; file audit passed with the existing header warning; structural complexity only and no timing claim |
