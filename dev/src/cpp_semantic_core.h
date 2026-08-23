@@ -1209,6 +1209,15 @@ struct SemanticCore
 			current_translation_unit;
 	}
 
+	bool namespace_name_declared_here(NamespaceId scope, NameId name) const
+	{
+		const NamespaceRecord& record = namespaces[scope.value];
+		const NamespaceId* direct = record.named_children.find(name);
+		const SourceNameKey source_key(name, current_translation_unit);
+		return (direct != NULL && namespace_visible(*direct)) ||
+			record.namespace_aliases.find(source_key) != NULL;
+	}
+
 	bool namespace_name_conflicts(NamespaceId scope, NameId name,
 		NamespaceDeclarationKind declaration_kind) const
 	{
@@ -1225,8 +1234,8 @@ struct SemanticCore
 			// namespace definition must nevertheless not take that name.
 			return record.namespace_aliases.find(source_key) != NULL;
 
-		// Namespace aliases are intentionally replaceable in the same
-		// current-TU source slot.  A directly declared namespace is not.
+		// Same-TU namespace-alias duplicates are validated by the typed writer;
+		// a directly declared namespace is not an alias occupant here.
 		const NamespaceId* direct = record.named_children.find(name);
 		return direct != NULL && namespace_visible(*direct);
 	}
@@ -1253,6 +1262,77 @@ struct SemanticCore
 			return false;
 		return namespaces[scope.value].source_entities.find(
 			SourceNameKey(name, current_translation_unit)) != NULL;
+	}
+
+	bool using_entity_conflicts_with_declaration(NamespaceId scope, NameId name,
+		TypeId type, bool is_function) const
+	{
+		const SourceEntityBucketIndex& index =
+			namespaces[scope.value].using_entities;
+		const EntityBucketId* found = index.find(
+			SourceNameKey(name, current_translation_unit));
+		if (found == NULL)
+			return false;
+		const std::vector<EntityId>& candidates =
+			entity_buckets[found->value];
+		for (std::vector<EntityId>::const_iterator it = candidates.begin();
+			it != candidates.end(); ++it)
+		{
+			const EntityRecord& candidate = entities[it->value];
+			if (!is_function || candidate.kind != EntityKind::Function ||
+				candidate.type.value == type.value)
+				return true;
+		}
+		return false;
+	}
+
+	bool using_entity_conflicts_here(NamespaceId scope, NameId name,
+		EntityId entity) const
+	{
+		const EntityRecord& incoming = entities[entity.value];
+		const NamespaceRecord& record = namespaces[scope.value];
+		const SourceNameKey source_key(name, current_translation_unit);
+
+		const EntityBucketId* direct_bucket =
+			record.source_entities.find(source_key);
+		if (direct_bucket != NULL)
+		{
+			const std::vector<EntityId>& candidates =
+				entity_buckets[direct_bucket->value];
+			for (std::vector<EntityId>::const_iterator it = candidates.begin();
+				it != candidates.end(); ++it)
+			{
+				const EntityRecord& candidate = entities[it->value];
+				if (it->value == entity.value)
+					continue;
+				if (incoming.kind != EntityKind::Function ||
+					candidate.kind != EntityKind::Function ||
+					candidate.type.value == incoming.type.value)
+					return true;
+			}
+		}
+
+		const EntityBucketId* imported_bucket =
+			record.using_entities.find(source_key);
+		if (imported_bucket != NULL)
+		{
+			const std::vector<EntityId>& candidates =
+				entity_buckets[imported_bucket->value];
+			for (std::vector<EntityId>::const_iterator it = candidates.begin();
+				it != candidates.end(); ++it)
+			{
+				const EntityRecord& candidate = entities[it->value];
+				if (it->value == entity.value)
+					continue;
+				// N3485 7.3.3p14 permits multiple using-declarations
+				// to introduce functions with the same signature. Distinct
+				// non-functions, and a function/non-function mix, conflict.
+				if (incoming.kind != EntityKind::Function ||
+					candidate.kind != EntityKind::Function)
+					return true;
+			}
+		}
+		return false;
 	}
 
 	void mark_entity_declaration(EntityId id)
@@ -1701,9 +1781,14 @@ struct SemanticCore
 	void declare_alias(NamespaceId scope, NameId name, TypeId type)
 	{
 		NamespaceRecord& record = namespaces[scope.value];
-		if (direct_entity_here(scope, name))
+		const SourceNameKey source_key(name, current_translation_unit);
+		const TypeId* imported_type = record.using_types.find(source_key);
+		if (namespace_name_declared_here(scope, name) ||
+			direct_entity_here(scope, name) ||
+			record.using_entities.find(source_key) != NULL ||
+			(imported_type != NULL && imported_type->value != type.value))
 			throw std::runtime_error("typedef conflicts with value declaration");
-		record.aliases.set(SourceNameKey(name, current_translation_unit), type);
+		record.aliases.set(source_key, type);
 		invalidate(LookupCategory::Type);
 	}
 
@@ -1719,8 +1804,11 @@ struct SemanticCore
 			NamespaceDeclarationKind::Alias))
 			throw std::runtime_error("namespace alias misuse");
 		NamespaceRecord& record = namespaces[scope.value];
-		record.namespace_aliases.set(
-			SourceNameKey(name, current_translation_unit), target);
+		const SourceNameKey source_key(name, current_translation_unit);
+		const NamespaceId* existing = record.namespace_aliases.find(source_key);
+		if (existing != NULL && existing->value != target.value)
+			throw std::runtime_error("namespace alias redefinition");
+		record.namespace_aliases.set(source_key, target);
 		invalidate_topology();
 	}
 
@@ -1733,8 +1821,16 @@ struct SemanticCore
 	void add_using_type(NamespaceId scope, NameId name, TypeId type)
 	{
 		NamespaceRecord& record = namespaces[scope.value];
-		record.using_types.set(SourceNameKey(name, current_translation_unit),
-			type);
+		const SourceNameKey source_key(name, current_translation_unit);
+		const TypeId* direct_type = record.aliases.find(source_key);
+		const TypeId* imported_type = record.using_types.find(source_key);
+		if (namespace_name_declared_here(scope, name) ||
+			direct_entity_here(scope, name) ||
+			record.using_entities.find(source_key) != NULL ||
+			(direct_type != NULL && direct_type->value != type.value) ||
+			(imported_type != NULL && imported_type->value != type.value))
+			throw std::runtime_error("using declaration conflicts with namespace");
+		record.using_types.set(source_key, type);
 		invalidate(LookupCategory::Type);
 	}
 
@@ -1784,6 +1880,14 @@ struct SemanticCore
 
 	void add_using_entity(NamespaceId scope, NameId name, EntityId entity)
 	{
+		NamespaceRecord& record = namespaces[scope.value];
+		const SourceNameKey source_key(name, current_translation_unit);
+		if (namespace_name_declared_here(scope, name) ||
+			record.aliases.find(source_key) != NULL ||
+			record.using_types.find(source_key) != NULL)
+			throw std::runtime_error("using declaration conflicts with namespace");
+		if (using_entity_conflicts_here(scope, name, entity))
+			throw std::runtime_error("using declaration entity conflict");
 		const EntityBucketId bucket_id = ensure_source_entity_bucket(scope, name,
 			current_translation_unit, true);
 		std::vector<EntityId>& bucket = entity_buckets[bucket_id.value];
@@ -1848,6 +1952,14 @@ struct SemanticCore
 		bool is_function)
 	{
 		NamespaceRecord& record = namespaces[scope.value];
+		const SourceNameKey source_key(name, current_translation_unit);
+		if (namespace_name_declared_here(scope, name) ||
+			record.aliases.find(source_key) != NULL ||
+			record.using_types.find(source_key) != NULL ||
+			using_entity_conflicts_with_declaration(scope, name,
+				type,
+				is_function))
+			throw std::runtime_error("declaration conflicts with namespace");
 		const EntityKind kind = is_function ? EntityKind::Function :
 			EntityKind::Variable;
 		EntityBucketId* found = record.external_entities.find(name);

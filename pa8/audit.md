@@ -2,9 +2,95 @@
 
 ## Current Checkpoint Review
 
-This review is bounded to the landed increment at `8b56021c` and the PA8
-`checkpointAudit` slice.  It does not attempt the 26 features still listed in
-the PA8 plan.
+This review is bounded to landed commit `bf249b24` (parent
+`8ee86ae7`), **PA8: validate namespace name occupancy**, and this
+`checkpointAudit` only.  The 18 pre-existing PA8 failures remain outside the
+slice; no broad PA8 feature repair is claimed here.
+
+The complete typed ownership path is intact: `cpp_declaration_syntax` emits
+typed namespace, alias, using, and declaration actions; the PA7/PA8 actions
+intern `NameId` and resolve the current `NamespaceId`; `SemanticCore` owns the
+`NamespaceRecord` indexes; and PA7 rendering plus PA8 image/exit behavior
+consume those facts without spelling reconstruction.  The shared conflict
+boundary and its typed writers are the repair points.  Namespace definitions
+and aliases call `namespace_name_conflicts` before mutation, reverse alias and
+using-type writers use `namespace_name_declared_here`, and entity writers use
+the current-TU typed entity buckets.
+
+The reviewed occupancy facts are:
+
+1. `named_children` is the compact program-identity index for direct named
+   namespaces.  A definition can reopen its canonical namespace, but a
+   current-TU entity, type alias, using-entity, using-type, or namespace-alias
+   source fact blocks the definition.  An alias rejects a current-TU direct
+   namespace.  `declare_namespace_alias` separately checks the existing
+   current-TU alias slot: a different canonical `NamespaceId` is rejected,
+   while a same-target duplicate, including the PA7 self-alias spelling that
+   resolves to that target, remains accepted.
+2. `source_entities`, `aliases`, `using_entities`, `using_types`, and
+   `namespace_aliases` are all probed by typed `(NameId, translation-unit)`
+   keys.  Reverse namespace/namespace-alias then typedef/alias and using
+   declarations now fail at their canonical writers.  `add_using_entity`
+   compares the incoming canonical `EntityId` with direct and imported
+   same-name current-TU buckets: distinct non-functions conflict; a direct
+   function with the same canonical function `TypeId` conflicts; distinct
+   function overloads and repeated/same-entity using-declarations remain
+   representable; and multiple using-declarations may introduce same-signature
+   functions as permitted by N3485 7.3.3p14.
+   Every incoming direct value declaration also inspects the imported same-name
+   bucket, so an earlier direct overload cannot hide a later matching
+   imported-function conflict.  Valid direct redeclarations and distinct
+   imported/direct overloads remain allowed.
+3. Each mutation keeps its existing category/topology invalidation: namespace
+   changes invalidate all lookup categories, type aliases/using-types
+   invalidate type lookup, and entity/using-entity changes invalidate entity
+   lookup.  Typed index probes are expected O(1), but using-entity compatibility
+   inspects only the relevant same-name candidate buckets in O(k), where k is
+   the language-relevant direct/imported candidate count.  There is no
+   whole-scope scan and no new cache.
+4. Nested scopes retain independent occupancy records.  Repeated namespace
+   reopening is accepted, inline reopening keeps the existing mismatch check,
+   and using-directives remain lookup edges rather than declarations that
+   occupy a local name.  Current-TU visibility still separates source facts
+   from cross-TU canonical identity: hidden prior-TU occupants do not become
+   current-TU diagnostic facts, while a namespace reopened in the current TU
+   is visible and checked.  This also keeps alias occupancy and entity buckets
+   deterministic across namespace reopening and translation-unit order.
+
+Focused evidence after supervisor review is PA8 **36/36** on the affected
+namespace, reverse-order, using-entity, cross-TU, hidden-occupant, and inline
+probes; PA7 **9/9** on namespace, alias, using, reopening, and rendering
+probes; and `make -C dev -B nsinit nsdecl -j2` passed.  The seven supervisor
+guards plus `410-using-entity-direct-overload-order-bad` are included in the
+17 added cases and all pass.  Existing handout tests and fixtures were not
+edited.
+
+The documented reference workflow ran for the new guards.  The reference
+agrees with the alias-rebind failure, direct-variable failure, and all three
+valid using-entity cases.  It accepts the standard-invalid direct
+same-signature-function, distinct-imported-variable, and direct-overload-then-
+matching-declaration (`410-using-entity-direct-overload-order-bad`) cases;
+those three checked-in sidecars remain
+intentionally `EXIT_FAILURE`.  The three earlier reduced standard-informed
+divergences (direct namespace then typedef, using-type then entity, and
+using-entity then alias) remain likewise pinned.
+Generated invalid-case output artifacts were removed; the three valid cases
+retain the required checked-in binary/stdout reference fixtures.
+
+Final gates are exact: the original 72-case PA8 baseline remains **54/72**
+with the same 18 failure identities; the 17 added reduced cases all pass, so
+the expanded PA8 gate is **71/89** with no new failure identity.  The exact
+through-PA7 gate is **339/339**, and through-PA8 is **410/428**.  The file
+audit passes with one pre-existing warning,
+`dev/src/cpp_semantic_core.h:1 [bad-division]` (substantial implementation
+body in a header).  The PA8 feature failures and reference divergences above,
+plus the absence of phase/allocation counters for a fresh performance claim,
+are the remaining uncertainties; no deferred PA8 feature was expanded here.
+
+## Prior Checkpoint Review
+
+The prior review was bounded to the landed increment at `8b56021c` and the PA8
+`checkpointAudit` slice.  It did not attempt the then-listed 26 features.
 
 The representative ownership path is continuous and typed:
 
@@ -124,3 +210,4 @@ uncertainties.
 | checkpoint | result | evidence and scope |
 | --- | --- | --- |
 | `checkpointAudit` at `8b56021c` | coherent bounded repair/documentation milestone complete; final gates passed | typed ownership trace; current-TU declaration-owned linkage inheritance; scalar TU ownership; typed `(NameId, TU)` source/link indexes and per-TU ranges; monotonic entity scratch and child-before-directive traversal; 10 new focused PA8 probes plus two guards; final PA8 46/72 with the same 26 failure identities, through-PA7 339/339, file audit passed with one existing warning, and many-TU scale evidence above |
+| `checkpointAudit` at `bf249b24` | completed after final order-dependent using-entity repair; final amended commit carries the bounded result | typed `cpp_declaration_syntax` -> PA7/PA8 actions -> interned `NameId`/current-TU `NamespaceId` -> `NamespaceRecord` indexes -> invalidating writers -> PA7 rendering/PA8 image and exit behavior; same-target-only namespace-alias redefinition; direct/imported using-entity bucket compatibility with O(k) candidate inspection; both direct-declaration adapters always inspect imported candidates; PA8 focused 36/36, PA7 focused 9/9; original baseline 54/72 and expanded gate 71/89 with exactly the original 18 identities; through-PA7 339/339, through-PA8 410/428; file audit passed with one pre-existing header warning; six standard-informed reference divergences pinned by failure sidecars and valid reference fixtures retained |

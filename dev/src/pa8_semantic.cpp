@@ -779,11 +779,12 @@ EntityId PA8ProgramModel::Impl::declare_entity(NamespaceId scope,
 	if (!scope.valid() || scope.value >= namespaces.size())
 		throw std::runtime_error("invalid PA8 declaration scope");
 	const SourceNameKey source_key(name, current_translation_unit);
-	const NamespaceId* named_namespace =
-		namespaces[scope.value].named_children.find(name);
-	if ((named_namespace != NULL && namespace_visible(*named_namespace)) ||
-		namespaces[scope.value].namespace_aliases.find(source_key) != NULL ||
-		namespaces[scope.value].aliases.find(source_key) != NULL)
+	if (namespace_name_declared_here(scope, name) ||
+		namespaces[scope.value].aliases.find(source_key) != NULL ||
+		namespaces[scope.value].using_types.find(source_key) != NULL ||
+		using_entity_conflicts_with_declaration(scope, name,
+			type,
+			type_kind(type) == TypeKind::Function))
 		throw std::runtime_error("PA8 entity conflicts with namespace or type");
 
 	const TypeKind raw_kind = type_kind(type);
