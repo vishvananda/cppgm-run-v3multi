@@ -92,10 +92,14 @@ const char* node_kind_name(PA10NodeKind kind)
 	case PA10NodeKind::BinaryExpression: return "binary-expression";
 	case PA10NodeKind::AssignmentExpression: return "assignment-expression";
 	case PA10NodeKind::ConditionalExpression: return "conditional-expression";
+	case PA10NodeKind::PackExpansionExpression:
+		return "pack-expansion-expression";
 	case PA10NodeKind::CastExpression: return "cast-expression";
 	case PA10NodeKind::SizeofExpression: return "sizeof-expression";
 	case PA10NodeKind::TypeTraitExpression: return "type-trait-expression";
 	case PA10NodeKind::NewExpression: return "new-expression";
+	case PA10NodeKind::GlobalScope: return "global-scope";
+	case PA10NodeKind::NewPlacement: return "placement";
 	case PA10NodeKind::DeleteExpression: return "delete-expression";
 	case PA10NodeKind::ArrayDeleteMarker: return "array-delete";
 	case PA10NodeKind::LambdaExpression: return "lambda-expression";
@@ -154,6 +158,23 @@ void append_destructor_name(const PA10Ast& ast, const PA10AstNode& node,
 
 void validate_node_sidecar_ranges(const PA10Ast& ast,
 	const PA10AstNode& node);
+
+bool has_non_token_payload(const PA10AstNode& node)
+{
+	return node.identifier_declspecifier || node.text != 0 || node.global_name ||
+		!node.name_parts.empty() || node.name_prefix_begin != 0 ||
+		node.name_prefix_count != 0 || node.producer_spelling != 0 ||
+		node.unqualified_id_kind != PA10UnqualifiedIdKind::None ||
+		node.unqualified_id_token != SimpleTokenType::OP_SEMICOLON ||
+		node.unqualified_id_token_spelling != 0 ||
+		node.unqualified_id_spelling != 0 ||
+		node.operator_function_kind != PA10OperatorFunctionKind::None ||
+		node.operator_token != SimpleTokenType::OP_SEMICOLON ||
+		node.operator_presentation_begin != 0 ||
+		node.operator_presentation_count != 0 ||
+		node.semantic_child_begin != 0 || node.semantic_child_count != 0 ||
+		node.has_literal;
+}
 
 void append_fixed_presentation(const PA10Ast& ast, const PA10AstNode& node,
 	std::ostream& output)
@@ -226,6 +247,63 @@ void validate_node_sidecar_ranges(const PA10Ast& ast,
 			component.template_argument_count > ast.template_arguments.size() -
 				component.template_argument_begin)
 			throw std::runtime_error("invalid PA10 template argument range");
+	}
+	switch (node.kind)
+	{
+	case PA10NodeKind::GlobalScope:
+		if (!node.has_token || node.token != SimpleTokenType::OP_COLON2 ||
+			node.token_spelling == 0 || ast.spelling(node.token_spelling) != "::" ||
+			has_non_token_payload(node) || !node.children.empty())
+			throw std::runtime_error("invalid PA10 global-scope marker");
+		break;
+	case PA10NodeKind::NewPlacement:
+		if (node.has_token || node.token != SimpleTokenType::OP_SEMICOLON ||
+			node.token_spelling != 0 || has_non_token_payload(node) ||
+			node.children.size() != 1 ||
+			node.children.front().kind != PA10NodeKind::ParenArgumentList)
+			throw std::runtime_error("invalid PA10 new-placement shape");
+		break;
+	case PA10NodeKind::PackExpansionExpression:
+		if (node.has_token || node.token != SimpleTokenType::OP_SEMICOLON ||
+			node.token_spelling != 0 || has_non_token_payload(node) ||
+			node.children.size() != 1)
+			throw std::runtime_error("invalid PA10 pack-expansion shape");
+		break;
+	case PA10NodeKind::NewExpression:
+	{
+		if (!node.has_token || node.token != SimpleTokenType::KW_NEW ||
+			node.token_spelling == 0 || ast.spelling(node.token_spelling) != "new" ||
+			has_non_token_payload(node))
+			throw std::runtime_error("invalid PA10 new-expression keyword");
+		std::size_t child = 0;
+		if (child < node.children.size() &&
+			node.children[child].kind == PA10NodeKind::GlobalScope)
+			++child;
+		if (child < node.children.size() &&
+			node.children[child].kind == PA10NodeKind::NewPlacement)
+			++child;
+		if (child >= node.children.size() ||
+			node.children[child].kind != PA10NodeKind::TypeId)
+			throw std::runtime_error("invalid PA10 new-expression type-id order");
+		++child;
+		if (child < node.children.size() &&
+			node.children[child].kind != PA10NodeKind::Initializer)
+			throw std::runtime_error("invalid PA10 new-expression initializer order");
+		if (child < node.children.size())
+		{
+			const PA10AstNode& initializer = node.children[child];
+			if (initializer.children.size() != 1 ||
+				(initializer.children.front().kind != PA10NodeKind::ParenInitializer &&
+				 initializer.children.front().kind != PA10NodeKind::BracedInitList))
+				throw std::runtime_error("invalid PA10 new-expression initializer shape");
+			++child;
+		}
+		if (child != node.children.size())
+			throw std::runtime_error("invalid PA10 new-expression child order");
+		break;
+	}
+	default:
+		break;
 	}
 }
 
@@ -310,6 +388,26 @@ void append_name(const PA10Ast& ast, const PA10AstNode& node,
 					node.operator_presentation_begin + i]);
 		}
 	}
+}
+
+void append_inline_new_expression(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output, std::size_t depth)
+{
+	std::size_t child = 0;
+	if (node.children[child].kind == PA10NodeKind::GlobalScope)
+		append_inline_node(ast, node.children[child++], output, depth + 1);
+	output << ast.spelling(node.token_spelling);
+	if (child < node.children.size() &&
+		node.children[child].kind == PA10NodeKind::NewPlacement)
+		append_inline_node(ast, node.children[child++], output, depth + 1);
+	append_inline_node(ast, node.children[child++], output, depth + 1);
+	if (child == node.children.size())
+		return;
+	const PA10AstNode& syntax = node.children[child].children.front();
+	const bool paren = syntax.kind == PA10NodeKind::ParenInitializer;
+	output << (paren ? '(' : '{');
+	append_inline_children(ast, syntax.children, output, depth + 1, ",");
+	output << (paren ? ')' : '}');
 }
 
 void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
@@ -448,6 +546,11 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 		if (node.children.size() > 2)
 			append_inline_node(ast, node.children[2], output, depth + 1);
 		break;
+	case PA10NodeKind::PackExpansionExpression:
+		if (!node.children.empty())
+			append_inline_node(ast, node.children.front(), output, depth + 1);
+		output << "...";
+		break;
 	case PA10NodeKind::CallExpression:
 		if (!node.children.empty())
 			append_inline_node(ast, node.children[0], output, depth + 1);
@@ -519,6 +622,19 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 		if (!node.children.empty())
 			append_inline_node(ast, node.children.front(), output, depth + 1);
 		output << ')';
+		break;
+	case PA10NodeKind::NewExpression:
+		append_inline_new_expression(ast, node, output, depth);
+		break;
+	case PA10NodeKind::GlobalScope:
+		if (node.token_spelling != 0)
+			output << ast.spelling(node.token_spelling);
+		else
+			output << "::";
+		break;
+	case PA10NodeKind::NewPlacement:
+		if (!node.children.empty())
+			append_inline_node(ast, node.children.front(), output, depth + 1);
 		break;
 	case PA10NodeKind::Initializer:
 	case PA10NodeKind::BracedInitList:
@@ -781,6 +897,13 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		break;
 	case PA10NodeKind::SpecialInitializer:
 		render_fixed_label(ast, node, output);
+		break;
+	case PA10NodeKind::NewPlacement:
+		if (!node.children.empty())
+		{
+			output << ' ';
+			append_inline_node(ast, node.children.front(), output, indent + 1);
+		}
 		break;
 	case PA10NodeKind::DeclSpecifier:
 		if (node.name_prefix_count != 0 || !node.name_parts.empty())
