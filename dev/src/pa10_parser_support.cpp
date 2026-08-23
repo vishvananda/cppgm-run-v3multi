@@ -356,6 +356,300 @@ bool skip_balanced_delimiters(const std::vector<PA10Token>& tokens,
 	}
 }
 
+enum NewAbstractGroupKind
+{
+	NewAbstractNone = 0,
+	NewAbstractShape = 1,
+	NewParameterClause = 2,
+	// A nested parameter-only group is an abstract form only in the
+	// parenthesized type-id spelling; keep it distinct from an initializer.
+	NewNestedParameter = 3
+};
+
+void fact_step(std::size_t& work)
+{
+	++work;
+}
+
+bool fact_identifier_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset, std::size_t& work)
+{
+	fact_step(work);
+	return token_identifier_at(tokens, absolute, offset);
+}
+
+bool fact_fixed_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset, SimpleTokenType type,
+	std::size_t& work)
+{
+	fact_step(work);
+	return token_fixed_at(tokens, absolute, offset, type);
+}
+
+bool fact_cv_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t& work)
+{
+	fact_step(work);
+	return absolute < tokens.size() &&
+		tokens[absolute].kind == PA10TokenKind::Fixed &&
+		is_cv_impl(tokens[absolute].fixed);
+}
+
+unsigned char fact_group_kind_at(const std::vector<unsigned char>& groups,
+	std::size_t absolute, std::size_t& work)
+{
+	fact_step(work);
+	return absolute < groups.size() ? groups[absolute] :
+		static_cast<unsigned char>(NewAbstractNone);
+}
+
+bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	std::size_t begin, std::size_t end, std::size_t* after,
+	std::size_t& work);
+
+bool parameter_clause_start_at(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t open, std::size_t& work)
+{
+	fact_step(work);
+	if (!fact_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN, work) ||
+		open >= delimiter_close_index.size() ||
+		delimiter_close_index[open] >= tokens.size())
+		return false;
+	if (delimiter_close_index[open] == open + 1 ||
+		fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_DOTS, work))
+		return true;
+	fact_step(work);
+	if (tokens[open + 1].kind == PA10TokenKind::Fixed)
+	{
+		const SimpleTokenType type = tokens[open + 1].fixed;
+		fact_step(work);
+		return is_type_keyword_impl(type) || is_cv_impl(type) ||
+			type == SimpleTokenType::KW_TYPEDEF ||
+			type == SimpleTokenType::KW_EXTERN ||
+			type == SimpleTokenType::KW_STATIC ||
+			type == SimpleTokenType::KW_INLINE ||
+			type == SimpleTokenType::KW_VIRTUAL ||
+			type == SimpleTokenType::KW_CONSTEXPR ||
+			type == SimpleTokenType::KW_THREAD_LOCAL ||
+			type == SimpleTokenType::KW_TYPENAME ||
+			type == SimpleTokenType::KW_DECLTYPE;
+	}
+	if (fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_COLON2, work))
+	{
+		std::size_t after = 0;
+		if (member_pointer_end_at(tokens, template_close_index,
+			rshift_piece1_nested_close, open + 1,
+			delimiter_close_index[open], &after, work))
+			return false;
+		return fact_identifier_at(tokens, open, 2, work) ||
+			fact_fixed_at(tokens, open, 2, SimpleTokenType::KW_TEMPLATE, work);
+	}
+	if (!fact_identifier_at(tokens, open, 1, work))
+		return false;
+	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work))
+	{
+		std::size_t after = 0;
+		if (member_pointer_end_at(tokens, template_close_index,
+			rshift_piece1_nested_close, open + 1,
+			delimiter_close_index[open], &after, work))
+			return false;
+	}
+	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_LT, work))
+	{
+		const std::size_t angle = open + 2;
+		fact_step(work);
+		if (angle < template_close_index.size())
+		{
+			const std::size_t close = template_close_index[angle];
+			fact_step(work);
+			if (close < delimiter_close_index[open])
+			{
+				std::size_t after = close + 1;
+				fact_step(work);
+				if (tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
+					after < delimiter_close_index[open] &&
+					close < rshift_piece1_nested_close.size() &&
+					rshift_piece1_nested_close[close])
+					++after;
+				if (fact_fixed_at(tokens, after, 0,
+					SimpleTokenType::OP_COLON2, work))
+				{
+					if (member_pointer_end_at(tokens, template_close_index,
+						rshift_piece1_nested_close, open + 1,
+						delimiter_close_index[open], &after, work))
+						return false;
+				}
+				fact_step(work);
+				return after == delimiter_close_index[open] ||
+					fact_identifier_at(tokens, after, 0, work) ||
+					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_STAR, work) ||
+					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_AMP, work) ||
+					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_LAND, work) ||
+					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_COLON2, work) ||
+					fact_fixed_at(tokens, after, 0, SimpleTokenType::OP_COMMA, work);
+			}
+		}
+	}
+	fact_step(work);
+	return delimiter_close_index[open] == open + 2 ||
+		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_DOTS, work) ||
+		fact_identifier_at(tokens, open, 2, work) ||
+		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_STAR, work) ||
+		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_AMP, work) ||
+		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_LAND, work) ||
+		fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work);
+}
+
+bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	std::size_t begin, std::size_t end, std::size_t* after,
+	std::size_t& work)
+{
+	fact_step(work);
+	std::size_t cursor = begin;
+	if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON2, work))
+		++cursor;
+	while (cursor < end)
+	{
+		fact_step(work);
+		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_TEMPLATE, work))
+			++cursor;
+		if (!fact_identifier_at(tokens, cursor, 0, work))
+			return false;
+		++cursor;
+		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LT, work))
+		{
+			fact_step(work);
+			if (cursor >= template_close_index.size() ||
+				template_close_index[cursor] >= end)
+				return false;
+			const std::size_t close = template_close_index[cursor];
+			fact_step(work);
+			cursor = close + 1;
+			if (tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
+				cursor < end && tokens[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close.size() &&
+				rshift_piece1_nested_close[close])
+				++cursor;
+		}
+		if (!fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON2, work))
+			return false;
+		++cursor;
+		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_STAR, work))
+		{
+			*after = cursor + 1;
+			return true;
+		}
+	}
+	return false;
+}
+
+unsigned char new_abstract_group_at(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<unsigned char>& groups, std::size_t open,
+	std::size_t& work)
+{
+	fact_step(work);
+	if (open >= delimiter_close_index.size() ||
+		delimiter_close_index[open] >= tokens.size())
+		return NewAbstractNone;
+	const std::size_t end = delimiter_close_index[open];
+	if (parameter_clause_start_at(tokens, template_close_index,
+		rshift_piece1_nested_close, delimiter_close_index, open, work))
+		return NewParameterClause;
+	std::size_t cursor = open + 1;
+	bool pointer = false;
+	while (cursor < end)
+	{
+		fact_step(work);
+		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_STAR, work) ||
+			fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_AMP, work) ||
+			fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LAND, work))
+		{
+			pointer = true;
+			++cursor;
+			while (cursor < end && fact_cv_at(tokens, cursor, work))
+				++cursor;
+			continue;
+		}
+		std::size_t after = 0;
+		if (member_pointer_end_at(tokens, template_close_index,
+			rshift_piece1_nested_close, cursor, end, &after, work))
+		{
+			pointer = true;
+			cursor = after;
+			while (cursor < end && fact_cv_at(tokens, cursor, work))
+				++cursor;
+			continue;
+		}
+		break;
+	}
+	if (pointer)
+	{
+		if (cursor == end || fact_fixed_at(tokens, cursor, 0,
+			SimpleTokenType::OP_LSQUARE, work))
+			return NewAbstractShape;
+		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN, work))
+		{
+			const bool parameter = parameter_clause_start_at(tokens, template_close_index,
+				rshift_piece1_nested_close, delimiter_close_index, cursor, work);
+			const unsigned char nested = fact_group_kind_at(groups, cursor, work);
+			if (parameter || nested == NewParameterClause ||
+				nested == NewNestedParameter)
+				return NewNestedParameter;
+			if (nested == NewAbstractShape)
+				return NewAbstractShape;
+		}
+		return NewAbstractNone;
+	}
+	if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LSQUARE, work))
+		return NewAbstractShape;
+	if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN, work))
+	{
+		const unsigned char nested = fact_group_kind_at(groups, cursor, work);
+		if (nested == NewAbstractShape)
+			return NewAbstractShape;
+		if (nested == NewParameterClause || nested == NewNestedParameter)
+			return NewNestedParameter;
+	}
+	return NewAbstractNone;
+}
+
+std::size_t build_new_abstract_declarator_groups(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::vector<unsigned char>& groups)
+{
+	// Every delimiter group is classified once in reverse token order, so a
+	// nested group's result is available before its enclosing group is read.
+	// A group owns only its leading pointer/member-pointer spine; a nested
+	// delimiter stops that scan.  Thus the variable scans are disjoint apart
+	// from the constant duplicate check shared with parameter classification.
+	// The returned counter records each indexed predicate and scan step.
+	std::size_t work = tokens.size();
+	groups.assign(tokens.size(), 0);
+	for (std::size_t reverse = tokens.size(); reverse != 0; --reverse)
+	{
+		fact_step(work);
+		const std::size_t open = reverse - 1;
+		if (fact_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN, work))
+			groups[open] = new_abstract_group_at(tokens, template_close_index,
+				rshift_piece1_nested_close, delimiter_close_index, groups, open,
+				work);
+	}
+	return work;
+}
+
 } // namespace
 
 bool is_cv(SimpleTokenType type)
@@ -388,11 +682,12 @@ bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens)
 	return true;
 }
 
-void build_indexes(const std::vector<PA10Token>& tokens,
+std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
-	std::vector<std::size_t>& delimiter_close_index)
+	std::vector<std::size_t>& delimiter_close_index,
+	std::vector<unsigned char>& new_abstract_declarator_group)
 {
 	template_close_index.assign(tokens.size(), tokens.size());
 	template_top_level_or.assign(tokens.size(), 0);
@@ -474,6 +769,9 @@ void build_indexes(const std::vector<PA10Token>& tokens,
 			break;
 		}
 	}
+	return tokens.size() + build_new_abstract_declarator_groups(tokens, template_close_index,
+		rshift_piece1_nested_close, delimiter_close_index,
+		new_abstract_declarator_group);
 }
 
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,

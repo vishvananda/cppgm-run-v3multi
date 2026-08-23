@@ -18,12 +18,16 @@ bool is_builtin_function_style_cast_keyword(SimpleTokenType type);
 bool is_operator_function_token(SimpleTokenType type);
 
 // build_indexes sizes and clears every output index to tokens.size(); an
-// uninitialized or reused side index is not a valid caller-owned state.
-void build_indexes(const std::vector<PA10Token>& tokens,
+// uninitialized or reused side index is not a valid caller-owned state.  The
+// return value is the exact counted index-work total (the ordinary index pass
+// plus the new-expression fact pass); the parser charges it against its
+// global work limit.
+std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
-	std::vector<std::size_t>& delimiter_close_index);
+	std::vector<std::size_t>& delimiter_close_index,
+	std::vector<unsigned char>& new_abstract_declarator_group);
 
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,

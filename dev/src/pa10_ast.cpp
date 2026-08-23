@@ -34,7 +34,7 @@ public:
 		  template_close_index_(tokens.size(), tokens.size()),
 		  template_top_level_or_(tokens.size(), 0),
 		  rshift_piece1_nested_close_(tokens.size(), 0),
-		  delimiter_close_index_(tokens.size(), tokens.size()),
+		  delimiter_close_index_(tokens.size(), tokens.size()), new_abstract_declarator_group_(tokens.size(), 0),
 		  ast_(), presentation_ids_()
 	{
 		ast_.snapshot_producer_spellings(producer_spellings);
@@ -63,6 +63,7 @@ private:
 	std::vector<unsigned char> template_top_level_or_;
 	std::vector<unsigned char> rshift_piece1_nested_close_;
 	std::vector<std::size_t> delimiter_close_index_;
+	std::vector<unsigned char> new_abstract_declarator_group_;
 	PA10Ast ast_;
 	std::unordered_map<std::string, PA10StringId> presentation_ids_;
 	static const std::size_t recursion_limit_ = PA10_MAX_AST_NESTING;
@@ -503,16 +504,15 @@ private:
 	PA10AstNode parse_type_specifier_seq();
 	PA10AstNode parse_decltype_specifier();
 	PA10AstNode parse_type_id(bool conversion_target = false,
-		bool new_expression_context = false);
-	PA10AstNode parse_abstract_declarator(
-		bool stop_at_empty_parameter_clause = false,
-		bool first_member_pointer_checked = false);
+		bool new_expression_context = false, bool parenthesized_new_type_id = false);
+	PA10AstNode parse_abstract_declarator(bool stop_at_empty_parameter_clause = false,
+		bool first_member_pointer_checked = false, bool new_expression_context = false);
 	PA10AstNode parse_declarator(bool allow_abstract = false,
 		bool force_parameter_suffix = false);
 	PA10AstNode parse_ptr_operator();
 	bool member_pointer_operator_start();
 	PA10Name parse_member_pointer_qualifier();
-	void parse_function_suffixes(PA10AstNode& result);
+	void parse_function_suffixes(PA10AstNode& result, bool new_expression_context = false);
 	PA10AstNode parse_noexcept_function_qualifier();
 	PA10AstNode parse_throw_function_qualifier();
 	PA10AstNode parse_noexcept_specification();
@@ -535,7 +535,7 @@ private:
 	PA10AstNode parse_keyword_cast();
 	PA10AstNode parse_new_expression();
 	bool new_type_id_start_at(std::size_t absolute) const; bool parenthesized_type_id_start_at(std::size_t absolute) const;
-	bool new_parenthesized_abstract_declarator_start() const;
+	bool new_parenthesized_abstract_declarator_start(bool parenthesized_new_type_id) const;
 	bool new_first_parenthesized_group_is_placement();
 	PA10AstNode parse_delete_expression();
 	PA10AstNode parse_postfix_expression();
@@ -679,10 +679,8 @@ private:
 };
 void PA10Parser::build_template_indexes()
 {
-	PA10ParserSupport::build_indexes(tokens_, template_close_index_,
-		template_top_level_or_, rshift_piece1_nested_close_,
-		delimiter_close_index_);
-	for (std::size_t i = 0; i < tokens_.size(); ++i)
+	const std::size_t indexed_work = PA10ParserSupport::build_indexes(tokens_, template_close_index_, template_top_level_or_, rshift_piece1_nested_close_, delimiter_close_index_, new_abstract_declarator_group_);
+	for (std::size_t i = 0; i < indexed_work; ++i)
 		charge();
 }
 bool PA10Parser::find_template_close(std::size_t absolute_lt,
@@ -1470,16 +1468,16 @@ PA10AstNode PA10Parser::parse_ptr_operator()
 	fail("expected ptr-operator");
 	return node(PA10NodeKind::PtrOperator);
 }
-PA10AstNode PA10Parser::parse_type_id(bool conversion_target, bool new_expression_context)
+PA10AstNode PA10Parser::parse_type_id(bool conversion_target, bool new_expression_context, bool parenthesized_new_type_id)
 {
 	PA10AstNode result = node(PA10NodeKind::TypeId); result.children.push_back(parse_type_specifier_seq());
 	bool member_abstract_start = false;
 	const bool parenthesized_abstract_start = fixed(SimpleTokenType::OP_LPAREN) &&
-		(new_expression_context ? new_parenthesized_abstract_declarator_start() :
+		(new_expression_context ? new_parenthesized_abstract_declarator_start(parenthesized_new_type_id) :
 		 (fixed(SimpleTokenType::OP_STAR, 1) || fixed(SimpleTokenType::OP_AMP, 1) ||
 		  fixed(SimpleTokenType::OP_LAND, 1) || fixed(SimpleTokenType::OP_LPAREN, 1) || (looks_like_parameter_clause() && (!conversion_target || !fixed(SimpleTokenType::OP_RPAREN, 1)))));
 	if (fixed(SimpleTokenType::OP_STAR) || fixed(SimpleTokenType::OP_AMP) || fixed(SimpleTokenType::OP_LAND) || fixed(SimpleTokenType::OP_LSQUARE) || (member_abstract_start = member_pointer_operator_start()) || parenthesized_abstract_start)
-		result.children.push_back(parse_abstract_declarator(conversion_target, member_abstract_start));
+		result.children.push_back(parse_abstract_declarator(conversion_target, member_abstract_start, new_expression_context));
 	return result;
 }
 PA10AstNode PA10Parser::parse_noexcept_function_qualifier()
@@ -1536,7 +1534,7 @@ PA10AstNode PA10Parser::parse_virt_specifier()
 	result.producer_spelling = token.spelling;
 	return result;
 }
-void PA10Parser::parse_function_suffixes(PA10AstNode& result)
+void PA10Parser::parse_function_suffixes(PA10AstNode& result, bool new_expression_context)
 {
 	while (true)
 	{
@@ -1570,7 +1568,7 @@ void PA10Parser::parse_function_suffixes(PA10AstNode& result)
 		{
 			consume_fixed(SimpleTokenType::OP_ARROW);
 			PA10AstNode trailing = node(PA10NodeKind::TrailingReturnType);
-			PA10AstNode type = parse_type_id();
+			PA10AstNode type = parse_type_id(false, new_expression_context);
 			if (!type.children.empty())
 			{
 				const PA10AstNode& seq = type.children.front();
@@ -1593,8 +1591,8 @@ void PA10Parser::parse_function_suffixes(PA10AstNode& result)
 		break;
 	}
 }
-PA10AstNode PA10Parser::parse_abstract_declarator(
-	bool stop_at_empty_parameter_clause, bool first_member_pointer_checked)
+PA10AstNode PA10Parser::parse_abstract_declarator(bool stop_at_empty_parameter_clause,
+	bool first_member_pointer_checked, bool new_expression_context)
 {
 	RecursionGuard recursion(*this);
 	PA10AstNode result = node(PA10NodeKind::AbstractDeclarator);
@@ -1612,16 +1610,18 @@ PA10AstNode PA10Parser::parse_abstract_declarator(
 		!(stop_at_empty_parameter_clause &&
 			fixed(SimpleTokenType::OP_RPAREN, 1)))
 	{
-		if (looks_like_parameter_clause())
+		const bool indexed_shape = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 1;
+		const bool indexed_parameter = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 2;
+		if ((looks_like_parameter_clause() || indexed_parameter) && !indexed_shape)
 		{
 			result.children.push_back(parse_parameter_clause());
-			parse_function_suffixes(result);
+			parse_function_suffixes(result, new_expression_context);
 		}
 		else
 		{
 			consume_fixed(SimpleTokenType::OP_LPAREN);
 			PA10AstNode nested = node(PA10NodeKind::NestedDeclarator);
-			nested.children.push_back(parse_abstract_declarator());
+			nested.children.push_back(parse_abstract_declarator(false, false, new_expression_context));
 			consume_fixed(SimpleTokenType::OP_RPAREN);
 			result.children.push_back(std::move(nested));
 		}
@@ -1631,12 +1631,13 @@ PA10AstNode PA10Parser::parse_abstract_declarator(
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN))
 		{
-			if (!looks_like_parameter_clause() ||
-				(stop_at_empty_parameter_clause &&
-					fixed(SimpleTokenType::OP_RPAREN, 1)))
+			const bool indexed_shape = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 1;
+			const bool indexed_parameter = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 2;
+			if ((!looks_like_parameter_clause() && !indexed_parameter) || indexed_shape ||
+				(stop_at_empty_parameter_clause && fixed(SimpleTokenType::OP_RPAREN, 1)))
 				break;
 			result.children.push_back(parse_parameter_clause());
-			parse_function_suffixes(result);
+			parse_function_suffixes(result, new_expression_context);
 			continue;
 		}
 		consume_fixed(SimpleTokenType::OP_LSQUARE);
@@ -1646,7 +1647,7 @@ PA10AstNode PA10Parser::parse_abstract_declarator(
 		consume_fixed(SimpleTokenType::OP_RSQUARE);
 		result.children.push_back(std::move(suffix));
 	}
-	parse_function_suffixes(result);
+	parse_function_suffixes(result, new_expression_context);
 	return result;
 }
 PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
@@ -2070,14 +2071,13 @@ bool PA10Parser::parenthesized_type_id_start_at(std::size_t absolute) const
 	if (!token_fixed_at(absolute, 0, SimpleTokenType::OP_LPAREN) || absolute + 1 >= tokens_.size() || absolute >= delimiter_close_index_.size()) return false;
 	const std::size_t close = delimiter_close_index_[absolute]; return close < tokens_.size() && close > absolute + 1 && new_type_id_start_at(absolute + 1);
 }
-bool PA10Parser::new_parenthesized_abstract_declarator_start() const
+bool PA10Parser::new_parenthesized_abstract_declarator_start(bool parenthesized_new_type_id) const
 {
 	const std::size_t open = position_;
-	if (!token_fixed_at(open, 0, SimpleTokenType::OP_LPAREN) || open >= delimiter_close_index_.size() || open + 2 >= tokens_.size()) return false;
+	if (!token_fixed_at(open, 0, SimpleTokenType::OP_LPAREN) || open >= delimiter_close_index_.size()) return false;
 	const std::size_t close = delimiter_close_index_[open];
-	const bool pointer = close == open + 2 && (token_fixed_at(open, 1, SimpleTokenType::OP_STAR) || token_fixed_at(open, 1, SimpleTokenType::OP_AMP) || token_fixed_at(open, 1, SimpleTokenType::OP_LAND));
-	if (pointer) { return true; } const std::size_t nested = open + 1;
-	return token_fixed_at(open, 1, SimpleTokenType::OP_LPAREN) && nested < delimiter_close_index_.size() && delimiter_close_index_[nested] == open + 3 && close == open + 4 && (token_fixed_at(nested, 1, SimpleTokenType::OP_STAR) || token_fixed_at(nested, 1, SimpleTokenType::OP_AMP) || token_fixed_at(nested, 1, SimpleTokenType::OP_LAND));
+	if (close >= tokens_.size()) return false;
+	return open < new_abstract_declarator_group_.size() && (new_abstract_declarator_group_[open] == 1 || (parenthesized_new_type_id && new_abstract_declarator_group_[open] != 0));
 }
 bool PA10Parser::new_first_parenthesized_group_is_placement()
 {
@@ -2095,7 +2095,7 @@ PA10AstNode PA10Parser::parse_new_expression()
 	result.has_token = true; result.token = keyword.fixed; result.token_spelling = intern(keyword.source);
 	const bool placement = fixed(SimpleTokenType::OP_LPAREN) && new_first_parenthesized_group_is_placement();
 	if (placement) { PA10AstNode node_placement = node(PA10NodeKind::NewPlacement); node_placement.children.push_back(parse_paren_argument_list()); result.children.push_back(std::move(node_placement)); }
-	if (fixed(SimpleTokenType::OP_LPAREN)) { consume_fixed(SimpleTokenType::OP_LPAREN); begin_non_angle(); result.children.push_back(parse_type_id(false, false)); consume_fixed(SimpleTokenType::OP_RPAREN); end_non_angle(); }
+	if (fixed(SimpleTokenType::OP_LPAREN)) { consume_fixed(SimpleTokenType::OP_LPAREN); begin_non_angle(); result.children.push_back(parse_type_id(false, true, true)); consume_fixed(SimpleTokenType::OP_RPAREN); end_non_angle(); }
 	else result.children.push_back(parse_type_id(false, true));
 	if (fixed(SimpleTokenType::OP_LPAREN) || fixed(SimpleTokenType::OP_LBRACE)) { result.children.push_back(parse_initializer()); } return result;
 }

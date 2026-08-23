@@ -403,7 +403,10 @@ void append_inline_new_expression(const PA10Ast& ast,
 	append_inline_node(ast, node.children[child++], output, depth + 1);
 	if (child == node.children.size())
 		return;
-	const PA10AstNode& syntax = node.children[child].children.front();
+	const PA10AstNode& initializer = node.children[child];
+	validate_node_sidecar_ranges(ast, initializer);
+	const PA10AstNode& syntax = initializer.children.front();
+	validate_node_sidecar_ranges(ast, syntax);
 	const bool paren = syntax.kind == PA10NodeKind::ParenInitializer;
 	output << (paren ? '(' : '{');
 	append_inline_children(ast, syntax.children, output, depth + 1, ",");
