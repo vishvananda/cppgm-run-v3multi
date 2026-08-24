@@ -1031,7 +1031,15 @@ private:
 	;
 	bool qualification_convertible(TypeId source, TypeId target) const
 	;
+	bool object_type(TypeId type) const
+	;
+	bool complete_object_type(TypeId type) const
+	;
 	bool pointer_convertible(TypeId source, TypeId target) const
+	;
+	TypeId pointer_subtraction_common_type(TypeId left, TypeId right)
+	;
+	TypeId conditional_pointer_common_type(TypeId left, TypeId right)
 	;
 	bool integer_zero(const PA10AstNode& node) const
 	;

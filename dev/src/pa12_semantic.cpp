@@ -589,86 +589,6 @@ FundamentalType PA11SemanticModel::unsigned_counterpart(
 	default: return type;
 	}
 }
-unsigned int PA11SemanticModel::cv_qualifiers(TypeId type) const
-{
-	return type_kind(type) == TypeKind::Cv ? types_[type.value].cv : 0;
-}
-void PA11SemanticModel::qualification_decomposition(TypeId type,
-	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
-{
-	unsigned int current_cv = 0;
-	TypeId cursor = type;
-	while (type_kind(cursor) == TypeKind::Cv)
-	{
-		current_cv |= types_[cursor.value].cv;
-		cursor = types_[cursor.value].child;
-	}
-	if (type_kind(cursor) == TypeKind::Pointer)
-	{
-		current_cv |= types_[cursor.value].cv;
-		qualifiers.push_back(current_cv);
-		qualification_decomposition(types_[cursor.value].child,
-			qualifiers, unqualified);
-		return;
-	}
-	qualifiers.push_back(current_cv);
-	*unqualified = cursor;
-}
-bool PA11SemanticModel::qualification_convertible_impl(TypeId source,
-	TypeId target, bool outer_pointer_consumed) const
-{
-	if (source == target)
-		return true;
-	std::vector<unsigned int> source_qualifiers;
-	std::vector<unsigned int> target_qualifiers;
-	TypeId source_unqualified;
-	TypeId target_unqualified;
-	qualification_decomposition(source, source_qualifiers,
-		&source_unqualified);
-	qualification_decomposition(target, target_qualifiers,
-		&target_unqualified);
-	if (source_unqualified != target_unqualified ||
-		source_qualifiers.size() != target_qualifiers.size())
-		return false;
-	for (std::size_t i = 0; i < source_qualifiers.size(); ++i)
-	{
-		if ((source_qualifiers[i] & ~target_qualifiers[i]) != 0)
-			return false;
-		if (source_qualifiers[i] == target_qualifiers[i])
-			continue;
-		const std::size_t first_intermediate = outer_pointer_consumed ? 0 : 1;
-		for (std::size_t j = first_intermediate; j < i; ++j)
-			if ((target_qualifiers[j] & 1u) == 0)
-				return false;
-	}
-	return true;
-}
-bool PA11SemanticModel::qualification_convertible(TypeId source, TypeId target) const
-{
-	return qualification_convertible_impl(source, target, false);
-}
-bool PA11SemanticModel::pointer_convertible(TypeId source, TypeId target) const
-{
-	source = strip_cv_type(source);
-	target = strip_cv_type(target);
-	if (type_kind(source) != TypeKind::Pointer ||
-		type_kind(target) != TypeKind::Pointer)
-		return false;
-	const TypeKey& source_key = types_[source.value];
-	const TypeKey& target_key = types_[target.value];
-	if ((source_key.cv & ~target_key.cv) != 0)
-		return false;
-	TypeId source_pointee = source_key.child;
-	TypeId target_pointee = target_key.child;
-	FundamentalType target_fundamental;
-	if (fundamental_of(target_pointee, &target_fundamental) &&
-		target_fundamental == FundamentalType::Void)
-	{
-		return (cv_qualifiers(source_pointee) &
-			~cv_qualifiers(target_pointee)) == 0;
-	}
-	return qualification_convertible_impl(source_pointee, target_pointee, true);
-}
 bool PA11SemanticModel::integer_zero(const PA10AstNode& node) const
 {
 	if (node.kind == PA10NodeKind::ParenthesizedExpression)
@@ -714,6 +634,8 @@ void PA11SemanticModel::set_fact_conversion(SemanticFactId fact, ConversionFactI
 	SemanticFact& owner = semantic_facts_[fact.value];
 	if (owner.conversion_begin == InvalidIdentityValue)
 		owner.conversion_begin = conversion.value;
+	else if (owner.conversion_begin + owner.conversion_count != conversion.value)
+		throw std::runtime_error("PA12 non-contiguous conversion range");
 	++owner.conversion_count;
 }
 std::string PA11SemanticModel::semantic_name(const SemanticFact& fact) const
@@ -1190,9 +1112,15 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	{
 		TypeId pointer = strip_cv_type(expression_object_type(operand.type));
 		if (type_kind(pointer) == TypeKind::Array)
+		{
 			pointer = make_pointer(types_[pointer.value].child);
+			record_builtin_conversion(operand, pointer);
+		}
 		if (type_kind(pointer) != TypeKind::Pointer)
 			throw std::runtime_error("PA12 dereference requires pointer");
+		if (type_kind(strip_cv_type(expression_object_type(operand.type))) ==
+			TypeKind::Pointer)
+			record_builtin_conversion(operand, pointer);
 		type = types_[pointer.value].child;
 		category = SemanticValueCategory::Lvalue;
 		break;
@@ -1204,6 +1132,8 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 			(!integral_id(operand.type) && !floating_id(operand.type) && !pointer_id(operand.type)))
 			throw std::runtime_error("PA12 increment requires modifiable lvalue");
 		type = strip_top_cv_type(operand.type);
+		record_builtin_conversion(operand, integral_id(operand.type) ?
+			promote_integral_type(operand.type) : type);
 		category = SemanticValueCategory::Lvalue;
 		break;
 	case SimpleTokenType::OP_PLUS:
@@ -1243,6 +1173,8 @@ ExprInfo PA11SemanticModel::semantic_postfix_expression(const PA10AstNode& node,
 			!pointer_id(operand.type)))
 		throw std::runtime_error("PA12 postfix requires modifiable lvalue");
 	const TypeId type = strip_top_cv_type(operand.type);
+	record_builtin_conversion(operand, integral_id(operand.type) ?
+		promote_integral_type(operand.type) : type);
 	return ExprInfo(make_expression_fact(SemanticFactKind::PostfixExpression,
 		type, SemanticValueCategory::Prvalue, node,
 		std::vector<SemanticFactId>(1, operand.fact)), type,
@@ -1279,20 +1211,25 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 		if (left_pointer && integral_id(right.type))
 		{
 			type = left_pointer_type;
+			record_builtin_conversion(left, left_pointer_type);
 			record_builtin_conversion(right, promote_integral_type(right.type));
 		}
 		else if (node.token == SimpleTokenType::OP_PLUS &&
 			right_pointer && integral_id(left.type))
 		{
 			type = right_pointer_type;
+			record_builtin_conversion(right, right_pointer_type);
 			record_builtin_conversion(left, promote_integral_type(left.type));
 		}
 		else if (left_pointer && right_pointer &&
 			node.token == SimpleTokenType::OP_MINUS)
 		{
-			if (!pointer_convertible(left_pointer_type, right_pointer_type) &&
-				!pointer_convertible(right_pointer_type, left_pointer_type))
+			const TypeId common_pointer = pointer_subtraction_common_type(
+				left_pointer_type, right_pointer_type);
+			if (!common_pointer.valid())
 				throw std::runtime_error("PA12 incompatible pointer subtraction");
+			record_builtin_conversion(left, common_pointer);
+			record_builtin_conversion(right, common_pointer);
 			type = fundamental(FundamentalType::LongInt);
 		}
 		else if (left_arithmetic && right_arithmetic)
@@ -1356,6 +1293,11 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 			if (!pointer_convertible(left_pointer_type, right_pointer_type) &&
 				!pointer_convertible(right_pointer_type, left_pointer_type))
 				throw std::runtime_error("PA12 incompatible pointer comparison");
+			const TypeId common_pointer = pointer_convertible(
+				left_pointer_type, right_pointer_type) ? right_pointer_type :
+				left_pointer_type;
+			record_builtin_conversion(left, common_pointer);
+			record_builtin_conversion(right, common_pointer);
 		}
 		else if (left_pointer || right_pointer)
 		{
@@ -1366,6 +1308,10 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 			if (node.token != SimpleTokenType::OP_EQ &&
 				node.token != SimpleTokenType::OP_NE)
 				throw std::runtime_error("PA12 invalid pointer relational comparison");
+			const TypeId pointer_type = left_pointer ? left_pointer_type :
+				right_pointer_type;
+			record_builtin_conversion(left_pointer ? left : right, pointer_type);
+			record_builtin_conversion(other, pointer_type);
 		}
 		else if (nullptr_id(left.type) && nullptr_id(right.type))
 		{
@@ -1414,6 +1360,7 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 		{
 			if (!integral_id(right.type))
 				throw std::runtime_error("PA12 pointer compound assignment requires integral");
+			record_builtin_conversion(left, target);
 			record_builtin_conversion(right, promote_integral_type(right.type));
 		}
 		else
@@ -1438,6 +1385,22 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 				(!arithmetic_operator && !integral_operator &&
 					(!integral_id(right.type) && !floating_id(right.type))))
 				throw std::runtime_error("PA12 invalid compound assignment operands");
+			if (integral_operator &&
+				(node.token == SimpleTokenType::OP_LSHIFTASS ||
+					node.token == SimpleTokenType::OP_RSHIFTASS))
+			{
+				record_builtin_conversion(left, promote_integral_type(target));
+				record_builtin_conversion(right,
+					promote_integral_type(right.type));
+			}
+			else
+			{
+				const TypeId operation_type = integral_operator ?
+					common_integral_type(target, right.type) :
+					common_arithmetic_type(target, right.type);
+				record_builtin_conversion(left, operation_type);
+				record_builtin_conversion(right, operation_type);
+			}
 		}
 	}
 	std::vector<SemanticFactId> children;
@@ -1455,13 +1418,25 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 	const ExprInfo condition = semantic_expression(node.children[0], scope);
 	if (!scalar_id(condition.type))
 		throw std::runtime_error("PA12 conditional requires scalar condition");
+	record_builtin_conversion(condition, fundamental(FundamentalType::Bool));
 	const ExprInfo when_true = semantic_expression(node.children[1], scope);
 	const ExprInfo when_false = semantic_expression(node.children[2], scope);
 	TypeId type;
 	SemanticValueCategory category = SemanticValueCategory::Prvalue;
 	const TypeId true_object = expression_object_type(when_true.type);
 	const TypeId false_object = expression_object_type(when_false.type);
-	if (strip_top_cv_type(true_object) == strip_top_cv_type(false_object))
+	const TypeId true_unqualified = strip_cv_type(true_object);
+	const TypeId false_unqualified = strip_cv_type(false_object);
+	const bool true_array = type_kind(true_unqualified) == TypeKind::Array;
+	const bool false_array = type_kind(false_unqualified) == TypeKind::Array;
+	const bool true_pointer = pointer_id(when_true.type) || true_array;
+	const bool false_pointer = pointer_id(when_false.type) || false_array;
+	const TypeId true_pointer_type = true_array ? make_pointer(
+		types_[true_unqualified.value].child) : strip_top_cv_type(when_true.type);
+	const TypeId false_pointer_type = false_array ? make_pointer(
+		types_[false_unqualified.value].child) : strip_top_cv_type(when_false.type);
+	if (!true_array && !false_array &&
+		strip_top_cv_type(true_object) == strip_top_cv_type(false_object))
 	{
 		type = (when_true.category == SemanticValueCategory::Lvalue ||
 			when_true.category == SemanticValueCategory::Xvalue) ?
@@ -1472,6 +1447,11 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 		else if (when_true.category == SemanticValueCategory::Xvalue &&
 			when_false.category == SemanticValueCategory::Xvalue)
 			category = SemanticValueCategory::Xvalue;
+		if (category == SemanticValueCategory::Prvalue)
+		{
+			record_builtin_conversion(when_true, type);
+			record_builtin_conversion(when_false, type);
+		}
 	}
 	else if ((integral_id(when_true.type) || floating_id(when_true.type)) &&
 		(integral_id(when_false.type) || floating_id(when_false.type)))
@@ -1480,21 +1460,29 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 		record_builtin_conversion(when_true, type);
 		record_builtin_conversion(when_false, type);
 	}
-	else if (pointer_id(when_true.type) && pointer_id(when_false.type))
+	else if (true_pointer && false_pointer)
 	{
-		if (pointer_convertible(when_true.type, when_false.type))
-			type = strip_top_cv_type(when_false.type);
-		else if (pointer_convertible(when_false.type, when_true.type))
-			type = strip_top_cv_type(when_true.type);
-		else
+		type = conditional_pointer_common_type(true_pointer_type,
+			false_pointer_type);
+		if (!type.valid())
 			throw std::runtime_error("PA12 incompatible conditional pointers");
+		record_builtin_conversion(when_true, type);
+		record_builtin_conversion(when_false, type);
 	}
-	else if (pointer_id(when_true.type) &&
+	else if (true_pointer &&
 		(nullptr_id(when_false.type) || when_false.integer_zero))
-		type = strip_top_cv_type(when_true.type);
-	else if (pointer_id(when_false.type) &&
+	{
+		type = true_pointer_type;
+		record_builtin_conversion(when_true, type);
+		record_builtin_conversion(when_false, type);
+	}
+	else if (false_pointer &&
 		(nullptr_id(when_true.type) || when_true.integer_zero))
-		type = strip_top_cv_type(when_false.type);
+	{
+		type = false_pointer_type;
+		record_builtin_conversion(when_true, type);
+		record_builtin_conversion(when_false, type);
+	}
 	else
 		throw std::runtime_error("PA12 incompatible conditional operands");
 	std::vector<SemanticFactId> children;
@@ -1900,6 +1888,7 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 		if (type_kind(sequence) != TypeKind::Pointer ||
 			!integral_id(index_expression.type))
 			throw std::runtime_error("PA12 invalid subscript operands");
+		record_builtin_conversion(sequence_expression, sequence);
 		record_builtin_conversion(index_expression,
 			promote_integral_type(index_expression.type));
 		const TypeId element = types_[sequence.value].child;

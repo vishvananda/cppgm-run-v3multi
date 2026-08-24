@@ -289,6 +289,184 @@ ScopeId PA11SemanticModel::scope_for_type(TypeId type) const
 		return named_[record.value].scope;
 	return ScopeId();
 }
+unsigned int PA11SemanticModel::cv_qualifiers(TypeId type) const
+{
+	return type_kind(type) == TypeKind::Cv ? types_[type.value].cv : 0;
+}
+void PA11SemanticModel::qualification_decomposition(TypeId type,
+	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
+{
+	unsigned int current_cv = 0;
+	TypeId cursor = type;
+	while (type_kind(cursor) == TypeKind::Cv)
+	{
+		current_cv |= types_[cursor.value].cv;
+		cursor = types_[cursor.value].child;
+	}
+	if (type_kind(cursor) == TypeKind::Pointer)
+	{
+		current_cv |= types_[cursor.value].cv;
+		qualifiers.push_back(current_cv);
+		qualification_decomposition(types_[cursor.value].child,
+			qualifiers, unqualified);
+		return;
+	}
+	qualifiers.push_back(current_cv);
+	*unqualified = cursor;
+}
+bool PA11SemanticModel::qualification_convertible_impl(TypeId source,
+	TypeId target, bool outer_pointer_consumed) const
+{
+	if (source == target)
+		return true;
+	std::vector<unsigned int> source_qualifiers;
+	std::vector<unsigned int> target_qualifiers;
+	TypeId source_unqualified;
+	TypeId target_unqualified;
+	qualification_decomposition(source, source_qualifiers,
+		&source_unqualified);
+	qualification_decomposition(target, target_qualifiers,
+		&target_unqualified);
+	if (source_unqualified != target_unqualified ||
+		source_qualifiers.size() != target_qualifiers.size())
+		return false;
+	for (std::size_t i = 0; i < source_qualifiers.size(); ++i)
+	{
+		if ((source_qualifiers[i] & ~target_qualifiers[i]) != 0)
+			return false;
+		if (source_qualifiers[i] == target_qualifiers[i])
+			continue;
+		const std::size_t first_intermediate = outer_pointer_consumed ? 0 : 1;
+		for (std::size_t j = first_intermediate; j < i; ++j)
+			if ((target_qualifiers[j] & 1u) == 0)
+				return false;
+	}
+	return true;
+}
+bool PA11SemanticModel::qualification_convertible(TypeId source, TypeId target) const
+{
+	return qualification_convertible_impl(source, target, false);
+}
+bool PA11SemanticModel::object_type(TypeId type) const
+{
+	type = strip_cv_type(type);
+	if (!type.valid())
+		return false;
+	switch (type_kind(type))
+	{
+	case TypeKind::Fundamental:
+		return types_[type.value].fundamental != FundamentalType::Void;
+	case TypeKind::Named:
+	case TypeKind::Pointer:
+	case TypeKind::Array:
+		return true;
+	case TypeKind::Cv:
+		return object_type(types_[type.value].child);
+	case TypeKind::LvalueReference:
+	case TypeKind::RvalueReference:
+	case TypeKind::Function:
+		return false;
+	}
+	return false;
+}
+bool PA11SemanticModel::complete_object_type(TypeId type) const
+{
+	type = strip_cv_type(type);
+	if (!object_type(type))
+		return false;
+	switch (type_kind(type))
+	{
+	case TypeKind::Array:
+		return !types_[type.value].unknown_bound &&
+			complete_object_type(types_[type.value].child);
+	case TypeKind::Named:
+	{
+		const NamedRecordId record = named_record_for_type(type);
+		if (!record.valid() || record.value >= named_.size())
+			return false;
+		return named_[record.value].kind == NamedKind::Enum ||
+			(named_[record.value].kind == NamedKind::Class &&
+				named_[record.value].defined);
+	}
+	case TypeKind::Fundamental:
+	case TypeKind::Pointer:
+		return true;
+	case TypeKind::Cv:
+		return complete_object_type(types_[type.value].child);
+	case TypeKind::LvalueReference:
+	case TypeKind::RvalueReference:
+	case TypeKind::Function:
+		return false;
+	}
+	return false;
+}
+bool PA11SemanticModel::pointer_convertible(TypeId source, TypeId target) const
+{
+	source = strip_cv_type(source);
+	target = strip_cv_type(target);
+	if (type_kind(source) != TypeKind::Pointer ||
+		type_kind(target) != TypeKind::Pointer)
+		return false;
+	const TypeKey& source_key = types_[source.value];
+	const TypeKey& target_key = types_[target.value];
+	if ((source_key.cv & ~target_key.cv) != 0)
+		return false;
+	TypeId source_pointee = source_key.child;
+	TypeId target_pointee = target_key.child;
+	FundamentalType target_fundamental;
+	if (fundamental_of(target_pointee, &target_fundamental) &&
+		target_fundamental == FundamentalType::Void)
+	{
+		if (object_type(source_pointee))
+			return (cv_qualifiers(source_pointee) &
+				~cv_qualifiers(target_pointee)) == 0;
+	}
+	return qualification_convertible_impl(source_pointee, target_pointee, true);
+}
+TypeId PA11SemanticModel::pointer_subtraction_common_type(TypeId left,
+	TypeId right)
+{
+	left = strip_cv_type(left);
+	right = strip_cv_type(right);
+	if (type_kind(left) != TypeKind::Pointer ||
+		type_kind(right) != TypeKind::Pointer)
+		return TypeId();
+	const TypeId left_pointee = types_[left.value].child;
+	const TypeId right_pointee = types_[right.value].child;
+	if (!complete_object_type(left_pointee) ||
+		!complete_object_type(right_pointee))
+		return TypeId();
+	const TypeId left_unqualified = strip_cv_type(left_pointee);
+	const TypeId right_unqualified = strip_cv_type(right_pointee);
+	if (left_unqualified != right_unqualified)
+		return TypeId();
+	const unsigned int qualifiers = cv_qualifiers(left_pointee) |
+		cv_qualifiers(right_pointee);
+	return make_pointer(make_cv(left_unqualified, qualifiers));
+}
+TypeId PA11SemanticModel::conditional_pointer_common_type(TypeId left,
+	TypeId right)
+{
+	if (pointer_convertible(left, right))
+		return strip_top_cv_type(right);
+	if (pointer_convertible(right, left))
+		return strip_top_cv_type(left);
+	left = strip_top_cv_type(left);
+	right = strip_top_cv_type(right);
+	if (type_kind(left) != TypeKind::Pointer ||
+		type_kind(right) != TypeKind::Pointer)
+		return TypeId();
+	const TypeId left_pointee = types_[left.value].child;
+	const TypeId right_pointee = types_[right.value].child;
+	const TypeId left_unqualified = strip_cv_type(left_pointee);
+	const TypeId right_unqualified = strip_cv_type(right_pointee);
+	if (left_unqualified != right_unqualified ||
+		!object_type(left_unqualified))
+		return TypeId();
+	const unsigned int qualifiers = cv_qualifiers(left_pointee) |
+		cv_qualifiers(right_pointee);
+	return make_pointer(make_cv(left_unqualified, qualifiers));
+}
 bool PA11SemanticModel::direct_value_exists(ScopeId scope, NameId name) const
 {
 	const ValueList* found = scopes_[scope.value].values.find(name);
