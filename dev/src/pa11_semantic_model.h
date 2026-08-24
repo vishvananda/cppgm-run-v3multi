@@ -352,6 +352,13 @@ struct ConstValue
 	{}
 };
 
+struct NonConstantExpression : std::runtime_error
+{
+	explicit NonConstantExpression(const char* message)
+		: std::runtime_error(message)
+	{}
+};
+
 struct DeclaratorName
 {
 	bool found;
@@ -1058,6 +1065,23 @@ private:
 	;
 	BindingId builtin_binding(BuiltinKind kind)
 	;
+	class SemanticTailGuard
+	{
+	public:
+		explicit SemanticTailGuard(PA11SemanticModel& model)
+		;
+		~SemanticTailGuard()
+		;
+		void discard()
+		;
+	private:
+		PA11SemanticModel& model_;
+		std::size_t semantic_begin_;
+		std::size_t children_begin_;
+		std::size_t conversion_begin_;
+		std::size_t names_begin_;
+		bool active_;
+	};
 	SemanticFactId make_semantic_fact(const SemanticFact& fact)
 	;
 	void set_semantic_children(SemanticFactId fact,
@@ -1080,7 +1104,7 @@ private:
 	;
 	ConversionChoice conversion_for(TypeId source,
 	SemanticValueCategory category, TypeId target,
-	const PA10AstNode* source_node) const
+	const PA10AstNode* source_node, bool source_integer_zero = false) const
 	;
 	const PA10AstNode* target_function_id(const PA10AstNode& node,
 	ScopeId scope)

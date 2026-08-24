@@ -650,7 +650,7 @@ TypeId PA11SemanticModel::callable_function_type(TypeId type) const
 }
 ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 	SemanticValueCategory category, TypeId target,
-	const PA10AstNode* source_node) const
+	const PA10AstNode* source_node, bool source_integer_zero) const
 {
 	if (!source.valid() || !target.valid())
 		return ConversionChoice();
@@ -685,8 +685,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
 		if (type_kind(target_referred) == TypeKind::Cv)
 		{
-			const ConversionChoice temporary = conversion_for(source, category,
-				target_referred, source_node);
+			const ConversionChoice temporary = conversion_for(source, category, target_referred, source_node, source_integer_zero);
 			const bool same_lvalue_value = source_lvalue &&
 				temporary.kind == ConversionKind::LvalueToRvalue &&
 				temporary.rank == 0;
@@ -701,6 +700,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 
 	const TypeId by_value_source = strip_cv_type(expression_object_type(source));
 	const TypeId by_value_target = strip_cv_type(expression_object_type(target));
+	const bool null_integer = source_integer_zero || (source_node != NULL && integer_zero(*source_node));
 	if (by_value_source == by_value_target)
 	{
 		return ConversionChoice(true, 0,
@@ -722,7 +722,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			types_[by_value_target.value].child))
 		return ConversionChoice(true, 1, ConversionKind::FunctionToPointer);
 	FundamentalType target_fundamental;
-	if (source_node != NULL && integer_zero(*source_node) &&
+	if (null_integer &&
 		fundamental_of(by_value_target, &target_fundamental) &&
 		target_fundamental == FundamentalType::NullptrT)
 		return ConversionChoice(true, 2, ConversionKind::NullIntegerToNullptr);
@@ -760,7 +760,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
 		bool_id(by_value_target))
 		return ConversionChoice(true, 1, ConversionKind::NullptrToBool);
-	if (source_node != NULL && integer_zero(*source_node) &&
+	if (null_integer &&
 		pointer_id(by_value_target))
 		return ConversionChoice(true, 1, ConversionKind::NullIntegerToPointer);
 	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
@@ -781,8 +781,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	TypeId target, const PA10AstNode* source_node)
 {
-	const ConversionChoice choice = conversion_for(expression.type,
-		expression.category, target, source_node);
+	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source_node, expression.integer_zero);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid conversion");
 	if (choice.kind == ConversionKind::ReferenceBinding &&
@@ -794,8 +793,7 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 		if (type_kind(referred) == TypeKind::Cv &&
 			!qualification_convertible(source_value, referred))
 		{
-			const ConversionChoice temporary = conversion_for(expression.type,
-				expression.category, referred, source_node);
+				const ConversionChoice temporary = conversion_for(expression.type, expression.category, referred, source_node, expression.integer_zero);
 			const PA10AstNode* cast_source = source_node != NULL ? source_node :
 				semantic_facts_[expression.fact.value].source;
 			if (temporary.valid && cast_source != NULL)
@@ -951,17 +949,21 @@ ExprInfo PA11SemanticModel::semantic_builtin_call(const PA10AstNode& node, Scope
 		if (argument_node.children.size() != 1)
 			throw std::runtime_error("PA12 invalid __builtin_constant_p arity");
 		const PA10AstNode& operand_node = argument_node.children.front();
+		SemanticTailGuard operand_tail(*this);
 		const ExprInfo operand = semantic_expression(operand_node, scope);
+		const TypeId operand_type = operand.type;
+		operand_tail.discard();
+		const bool integral_operand = integral_id(operand_type);
 		bool constant = false;
-		if (integral_id(operand.type))
+		if (integral_operand)
 		{
-			// Validation above leaves only supported integral queries; folding
-			// failure means this valid expression is not a propagated constant.
+			// Semantic validation is complete.  Only a typed fold failure is a
+			// nonconstant result; malformed or invalid model state must escape.
 			try
 			{
 				constant = eval_constexpr(operand_node, scope).valid;
 			}
-			catch (const std::runtime_error&)
+			catch (const NonConstantExpression&)
 			{
 				constant = false;
 			}
@@ -1041,8 +1043,7 @@ void PA11SemanticModel::record_builtin_conversion(const ExprInfo& expression,
 	const PA10AstNode* source = expression.fact.valid() &&
 		expression.fact.value < semantic_facts_.size() ?
 		semantic_facts_[expression.fact.value].source : NULL;
-	const ConversionChoice choice = conversion_for(expression.type,
-		expression.category, target, source);
+	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source, expression.integer_zero);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid built-in conversion");
 	set_fact_conversion(expression.fact, add_conversion(expression.type, target,
@@ -1555,9 +1556,7 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(const PA10AstNode& node, Sc
 	{
 		if (bool_id(target))
 		{
-			const ConversionChoice choice = conversion_for(source,
-				operand.category, target,
-				semantic_facts_[operand.fact.value].source);
+			const ConversionChoice choice = conversion_for(source, operand.category, target, semantic_facts_[operand.fact.value].source, operand.integer_zero);
 			valid = choice.valid;
 			kind = choice.kind;
 		}
@@ -1572,8 +1571,7 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(const PA10AstNode& node, Sc
 	}
 	else if (floating_id(target) || pointer_id(target))
 	{
-		const ConversionChoice choice = conversion_for(source,
-			operand.category, target, semantic_facts_[operand.fact.value].source);
+			const ConversionChoice choice = conversion_for(source, operand.category, target, semantic_facts_[operand.fact.value].source, operand.integer_zero);
 		valid = choice.valid;
 		kind = choice.kind;
 	}
@@ -1724,9 +1722,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 				}
 				ConversionChoice choice;
 				if (arguments[arg].fact.valid())
-					choice = conversion_for(arguments[arg].type,
-						arguments[arg].category, function.parameters[arg],
-						semantic_facts_[arguments[arg].fact.value].source);
+					choice = conversion_for(arguments[arg].type, arguments[arg].category, function.parameters[arg], semantic_facts_[arguments[arg].fact.value].source, arguments[arg].integer_zero);
 				else
 				{
 					const PA10AstNode* function_id = target_function_id(
@@ -2046,9 +2042,7 @@ FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(
 		const TypeKey& function = types_[candidate.type.value];
 		if (function.parameters.size() != 1)
 			continue;
-		const ConversionChoice choice = conversion_for(argument.type,
-			argument.category, function.parameters.front(),
-			semantic_facts_[argument.fact.value].source);
+		const ConversionChoice choice = conversion_for(argument.type, argument.category, function.parameters.front(), semantic_facts_[argument.fact.value].source, argument.integer_zero);
 		if (!choice.valid)
 			continue;
 		if (!have_selected || choice.rank < selected_conversion.rank)

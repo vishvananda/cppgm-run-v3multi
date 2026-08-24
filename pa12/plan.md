@@ -11,18 +11,22 @@ rendering; names and types are never rendered and reparsed.
 This checkpoint classifies the exact source spelling of the two supported
 intrinsics once into `BuiltinKind`. `__builtin_constant_p` validates its one
 operand locally, folds the supported integral constant-expression subtree, and
-returns a typed `int` literal (1 or 0); the intrinsic call and operand facts do
-not remain in the dump. `__builtin_abort()` accepts exactly zero arguments and
-uses one model-owned function `BindingId` for its typed void call and stable
-callee spelling. Ordinary unknown identifiers still use ordinary lookup.
+returns a typed `int` literal (1 or 0); its validation-only operand facts are
+rolled back from the local arena tail and do not remain in the dump.
+`__builtin_abort()` accepts exactly zero arguments and uses one model-owned
+function `BindingId` for its typed void call and stable callee spelling.
+Ordinary unknown identifiers still use ordinary lookup.
 
 Constexpr declaration facts retain their typed spec flag. Only a complete
 constexpr object initializer gets the checked target-directed literal fact
 typing; the original conversion is still recorded against the source fact, so
-ordinary declarations and conversion rules are unchanged. Call work is local
-to the callee AST and argument count/subtrees. No whole-arena scan, retry loop,
-per-node owning string, new semantic path, test/ref/grammar/harness change, or
-new `.cpp` is permitted for this checkpoint.
+ordinary declarations and conversion rules are unchanged. The typed
+`integer_zero` result fact is passed into target conversion ranking, including
+pointer and `nullptr_t` contexts. Fold failures use a typed nonconstant status;
+semantic errors are not downgraded. Call work is local to the callee AST and
+argument count/subtrees. No whole-arena scan, retry loop, per-node owning
+string, new semantic path, test/ref/grammar/harness change, or new `.cpp` is
+permitted for this checkpoint.
 
 ## Failure Map
 
@@ -62,28 +66,31 @@ Excluded residual families (20 paths; not changed by this checkpoint):
   - `pa12/tests/general/300-unnamed-namespace-qualified-call.t`
   - `pa12/tests/general/300-unnamed-namespace-unqualified-call.t`
 
-The focused run removed the active four (`4/4` passing). Authorized broad
-validation covered all `166/166` paths and produced `146/166` passing: the
-turn-start `24` failures became exactly the excluded `20`, with no
-current-only failures and no supplied-baseline residual left unresolved.
-The current residual set is therefore the 20 paths listed above; these remain
-excluded because they belong to declaration/anonymous-union, member-pointer/
-cast/reference, or lookup/namespace/overload families rather than this
-intrinsic boundary.
+The focused run removed the active four (`4/4` passing). The fresh final
+`make test-pa12` covered all `166/166` paths and produced `146/166` passing
+with exit `2`: the turn-start `24` failures became exactly the excluded `20`,
+with no current-only failures and no supplied-baseline residual left
+unresolved. Its failure paths are byte-for-byte identical to the supplied
+post-`f8b8c49b` log. These paths remain excluded because they belong to
+declaration/anonymous-union, member-pointer/cast/reference, or
+lookup/namespace/overload families rather than this intrinsic boundary.
 
 ## Active Checkpoint
 
 Implementation scope is exactly:
 
 - `dev/src/pa11_semantic_model.h`: typed builtin identity, declaration-owned
-  constexpr flag, and model-owned builtin binding state.
+  constexpr flag, model-owned builtin binding state, typed fold-failure type,
+  and the four-tail rollback guard declaration.
 - `dev/src/pa11_semantic_core.cpp`: initialize builtin identities and publish
   the constexpr declaration fact; own builtin spelling classification, the
-  abort binding, and shared type normalization.
-- `dev/src/pa12_semantic.cpp`: local intrinsic call semantics and narrow
-  constexpr literal retargeting; the call helper validates the AST first and
-  catches only the supported integral-folding boundary.
-- `pa12/plan.md`: this compact stage plan and review ledger.
+  abort binding, shared type normalization, rollback implementation, and
+  bounded integral fold safety.
+- `dev/src/pa12_semantic.cpp`: local intrinsic call semantics, typed null-result
+  conversion propagation, validation-fact tail rollback, and narrow constexpr
+  literal retargeting; the call helper validates the AST first and catches
+  only the typed integral-folding boundary.
+- `pa12/plan.md` and `pa12/audit.md`: current checkpoint plan and audit record.
 
 Focused validation commands:
 
@@ -113,18 +120,24 @@ make -C pa12 check TEST='tests/spec/200-switch-statement.t tests/general/300-non
 
 Exception-boundary audit: `semantic_expression` runs before the
 `eval_constexpr` catch, so unknown names, invalid operators/conversions,
-nested-call failures, and intrinsic arity errors escape as PA12 errors. The
-catch is reached only for a semantically valid integral operand within the
-README-supported query; a folding `runtime_error` there means that the
-expression is not a propagated integral constant and therefore yields the
-required typed zero. The constexpr retarget call sites are both guarded by
-the declaration-owned `is_constexpr` flag, and the helper additionally
-requires a complete object target and a literal source; ordinary `const`
-declarations and recorded source conversions are untouched.
+nested-call validation failures, and intrinsic arity errors escape as PA12
+errors. Only `NonConstantExpression` fold failures are converted to the
+required typed zero; malformed ASTs, invalid `sizeof` types, and other
+`runtime_error` model failures escape. `SemanticTailGuard` restores the fact,
+child, conversion, and semantic-name tails on an operand failure and discards
+them after the operand type is known. The supported evaluator folds the left
+side before `&&`/`||`, returns without evaluating the right side when the
+result is determined, and still sees both operands through prior semantic
+validation. Unsigned multiply/shift use unsigned intermediates, shift counts
+are bounded to 64-bit operands, and signed `INT64_MIN /|% -1` is nonconstant.
+The constexpr retarget call sites are both guarded by the declaration-owned
+`is_constexpr` flag, and the helper additionally requires a complete object
+target and a literal source; ordinary `const` declarations and recorded source
+conversions are untouched.
 
 ## Performance Evidence
 
-Structural probes used immutable executable
+Structural probes used immutable landed executable
 `/tmp/pa12-builtin-structure-cppgm-final-immutable` (mode `555`, SHA-256
 `d3f8456f118c61513ac8a41ba3d7cb9f2003b446560886101e13417e9bb80bc4`) and
 inputs `/tmp/pa12-builtin-structure-small.t` (SHA-256
@@ -140,26 +153,37 @@ Each input was compiled twice with the immutable executable:
 
 The large probe repeats the same local call/subtree shape as the small probe.
 The counts and byte-identical pairs support bounded local work and
-determinism. This is not a timing or asymptotic scaling measurement.
+determinism for the landed implementation only; the old executable does not
+prove repaired behavior. Current boundedness is supported by the reviewed
+local four-tail code shape and the fresh focused/broad results. This is not a
+timing, asymptotic, memory, or scaling measurement.
 
 ## Checkpoint Ledger
 
 | state | evidence | status |
 |---|---|---|
 | turn-start | Clean workspace at `43105867`; PA12 `142/166`, `24` failures, `166/166` covered; earlier PAs supplied passing. | recorded |
-| implementation | Four-path intrinsic/constexpr boundary implemented in the three approved source owners; no tests, refs, fixtures, grammar, harness, scripts, generated artifacts, or new `.cpp`. | complete |
-| focused active | Exact active command: build passed; active set `4/4`. | passed |
-| neighboring controls | Exact control command: `13/13`, including valid and checked-invalid constant/case/sizeof/enum/conditional/nullptr/direct-call controls. | passed |
-| narrow regressions | Additional non-constexpr const-initializer and ordinary zero-to-pointer controls: `3/3`. | passed |
-| boundary probes | Out-of-tree zero/many-argument constant-p, one-argument abort, ordinary unknown call, and unknown operand all exited `1`. | passed |
-| structural evidence | Small/large local-call probes had 4/16 source calls and 4/16 output literal facts; repeated output pairs were byte-identical. | recorded |
-| broad PA12 | `make test-pa12` ran all `166/166`; exit `2` is expected for the 20 checked residuals; summary `146/166`. Baseline normalization: `24 -> 20`, supplied-only active four, fresh-only `0`. | passed checkpoint gate |
-| through-PA11 | Exact `n=12` gate: `make test-report-through-pa11`; exit `0`, `685/685`. | passed |
-| file audit | Exact `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`; exit `0`, two pre-existing header warnings, no fatal issues. | passed |
-| final scope | Final implementation paths are exactly `dev/src/pa11_semantic_model.h`, `dev/src/pa11_semantic_core.cpp`, `dev/src/pa12_semantic.cpp`, and `pa12/plan.md`; no test/ref/fixture/grammar/harness/script/generated path changed. | verified |
-| staging/commit | One coherent worker-authored commit contains exactly the four approved paths; final clean-tree verification follows. | complete |
+| implementation | Landed `f8b8c49b` audited in the three source owners; final repair adds typed null-result propagation, typed fold-failure handling, four-tail `SemanticTailGuard` rollback, and bounded integral fold safety. No tests, refs, fixtures, grammar, harness, scripts, generated artifacts, or new `.cpp`. | complete/current |
+| focused active | Fresh final build passed; exact active set passed `4/4`. | passed |
+| neighboring controls | Fresh final exact checked-in control set passed `13/13`, including valid and checked-invalid case/sizeof/enum/conditional/nullptr/direct-call controls and the builtin-prefix boundary. | passed |
+| typed/evaluator probes | Fresh out-of-tree typed-zero and valid nonconstant-call probes exited `0`; short-circuit evaluator results were `1/1`; unsafe fold cases were `0`; valid fold cases were `1/1/1`; semantic-invalid short-circuit and malformed arity/name/abort/sizeof probes retained exit `1`. | passed |
+| structural evidence | Retained immutable landed evidence: small/large local-call probes had 4/16 source calls and 4/16 output literal facts; repeated output pairs were byte-identical. It is historical only; no current timing or asymptotic claim. | recorded |
+| final broad PA12 | Fresh `make test-pa12` covered all `166/166`, exited `2`, passed `146/166`, and had exactly the excluded 20 failures; normalized against the supplied log with 0 current-only and 0 supplied-only paths. | passed gate |
+| prior/file gates | Fresh exact prior-through-PA11 passed `685/685`; fresh exact file audit exited `0` with exactly the two known header warnings. | passed |
+| scope/commit | The final mutation is exactly the three source owners plus `pa12/plan.md` and `pa12/audit.md`; diff/path checks pass before the one authorized commit. No outside path is changed. | current |
 
 Historical context: earlier PA12 checkpoints established the shared typed
 expression, conversion, statement, lookup, and deterministic dump foundation;
 this row is the next isolated semantic-boundary increment rather than a reset
 of that work.
+
+## Next Checkpoint
+
+This intrinsic checkpoint's broad, through-PA11, and file-audit gates are
+complete, but PA12 is not complete. The exact 20 residual paths remain
+explicitly excluded. The next bounded implementation family should be the
+four declaration/anonymous-union paths listed above (`200-local-anonymous-
+union-variable`, `300-block-anonymous-union-injected-members`,
+`300-elaborated-local-struct-copy-init`, and `300-local-extern-function-
+declaration`), and requires separate supervisor authorization; no residual
+family is implied by this commit.
