@@ -6,7 +6,6 @@
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
-
 bool PA11SemanticModel::enumeration_id(TypeId type) const
 {
 	const NamedRecordId record = named_record_for_type(type);
@@ -441,26 +440,6 @@ ScopeId PA11SemanticModel::compound_scope(const PA10AstNode& node) const
 	const ScopeId* found = compound_scope_index_.find(&node);
 	return found == NULL ? ScopeId() : *found;
 }
-TypeId PA11SemanticModel::strip_cv_type(TypeId type) const
-{
-	return type_kind(type) == TypeKind::Cv ? types_[type.value].child : type;
-}
-TypeId PA11SemanticModel::strip_reference_type(TypeId type) const
-{
-	const TypeKind kind = type_kind(type);
-	if (kind == TypeKind::LvalueReference ||
-		kind == TypeKind::RvalueReference)
-		return types_[type.value].child;
-	return type;
-}
-TypeId PA11SemanticModel::strip_top_cv_type(TypeId type)
-{
-	type = strip_reference_type(type);
-	while (type_kind(type) == TypeKind::Cv)
-		type = types_[type.value].child;
-	return type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0 ?
-		make_pointer(types_[type.value].child) : type;
-}
 bool PA11SemanticModel::modifiable_lvalue(TypeId type) const
 {
 	type = strip_reference_type(type);
@@ -588,15 +567,6 @@ FundamentalType PA11SemanticModel::unsigned_counterpart(
 	case FundamentalType::LongLongInt: return FundamentalType::UnsignedLongLongInt;
 	default: return type;
 	}
-}
-bool PA11SemanticModel::integer_zero(const PA10AstNode& node) const
-{
-	if (node.kind == PA10NodeKind::ParenthesizedExpression)
-		return node.children.size() == 1 && integer_zero(node.children.front());
-	if (node.kind != PA10NodeKind::Literal || !node.has_literal ||
-		node.literal.element_count != 0 || !integral_type(node.literal.type))
-		return false;
-	return literal_constant(node).valid && literal_constant(node).value == 0;
 }
 SemanticFactId PA11SemanticModel::make_semantic_fact(const SemanticFact& fact)
 {
@@ -953,6 +923,65 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 	if (!resolution.valid)
 		throw std::runtime_error("PA12 no function matches target type");
 	return semantic_id_expression_selected(*function_id, scope, resolution);
+}
+void PA11SemanticModel::retarget_constexpr_literal(SemanticFactId fact_id, TypeId target)
+{
+	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size() || !target.valid() ||
+		!complete_object_type(target))
+		return;
+	SemanticFact& fact = semantic_facts_[fact_id.value];
+	if (fact.kind != SemanticFactKind::Literal || fact.source == NULL)
+		return;
+	const PA10AstNode& source = *fact.source;
+	if (pointer_id(target))
+	{
+		if (integer_zero(source) || (source.kind == PA10NodeKind::KeywordLiteral &&
+			source.token == SimpleTokenType::KW_NULLPTR))
+			fact.type = strip_top_cv_type(target);
+		return;
+	}
+	if ((source.kind == PA10NodeKind::Literal || source.kind == PA10NodeKind::KeywordLiteral) &&
+		integral_id(target) && integral_id(fact.type))
+		fact.type = target;
+}
+ExprInfo PA11SemanticModel::semantic_builtin_call(const PA10AstNode& node, ScopeId scope, BuiltinKind builtin, const PA10AstNode& argument_node)
+{
+	if (builtin == BuiltinKind::ConstantP)
+	{
+		if (argument_node.children.size() != 1)
+			throw std::runtime_error("PA12 invalid __builtin_constant_p arity");
+		const PA10AstNode& operand_node = argument_node.children.front();
+		const ExprInfo operand = semantic_expression(operand_node, scope);
+		bool constant = false;
+		if (integral_id(operand.type))
+		{
+			// Validation above leaves only supported integral queries; folding
+			// failure means this valid expression is not a propagated constant.
+			try
+			{
+				constant = eval_constexpr(operand_node, scope).valid;
+			}
+			catch (const std::runtime_error&)
+			{
+				constant = false;
+			}
+		}
+		SemanticFact fact(SemanticFactKind::Literal, fundamental(FundamentalType::Int),
+			SemanticValueCategory::Prvalue, &node);
+		fact.has_literal_value = true;
+		fact.literal_value = constant ? 1 : 0;
+		const SemanticFactId result = make_semantic_fact(fact);
+		return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, !constant);
+	}
+	if (builtin != BuiltinKind::Abort || !argument_node.children.empty())
+		throw std::runtime_error("PA12 invalid __builtin_abort arity");
+	SemanticFact fact(SemanticFactKind::CallExpression, fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue, &node);
+	fact.has_callee = true;
+	fact.selected_binding = builtin_binding(builtin);
+	fact.selected_scope = global_;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_children(result, std::vector<SemanticFactId>());
+	return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, false);
 }
 TypeId PA11SemanticModel::common_integral_type(TypeId left, TypeId right) const
 {
@@ -1493,30 +1522,6 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 		SemanticFactKind::ConditionalExpression, type, category, node, children),
 		type, category, false);
 }
-bool PA11SemanticModel::builtin_cast_target(const PA10AstNode& node, TypeId* target) const
-{
-	if (node.kind != PA10NodeKind::IdExpression || !node.has_token)
-		return false;
-	FundamentalType fundamental_type;
-	switch (node.token)
-	{
-	case SimpleTokenType::KW_BOOL: fundamental_type = FundamentalType::Bool; break;
-	case SimpleTokenType::KW_CHAR: fundamental_type = FundamentalType::Char; break;
-	case SimpleTokenType::KW_CHAR16_T: fundamental_type = FundamentalType::Char16T; break;
-	case SimpleTokenType::KW_CHAR32_T: fundamental_type = FundamentalType::Char32T; break;
-	case SimpleTokenType::KW_DOUBLE: fundamental_type = FundamentalType::Double; break;
-	case SimpleTokenType::KW_FLOAT: fundamental_type = FundamentalType::Float; break;
-	case SimpleTokenType::KW_INT: fundamental_type = FundamentalType::Int; break;
-	case SimpleTokenType::KW_LONG: fundamental_type = FundamentalType::LongInt; break;
-	case SimpleTokenType::KW_SHORT: fundamental_type = FundamentalType::ShortInt; break;
-	case SimpleTokenType::KW_UNSIGNED: fundamental_type = FundamentalType::UnsignedInt; break;
-	case SimpleTokenType::KW_VOID: fundamental_type = FundamentalType::Void; break;
-	case SimpleTokenType::KW_WCHAR_T: fundamental_type = FundamentalType::WcharT; break;
-	default: return false;
-	}
-	*target = fundamental(fundamental_type);
-	return true;
-}
 ExprInfo PA11SemanticModel::semantic_cast_expression(const PA10AstNode& node, ScopeId scope)
 {
 	if (node.children.size() < 2)
@@ -1593,6 +1598,9 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (argument_node.kind != PA10NodeKind::ArgumentList &&
 		argument_node.kind != PA10NodeKind::ParenArgumentList)
 		throw std::runtime_error("PA12 invalid argument list");
+	const BuiltinKind builtin = builtin_kind(callee_node);
+	if (builtin != BuiltinKind::None)
+		return semantic_builtin_call(node, scope, builtin, argument_node);
 
 	// PA10 intentionally retains built-in function-style casts as a
 	// call-shaped syntax node.  Resolve that typed vocabulary here without
@@ -1961,6 +1969,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			initializer.children.front(), declaration->scope, value.type);
 		apply_context_conversion(expression, value.type,
 			semantic_facts_[expression.fact.value].source);
+		if (declaration->is_constexpr)
+			retarget_constexpr_literal(expression.fact, value.type);
 		set_semantic_children(variable,
 			std::vector<SemanticFactId>(1, expression.fact));
 		declaration->semantic_begin = declaration_semantic_ids_.size();
@@ -2010,6 +2020,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			if (clause.kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
+			if (declaration->is_constexpr)
+				retarget_constexpr_literal(expression.fact, value.type);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
 		}

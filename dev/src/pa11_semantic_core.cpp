@@ -18,7 +18,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(),
 	conversion_facts_(), declaration_semantic_ids_(),
-	semantic_name_components_()
+	semantic_name_components_(), builtin_constant_p_name_(),
+	builtin_abort_name_(), builtin_abort_binding_()
 {
 	global_ = create_scope(ScopeKind::Namespace, ScopeId(), NameId());
 	for (int i = static_cast<int>(FundamentalType::SignedChar);
@@ -29,6 +30,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 		key.fundamental = static_cast<FundamentalType>(i);
 		intern_type(key);
 	}
+	builtin_constant_p_name_ = intern_name("__builtin_constant_p");
+	builtin_abort_name_ = intern_name("__builtin_abort");
 }
 void PA11SemanticModel::analyze()
 {
@@ -219,6 +222,78 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node)
 	if (result.components.empty())
 		throw std::runtime_error("PA11 name has no semantic component");
 	return result;
+}
+TypeId PA11SemanticModel::strip_cv_type(TypeId type) const
+{
+	return type_kind(type) == TypeKind::Cv ? types_[type.value].child : type;
+}
+TypeId PA11SemanticModel::strip_reference_type(TypeId type) const
+{
+	const TypeKind kind = type_kind(type);
+	if (kind == TypeKind::LvalueReference ||
+		kind == TypeKind::RvalueReference)
+		return types_[type.value].child;
+	return type;
+}
+TypeId PA11SemanticModel::strip_top_cv_type(TypeId type)
+{
+	type = strip_reference_type(type);
+	while (type_kind(type) == TypeKind::Cv)
+		type = types_[type.value].child;
+	return type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0 ?
+		make_pointer(types_[type.value].child) : type;
+}
+BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
+{
+	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
+		node.global_name || node.name_prefix_count != 0)
+		return BuiltinKind::None;
+	const NamePath path = name_path(node);
+	if (path.components.size() != 1)
+		return BuiltinKind::None;
+	if (path.last() == builtin_constant_p_name_)
+		return BuiltinKind::ConstantP;
+	if (path.last() == builtin_abort_name_)
+		return BuiltinKind::Abort;
+	return BuiltinKind::None;
+}
+BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
+{
+	if (kind != BuiltinKind::Abort)
+		return BindingId();
+	if (builtin_abort_binding_.valid())
+		return builtin_abort_binding_;
+	const TypeId function_type = make_function(std::vector<TypeId>(), false,
+		fundamental(FundamentalType::Void));
+	const BindingId result(bindings_.size());
+	bindings_.push_back(Binding(BindingKind::Function, builtin_abort_name_,
+		function_type));
+	builtin_abort_binding_ = result;
+	return result;
+}
+bool PA11SemanticModel::builtin_cast_target(const PA10AstNode& node, TypeId* target) const
+{
+	if (node.kind != PA10NodeKind::IdExpression || !node.has_token)
+		return false;
+	FundamentalType fundamental_type;
+	switch (node.token)
+	{
+	case SimpleTokenType::KW_BOOL: fundamental_type = FundamentalType::Bool; break;
+	case SimpleTokenType::KW_CHAR: fundamental_type = FundamentalType::Char; break;
+	case SimpleTokenType::KW_CHAR16_T: fundamental_type = FundamentalType::Char16T; break;
+	case SimpleTokenType::KW_CHAR32_T: fundamental_type = FundamentalType::Char32T; break;
+	case SimpleTokenType::KW_DOUBLE: fundamental_type = FundamentalType::Double; break;
+	case SimpleTokenType::KW_FLOAT: fundamental_type = FundamentalType::Float; break;
+	case SimpleTokenType::KW_INT: fundamental_type = FundamentalType::Int; break;
+	case SimpleTokenType::KW_LONG: fundamental_type = FundamentalType::LongInt; break;
+	case SimpleTokenType::KW_SHORT: fundamental_type = FundamentalType::ShortInt; break;
+	case SimpleTokenType::KW_UNSIGNED: fundamental_type = FundamentalType::UnsignedInt; break;
+	case SimpleTokenType::KW_VOID: fundamental_type = FundamentalType::Void; break;
+	case SimpleTokenType::KW_WCHAR_T: fundamental_type = FundamentalType::WcharT; break;
+	default: return false;
+	}
+	*target = fundamental(fundamental_type);
+	return true;
 }
 bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node, NamePath* result)
 {
@@ -1332,6 +1407,15 @@ ConstValue PA11SemanticModel::literal_constant(const PA10AstNode& node) const
 			(node.literal.bytes.size() * 8);
 	return ConstValue(true, value, unsigned_type(node.literal.type));
 }
+bool PA11SemanticModel::integer_zero(const PA10AstNode& node) const
+{
+	if (node.kind == PA10NodeKind::ParenthesizedExpression)
+		return node.children.size() == 1 && integer_zero(node.children.front());
+	if (node.kind != PA10NodeKind::Literal || !node.has_literal ||
+		node.literal.element_count != 0 || !integral_type(node.literal.type))
+		return false;
+	return literal_constant(node).valid && literal_constant(node).value == 0;
+}
 void PA11SemanticModel::check_constant_range(const ConstValue& value) const
 {
 	if (value.is_unsigned)
@@ -2305,6 +2389,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	if (list.kind != PA10NodeKind::InitDeclaratorList)
 		throw std::runtime_error("invalid PA11 declarator list");
 	DeclarationFact declaration(&node, scope);
+	declaration.is_constexpr = spec.is_constexpr;
 	declaration.binding_begin = declaration_bindings_.size();
 	for (std::size_t i = 0; i < list.children.size(); ++i)
 	{

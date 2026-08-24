@@ -423,6 +423,13 @@ enum class SemanticFactKind
 	ContinueStatement
 };
 
+enum class BuiltinKind
+{
+	None,
+	ConstantP,
+	Abort
+};
+
 enum class SemanticValueCategory
 {
 	Lvalue,
@@ -547,11 +554,12 @@ struct DeclarationFact
 	std::size_t binding_count;
 	std::size_t semantic_begin;
 	std::size_t semantic_count;
+	bool is_constexpr;
 
 	DeclarationFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope), binding_begin(InvalidIdentityValue),
 		  binding_count(0), semantic_begin(InvalidIdentityValue),
-		  semantic_count(0)
+		  semantic_count(0), is_constexpr(false)
 	{}
 };
 
@@ -717,6 +725,9 @@ private:
 	std::vector<ConversionFact> conversion_facts_;
 	std::vector<SemanticFactId> declaration_semantic_ids_;
 	std::vector<NameId> semantic_name_components_;
+	NameId builtin_constant_p_name_;
+	NameId builtin_abort_name_;
+	BindingId builtin_abort_binding_;
 	static void unsupported(const char* feature)
 	;
 	NameId intern_name(const std::string& name)
@@ -1043,6 +1054,10 @@ private:
 	;
 	bool integer_zero(const PA10AstNode& node) const
 	;
+	BuiltinKind builtin_kind(const PA10AstNode& node)
+	;
+	BindingId builtin_binding(BuiltinKind kind)
+	;
 	SemanticFactId make_semantic_fact(const SemanticFact& fact)
 	;
 	void set_semantic_children(SemanticFactId fact,
@@ -1085,6 +1100,8 @@ private:
 	ExprInfo semantic_expression_for_target(const PA10AstNode& node,
 	ScopeId scope, TypeId target)
 	;
+	void retarget_constexpr_literal(SemanticFactId fact, TypeId target)
+	;
 	ExprInfo apply_context_conversion(const ExprInfo& expression,
 	TypeId target, const PA10AstNode* source_node)
 	;
@@ -1121,6 +1138,9 @@ private:
 	ExprInfo semantic_cast_expression(const PA10AstNode& node, ScopeId scope)
 	;
 	ExprInfo semantic_call_expression(const PA10AstNode& node, ScopeId scope)
+	;
+	ExprInfo semantic_builtin_call(const PA10AstNode& node, ScopeId scope,
+	BuiltinKind builtin, const PA10AstNode& argument_node)
 	;
 	ExprInfo semantic_expression(const PA10AstNode& node, ScopeId scope)
 	;
