@@ -25,6 +25,7 @@ enum class TypeKind
 	Named,
 	Cv,
 	Pointer,
+	MemberPointer,
 	LvalueReference,
 	RvalueReference,
 	Array,
@@ -167,12 +168,13 @@ struct BindingSidecar
 	BindingId backing_storage;
 	NamedRecordId constructor_record;
 	NamedRecordId generated_name_record;
+	bool static_member;
 
 	BindingSidecar(BindingId backing_storage = BindingId(),
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record),
-		  generated_name_record(generated_name_record)
+		  generated_name_record(generated_name_record), static_member(false)
 	{}
 };
 
@@ -470,10 +472,11 @@ struct SpecFact
 	unsigned int cv;
 	bool is_typedef;
 	bool is_constexpr;
+	bool is_static;
 
 	SpecFact()
 		: base(), has_base(false), anonymous_record(), cv(0),
-		  is_typedef(false), is_constexpr(false)
+		  is_typedef(false), is_constexpr(false), is_static(false)
 	{}
 };
 
@@ -520,10 +523,11 @@ struct DeclaratorOp
 	bool unknown_bound;
 	ArrayBound bound;
 	const PA10AstNode* parameter_clause;
+	NamedRecordId member_owner;
 
 	DeclaratorOp(Kind kind = Pointer)
 		: kind(kind), cv(0), unknown_bound(false), bound(),
-		  parameter_clause(NULL)
+		  parameter_clause(NULL), member_owner()
 	{}
 };
 
@@ -882,6 +886,7 @@ private:
 	std::vector<FunctionFact> function_facts_;
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
+	std::vector<FunctionFactId> class_function_facts_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
@@ -923,12 +928,20 @@ private:
 	;
 	TypeId make_pointer(TypeId child, unsigned int qualifiers = 0)
 	;
+	TypeId make_member_pointer(NamedRecordId owner, TypeId child,
+	unsigned int qualifiers = 0)
+	;
+	TypeId member_object_type(TypeId function_type, ScopeId member_scope)
+	;
+	TypeId member_object_pointer_type(TypeId function_type,
+	ScopeId member_scope)
+	;
 	TypeId make_reference(TypeId child, bool rvalue)
 	;
 	TypeId make_array(TypeId child, bool unknown_bound, ArrayBound bound)
 	;
 	TypeId make_function(const std::vector<TypeId>& parameters, bool variadic,
-	TypeId result)
+	TypeId result, unsigned int qualifiers = 0)
 	;
 	ScopeId create_scope(ScopeKind kind, ScopeId parent, NameId name,
 	NamedRecordId record = NamedRecordId(),
@@ -1054,6 +1067,10 @@ private:
 	;
 	void set_binding_sidecar(BindingId id, const BindingSidecar& sidecar)
 	;
+	bool is_static_member(BindingId id) const
+	;
+	void mark_static_member(BindingId id)
+	;
 	const NamedRecordSidecar* named_record_sidecar(NamedRecordId id) const
 	;
 	void set_named_record_sidecar(NamedRecordId id,
@@ -1150,7 +1167,7 @@ private:
 	;
 	TypeId type_from_type_id(const PA10AstNode& node, ScopeId scope)
 	;
-	DeclaratorOp pointer_op(const PA10AstNode& node)
+	DeclaratorOp pointer_op(const PA10AstNode& node, ScopeId scope)
 	;
 	ArrayBound literal_bound(const PA10AstNode& node) const
 	;
@@ -1165,6 +1182,9 @@ private:
 	ScopeId scope)
 	;
 	TypeId apply_declarator(const PA10AstNode& node, TypeId base, ScopeId scope)
+	;
+	TypeId member_function_expression_type(TypeId type, ScopeId scope,
+		BindingId binding)
 	;
 	bool ambiguous_call_statement(const PA10AstNode& node, ScopeId scope,
 	NamePath* callee, const PA10AstNode** argument)
@@ -1213,6 +1233,8 @@ private:
 	void process_condition_declaration(const PA10AstNode& node, ScopeId scope)
 	;
 	void prepare_pa12()
+	;
+	void prepare_pa12_member_parameter(FunctionFact& function)
 	;
 	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;
@@ -1498,6 +1520,12 @@ private:
 	bool use_override) const
 	;
 	std::string render_type(TypeId type) const
+	;
+	std::string render_member_object_parameter(TypeId function_type,
+	ScopeId member_scope) const
+	;
+	std::string render_member_function_type(TypeId function_type,
+	ScopeId member_scope, BindingId binding) const
 	;
 	std::string render_binding_type(const Binding& binding) const
 	;

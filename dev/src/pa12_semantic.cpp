@@ -382,6 +382,29 @@ void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
 	}
 }
 
+void PA11SemanticModel::prepare_pa12_member_parameter(FunctionFact& function)
+{
+	if (!function.owner.valid() || function.owner.value >= scopes_.size() ||
+		scopes_[function.owner.value].kind != ScopeKind::Class ||
+		is_static_member(function.binding))
+		return;
+	const TypeId object_pointer = member_object_pointer_type(
+		binding(function.binding).type, function.owner);
+	if (!object_pointer.valid())
+		throw std::runtime_error("PA12 member function has no object type");
+	const NameId this_name = intern_name("this");
+	Scope& function_scope = scopes_[function.function_scope.value];
+	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+	{
+		const Binding& parameter = binding(function_scope.bindings[i]);
+		if (parameter.kind == BindingKind::Parameter &&
+			parameter.name == this_name)
+			return;
+	}
+	store_binding(function.function_scope,
+		Binding(BindingKind::Parameter, this_name, object_pointer), 0);
+}
+
 void PA11SemanticModel::prepare_pa12()
 {
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
@@ -475,6 +498,16 @@ void PA11SemanticModel::dump_pa12(std::ostream& output) const
 	output << "translation-unit\n";
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		dump_pa12_top_node(output, ast_.root.children[i], global_, 1);
+	for (std::size_t i = 0; i < class_function_facts_.size(); ++i)
+	{
+		const FunctionFactId id = class_function_facts_[i];
+		if (!id.valid() || id.value >= function_facts_.size())
+			throw std::runtime_error("PA12 class function fact is missing");
+		const FunctionFact& function = function_facts_[id.value];
+		if (function.node == NULL)
+			throw std::runtime_error("PA12 class function node is missing");
+		dump_pa12_function(output, *function.node, 1);
+	}
 	for (std::size_t i = 0; i < synthetic_function_facts_.size(); ++i)
 		dump_pa12_synthetic_function(output, synthetic_function_facts_[i], 1);
 }
@@ -749,6 +782,8 @@ bool PA11SemanticModel::pointer_id(TypeId type) const
 bool PA11SemanticModel::scalar_id(TypeId type) const
 {
 	return integral_id(type) || pointer_id(type) ||
+		type_kind(strip_cv_type(expression_object_type(type))) ==
+			TypeKind::MemberPointer ||
 		bool_id(type) || floating_id(type) ||
 		nullptr_id(type);
 }
@@ -872,6 +907,10 @@ std::string PA11SemanticModel::qualified_binding_name(ScopeId owner, NameId name
 		const Scope& current = scopes_[cursor.value];
 		if (current.kind == ScopeKind::Namespace && current.name.valid())
 			parents.push_back(current.name);
+		else if (current.kind == ScopeKind::Class && current.record.valid() &&
+			current.record.value < named_.size() &&
+			named_[current.record.value].name.valid())
+			parents.push_back(named_[current.record.value].name);
 		cursor = current.parent;
 	}
 	for (std::size_t i = parents.size(); i != 0; --i)
@@ -1068,105 +1107,6 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	}
 	return result;
 }
-const PA10AstNode* PA11SemanticModel::target_function_id(
-	const PA10AstNode& node, ScopeId scope)
-{
-	if (node.kind == PA10NodeKind::ParenthesizedExpression)
-	{
-		if (node.children.size() != 1)
-			return NULL;
-		return target_function_id(node.children.front(), scope);
-	}
-	if (node.kind != PA10NodeKind::IdExpression &&
-		!(node.kind == PA10NodeKind::DeclSpecifier &&
-			node.identifier_declspecifier))
-		return NULL;
-	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
-	if (values.size() <= 1)
-		return NULL;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
-		const Binding& value = binding(values[i].binding);
-		if (value.kind != BindingKind::Function ||
-			type_kind(value.type) != TypeKind::Function)
-			return NULL;
-	}
-	return &node;
-}
-FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
-	const PA10AstNode& node, ScopeId scope, TypeId target)
-{
-	if (node.kind != PA10NodeKind::IdExpression &&
-		!(node.kind == PA10NodeKind::DeclSpecifier &&
-			node.identifier_declspecifier))
-		return FunctionIdResolution();
-	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
-	ValueRef selected;
-	ConversionChoice selected_conversion;
-	bool have_selected = false;
-	bool ambiguous = false;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
-		const Binding& value = binding(values[i].binding);
-		if (value.kind != BindingKind::Function ||
-			type_kind(value.type) != TypeKind::Function)
-			continue;
-		const ConversionChoice conversion = conversion_for(value.type,
-			SemanticValueCategory::Lvalue, target, &node);
-		if (!conversion.valid)
-			continue;
-		if (!have_selected || conversion.rank < selected_conversion.rank)
-		{
-			have_selected = true;
-			selected = values[i];
-			selected_conversion = conversion;
-			ambiguous = false;
-		}
-		else if (conversion.rank == selected_conversion.rank)
-		{
-			ambiguous = true;
-		}
-	}
-	return have_selected && !ambiguous ? FunctionIdResolution(true, selected,
-		selected_conversion) : FunctionIdResolution();
-}
-ExprInfo PA11SemanticModel::semantic_id_expression_selected(
-	const PA10AstNode& node, ScopeId scope,
-	const FunctionIdResolution& resolution)
-{
-	(void)scope;
-	if (!resolution.valid)
-		throw std::runtime_error("PA12 target does not select a function");
-	const Binding& value = binding(resolution.selected.binding);
-	if (value.kind != BindingKind::Function ||
-		type_kind(value.type) != TypeKind::Function)
-		throw std::runtime_error("PA12 target selected a non-function");
-	SemanticFact fact(SemanticFactKind::IdExpression, value.type,
-		SemanticValueCategory::Lvalue, &node);
-	fact.binding = resolution.selected.binding;
-	const SemanticFactId result = make_semantic_fact(fact);
-	set_semantic_name(result, name_path(node));
-	return ExprInfo(result, value.type, SemanticValueCategory::Lvalue, false);
-}
-ExprInfo PA11SemanticModel::semantic_expression_for_target(
-	const PA10AstNode& node, ScopeId scope, TypeId target)
-{
-	if (node.kind == PA10NodeKind::BracedInitList)
-		return semantic_braced_init_list(node, target, scope);
-	const PA10AstNode* function_id = target_function_id(node, scope);
-	if (function_id == NULL)
-	{
-		if (node.kind == PA10NodeKind::DeclSpecifier &&
-			node.identifier_declspecifier)
-			return semantic_id_expression(node, scope);
-		return semantic_expression(node, scope);
-	}
-	const FunctionIdResolution resolution = resolve_function_id_target(
-		*function_id, scope, target);
-	if (!resolution.valid)
-		throw std::runtime_error("PA12 no function matches target type");
-	return semantic_id_expression_selected(*function_id, scope, resolution);
-}
 void PA11SemanticModel::retarget_constexpr_literal(SemanticFactId fact_id, TypeId target)
 {
 	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size() || !target.valid() ||
@@ -1347,6 +1287,9 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 		throw std::runtime_error("PA12 overloaded id requires a target");
 	const Binding& value = binding(values.front().binding);
 	TypeId type = value.type;
+	if (value.kind == BindingKind::Function)
+		type = member_function_expression_type(type, values.front().scope,
+			values.front().binding);
 	SemanticValueCategory category = SemanticValueCategory::Lvalue;
 	if (value.kind == BindingKind::Enumerator)
 	{
@@ -1384,6 +1327,25 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	case SimpleTokenType::OP_AMP:
 		if (operand.category != SemanticValueCategory::Lvalue)
 			throw std::runtime_error("PA12 address-of requires lvalue");
+		if (node.children.front().kind == PA10NodeKind::IdExpression)
+		{
+			const std::vector<ValueRef> values = lookup_value_path(
+				name_path(node.children.front()), scope);
+			if (values.size() == 1 && operand.fact.valid() &&
+				values.front().binding ==
+				semantic_facts_[operand.fact.value].binding &&
+				!is_static_member(values.front().binding) &&
+				values.front().scope.valid() &&
+				values.front().scope.value < scopes_.size() &&
+				scopes_[values.front().scope.value].kind == ScopeKind::Class)
+			{
+				const NamedRecordId owner =
+					scopes_[values.front().scope.value].record;
+				type = make_member_pointer(owner,
+					binding(values.front().binding).type);
+				break;
+			}
+		}
 		type = make_pointer(operand.type);
 		break;
 	case SimpleTokenType::OP_STAR:
@@ -1823,10 +1785,21 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(const PA10AstNode& node, Sc
 		valid = choice.valid;
 		kind = choice.kind;
 	}
+	else if (type_kind(strip_cv_type(target)) == TypeKind::MemberPointer)
+	{
+		valid = type_kind(strip_cv_type(source)) == TypeKind::MemberPointer &&
+			strip_cv_type(source) == strip_cv_type(target);
+		kind = ConversionKind::Identity;
+	}
 	else if (type_kind(strip_cv_type(target)) == TypeKind::Named)
 		valid = integral_id(source) || source == target;
 	if (!valid)
 		throw std::runtime_error("PA12 invalid explicit cast");
+	if (node.token == SimpleTokenType::KW_STATIC_CAST &&
+		type_kind(strip_cv_type(target)) == TypeKind::MemberPointer &&
+		kind == ConversionKind::Identity &&
+		strip_cv_type(source) == strip_cv_type(target))
+		return operand;
 	const ConversionFactId conversion = add_conversion(source, target, kind, 0);
 	const SemanticFactId result = make_expression_fact(
 		SemanticFactKind::CastExpression, target,
@@ -2938,6 +2911,28 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 			analyze_pa12_node(node.children[i], scope);
 		break;
+	case PA10NodeKind::ClassSpecifier:
+	{
+		const NamePath name = class_name(node);
+		if (name.empty())
+			break;
+		const ScopeId class_scope = class_scope_for_type(
+			lookup_type_path(name, scope));
+		if (!class_scope.valid())
+			throw std::runtime_error("PA12 class semantic scope is missing");
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+		{
+			if (node.children[i].kind != PA10NodeKind::FunctionDefinition)
+				continue;
+			analyze_pa12_node(node.children[i], class_scope);
+			const FunctionFactId* id = function_fact_index_.find(
+				&node.children[i]);
+			if (id == NULL || !id->valid())
+				throw std::runtime_error("PA12 class function identity is missing");
+			class_function_facts_.push_back(*id);
+		}
+		break;
+	}
 	case PA10NodeKind::SimpleDeclaration:
 		if (declaration_fact(node) != NULL)
 			semantic_declaration(node, scope);
@@ -2950,6 +2945,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		FunctionFact* function = function_fact(node);
 		if (function == NULL || function->body_fact.valid())
 			throw std::runtime_error("PA12 function fact is missing");
+		prepare_pa12_member_parameter(*function);
 		function->body_fact = semantic_compound(node.children.back(),
 			function->function_scope, *function, 0, 0, NULL);
 		break;

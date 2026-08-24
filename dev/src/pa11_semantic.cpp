@@ -95,10 +95,10 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 	{
 		bool text;
 		TypeId type;
-		const char* value;
+		std::string value;
 
 		Task(bool text, TypeId type, const char* value)
-			: text(text), type(type), value(value)
+			: text(text), type(type), value(value == NULL ? "" : value)
 		{}
 	};
 	std::string result;
@@ -143,6 +143,16 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 			result += "pointer to ";
 			tasks.push_back(Task(false, key.child, NULL));
 			break;
+		case TypeKind::MemberPointer:
+			if ((key.cv & 1u) != 0)
+				result += "const ";
+			if ((key.cv & 2u) != 0)
+				result += "volatile ";
+			result += "member-pointer of ";
+			result += render_named_record(key.named, ClassTag::Struct, false);
+			result += " to ";
+			tasks.push_back(Task(false, key.child, NULL));
+			break;
 		case TypeKind::LvalueReference:
 			result += "lvalue-reference to ";
 			tasks.push_back(Task(false, key.child, NULL));
@@ -166,7 +176,13 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 		case TypeKind::Function:
 			result += "function of (";
 			tasks.push_back(Task(false, key.result, NULL));
-			tasks.push_back(Task(true, TypeId(), ") returning "));
+			std::string function_suffix = ")";
+			if ((key.cv & 1u) != 0)
+				function_suffix += " const";
+			if ((key.cv & 2u) != 0)
+				function_suffix += " volatile";
+			function_suffix += " returning ";
+			tasks.push_back(Task(true, TypeId(), function_suffix.c_str()));
 			if (key.variadic)
 			{
 				tasks.push_back(Task(true, TypeId(), "..."));
@@ -182,6 +198,51 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 			break;
 		}
 	}
+	return result;
+}
+std::string PA11SemanticModel::render_member_object_parameter(
+	TypeId function_type, ScopeId member_scope) const
+{
+	if (!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class ||
+		type_kind(function_type) != TypeKind::Function)
+		return render_type(function_type);
+	const NamedRecordId owner = scopes_[member_scope.value].record;
+	if (!owner.valid())
+		throw std::runtime_error("PA12 member function has no object owner");
+	const unsigned int qualifiers = types_[function_type.value].cv;
+	std::string result = "pointer to ";
+	if ((qualifiers & 1u) != 0)
+		result += "const ";
+	if ((qualifiers & 2u) != 0)
+		result += "volatile ";
+	result += render_named_record(owner, ClassTag::Struct, false);
+	return result;
+}
+std::string PA11SemanticModel::render_member_function_type(
+	TypeId function_type, ScopeId member_scope, BindingId binding_id) const
+{
+	if (!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class ||
+		type_kind(function_type) != TypeKind::Function ||
+		is_static_member(binding_id))
+		return render_type(function_type);
+	const TypeKey& function = types_[function_type.value];
+	std::string result = "function of (";
+	result += render_member_object_parameter(function_type, member_scope);
+	for (std::size_t i = 0; i < function.parameters.size(); ++i)
+	{
+		result += ", ";
+		result += render_type(function.parameters[i]);
+	}
+	if (function.variadic)
+	{
+		if (!function.parameters.empty())
+			result += ", ";
+		result += "...";
+	}
+	result += ") returning ";
+	result += render_type(function.result);
 	return result;
 }
 std::string PA11SemanticModel::render_binding_type(const Binding& binding) const
@@ -413,8 +474,13 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 		throw std::runtime_error("PA11 definition is not a function");
 	const BindingId function_binding = add_value(target, name.path.last(),
 		type, true, true, true, BindingId(), SourcePoint(node.source_begin));
+	if (spec.is_static && target.value < scopes_.size() &&
+		scopes_[target.value].kind == ScopeKind::Class)
+		mark_static_member(function_binding);
 	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
 		name.path.last());
+	FunctionFact function_fact(&node, target, function_binding,
+		function_scope, ScopeId());
 	function_definition_points_.set(function_scope,
 		SourcePoint(node.source_begin));
 	const PA10AstNode* clause = top_parameter_clause(declarator);
@@ -436,9 +502,9 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	}
 	const ScopeId body_scope = process_compound_statement(node.children[2],
 		function_scope);
+	function_fact.body_scope = body_scope;
 	const FunctionFactId function_id(function_facts_.size());
-	function_facts_.push_back(FunctionFact(&node, target, function_binding,
-		function_scope, body_scope));
+	function_facts_.push_back(function_fact);
 	function_fact_index_.set(&node, function_id);
 }
 ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
@@ -1075,10 +1141,15 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output,
 	for (std::size_t indent = 0; indent < depth; ++indent)
 		output << "  ";
 	output << "function-definition " << qualified_binding_name(function->owner,
-		value.name) << ' ' << render_binding_type(value) << '\n';
+		value.name) << ' ' << render_member_function_type(value.type,
+		function->owner, function->binding) << '\n';
 	if (type_kind(value.type) != TypeKind::Function)
 		throw std::runtime_error("PA12 function binding has non-function type");
 	const TypeKey& function_type = types_[value.type.value];
+	const bool member_function = function->owner.valid() &&
+		function->owner.value < scopes_.size() &&
+		scopes_[function->owner.value].kind == ScopeKind::Class &&
+		!is_static_member(function->binding);
 	const Scope& function_scope = scopes_[function->function_scope.value];
 	std::size_t parameter_index = 0;
 	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
@@ -1091,8 +1162,17 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output,
 		output << "parameter ";
 		if (parameter.name.valid())
 			output << name_text(parameter.name);
-		output << ' ' << render_type(parameter_index < function_type.parameters.size() ?
-			function_type.parameters[parameter_index] : parameter.type) << '\n';
+		if (member_function && parameter_index == 0)
+			output << ' ' << render_member_object_parameter(value.type,
+				function->owner);
+		else
+		{
+			const std::size_t type_index = member_function ?
+				parameter_index - 1 : parameter_index;
+			output << ' ' << render_type(type_index < function_type.parameters.size() ?
+				function_type.parameters[type_index] : parameter.type);
+		}
+		output << '\n';
 		++parameter_index;
 	}
 	dump_pa12_fact(output, function->body_fact, depth + 1);

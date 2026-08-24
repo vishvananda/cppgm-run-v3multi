@@ -26,7 +26,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
 	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
-	function_fact_index_(), synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
+	function_fact_index_(), class_function_facts_(), synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(),
@@ -113,71 +113,6 @@ TypeKind PA11SemanticModel::type_kind(TypeId type) const
 		throw std::runtime_error("invalid PA11 type identity");
 	return types_[type.value].kind;
 }
-TypeId PA11SemanticModel::make_cv(TypeId child, unsigned int qualifiers)
-{
-	if (qualifiers == 0)
-		return child;
-	if (type_kind(child) == TypeKind::Cv)
-	{
-		const TypeKey& old = types_[child.value];
-		qualifiers |= old.cv;
-		child = old.child;
-	}
-	TypeKey key;
-	key.kind = TypeKind::Cv;
-	key.child = child;
-	key.cv = qualifiers;
-	return intern_type(key);
-}
-TypeId PA11SemanticModel::make_pointer(TypeId child, unsigned int qualifiers )
-{
-	if (type_kind(child) == TypeKind::LvalueReference ||
-		type_kind(child) == TypeKind::RvalueReference)
-		throw std::runtime_error("pointer to reference type");
-	TypeKey key;
-	key.kind = TypeKind::Pointer;
-	key.child = child;
-	key.cv = qualifiers;
-	return intern_type(key);
-}
-TypeId PA11SemanticModel::make_reference(TypeId child, bool rvalue)
-{
-	TypeId unqualified = child;
-	if (type_kind(unqualified) == TypeKind::Cv)
-		unqualified = types_[unqualified.value].child;
-	if (type_kind(unqualified) == TypeKind::Fundamental &&
-		types_[unqualified.value].fundamental == FundamentalType::Void)
-		throw std::runtime_error("reference to void type");
-	if (!rvalue && type_kind(child) == TypeKind::LvalueReference)
-		return child;
-	TypeKey key;
-	key.kind = rvalue ? TypeKind::RvalueReference :
-		TypeKind::LvalueReference;
-	key.child = child;
-	return intern_type(key);
-}
-TypeId PA11SemanticModel::make_array(TypeId child, bool unknown_bound, ArrayBound bound)
-{
-	const TypeKind kind = type_kind(child);
-	if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
-		throw std::runtime_error("array of reference type");
-	TypeKey key;
-	key.kind = TypeKind::Array;
-	key.child = child;
-	key.unknown_bound = unknown_bound;
-	key.bound = bound;
-	return intern_type(key);
-}
-TypeId PA11SemanticModel::make_function(const std::vector<TypeId>& parameters, bool variadic,
-	TypeId result)
-{
-	TypeKey key;
-	key.kind = TypeKind::Function;
-	key.parameters = parameters;
-	key.variadic = variadic;
-	key.result = result;
-	return intern_type(key);
-}
 ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId name,
 	NamedRecordId record ,
 	bool inline_namespace , bool attach )
@@ -249,14 +184,6 @@ TypeId PA11SemanticModel::strip_reference_type(TypeId type) const
 		return types_[type.value].child;
 	return type;
 }
-TypeId PA11SemanticModel::strip_top_cv_type(TypeId type)
-{
-	type = strip_reference_type(type);
-	while (type_kind(type) == TypeKind::Cv)
-		type = types_[type.value].child;
-	return type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0 ?
-		make_pointer(types_[type.value].child) : type;
-}
 bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node, NamePath* result)
 {
 	if (node.kind == PA10NodeKind::Identifier &&
@@ -326,64 +253,6 @@ ScopeId PA11SemanticModel::scope_for_type(TypeId type) const
 		return named_[record.value].scope;
 	return ScopeId();
 }
-unsigned int PA11SemanticModel::cv_qualifiers(TypeId type) const
-{
-	return type_kind(type) == TypeKind::Cv ? types_[type.value].cv : 0;
-}
-void PA11SemanticModel::qualification_decomposition(TypeId type,
-	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
-{
-	unsigned int current_cv = 0;
-	TypeId cursor = type;
-	while (type_kind(cursor) == TypeKind::Cv)
-	{
-		current_cv |= types_[cursor.value].cv;
-		cursor = types_[cursor.value].child;
-	}
-	if (type_kind(cursor) == TypeKind::Pointer)
-	{
-		current_cv |= types_[cursor.value].cv;
-		qualifiers.push_back(current_cv);
-		qualification_decomposition(types_[cursor.value].child,
-			qualifiers, unqualified);
-		return;
-	}
-	qualifiers.push_back(current_cv);
-	*unqualified = cursor;
-}
-bool PA11SemanticModel::qualification_convertible_impl(TypeId source,
-	TypeId target, bool outer_pointer_consumed) const
-{
-	if (source == target)
-		return true;
-	std::vector<unsigned int> source_qualifiers;
-	std::vector<unsigned int> target_qualifiers;
-	TypeId source_unqualified;
-	TypeId target_unqualified;
-	qualification_decomposition(source, source_qualifiers,
-		&source_unqualified);
-	qualification_decomposition(target, target_qualifiers,
-		&target_unqualified);
-	if (source_unqualified != target_unqualified ||
-		source_qualifiers.size() != target_qualifiers.size())
-		return false;
-	for (std::size_t i = 0; i < source_qualifiers.size(); ++i)
-	{
-		if ((source_qualifiers[i] & ~target_qualifiers[i]) != 0)
-			return false;
-		if (source_qualifiers[i] == target_qualifiers[i])
-			continue;
-		const std::size_t first_intermediate = outer_pointer_consumed ? 0 : 1;
-		for (std::size_t j = first_intermediate; j < i; ++j)
-			if ((target_qualifiers[j] & 1u) == 0)
-				return false;
-	}
-	return true;
-}
-bool PA11SemanticModel::qualification_convertible(TypeId source, TypeId target) const
-{
-	return qualification_convertible_impl(source, target, false);
-}
 bool PA11SemanticModel::object_type(TypeId type) const
 {
 	type = strip_cv_type(type);
@@ -395,6 +264,7 @@ bool PA11SemanticModel::object_type(TypeId type) const
 		return types_[type.value].fundamental != FundamentalType::Void;
 	case TypeKind::Named:
 	case TypeKind::Pointer:
+	case TypeKind::MemberPointer:
 	case TypeKind::Array:
 		return true;
 	case TypeKind::Cv:
@@ -427,6 +297,7 @@ bool PA11SemanticModel::complete_object_type(TypeId type) const
 	}
 	case TypeKind::Fundamental:
 	case TypeKind::Pointer:
+	case TypeKind::MemberPointer:
 		return true;
 	case TypeKind::Cv:
 		return complete_object_type(types_[type.value].child);
@@ -1137,6 +1008,22 @@ void PA11SemanticModel::set_binding_sidecar(BindingId id,
 		throw std::runtime_error("invalid PA11 binding sidecar identity");
 	binding_sidecars_.set(id, sidecar);
 }
+bool PA11SemanticModel::is_static_member(BindingId id) const
+{
+	const BindingSidecar* sidecar = binding_sidecar(id);
+	return sidecar != NULL && sidecar->static_member;
+}
+void PA11SemanticModel::mark_static_member(BindingId id)
+{
+	if (!id.valid() || id.value >= bindings_.size())
+		throw std::runtime_error("invalid static member binding identity");
+	BindingSidecar sidecar;
+	const BindingSidecar* existing = binding_sidecar(id);
+	if (existing != NULL)
+		sidecar = *existing;
+	sidecar.static_member = true;
+	set_binding_sidecar(id, sidecar);
+}
 const NamedRecordSidecar* PA11SemanticModel::named_record_sidecar(
 	NamedRecordId id) const
 {
@@ -1644,6 +1531,7 @@ std::size_t PA11SemanticModel::type_size(TypeId type) const
 			throw std::runtime_error("sizeof void type");
 		}
 	case TypeKind::Pointer:
+	case TypeKind::MemberPointer:
 	case TypeKind::LvalueReference:
 	case TypeKind::RvalueReference:
 		return 8;
@@ -2032,18 +1920,6 @@ BindingId PA11SemanticModel::add_type_alias(ScopeId scope, NameId name,
 	record_type_declaration(scope, name, declaration_point, declaration);
 	return declaration;
 }
-TypeId PA11SemanticModel::normalize_parameter_type(TypeId type)
-{
-	while (type_kind(type) == TypeKind::Cv)
-		type = types_[type.value].child;
-	if (type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0)
-	{
-		TypeKey normalized = types_[type.value];
-		normalized.cv = 0;
-		return intern_type(normalized);
-	}
-	return type;
-}
 TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 {
 	if (type_kind(type) != TypeKind::Function)
@@ -2088,7 +1964,9 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 				throw std::runtime_error("invalid function redeclaration");
 			const TypeKey& existing_function = types_[existing.type.value];
 			const TypeKey& candidate_function = types_[type.value];
-			if (existing_function.variadic != candidate_function.variadic || existing_function.parameters != candidate_function.parameters)
+			if (existing_function.cv != candidate_function.cv ||
+				existing_function.variadic != candidate_function.variadic ||
+				existing_function.parameters != candidate_function.parameters)
 				continue;
 			if (existing_function.result != candidate_function.result)
 				throw std::runtime_error("conflicting function return type");
@@ -2232,6 +2110,9 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 		case SimpleTokenType::KW_CONSTEXPR:
 			result.is_constexpr = true;
 			break;
+		case SimpleTokenType::KW_STATIC:
+			result.is_static = true;
+			break;
 		case SimpleTokenType::KW_CONST:
 		case SimpleTokenType::KW_VOLATILE:
 			result.cv |= cv_bit(child);
@@ -2350,31 +2231,6 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 	}
 	(void)owner;
 }
-TypeId PA11SemanticModel::type_from_type_id(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.kind != PA10NodeKind::TypeId || node.children.empty())
-		throw std::runtime_error("invalid PA11 type-id");
-	SpecFact spec = spec_fact(node.children.front(), scope);
-	TypeId result = spec.base;
-	if (node.children.size() > 1)
-		result = apply_declarator(node.children[1], result, scope);
-	return result;
-}
-DeclaratorOp PA11SemanticModel::pointer_op(const PA10AstNode& node)
-{
-	if (!node.has_token)
-		unsupported("member-pointer declarators");
-	DeclaratorOp result;
-	if (node.token == SimpleTokenType::OP_STAR)
-		result.kind = DeclaratorOp::Pointer;
-	else if (node.token == SimpleTokenType::OP_AMP)
-		result.kind = DeclaratorOp::LvalueReference;
-	else if (node.token == SimpleTokenType::OP_LAND)
-		result.kind = DeclaratorOp::RvalueReference;
-	else
-		unsupported("unknown pointer operator");
-	return result;
-}
 ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
 {
 	if (node.kind != PA10NodeKind::Literal || !node.has_literal ||
@@ -2386,197 +2242,6 @@ ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
 	if (value == 0 || value > static_cast<std::uint64_t>(InvalidIdentityValue))
 		throw std::runtime_error("invalid PA11 array bound");
 	return ArrayBound(static_cast<std::size_t>(value));
-}
-bool PA11SemanticModel::contains_parameter_pack(const PA10AstNode& node) const
-{
-	if (node.kind == PA10NodeKind::ParameterPack)
-		return true;
-	if (node.kind == PA10NodeKind::ParameterClause)
-		return false;
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-		if (contains_parameter_pack(node.children[i]))
-			return true;
-	return false;
-}
-std::vector<TypeId> PA11SemanticModel::parameter_types(const PA10AstNode& clause, ScopeId scope,
-	bool* variadic, std::vector<ParamFact>* facts)
-{
-	if (clause.kind != PA10NodeKind::ParameterClause)
-		throw std::runtime_error("invalid PA11 parameter clause");
-	std::vector<TypeId> result;
-	*variadic = false;
-	for (std::size_t i = 0; i < clause.children.size(); ++i)
-	{
-		const PA10AstNode& child = clause.children[i];
-		if (child.kind == PA10NodeKind::ParameterPack)
-		{
-			*variadic = true;
-			continue;
-		}
-		if (child.kind != PA10NodeKind::ParameterDeclaration ||
-			child.children.empty())
-			throw std::runtime_error("invalid PA11 parameter declaration");
-		SpecFact spec = spec_fact(child.children.front(), scope);
-		TypeId type = spec.base;
-		DeclaratorName name;
-		if (child.children.size() > 1)
-		{
-			name = declarator_name(child.children[1]);
-			type = apply_declarator(child.children[1], type, scope);
-			if (contains_parameter_pack(child.children[1]))
-				*variadic = true;
-		}
-		const bool unnamed_void = type_kind(type) == TypeKind::Fundamental &&
-			types_[type.value].fundamental == FundamentalType::Void && !name.found;
-		if (unnamed_void && clause.children.size() == 1)
-		{
-			// The one special parameter declaration `(void)` denotes an
-			// empty parameter list.  `void *` has a declarator and is kept.
-			continue;
-		}
-		result.push_back(type);
-		if (facts != NULL)
-			facts->push_back(ParamFact(name.found ? name.path.last() : NameId(),
-				type));
-	}
-	return result;
-}
-TypeId PA11SemanticModel::apply_prefix(const std::vector<DeclaratorOp>& ops, TypeId base)
-{
-	TypeId result = base;
-	for (std::size_t i = 0; i < ops.size(); ++i)
-	{
-		switch (ops[i].kind)
-		{
-		case DeclaratorOp::Pointer:
-			result = make_pointer(result, ops[i].cv);
-			break;
-		case DeclaratorOp::LvalueReference:
-			result = make_reference(result, false);
-			break;
-		case DeclaratorOp::RvalueReference:
-			result = make_reference(result, true);
-			break;
-		case DeclaratorOp::Array:
-		case DeclaratorOp::Function:
-			throw std::runtime_error("invalid PA11 prefix declarator operation");
-		}
-	}
-	return result;
-}
-TypeId PA11SemanticModel::apply_suffix(const std::vector<DeclaratorOp>& ops, TypeId base,
-	ScopeId scope)
-{
-	TypeId result = base;
-	for (std::size_t i = 0; i < ops.size(); ++i)
-	{
-		if (ops[i].kind == DeclaratorOp::Array)
-		{
-			result = make_array(result, ops[i].unknown_bound, ops[i].bound);
-			continue;
-		}
-		if (ops[i].kind == DeclaratorOp::Function)
-		{
-			bool variadic = false;
-			const std::vector<TypeId> parameters = parameter_types(
-				*ops[i].parameter_clause, scope, &variadic, NULL);
-			result = make_function(parameters, variadic, result);
-			continue;
-		}
-		throw std::runtime_error("invalid PA11 suffix declarator operation");
-	}
-	return result;
-}
-TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node, TypeId base, ScopeId scope)
-{
-	if (node.kind != PA10NodeKind::Declarator &&
-		node.kind != PA10NodeKind::AbstractDeclarator)
-		throw std::runtime_error("invalid PA11 declarator node");
-	std::size_t direct = node.children.size();
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		if (node.children[i].kind == PA10NodeKind::Identifier ||
-			node.children[i].kind == PA10NodeKind::NestedDeclarator)
-		{
-			direct = i;
-			break;
-		}
-	}
-	std::vector<DeclaratorOp> prefix;
-	for (std::size_t i = 0; i < direct; ++i)
-	{
-		if (node.children[i].kind == PA10NodeKind::PtrOperator)
-		{
-			DeclaratorOp op = pointer_op(node.children[i]);
-			std::size_t at = i + 1;
-			while (at < direct && is_cv_node(node.children[at]))
-			{
-				op.cv |= cv_bit(node.children[at]);
-				++at;
-			}
-			prefix.push_back(op);
-			i = at - 1;
-		}
-		else if (node.children[i].kind != PA10NodeKind::ParameterPack &&
-			node.children[i].kind != PA10NodeKind::CvQualifier)
-			throw std::runtime_error("invalid PA11 declarator prefix");
-	}
-	std::vector<DeclaratorOp> suffix;
-	if (direct < node.children.size())
-	{
-		for (std::size_t i = direct + 1; i < node.children.size(); ++i)
-		{
-			const PA10AstNode& child = node.children[i];
-			if (child.kind == PA10NodeKind::ArraySuffix)
-			{
-				DeclaratorOp op(DeclaratorOp::Array);
-				if (child.children.empty())
-					op.unknown_bound = true;
-				else if (child.children.size() == 1)
-				{
-					const ConstValue bound = eval_constexpr(
-						child.children.front(), scope);
-					if (!bound.valid || bound.value <= 0 ||
-						bound.value > static_cast<__int128>(InvalidIdentityValue))
-						throw std::runtime_error("invalid PA11 array bound");
-					op.bound = ArrayBound(static_cast<std::size_t>(bound.value));
-				}
-				else
-					throw std::runtime_error("unsupported PA11 array bound expression");
-				suffix.push_back(op);
-			}
-			else if (child.kind == PA10NodeKind::ParameterClause)
-			{
-				DeclaratorOp op(DeclaratorOp::Function);
-				op.parameter_clause = &child;
-				suffix.push_back(op);
-			}
-			else if (child.kind == PA10NodeKind::FunctionQualifier ||
-				child.kind == PA10NodeKind::CvQualifier ||
-				child.kind == PA10NodeKind::RefQualifier ||
-				child.kind == PA10NodeKind::VirtSpecifier)
-			{
-				// These facts do not change the PA11 function type model.
-			}
-			else
-				throw std::runtime_error("invalid PA11 declarator suffix");
-		}
-	}
-	TypeId result = base;
-	if (direct < node.children.size() &&
-		node.children[direct].kind == PA10NodeKind::NestedDeclarator)
-	{
-		const TypeId with_suffix = apply_suffix(suffix, base, scope);
-		result = apply_declarator(node.children[direct].children.front(),
-			with_suffix, scope);
-		result = apply_prefix(prefix, result);
-	}
-	else
-	{
-		result = apply_prefix(prefix, base);
-		result = apply_suffix(suffix, result, scope);
-	}
-	return result;
 }
 bool PA11SemanticModel::ambiguous_call_statement(const PA10AstNode& node, ScopeId scope,
 	NamePath* callee, const PA10AstNode** argument)
@@ -2774,6 +2439,10 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 				}
 			}
 		}
+		if (spec.is_static && target.value < scopes_.size() &&
+			scopes_[target.value].kind == ScopeKind::Class &&
+			type_kind(type) == TypeKind::Function)
+			mark_static_member(binding_id);
 		declaration_bindings_.push_back(binding_id);
 	}
 	declaration.binding_count = declaration_bindings_.size() -
