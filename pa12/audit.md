@@ -2,77 +2,80 @@
 
 ## Current Checkpoint Review
 
-This final `checkpointAudit` reviews landed commit `4f890322` (`pa12: split
-canonical type and member target semantics`) and one bounded repair in the
-same ownership path. The forward path is PA10 declarator/source identity and
-source points -> the sole PA11 `PA11SemanticModel` -> canonical `TypeKey` /
-`TypeId`, `BindingId`, `NamedRecordId`, `ScopeId`, and `ValueRef` facts -> PA12
-target selection and expression facts -> cold deterministic rendering. No
-stage reparses rendered text or maintains a parallel semantic model.
+This `checkpointAudit` reviews landed commit `115aff98b17774925ae64e53c1ec3260a0b1e6ca`
+(`PA12: support typed functional casts`), parent `d0d2e2b3`. No bounded source
+repair was justified. The implementation path remains one forward flow:
+source tokens and source points -> the PA10 `PA10Ast` call-shaped boundary ->
+the sole PA11 `PA11SemanticModel` with canonical `TypeKey`/`TypeId`, lookup,
+binding, and `ValueRef` facts -> PA12 `SemanticFact` and `ConversionFact`
+ownership -> cold deterministic rendering. No stage reparses rendered text or
+maintains a parallel parser/type/semantic model.
 
-`pointer_op` resolves a qualified `C::*` owner through typed lookup and stores
-the resulting `NamedRecordId` in `DeclaratorOp`; `apply_declarator` applies
-outer prefix operations before recursively binding reverse-order suffixes, so
-nested pointer/function/array shapes retain their source binding. `TypeKey`
-uses `TypeKind::MemberPointer`, its typed `named` owner, typed `child` member
-type, and `cv`; the existing `FlatIndex<TypeKey, TypeId, TypeKeyHash>` gives
-canonical identities and O(1) identity equality. Data and function member
-pointers therefore cannot collapse into ordinary pointers or each other.
+At the PA10 boundary, `PA10Parser` builds the indexed delimiter tables once and
+charges that bounded indexing work. `parse_postfix_expression_seed` invokes
+`classify_function_style_cast` once at the current position. The classifier
+charges its contiguous built-in/cv prefix checks, uses the indexed `decltype`
+close position, publishes the classification and `charged_work`, and returns
+before any operand walk. The parser charges that published work once, then
+consumes the same call-shaped syntax: a single built-in keyword keeps its
+legacy identifier callee, while a multi-keyword fundamental target or
+`decltype(expr)` becomes a typed `TypeId` child. The scan is bounded by the
+contiguous prefix and the prebuilt index; it does not retry or shell out to a
+host/reference parser.
 
-Function cv is retained in the canonical function key and participates in
-function redeclaration matching. Non-static member address-of forms create a
-member-pointer key from the class scope and function type. Target-directed
-selection requires the exact owner and exact function `TypeId`, and rejects
-static members for a member-pointer target. Static status is a sparse
-`BindingSidecar` fact: static members remain ordinary function pointers and do
-not receive an implicit object. PA12 adds the typed synthetic `this` parameter
-after PA11 analysis, and the cold member-definition renderer derives the
-implicit-object view without storing dump-only type state.
+PA11 keeps canonical type identity and lookup in `TypeId`/`TypeKey`. The
+`SizeofExpression` type is `unsigned long`, so `decltype(sizeof(0))` reaches
+the same canonical target used by the visible `size_t` alias. In
+`functional_cast_target`, built-ins, a parsed `TypeId`, and a name lookup all
+resolve to that canonical identity. Value lookup is attempted before typed
+lookup for an alias-shaped callee, preserving value hiding and ordinary-call
+continuity; no rendered spelling is joined, split, or re-interned for this
+decision.
 
-`make_cv` qualifies array elements recursively. The audit found that the
-existing `cv_qualifiers` helper did not follow that canonical array form (and
-also missed cv held directly by pointer/member-pointer nodes), which allowed a
-pointer to a const array or const pointer object to convert to unqualified
-`void*`. The bounded repair makes that helper walk cv wrappers, pointer and
-member-pointer top-level cv, and array element cv recursively. Bounds and
-element identity remain checked by `qualification_convertible`; the work is
-O(declarator/type depth).
+PA12 resolves the target in `pa12_semantic_resolution.cpp`, validates the
+supported void/scalar/enum target set, and sends zero-argument supported
+targets to a typed prvalue zero `Literal` fact. A one-argument functional cast
+and an explicit/static cast both call `semantic_cast_to_target`. That shared
+owner performs the reference, integral, pointer, enum, void, and retained
+member-pointer checks, creates the selected source-to-target `ConversionFact`,
+and attaches it to the resulting `CastExpression`. If a later context asks for
+an exact target type, `record_builtin_conversion` does not append a second
+identity conversion to a cast-owned fact, so the conversion range remains
+contiguous and the selected conversion is not lost. Ordinary calls remain
+after the functional-target check and still use typed value lookup, candidate
+selection, argument conversion, and selected callee facts. The retained
+explicit/static-cast path, including the member-pointer identity case, remains
+on the same semantic owner.
 
-The review found no host/reference compiler call, retry or timeout shortcut,
-rendered-name lookup, unbounded dump-only hot state, nondeterministic hash
-iteration, or second semantic owner. Sparse static-member metadata and the
-existing cold renderer preserve compact hot records. General class-aware calls
-and template semantics remain outside this checkpoint; only the tested
-member-pointer target and synthetic member-definition view are admitted.
+The cold renderer walks typed fact IDs in source/child order and derives type
+and name text only at the requested dump boundary. Functional casts therefore
+render as typed cast or zero-literal facts without becoming a new lookup input.
+Repeated direct dumps of six functional/explicit-cast representatives had
+exit `0/0` and `cmp` exit `0` for every pair. The focused checked-in evidence
+is `make -C pa12 -j2` exit `0`, the three active PA12 cases `3/3`, eight PA12
+call/cast/static-cast controls `8/8`, and four PA10 call-shaped parser controls
+`4/4`. This covers the root spec's one-pipeline and typed-fact requirements in
+sections 1-3, the bounded work/storage requirements in section 4, and the
+determinism/measurement requirements in section 7. The retained five-round
+immutable generated cast-family measurements remain bounded observations; no
+broader timing coefficient or asymptotic claim is made.
 
-Focused evidence after the repair is `make -C pa12 -j2` exit `0`, the five
-affected PA12 cases plus fifteen nearby PA12 controls `20/20`, and four
-checked-in PA10 member-pointer declarator controls `4/4`, all compared to
-their checked-in outputs/statuses. Twelve targeted probes have the expected
-owner-mismatch, function-cv-mismatch, data/function distinction, recursive
-array qualification, array-bound, static/non-static, and const-void-pointer
-statuses; nested prefix/suffix rendering and static versus non-static member
-rendering assertions also pass.
-
-Fresh final broad validation covered all `166/166` PA12 paths and passed
-`160/166`; the six failures are exactly the turn-start residual paths, with
-zero current-only and zero baseline-only paths. Relative to the increment's
-earlier `155/166` eleven-failure pre-implementation baseline, the five
-member-pointer/array paths listed in the plan are fixed. The exact prior-through
-command passed `685/685` through PA11. The file audit passed with exactly two
-known header-division warnings.
-
-Fresh performance evidence used an immutable copy of the newly built
-executable and five interleaved rounds of equivalent generated inputs with 200
-typedef declarations at pointer-prefix depths 32, 128, and 512. The median
-wall/user/system/RSS results were respectively `10/0/0/10464 KiB`,
-`50/20/30/26892 KiB`, and `220/120/100/91860 KiB`; all runs exited `0`.
-Startup and timer-resolution effects are included, so this is bounded
-representative evidence rather than a broader timing or asymptotic claim.
+The fresh final stage result is `163/166` with all 166 paths covered. The exact
+residuals are the local-extern declaration, pointee-const-pointer reference
+binding, and overloaded function-template argument cases listed below. Each
+still reproduces the same residual in the fresh broad run; none is a direct
+regression owned by this functional-cast increment, so no residual-family
+repair is included. Fresh through-PA11 is `685/685`; fresh through-PA12 is
+`848/851` with that same three-path set. The fresh file audit passes with the
+two retained header-division warnings, `git diff --check` is clean, and the
+exact authorized-path audit finds only the two record files changed.
 
 ## Prior checkpoint context
 
-The preceding audit row at `eee242c6` established the shared PA12 semantic-fact foundation and recorded the 90/166 checkpoint, its 76 residual failures, the through-PA11 result, and the prior qualification/function-redeclaration repairs. That residual family remains outside this bounded review.
+The immediately preceding audit row at `4f890322` established the typed
+member-pointer target path and recursive array qualification repair. Earlier
+rows remain preserved below; this review is limited to the functional-cast and
+type-name increment in `115aff98`.
 
 ## Audit ledger
 
@@ -87,3 +90,4 @@ The preceding audit row at `eee242c6` established the shared PA12 semantic-fact 
 | 2026-08-24 PA12 `checkpointAudit` at `e45d0795` with bounded cv repair | Traced PA10 source/node identity through PA11 canonical record/scope/binding formation, sparse storage/member/constructor sidecars, PA12 construction/member/copy facts, and cold deterministic rendering. Repaired ordinary cv-qualified anonymous record objects by publishing the unqualified `NamedRecordId` type for the record name while preserving typedef alias qualification; confirmed cv propagation, invalid member rejection, generated identities, and no integral/constexpr poisoning. | Fresh final PA12 `149/166`, exactly 17 failures, all `166/166`; normalized against the supplied post-landed set with `0` current-only and `0` supplied-only paths. Fresh build and focused PA12 controls passed `12/12`; PA11 anonymous-union control passed `1/1`; cv, reuse, invalid-operand/member, and constexpr probes had expected exits; five interleaved immutable rounds produced one hash per representative shape and median peak RSS `4360/4376/4384 KiB` with timer-resolution-limited `0.00` wall/user/system values. Through-PA11 passed `685/685`; file audit passed with exactly two known header-division warnings. | The exact 17 residual paths remain outside this checkpoint: local extern/parser, member-pointer/cast/reference, and namespace/lookup families. No broad timing or asymptotic claim is made; the two file-audit warnings are retained known findings. | `make test-pa12` exit `2`; exact through-PA11 command exit `0`; exact file audit exit `0`; `make -C pa12 -j2`; exact 12-test PA12 check; exact PA11 control check; bounded valid/invalid `/dev/fd` probes; immutable five-round structural/determinism probe at `/tmp/pa12-record-checkpoint.PJtyG8`; `git diff --check`; exact changed-path audit; one final commit containing only `dev/src/pa11_semantic_core.cpp`, `pa12/audit.md`, and `pa12/plan.md`, followed by clean `git status --short`. |
 | 2026-08-24 PA12 `checkpointAudit` at `1a150235` with bounded namespace/type audit | Traced PA10 source identities and points through the sole PA11 namespace/type/binding/lookup owner into PA12 selection and cold rendering. Preserved stable unnamed-namespace reopening and implicit visibility; retained direct-vs-using hiding, source-order value/relation filtering, conflict and redeclaration ownership, cycle marks, and bounded call-shaped `decltype`. Repaired namespace aliases with sparse declaration points, inline-child traversal, namespace-owned type declaration-point filtering for `types`/`using_types`, stable originating `BindingId` candidate identity (rather than `TypeId`) for ambiguity/deduplication, optional identity propagation through qualified/unqualified `lookup_type_path` into type-using formation, including transitive and graph-exposed chains, and later-inline-marker source-order leakage. The new type and inline facts are sparse and the hot `Scope`, `Binding`, and `NamedRecord` layouts are unchanged; the sidecar helpers remain in the PA11 formation `.cpp` and the lookup core is 3000 lines. | Final PA12 `155/166`, exactly 11 failures, all `166/166` paths covered; normalized supplied/final failure sets match with `0` current-only and `0` supplied-only; focused PA12 `19/19`; focused PA11 `12/12`; nine late-type probes rejected; distinct same-`TypeId` declarations were ambiguous, repeated same-origin paths, transitive chains, and graph-exposed type-using imports deduplicated, direct hiding passed, distinct inline siblings were ambiguous, and late/early inline-marker probes had expected exits; four repeated namespace-shape dumps had `cmp` exit `0` with one hash each; layout was `Binding 80`, `NamedRecord 120`, `Scope 440`, `NamespaceAliasRelation/List 16/24`, `TypeDeclarationRelation/List 24/24`, and `SourcePoint 8`; through-PA11 `685/685`; file audit passed with exactly two known warnings. | The exact eleven residual paths remain outside this checkpoint: decltype functional-cast, local-extern, member-pointer, reference-binding, scoped-enum-cast, and static-cast families. No broad conversion/overload semantics, timing/scaling claim, or new test/reference/harness/grammar/script change is claimed; the two header-division warnings remain known findings. | Final `make test-pa12` (exit `2`); exact residual normalization and 166-path count; exact through-PA11 command; `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` (pass, 2 warnings); focused PA12/PA11 checks and bounded `/dev/fd` probes; deterministic `cmp`/SHA-256 and layout probes; `git diff --check`; exact five-path audit; amended existing checkpoint commit followed by clean `git status --short`. |
 | 2026-08-24 PA12 `checkpointAudit` at `4f890322` with bounded array-cv repair | Traced PA10 declarator/source identities through `pointer_op`, typed `DeclaratorOp` prefix/suffix application, and canonical `TypeKey`/`TypeId` formation into PA12 exact member-pointer target selection, address-of facts, synthetic `this`, static-member sidecars, and cold member-definition rendering. Confirmed exact class-owner/function-type matching, function cv retention, data/function member-pointer distinction, static ordinary-function behavior, recursive array qualification, and deterministic typed output. Repaired `cv_qualifiers` to retain cv from wrappers, pointer/member-pointer nodes, and nested array elements, preventing const-array or const-pointer objects from converting to unqualified `void*`. | Fresh focused build; five affected PA12 tests plus fifteen nearby PA12 controls `20/20`; four checked-in PA10 member-pointer controls `4/4`; twelve valid/invalid target, cv, data/function, array, bound, static, and void-pointer probes with expected statuses; nested prefix/suffix and static/non-static rendering assertions passed. Fresh broad PA12 `160/166` with all `166/166` covered and exactly the six turn-start residuals; through-PA11 `685/685`; five interleaved performance rounds passed; file audit passed with two known warnings. | The six exact residual paths remain outside this audit. General class-aware calls/templates remain out of scope; local-extern, reference-binding, and overloaded-function-template selection remain residual. No tests, refs, harnesses, grammar, or scripts changed. | `make -C pa12 -j2`; direct checked-in-output/status comparisons for focused `20/20 + 4/4`; bounded `/dev/stdin` probes; five-round immutable performance probe; exact through-PA11 command; `make test-pa12` exit `2` with `160/166`; file audit exit `0`; `git diff --check`; exact authorized-path audit; checkpoint-audit commit followed by clean `git status --short`. |
+| 2026-08-24 PA12 `checkpointAudit` at `115aff98` | Complete PA10 call-shaped classification/charging -> PA11 canonical type/value lookup -> PA12 functional/explicit cast conversion ownership -> cold typed rendering trace; no source repair. | Fresh `make test-pa12` `163/166`, all 166 covered; fresh through-PA11 `685/685`; fresh through-PA12 `848/851`; focused build exit `0`, active PA12 `3/3`, PA12 controls `8/8`, PA10 parser controls `4/4`; six repeated dump pairs had status `0/0` and `cmp` `0`; fresh file audit passed with the two retained header warnings; diff/path checks passed. | Exact residuals remain outside this checkpoint: `300-local-extern-function-declaration.t`, `300-reference-binding-pointee-const-pointer.t`, and `300-static-cast-overloaded-function-template-argument.t`. No class-aware/template repair, test/ref/harness/grammar/script change, or source repair was made. | `make test-pa12` exit `2`; exact prior-through command exit `0`; `make test-report-through-pa12` exit `2`; file audit exit `0` with 2 warnings; `git diff --check` exit `0`; exact path audit pass. |
