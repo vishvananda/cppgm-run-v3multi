@@ -2310,11 +2310,12 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	const NameId introduced = target_name.last();
 	Scope& current = scopes_[scope.value];
 	if (current.types.find(introduced) != NULL ||
-		direct_value_exists(scope, introduced) ||
 		direct_namespace_exists(scope, introduced))
 		throw std::runtime_error("using declaration conflicts with binding");
 	if (type.valid())
 	{
+		if (direct_value_exists(scope, introduced))
+			throw std::runtime_error("using declaration conflicts with binding");
 		current.types.set(introduced, type);
 		current.using_types.set(introduced, type);
 		BindingKind kind = BindingKind::TypeAlias;
@@ -2341,12 +2342,81 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope);
 	if (values.empty())
 		throw std::runtime_error("using declaration target is not a binding");
+	const ValueList* existing = current.values.find(introduced);
+	bool existing_functions = existing != NULL && !existing->entries.empty();
+	if (existing_functions)
+	{
+		for (std::size_t i = 0; i < existing->entries.size(); ++i)
+		{
+			const Binding& old = binding(existing->entries[i].binding);
+			if (old.kind != BindingKind::Function ||
+				type_kind(old.type) != TypeKind::Function)
+			{
+				existing_functions = false;
+				break;
+			}
+		}
+	}
+	bool incoming_functions = true;
+	bool incoming_nonfunctions = true;
 	for (std::size_t i = 0; i < values.size(); ++i)
 	{
-		append_value_index(scope, introduced, values[i].binding, values[i].scope);
-		// Keep the PA11 dump's imported binding view without creating a second
-		// semantic declaration.  PA12 lookup consumers retain values[i].scope.
-		add_dump_binding_view(scope, values[i].binding);
+		const Binding& imported = binding(values[i].binding);
+		const bool is_function = imported.kind == BindingKind::Function &&
+			type_kind(imported.type) == TypeKind::Function;
+		incoming_functions = incoming_functions && is_function;
+		incoming_nonfunctions = incoming_nonfunctions && !is_function;
+	}
+	if (!incoming_functions && !incoming_nonfunctions)
+		throw std::runtime_error("using declaration mixes value kinds");
+	std::vector<ValueRef> additions;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
+		bool duplicate = false;
+		if (existing != NULL)
+			for (std::size_t j = 0; j < existing->entries.size(); ++j)
+				if (existing->entries[j].binding == values[i].binding &&
+					existing->entries[j].origin == values[i].scope)
+				{
+					duplicate = true;
+					break;
+				}
+		if (!duplicate)
+			for (std::size_t j = 0; j < additions.size(); ++j)
+				if (additions[j].binding == values[i].binding &&
+					additions[j].scope == values[i].scope)
+				{
+					duplicate = true;
+					break;
+				}
+		if (duplicate)
+			continue;
+		const Binding& imported = binding(values[i].binding);
+		const bool is_function = imported.kind == BindingKind::Function &&
+			type_kind(imported.type) == TypeKind::Function;
+		if (existing != NULL && (!existing_functions || !is_function))
+			throw std::runtime_error("using declaration conflicts with binding");
+		additions.push_back(values[i]);
+	}
+	for (std::size_t i = 0; i < additions.size(); ++i)
+	{
+		append_value_index(scope, introduced, additions[i].binding,
+			additions[i].scope);
+		// Keep one PA11 dump view per imported canonical binding in this
+		// scope.  Lookup retains the full (BindingId, origin ScopeId) pair.
+		bool have_view = false;
+		for (std::size_t j = 0; j < current.binding_views.size(); ++j)
+		{
+			const DumpBindingViewId view_id = current.binding_views[j];
+			if (view_id.valid() && view_id.value < dump_binding_views_.size() &&
+				dump_binding_views_[view_id.value].binding == additions[i].binding)
+			{
+				have_view = true;
+				break;
+			}
+		}
+		if (!have_view)
+			add_dump_binding_view(scope, additions[i].binding);
 	}
 }
 NameId PA11SemanticModel::template_parameter_name(const PA10AstNode& node)

@@ -72,9 +72,12 @@ bool PA11SemanticModel::case_label_convertible(TypeId source, TypeId target) con
 
 ScopeId PA11SemanticModel::create_internal_scope(ScopeId parent)
 {
+	if (!parent.valid() || parent.value >= scopes_.size())
+		throw std::runtime_error("PA12 internal scope has no valid parent");
 	const ScopeId result(scopes_.size());
+	const std::size_t depth = scopes_[parent.value].depth + 1;
 	scopes_.push_back(Scope(ScopeKind::Block, parent, NameId(),
-		NamedRecordId(), false, creation_order_++));
+		NamedRecordId(), false, creation_order_++, depth));
 	return result;
 }
 
@@ -187,7 +190,24 @@ void PA11SemanticModel::prepare_pa12_compound(const PA10AstNode& node,
 			throw std::runtime_error("PA12 compound scope is missing");
 	}
 	for (std::size_t i = 0; i < node.children.size(); ++i)
-		prepare_pa12_statement(node.children[i], block);
+	{
+		// process_compound_statement already formed direct declaration
+		// children in source order.  Do not feed them back through the
+		// substatement declaration path, which is reserved for declarations
+		// reached through an unbraced or label/case statement edge.
+		switch (node.children[i].kind)
+		{
+		case PA10NodeKind::SimpleDeclaration:
+		case PA10NodeKind::AliasDeclaration:
+		case PA10NodeKind::NamespaceAliasDefinition:
+		case PA10NodeKind::UsingDirective:
+		case PA10NodeKind::UsingDeclaration:
+			continue;
+		default:
+			prepare_pa12_statement(node.children[i], block);
+			break;
+		}
+	}
 }
 
 void PA11SemanticModel::prepare_pa12_statement(const PA10AstNode& node,
@@ -201,6 +221,18 @@ void PA11SemanticModel::prepare_pa12_statement(const PA10AstNode& node,
 	case PA10NodeKind::SimpleDeclaration:
 		if (declaration_fact(node) == NULL)
 			process_simple_declaration(node, scope);
+		return;
+	case PA10NodeKind::AliasDeclaration:
+		if (declaration_fact(node) == NULL)
+			process_declaration(node, scope);
+		return;
+	case PA10NodeKind::NamespaceAliasDefinition:
+	case PA10NodeKind::UsingDirective:
+	case PA10NodeKind::UsingDeclaration:
+		// These declarations are not direct children of a compound scope
+		// here; they were reached through an implicit substatement or a
+		// label/case edge and must be formed in that edge's scope.
+		process_declaration(node, scope);
 		return;
 	case PA10NodeKind::IfStatement:
 	{
@@ -1649,6 +1681,22 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		throw std::runtime_error("PA12 declaration fact is missing");
 	if (declaration->semantic_begin != InvalidIdentityValue)
 		return declaration_semantic_ids_[declaration->semantic_begin];
+	if (node.kind == PA10NodeKind::AliasDeclaration)
+	{
+		if (declaration->binding_count != 1)
+			throw std::runtime_error("PA12 alias declaration binding mismatch");
+		const BindingId binding_id = declaration_bindings_[
+			declaration->binding_begin];
+		const Binding& value = binding(binding_id);
+		SemanticFact fact(SemanticFactKind::TypeAlias, value.type,
+			SemanticValueCategory::Prvalue, &node);
+		fact.binding = binding_id;
+		const SemanticFactId result = make_semantic_fact(fact);
+		declaration->semantic_begin = declaration_semantic_ids_.size();
+		declaration->semantic_count = 1;
+		declaration_semantic_ids_.push_back(result);
+		return result;
+	}
 	if (node.kind == PA10NodeKind::ConditionDeclaration)
 	{
 		if (node.children.size() != 3 || declaration->binding_count != 1)
@@ -2052,16 +2100,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration_statement(
 		return SemanticFactId();
 	case PA10NodeKind::AliasDeclaration:
 	{
-		const DeclarationFact* declaration = declaration_fact(node);
-		if (declaration == NULL || declaration->binding_count != 1)
-			throw std::runtime_error("PA12 alias declaration fact is missing");
-		const BindingId binding_id = declaration_bindings_[
-			declaration->binding_begin];
-		const Binding& value = binding(binding_id);
-		SemanticFact fact(SemanticFactKind::TypeAlias, value.type,
-			SemanticValueCategory::Prvalue, &node);
-		fact.binding = binding_id;
-		return make_semantic_fact(fact);
+		return semantic_declaration(node, scope);
 	}
 	case PA10NodeKind::SimpleDeclaration:
 	{
@@ -2333,6 +2372,9 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 	case PA10NodeKind::SimpleDeclaration:
 		if (declaration_fact(node) != NULL)
 			semantic_declaration(node, scope);
+		break;
+	case PA10NodeKind::AliasDeclaration:
+		semantic_declaration(node, scope);
 		break;
 	case PA10NodeKind::FunctionDefinition:
 	{
@@ -2637,14 +2679,12 @@ void PA11SemanticModel::dump_pa12_top_node(std::ostream& output, const PA10AstNo
 	}
 	case PA10NodeKind::AliasDeclaration:
 	{
-		if (node.children.size() != 1 || node.producer_spelling == 0)
-			throw std::runtime_error("PA12 invalid alias dump fact");
-		const TypeId type = const_cast<PA11SemanticModel*>(this)->
-			type_from_type_id(node.children.front(), scope);
-		for (std::size_t indent = 0; indent < depth; ++indent)
-			output << "  ";
-		output << "type-alias " << ast_.producer_spelling(
-			node.producer_spelling) << ' ' << render_type(type) << '\n';
+		const DeclarationFact* declaration = declaration_fact(node);
+		if (declaration == NULL || declaration->semantic_count != 1 ||
+			declaration->semantic_begin == InvalidIdentityValue)
+			throw std::runtime_error("PA12 alias semantic fact is missing");
+		dump_pa12_fact(output, declaration_semantic_ids_[
+			declaration->semantic_begin], depth);
 		return;
 	}
 	case PA10NodeKind::FunctionDefinition:

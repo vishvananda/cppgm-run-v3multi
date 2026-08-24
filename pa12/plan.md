@@ -11,12 +11,23 @@ PA11 owns canonical `TypeId`, `ScopeId`, `BindingId`, `NamePath`, and lookup.
 once in source order: `AliasDeclaration`, `NamespaceAliasDefinition`,
 `UsingDirective`, `UsingDeclaration`, and `SimpleDeclaration`. PA12 consumes
 the resulting facts; lookup-only declarations have no statement line, while a
-local alias is a typed `TypeAlias` fact and `type-alias` dump line.
+local alias is a typed `TypeAlias` fact and `type-alias` dump line. Declaration
+nodes reached through an implicit unbraced substatement or label/case edge are
+formed by `prepare_pa12_statement` in that edge's canonical scope. The
+compound preparation loop skips its direct declaration children because the
+PA11 source-order pass already formed them.
+
+The bounded audit repair also carries the stored scope depth into PA12's
+internal unbraced-control scopes, and routes top-level aliases through the same
+cached `TypeAlias` fact used by block aliases before cold rendering.
 
 Using-declaration entries are typed `(BindingId, ScopeId)` pairs. The binding
 is the canonical source declaration and the scope is its source provenance;
 the importing scope gets only a lookup entry and a cold dump view, never a
-second semantic declaration or a rendered-name key.
+second semantic declaration or a rendered-name key. Same-scope using
+declarations merge only function bindings into one overload set; exact
+`(BindingId, origin ScopeId)` pairs and their per-scope dump views are
+deduplicated, while non-function collisions remain errors.
 
 Each `Scope` retains raw using-directive target edges for qualified and
 transitive graph traversal, while `process_using_directive` computes the
@@ -42,26 +53,29 @@ conversion. Thus overloaded function IDs and ordinary value operands share
 the target-directed path.
 
 Scope formation is O(block children). Effective placement costs O(H) once per
-using directive, where H is its scope depth; each query costs one O(H) lexical
-mark pass plus scans of effective entries at visited levels and reachable
-lookup graph/candidate work. It does not rescan the start ancestry per level or
-edge. There is no whole-arena scan, retry loop, rendered-name reparsing, or
-hash-order output.
+using directive, where H is its scope depth; same-name using-declaration merge
+work is bounded by the existing and incoming candidate entries. Each query
+costs one O(H) lexical mark pass plus scans of effective entries at visited
+levels and reachable lookup graph/candidate work. It does not rescan the start
+ancestry per level or edge. There is no whole-arena scan, retry loop,
+rendered-name reparsing, or hash-order output.
 
 ## Failure Map
 
-Turn start was clean at `994a7000`: PA12 **113/166 passing**, exactly **53
-failures**, all 166 covered; through PA11 was **685/685**.
+The reviewed checkpoint starts from landed commit `61b60cb1` (`pa12: preserve
+block lookup provenance`) and its supplied **120/166 passing**, exact **46
+failure** baseline, all 166 covered. The final broad result remains **120/166**
+with the earlier through-PA11 gate at **685/685**.
 
 | partition | total | passed | failed |
 | --- | ---: | ---: | ---: |
 | `tests/spec/100-*.t` | 12 | 12 | 0 |
 | `tests/general/100-*.t` | 25 | 25 | 0 |
 | `tests/spec/200-*.t` | 9 | 9 | 0 |
-| `tests/general/200-*.t` | 33 | 23 | 10 |
-| `tests/spec/300-*.t` | 10 | 9 | 1 |
+| `tests/general/200-*.t` | 33 | 29 | 4 |
+| `tests/spec/300-*.t` | 10 | 10 | 0 |
 | `tests/general/300-*.t` | 77 | 35 | 42 |
-| **all PA12 at turn start** | **166** | **113** | **53** |
+| **all PA12 final broad** | **166** | **120** | **46** |
 
 Checkpoint paths fixed by this increment:
 
@@ -75,10 +89,9 @@ pa12/tests/general/200-using-declaration-call.t
 pa12/tests/spec/300-block-scope-namespace-alias-qualified-call.t
 ```
 
-Final broad result is **120/166 passing**, **46 failures**, with all 166
-covered. Normalization against the supplied 53-path baseline found **0
-current-only** paths and **exactly seven baseline-only paths**, namely the
-seven fixed checkpoint paths above. The exact current residual inventory is:
+The final broad run and the supplied primary log have the same exact residual
+inventory: **46 failures**, all 166 covered, with zero current-only and zero
+baseline-only paths. The residual inventory is:
 
 ```text
 pa12/tests/general/200-builtin-constant-p-propagated-expression.t
@@ -131,76 +144,95 @@ pa12/tests/general/300-zero-arg-functional-cast-alias.t
 
 ## Active Checkpoint
 
-The approved five-file implementation increment is complete and validated.
-Its owner-level changes are:
+The landed five-file implementation increment is complete at `61b60cb1` and
+this audit found two additional bounded repairs in its approved PA12 owner.
+The owner-level changes are:
 
 - PA10 declaration disambiguation for cv-qualified and pointer/reference
   named-type forms, with declaration-follow validation;
 - PA11 one-pass block declaration formation, paired source-provenance value
   entries, nearest-common-ancestor using lookup, and direct-initializer target
-  recognition;
+  recognition, including typed same-scope function-using overload merging and
+  pair/dump-view deduplication;
 - PA12 lookup-only statement suppression, typed local-alias facts, function
   provenance in dumps, and target-directed direct initialization.
+- PA12 internal unbraced-control scope depth propagation for common-ancestor
+  lookup;
+- PA12 direct unbraced/label/case declaration preparation without reprocessing
+  direct compound children;
+- cached top-level `TypeAlias` facts for cold PA12 rendering, eliminating the
+  dump-time type reconstruction path.
 
 The checkpoint remains intentionally scoped to block declarations, aliases,
-using continuity, lookup precedence, and direct initialization. The 46
-residual paths remain owned by unrelated later expression/control families.
+using continuity, lookup precedence, and direct initialization. The final
+46-path residual set remains owned by unrelated later expression/control
+families. This bounded checkpoint audit is complete; a future residual-family
+pass is a separate checkpoint.
 
 ## Performance Evidence
 
-The corrected lookup traversal was exercised with two out-of-tree structural
-probes. The common-ancestor probe has one `n::f(int)`, one global `f(long)`,
-and a block `using namespace n`: two runs both exited 0, produced byte-identical
-dumps, and selected `n::f` for `f(0)`. The transitive/cyclic probe has four
-namespace-definition nodes, four using edges including an `a <-> b` cycle,
-and a block edge to `a`: two runs both exited 0, were byte-identical, and
-selected `c::g`. Generation marks prevent cycle retries.
+Fresh out-of-tree probes exercised direct unbraced selection/iteration
+declarations, nested implicit scopes, label/case preparation, direct
+overloaded-function initialization, same-scope using-function merge and
+repeat-import deduplication, common-ancestor overload merge, and an `a <-> b`
+transitive/cyclic using graph. Valid direct, case, iteration, and nested-scope
+probes exited 0. Invalid targets and post-substatement name uses exited 1;
+the valid labeled-alias probe reaches the pre-existing unsupported labeled
+semantic statement path, while an invalid labeled target is rejected during
+declaration preparation.
 
-The immutable scaling executable was
-`/tmp/pa12-lookup-effective-immutable-final2`, SHA-256
-`482f814a4a98626bb66e05a117a35bd106c241195be1887040427a60e8175aa3`.
-Equivalent block-nesting inputs used one declaration, one call, one selected
-candidate, and only the lexical depth/effective using-edge count varied:
+The parser evidence is concrete: `PA10Parser::parse_statement` checks
+`declaration_start()` and returns `parse_declaration()` for direct substatements
+(`dev/src/pa10_ast.cpp:2360-2361`), and `--emit-ast` emitted the expected
+`using-directive`, `using-declaration`, and `alias-declaration` branch/case
+children. No grammar or parser change was needed.
+
+The refreshed immutable scaling executable was copied from `dev/cppgm++` to
+`/tmp/pa12-checkpoint-audit-immutable-61b60cb1-direct-using`, SHA-256
+`2fc6d0b184ed8a5a6aea86224607b9ef4ad3b04f93975040e3aab0b2156a680b`.
+Equivalent inputs used one declaration, one call, one selected candidate, and
+only nested lexical depth/effective using-edge count varied:
 
 | case | input SHA-256 | H lexical scopes | effective using edges | source lines | selected candidates |
 | --- | --- | ---: | ---: | ---: | ---: |
-| small | `e2cbb96e747b59ecf24bc1476bfe4dd29902695cec82c261a3d6f2c6cc0b3ba7` | 11 | 8 | 32 | 1 (`target::f`) |
-| large | `8094f1fa118e8c3dee78f7d57f0ff293ac57a738eff96640a1745dcf179053de` | 67 | 64 | 200 | 1 (`target::f`) |
+| small | `7e3ee5825d46edb515ac5b964390f490501200b4c2a697817630fbbcf1c1b2f1` | 11 | 8 | 23 | 1 (`target::f`) |
+| large | `2a0f6e8fa07a47af133d2f09bba986ec74537d6e6abaaa48dc1f4d9a3eb002ab` | 38 | 35 | 77 | 1 (`target::f`) |
 
-Five interleaved rounds of five batches per case timed ten invocations per
-sample: 25 samples and 250 successful invocations per case. Median batch
-measurements were:
+Five interleaved rounds timed ten invocations per sample: 5 batches and 50
+successful invocations per case. Refreshed median batch measurements were:
 
 | case | wall (s/10) | user (s/10) | system (s/10) | peak RSS (KiB) |
 | --- | ---: | ---: | ---: | ---: |
-| small | 0.03 | 0.01 | 0.02 | 7080 |
-| large | 0.05 | 0.02 | 0.02 | 7116 |
+| small | 1.06 | 0.03 | 0.06 | 7206 |
+| large | 1.06 | 0.03 | 0.06 | 7194 |
 
-Separate repeated runs for both inputs exited 0 and produced byte-identical
-dumps, with `target::f` selected. The roughly 6.1x increase in H and 8x
-increase in effective edges produced bounded near-linear structural growth,
-not the prior per-level ancestry/common-ancestor rescan shape: the observed
-median batch cost changed from 0.03 s to 0.05 s while peak RSS stayed within
-36 KiB.
+Separate repeated runs for both inputs exited 0 and produced one byte-identical
+dump hash per case, with `target::f` selected. The roughly 3.5x increase in H
+and 4.4x increase in effective edges remained within the coarse refreshed
+1.06-second batch wall median and nearly unchanged peak RSS. This supports the
+documented bounded lexical-mark/effective-entry and reachable-graph work; it
+is not a claim about the full PA12 suite or a fine-grained scaling coefficient.
 
-The direct-initializer probe uses `using FP = int (*)();`, overloads `f()`
-with `f(int)`, and initializes `FP p(f)`. It exits 0 and dumps `p` as a
-pointer to function returning `int` with an `id-expression` of function
-returning `int`, proving target selection of `f()`. The parser probe exits 0
-for `const`, `volatile`, pointer, const-pointer, reference, and genuine
-function-declaration forms; focused negative controls preserve ambiguous-call
-failure behavior.
+The direct-target input hash is
+`60ff14d8c359511d497a90129726a23afd0d6193bed743ecea7209582f6a88a4` and its
+repeated output hash is
+`bff28ef00c661139964e5c478c46a6661aa2229cb81cc4a4d25273dbce828b6b`. The
+cyclic input hash is
+`bb50766e3aff8dd32140df018a26c75c0454bbb76a5676abc07524aaa3ad1850` and its
+repeated output hash is
+`8f7bbacd28fed9d4bcc70f79db2ae5cae80f273cebb68c862b9126db467746d7`.
+The focused parser/declaration controls cover `const`, `volatile`, pointer,
+const-pointer, reference, and genuine function-declaration forms.
 
 ## checkpoint ledger
 
 | row | evidence / ownership |
 | --- | --- |
-| turn-start | Clean `994a7000`; PA12 **113/166**, exact **53** failures, all covered; through PA11 **685/685**. |
-| implementation | Exactly five changed files: four approved `dev/src` owners plus `pa12/plan.md`; no tests, refs, fixtures, grammar, harnesses, scripts, or generated artifacts. |
-| focused | Checkpoint, namespace/using controls, alias cv/pointer/reference controls, function declarations, and negative ambiguity controls: **15/15 PASS**. |
-| probes | Direct overloaded-function initialization, common-ancestor overload merge, cyclic/transitive deterministic graph, and parser declaration probe all exited 0; repeated lookup dumps were byte-identical. |
-| broad PA12 | Required `make test-pa12`: **120/166 passed**, **46 failed**, all 166 covered; normalized delta **+7 passed / -7 failed**, current-only **0**, baseline-only exactly the **7 fixed checkpoint paths**. |
-| through PA11 | Exact required through command: **ALL TESTS PASSED SUCCESSFULLY! (685 / 685)**. |
-| file audit | `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: passed with the two pre-existing header-division warnings. |
-| diff check | `git diff --check`: passed. |
-| commit | Existing PA12-focused commit is amended in place with this typed effective-scope performance repair; post-amend review and clean-status checks are recorded in the handoff. |
+| turn-start | Clean `61b60cb1`; supplied PA12 **120/166**, exact **46** failures, all covered; through PA11 **685/685**. |
+| implementation | Landed five-file increment audited; unbraced/label/case declaration preparation and typed same-scope function-using merge/dedup repairs are included in the final four-file checkpoint-audit change; no tests, refs, fixtures, grammar, harnesses, scripts, or generated repository artifacts changed. |
+| focused | Exact checkpoint paths **7/7 PASS**; expanded ownership/lookup controls **14/14 PASS**; the one additional qualified-`decltype` control remains its supplied residual failure. |
+| probes | Valid direct selection/iteration, alias, case, nested-scope, overload-merge, and repeat-import probes exited 0; invalid target/collision/non-leakage probes exited 1; merge selected both `left::f` and `right::f`, and repeat `--emit-types` showed one block `f` view. |
+| performance | Refreshed immutable executable/input hashes, five interleaved 10-run batches, 50/50 successful invocations per case, medians, RSS, selected candidates, and one output hash per case are recorded above. |
+| broad PA12 | Exact `make test-pa12` exited 2 with **120/166** passed and **46** failures; all 166 covered; normalized against the supplied log as **46 baseline / 46 current / 0 current-only / 0 baseline-only**; none of the seven checkpoint paths regressed. |
+| through PA11 / file audit | Exact through-PA11 command passed **685/685**. Exact file audit passed with the two known warnings: `cpp_semantic_core.h:1` and `pa11_semantic_model.h:1` substantial header implementation bodies. |
+| diff / paths / commit | `git diff --check` passed; diff from `61b60cb1` contains exactly the four approved paths and no tests, refs, fixtures, grammar, harnesses, scripts, or generated artifacts; final checkpoint-audit commit records this row. |
