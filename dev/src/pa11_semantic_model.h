@@ -254,7 +254,8 @@ struct GeneratedOrdinal
 
 enum class GeneratedEntityKind
 {
-	AnonymousUnion
+	AnonymousUnion,
+	AnonymousEnum
 };
 
 struct GeneratedIdentity
@@ -403,6 +404,7 @@ enum class SemanticFactKind
 	ConditionalExpression,
 	CastExpression,
 	SubscriptExpression,
+	BracedInitList,
 	SizeofExpression,
 	IfStatement,
 	ThenBranch,
@@ -442,7 +444,8 @@ enum class ConversionKind
 	ArrayToPointer,
 	FunctionToPointer,
 	ReferenceBinding,
-	PointerToBool
+	PointerToBool,
+	Floating
 };
 
 struct ConversionFact
@@ -684,6 +687,7 @@ private:
 	std::vector<DumpBindingView> dump_binding_views_;
 	std::vector<DumpScopeView> dump_scope_views_;
 	std::size_t anonymous_union_count_;
+	std::size_t anonymous_enum_count_;
 	std::size_t creation_order_;
 	mutable std::vector<std::uint32_t> lookup_marks_;
 	mutable std::uint32_t lookup_generation_;
@@ -971,6 +975,9 @@ private:
 	;
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
 	;
+	ScopeId prepare_pa12_control(const PA10AstNode& node, ScopeId parent,
+		StatementFactKind kind)
+	;
 	void prepare_pa12_condition(const PA10AstNode& node, ScopeId scope)
 	;
 	void prepare_pa12_substatement(const PA10AstNode& node, ScopeId parent)
@@ -984,6 +991,10 @@ private:
 	TypeId strip_cv_type(TypeId type) const
 	;
 	TypeId strip_reference_type(TypeId type) const
+	;
+	TypeId strip_top_cv_type(TypeId type)
+	;
+	bool modifiable_lvalue(TypeId type) const
 	;
 	TypeId expression_object_type(TypeId type) const
 	;
@@ -1001,7 +1012,14 @@ private:
 	;
 	bool scalar_id(TypeId type) const
 	;
+	bool nullptr_id(TypeId type) const
+	;
 	unsigned int integral_rank(TypeId type) const
+	;
+	bool signed_integral_represents(TypeId signed_type,
+		TypeId unsigned_value) const
+	;
+	FundamentalType unsigned_counterpart(FundamentalType type) const
 	;
 	unsigned int cv_qualifiers(TypeId type) const
 	;
@@ -1045,7 +1063,13 @@ private:
 	ScopeId scope)
 	;
 	FunctionIdResolution resolve_function_id_target(const PA10AstNode& node,
-	ScopeId scope, TypeId target)
+		ScopeId scope, TypeId target)
+	;
+	FunctionIdResolution resolve_single_argument_function(const NamePath& path,
+		ScopeId scope, const ExprInfo& argument) const
+	;
+	ExprInfo semantic_single_argument_call(const PA10AstNode& node,
+		const FunctionIdResolution& resolution, const ExprInfo& argument)
 	;
 	ExprInfo semantic_id_expression_selected(const PA10AstNode& node,
 	ScopeId scope, const FunctionIdResolution& resolution)
@@ -1057,6 +1081,12 @@ private:
 	TypeId target, const PA10AstNode* source_node)
 	;
 	TypeId common_integral_type(TypeId left, TypeId right) const
+	;
+	TypeId common_arithmetic_type(TypeId left, TypeId right) const
+	;
+	unsigned int floating_rank(TypeId type) const
+	;
+	void record_builtin_conversion(const ExprInfo& expression, TypeId target)
 	;
 	SemanticFactId make_expression_fact(SemanticFactKind kind, TypeId type,
 	SemanticValueCategory category, const PA10AstNode& node,
@@ -1086,6 +1116,9 @@ private:
 	;
 	ExprInfo semantic_expression(const PA10AstNode& node, ScopeId scope)
 	;
+	ExprInfo semantic_braced_init_list(const PA10AstNode& node,
+		TypeId target, ScopeId scope)
+	;
 	SemanticFactId semantic_declaration(const PA10AstNode& node, ScopeId scope)
 	;
 	SemanticFactId semantic_declaration_statement(const PA10AstNode& node,
@@ -1093,6 +1126,10 @@ private:
 	;
 	SemanticFactId semantic_ambiguous_call_statement(const PA10AstNode& node,
 	ScopeId scope)
+	;
+	bool ambiguous_assignment_statement(const PA10AstNode& node,
+		ScopeId scope, NamePath* callee, const PA10AstNode** argument,
+		const PA10AstNode** right)
 	;
 	SemanticFactId semantic_compound(const PA10AstNode& node, ScopeId parent,
 	const FunctionFact& function, unsigned int loop_depth,

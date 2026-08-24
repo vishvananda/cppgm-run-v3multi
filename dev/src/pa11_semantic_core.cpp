@@ -8,7 +8,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
 	  scopes_(), bindings_(), global_(), deferred_scopes_(),
 	  dump_binding_views_(), dump_scope_views_(),
-	  anonymous_union_count_(0), creation_order_(0), lookup_marks_(),
+	  anonymous_union_count_(0), anonymous_enum_count_(0), creation_order_(0),
+	  lookup_marks_(),
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
 	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
@@ -909,6 +910,10 @@ TypeId PA11SemanticModel::create_anonymous_enum(ScopeId owner, bool scoped, bool
 	record.has_underlying = has_underlying;
 	record.underlying = underlying;
 	record.defined = definition;
+	record.has_generated_identity = true;
+	record.generated_identity = GeneratedIdentity(
+		GeneratedEntityKind::AnonymousEnum, owner, SourceInterval(),
+		GeneratedOrdinal(anonymous_enum_count_++));
 	const NamedRecordId record_id(named_.size());
 	named_.push_back(record);
 	if (scoped)
@@ -1230,10 +1235,14 @@ std::size_t PA11SemanticModel::type_size(TypeId type) const
 }
 TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope)
 {
-	if (node.kind == PA10NodeKind::Literal ||
-		node.kind == PA10NodeKind::KeywordLiteral)
-		return fundamental(node.kind == PA10NodeKind::KeywordLiteral ?
-			FundamentalType::Bool : node.literal.type);
+	if (node.kind == PA10NodeKind::Literal)
+		return fundamental(node.literal.type);
+	if (node.kind == PA10NodeKind::KeywordLiteral)
+	{
+		if (node.token == SimpleTokenType::KW_NULLPTR)
+			return fundamental(FundamentalType::NullptrT);
+		return fundamental(FundamentalType::Bool);
+	}
 	if (node.kind == PA10NodeKind::ParenthesizedExpression)
 	{
 		if (node.children.empty())
@@ -2100,7 +2109,8 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 {
 	if (node.children.empty())
 		throw std::runtime_error("invalid PA11 simple declaration");
-	if (ambiguous_call_statement(node, scope, NULL, NULL))
+	if (ambiguous_call_statement(node, scope, NULL, NULL) ||
+		ambiguous_assignment_statement(node, scope, NULL, NULL, NULL))
 		return;
 	const SpecFact spec = spec_fact(node.children.front(), scope);
 	if (node.children.size() == 1)
@@ -2135,6 +2145,17 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		const bool direct_initializer = direct_initializer_operand(init, target, NULL);
 		TypeId type = direct_initializer ? spec.base :
 			apply_declarator(declarator, spec.base, target);
+		if (!direct_initializer && type_kind(type) == TypeKind::Array &&
+			types_[type.value].unknown_bound && init.children.size() > 1 &&
+			init.children[1].kind == PA10NodeKind::Initializer &&
+			init.children[1].children.size() == 1 &&
+			init.children[1].children.front().kind ==
+				PA10NodeKind::BracedInitList)
+		{
+			const PA10AstNode& braces = init.children[1].children.front();
+			type = make_array(types_[type.value].child, false,
+				ArrayBound(braces.children.size()));
+		}
 		if (spec.is_constexpr && type_kind(type) != TypeKind::Function)
 			type = make_cv(type, 1u);
 		BindingId binding_id;
@@ -2233,6 +2254,11 @@ ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, S
 		case PA10NodeKind::UsingDeclaration:
 			// Block declarations are formed once, in source order, before
 			// PA12 traverses their statement facts.
+			process_declaration(child, block);
+			break;
+		case PA10NodeKind::EnumSpecifier:
+			// A block enum publishes its typed enumerator bindings before
+			// PA12 analyzes the following expressions.
 			process_declaration(child, block);
 			break;
 		case PA10NodeKind::CompoundStatement:
@@ -2466,6 +2492,69 @@ void PA11SemanticModel::process_template_declaration(const PA10AstNode& node, Sc
 			process_template_parameter(clause.children[i].children[j], parameters);
 	}
 	process_declaration(node.children[1], parameters);
+}
+bool PA11SemanticModel::ambiguous_assignment_statement(const PA10AstNode& node,
+	ScopeId scope, NamePath* callee, const PA10AstNode** argument,
+	const PA10AstNode** right)
+{
+	if (node.kind != PA10NodeKind::SimpleDeclaration || node.children.size() != 2 ||
+		node.children[0].kind != PA10NodeKind::DeclSpecifierSeq ||
+		node.children[0].children.size() != 1 ||
+		node.children[1].kind != PA10NodeKind::InitDeclaratorList ||
+		node.children[1].children.size() != 1)
+		return false;
+	const PA10AstNode& spec = node.children[0].children.front();
+	if (spec.kind != PA10NodeKind::DeclSpecifier || spec.has_token ||
+		(spec.name_parts.empty() && spec.producer_spelling == 0))
+		return false;
+	const PA10AstNode& init = node.children[1].children.front();
+	if (init.kind != PA10NodeKind::InitDeclarator || init.children.size() != 2 ||
+		init.children[0].kind != PA10NodeKind::Declarator ||
+		init.children[1].kind != PA10NodeKind::Initializer ||
+		init.children[1].children.size() != 1)
+		return false;
+	const PA10AstNode& outer = init.children.front();
+	if (outer.children.size() != 1 ||
+		outer.children.front().kind != PA10NodeKind::NestedDeclarator)
+		return false;
+	const PA10AstNode& nested = outer.children.front();
+	if (nested.children.size() != 1 ||
+		nested.children.front().kind != PA10NodeKind::Declarator)
+		return false;
+	const PA10AstNode& inner = nested.children.front();
+	if (inner.children.size() != 1 ||
+		inner.children.front().kind != PA10NodeKind::Identifier)
+		return false;
+	const NamePath function_name = name_path(spec);
+	if (lookup_type_path(function_name, scope).valid())
+		return false;
+	const std::vector<ValueRef> values = lookup_value_path(function_name, scope);
+	bool has_function = false;
+	for (std::size_t i = 0; i < values.size(); ++i)
+		if (binding(values[i].binding).kind == BindingKind::Function)
+		{
+			has_function = true;
+			break;
+		}
+	if (!has_function)
+		return false;
+	const PA10AstNode& initializer = init.children[1].children.front();
+	if (initializer.kind != PA10NodeKind::IdExpression &&
+		initializer.kind != PA10NodeKind::Literal &&
+		initializer.kind != PA10NodeKind::KeywordLiteral &&
+		initializer.kind != PA10NodeKind::ParenthesizedExpression &&
+		initializer.kind != PA10NodeKind::BinaryExpression &&
+		initializer.kind != PA10NodeKind::AssignmentExpression &&
+		initializer.kind != PA10NodeKind::ConditionalExpression &&
+		initializer.kind != PA10NodeKind::CastExpression)
+		return false;
+	if (callee != NULL)
+		*callee = function_name;
+	if (argument != NULL)
+		*argument = &inner.children.front();
+	if (right != NULL)
+		*right = &initializer;
+	return true;
 }
 void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId scope)
 {

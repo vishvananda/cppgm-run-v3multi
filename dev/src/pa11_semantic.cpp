@@ -32,6 +32,9 @@ std::string PA11SemanticModel::render_generated_name(const GeneratedIdentity& ge
 		result << "__anonymous_union_type__" << generated.source.begin.value << '_'
 			<< generated.source.end.value;
 		break;
+	case GeneratedEntityKind::AnonymousEnum:
+		result << "__anonymous_enum" << (generated.ordinal.value + 1);
+		break;
 	}
 	return result.str();
 }
