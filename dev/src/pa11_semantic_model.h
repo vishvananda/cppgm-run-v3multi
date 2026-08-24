@@ -472,8 +472,10 @@ struct SemanticFact
 	std::size_t conversion_begin;
 	std::size_t conversion_count;
 	std::size_t literal_element_count;
+	std::uint64_t literal_value;
 	bool has_literal_value;
-	std::int64_t literal_value;
+	bool literal_value_unsigned;
+	bool literal_value_negative;
 	bool has_callee;
 
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
@@ -486,7 +488,8 @@ struct SemanticFact
 		  name_begin(0), name_count(0), name_global(false),
 		  child_begin(InvalidIdentityValue), child_count(0),
 		  conversion_begin(InvalidIdentityValue), conversion_count(0),
-		  literal_element_count(0), has_literal_value(false), literal_value(0),
+		  literal_element_count(0), literal_value(0), has_literal_value(false),
+		  literal_value_unsigned(false), literal_value_negative(false),
 		  has_callee(false)
 	{}
 };
@@ -602,12 +605,12 @@ struct SwitchCaseKeyHash
 struct SwitchValidationContext
 {
 	TypeId type;
+	TypeId conversion_type;
 	FlatIndex<SwitchCaseKey, bool, SwitchCaseKeyHash> case_values;
 	bool has_default;
 
-	explicit SwitchValidationContext(TypeId type = TypeId())
-		: type(type), case_values(), has_default(false)
-	{}
+	explicit SwitchValidationContext(TypeId type = TypeId(), TypeId conversion_type = TypeId())
+		: type(type), conversion_type(conversion_type.valid() ? conversion_type : type), case_values(), has_default(false) {}
 };
 
 class PA11SemanticModel
@@ -1025,13 +1028,23 @@ private:
 	SemanticFactId semantic_case_label(const PA10AstNode& node, ScopeId scope,
 		SwitchValidationContext& switch_context)
 	;
-	SwitchCaseKey switch_case_key(TypeId switch_type, __int128 value) const
+	TypeId promote_integral_type(TypeId type) const
+	;
+	TypeId switch_condition_type(TypeId type) const
+	;
+	bool case_label_convertible(TypeId source, TypeId target) const
+	;
+	bool convert_case_value(TypeId switch_type, __int128 value,
+		SwitchCaseKey* result) const
 	;
 	SemanticFactId semantic_for_init(const PA10AstNode& node, ScopeId scope)
 	;
 	SemanticFactId semantic_substatement(const PA10AstNode& wrapper,
 		ScopeId parent, const FunctionFact& function, unsigned int loop_depth,
 		unsigned int switch_depth, SwitchValidationContext* switch_context)
+	;
+	SemanticFactId semantic_jump_statement(const PA10AstNode& node,
+		unsigned int loop_depth, unsigned int switch_depth)
 	;
 	SemanticFactId semantic_statement(const PA10AstNode& node, ScopeId scope,
 	const FunctionFact& function, unsigned int loop_depth,

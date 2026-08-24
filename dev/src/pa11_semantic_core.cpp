@@ -1030,7 +1030,9 @@ bool PA11SemanticModel::unsigned_type(FundamentalType type) const
 		type == FundamentalType::UnsignedShortInt ||
 		type == FundamentalType::UnsignedInt ||
 		type == FundamentalType::UnsignedLongInt ||
-		type == FundamentalType::UnsignedLongLongInt;
+		type == FundamentalType::UnsignedLongLongInt ||
+		type == FundamentalType::Char16T ||
+		type == FundamentalType::Char32T;
 }
 ConstValue PA11SemanticModel::literal_constant(const PA10AstNode& node) const
 {
