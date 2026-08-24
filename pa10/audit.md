@@ -116,8 +116,11 @@ The earliest public regression is
 `cppgm.tests/course/pa10/300-global-scope-delete.t`; its checked-in `.ref`
 contains the exact AST for both `::delete p` and `::delete [] q`, and its
 `.ref.exit_status` contains `EXIT_SUCCESS`.  The focused course check passed
-`1/1`.  PA10 has no reference binary, so the output was recorded directly
-from the implementation under test.
+`1/1`.  The `.ref` bytes are hand-authored and contract-derived from the
+`pa10.gram` delete productions, the README translation-unit/tree output
+contract, and the established standalone `global-scope` child shape in the
+checked placement-new references.  The implementation output was compared
+against those independently derived bytes only as a behavioral check.
 
 The checked fixture's anonymous built-in non-type parameter presentation and
 the attribute-skipping boundary remain documented syntax conventions.  They
