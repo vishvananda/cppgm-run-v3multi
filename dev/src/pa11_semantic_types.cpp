@@ -128,7 +128,18 @@ TypeId PA11SemanticModel::strip_top_cv_type(TypeId type)
 }
 unsigned int PA11SemanticModel::cv_qualifiers(TypeId type) const
 {
-	return type_kind(type) == TypeKind::Cv ? types_[type.value].cv : 0;
+	unsigned int qualifiers = 0;
+	while (type_kind(type) == TypeKind::Cv)
+	{
+		qualifiers |= types_[type.value].cv;
+		type = types_[type.value].child;
+	}
+	const TypeKind kind = type_kind(type);
+	if (kind == TypeKind::Pointer || kind == TypeKind::MemberPointer)
+		return qualifiers | types_[type.value].cv;
+	if (kind == TypeKind::Array)
+		return qualifiers | cv_qualifiers(types_[type.value].child);
+	return qualifiers;
 }
 void PA11SemanticModel::qualification_decomposition(TypeId type,
 	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
