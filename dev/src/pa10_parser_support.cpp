@@ -1099,6 +1099,12 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	return true;
 }
 
+bool attribute_specifier_start(const std::vector<PA10Token>& tokens,
+	std::size_t position)
+{
+	return attribute_start_at(tokens, position);
+}
+
 PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
 	const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,

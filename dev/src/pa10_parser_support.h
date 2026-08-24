@@ -61,6 +61,8 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 // bounded attribute scan, including a present failing token.
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	std::size_t position, std::size_t* after, std::size_t* consumed);
+bool attribute_specifier_start(const std::vector<PA10Token>& tokens,
+	std::size_t position);
 
 enum class PA10ElaboratedSpecifierContext
 {

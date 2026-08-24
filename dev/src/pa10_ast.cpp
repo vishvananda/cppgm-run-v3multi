@@ -514,7 +514,7 @@ private:
 	PA10AstNode parse_abstract_declarator(bool stop_at_empty_parameter_clause = false,
 		bool first_member_pointer_checked = false, bool new_expression_context = false);
 	PA10AstNode parse_declarator(bool allow_abstract = false, bool force_parameter_suffix = false,
-		bool prefer_parameter_clause_at_root = false);
+		bool prefer_parameter_clause_at_root = false, bool stop_at_parameter_attributes = false);
 	PA10AstNode parse_ptr_operator();
 	bool member_pointer_operator_start();
 	PA10Name parse_member_pointer_qualifier();
@@ -1649,7 +1649,7 @@ PA10AstNode PA10Parser::parse_abstract_declarator(bool stop_at_empty_parameter_c
 	return result;
 }
 PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
-	bool force_parameter_suffix, bool prefer_parameter_clause_at_root)
+	bool force_parameter_suffix, bool prefer_parameter_clause_at_root, bool stop_at_parameter_attributes)
 {
 	enter();
 	PA10AstNode result = node(PA10NodeKind::Declarator);
@@ -1681,7 +1681,7 @@ PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
 	else if (!allow_abstract)
 		fail("expected declarator-id");
 	while (fixed(SimpleTokenType::OP_LPAREN) ||
-		fixed(SimpleTokenType::OP_LSQUARE))
+		(fixed(SimpleTokenType::OP_LSQUARE) && !(stop_at_parameter_attributes && PA10ParserSupport::attribute_specifier_start(tokens_, position_))))
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN) &&
 			(force_parameter_suffix || looks_like_parameter_clause()))
@@ -1754,10 +1754,10 @@ PA10AstNode PA10Parser::parse_parameter_declaration()
 		declarator.children.push_back(node(PA10NodeKind::ParameterPack));
 		result.children.push_back(std::move(declarator));
 	}
-	else if (!fixed(SimpleTokenType::OP_COMMA) &&
-		!fixed(SimpleTokenType::OP_RPAREN) &&
-		!fixed(SimpleTokenType::OP_DOTS))
-		result.children.push_back(parse_declarator(true, false, true));
+	else if (!fixed(SimpleTokenType::OP_COMMA) && !fixed(SimpleTokenType::OP_RPAREN) &&
+		!fixed(SimpleTokenType::OP_DOTS) && !PA10ParserSupport::attribute_specifier_start(tokens_, position_))
+		result.children.push_back(parse_declarator(true, false, true, true));
+	skip_attribute_specifiers();
 	if (fixed(SimpleTokenType::OP_ASS))
 	{
 		PA10AstNode argument = node(PA10NodeKind::DefaultArgument);
