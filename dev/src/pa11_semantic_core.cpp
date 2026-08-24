@@ -2459,7 +2459,8 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			throw std::runtime_error("unresolved PA11 declaration scope");
 		if (spec.anonymous_record.valid())
 		{
-			finalize_anonymous_record(spec.base, name.path.last(), target);
+			const TypeId record_name_type = spec.is_typedef ? spec.base : named_type(spec.anonymous_record);
+			finalize_anonymous_record(record_name_type, name.path.last(), target);
 			if (!spec.is_typedef &&
 				named_[spec.anonymous_record.value].class_tag == ClassTag::Union)
 			{
