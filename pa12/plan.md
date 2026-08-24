@@ -32,32 +32,35 @@ caches, or hash-order output.
 
 The PA11 core edits are limited to the two typed ownership gaps exposed by the
 checkpoint: the assignment vocabulary's unqualified `nullptr_t` type lookup
-and the AST representation of a named variadic parameter pack. They preserve
-the existing canonical type and binding owners.
+and the AST representation of a named variadic parameter pack. The lookup
+fallback now consults an ordinary alias first and synthesizes the assignment
+vocabulary type only when no binding exists; the pack walk covers nested
+pointer/reference declarators but stops at nested function-type clauses.
+These edits preserve the existing canonical type and binding owners.
 
 ## Failure Map
 
-The clean turn-start baseline is **103/166 passing, 63 failures**, with all
-166 tests covered. The supplied earlier-stage baseline is **685/685 through
-PA11**. Partition:
+The clean turn-start and post-repair results are both **113/166 passing,
+53 failures**, with all 166 tests covered. The earlier-stage gate is
+**685/685 through PA11**. The current partition is:
 
 | checked-in partition | total | passed | failed |
 | --- | ---: | ---: | ---: |
 | `tests/spec/100-*.t` | 12 | 12 | 0 |
 | `tests/general/100-*.t` | 25 | 25 | 0 |
-| `tests/spec/200-*.t` | 9 | 8 | 1 |
-| `tests/general/200-*.t` | 33 | 19 | 14 |
-| `tests/spec/300-*.t` | 10 | 6 | 4 |
-| `tests/general/300-*.t` | 77 | 33 | 44 |
-| **all PA12 tests** | **166** | **103** | **63** |
+| `tests/spec/200-*.t` | 9 | 9 | 0 |
+| `tests/general/200-*.t` | 33 | 23 | 10 |
+| `tests/spec/300-*.t` | 10 | 9 | 1 |
+| `tests/general/300-*.t` | 77 | 35 | 42 |
+| **all PA12 tests** | **166** | **113** | **53** |
 
-The complete turn-start failure ownership is recorded below. After this
-increment, full PA12 is **113/166 passing, 53 failing**, with all 166 covered:
-all ten active-checkpoint paths pass, the exact current failure set is the same
-53 residual paths listed below, and there are no extra failures or regressions.
-The ten paths in the active checkpoint are the only callable/conversion
-failures being changed; the remaining 53 retain explicit residual ownership
-and are not hidden by added passing probes.
+The complete turn-start and current failure ownership is recorded below. All
+ten active checkpoint paths pass, and the exact 53 residual paths remain
+listed below. The ten paths are the landed callable/conversion gains. The
+audit repairs additionally close two PA11 ownership gaps—ordinary alias
+precedence and nested named-pack traversal—without changing fixture
+inventory. The remaining 53 retain explicit residual ownership and are not
+hidden by added passing probes.
 
 Checkpoint-owned paths (10):
 
@@ -135,7 +138,7 @@ pa12/tests/spec/300-block-scope-namespace-alias-qualified-call.t
 
 ## Active Checkpoint
 
-Implemented in the coherent checkpoint commit:
+Landed in the coherent checkpoint commit:
 
 - direct namespace/function overload-set calls are separated from indirect
   variable/parameter calls, preserving the selected `BindingId`, `ScopeId`,
@@ -151,14 +154,26 @@ Implemented in the coherent checkpoint commit:
   fact;
 - unnamed parameters retain the checked-in two-space dump spelling.
 
-Changed paths are exactly:
+Repaired in this checkpoint audit:
+
+- ordinary unqualified type lookup now preserves an existing `nullptr_t`
+  alias before the synthetic assignment-vocabulary fallback;
+- named variadic-pack markers remain attached to the enclosing parameter
+  declarator, without leaking nested function-type ellipses.
+
+Reviewed implementation and record paths for this checkpoint are:
 
 ```text
 dev/src/pa12_semantic.cpp
 dev/src/pa11_semantic_model.h
 dev/src/pa11_semantic_core.cpp
 pa12/plan.md
+pa12/audit.md
 ```
+
+The final audit commit changes exactly `dev/src/pa11_semantic_core.cpp`,
+`dev/src/pa11_semantic_model.h`, `pa12/plan.md`, and `pa12/audit.md`;
+`dev/src/pa12_semantic.cpp` was inspected and is unchanged.
 
 Build and focused validation:
 
@@ -179,51 +194,77 @@ An adjacent nine-test control command passed **7/9**; its two failures,
 `general/300-pointer-bool-conversion.t` and
 `general/300-pointer-nullptr-conditional.t`, are both in the supplied
 turn-start failure set and remain residual explicit-cast/conditional families.
-The authorized broad `make test-pa12` run passed **113/166**, covered all 166,
-and left exactly the 53 residual paths listed above. The required through-PA11
-report passed **685/685**.
+The required broad `make test-pa12` run exited **2** with **113/166 passed**,
+covered all 166, and left exactly the 53 residual paths listed above. Failure
+normalization against
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+found **53 baseline**, **53 current**, **0 current-only**, and
+**0 baseline-only** paths. The exact required through-PA11 command printed
+`===== ALL TESTS PASSED SUCCESSFULLY! (685 / 685) =====`.
+
+Out-of-tree focused probes also passed: qualified and parenthesized function
+IDs in pointer/reference initialization and arguments; named `int... args`
+packs in direct and nested pointer/reference declarators plus a nested
+function-type control; and a user `using nullptr_t = int` alias after the
+fallback repair. These probes are not fixtures.
 
 ## Performance Evidence
 
-The earlier immutable direct-argument probe is ordinary-only and does not
-measure deferred target-ID work. The corrected executable used for the
-representative probe was `/tmp/pa12-cppgm-corrected-immutable`, SHA-256
-`abe033b89584757bf759eac15247d434356323621da0fc08e30fb947dfd39c95`.
-The out-of-tree target-directed probes each contain one `use(inner)` call,
-where `inner` is an overload set and `use` has function-pointer/reference
-parameter overloads. The small case `/tmp/pa12-nested-c8-f4.t` has C=8 outer
-and F=4 inner candidates, 14 source lines, a 27-line dump, two call
-expressions, one selected inner ID, and one reference callee. The larger
-`/tmp/pa12-nested-c32-f32.t` has C=31 outer and F=32 inner candidates, 65
-source lines, a 78-line dump, two call expressions, one selected inner ID,
-and one reference callee. Thus C*F grows from 32 to 992 (31x).
-Each repetition invoked
-`/tmp/pa12-cppgm-corrected-immutable --emit-semantics -o <dump> <probe>`;
-the executable and both probe inputs remained unchanged throughout timing.
+The prior cited timing artifacts are absent, so this audit gathered a fresh
+out-of-tree replacement from the repaired build. The immutable executable is
+`/tmp/pa12-cppgm-checkpoint-audit-v2-immutable`, SHA-256
+`3e2d092dc1cf8968187179e30d9f9c447079034d297ca8aca635e594000551e7`; the
+unchanged inputs are `/tmp/pa12-nested-c8-f4.t` (SHA-256
+`777e23a45637dd43fb8f07448c055a928c645c855384649e9ce1ac12465cd851`) and
+`/tmp/pa12-nested-c31-f32.t` (SHA-256
+`3954e3cd7f7054b3c0e8f6b1ec7083278d1b6899f0a97f98a83b6fc4336c6048`). Both
+workloads use one direct `use(inner)` call with A=4 arguments and D=1
+deferred function-ID slot; only C outer candidates and F inner lookup
+candidates vary:
 
-Five interleaved samples ran each immutable probe 40 times. Every sample was
-**40/40 successful** for each case (200/200 per case overall):
+| case (C,F) | source lines | dump lines | C*F | selected inner IDs |
+| --- | ---: | ---: | ---: | ---: |
+| small (8,4) | 13 | 106 | 32 | 1 |
+| large (31,32) | 64 | 462 | 992 | 1 |
 
-| case (C,F) | wall samples (s) | user samples (s) | system samples (s) | peak RSS samples (KiB) |
+The fixed argument shape and target type are otherwise equivalent. Candidate
+scoring therefore performs C*(A-D) ordinary conversions plus C*D*F deferred
+candidate checks; the measured C*F term grows 31x. Five interleaved rounds ran
+each immutable input 40 times, with **200/200 successful invocations per
+case**:
+
+| case | wall samples (s) | user samples (s) | system samples (s) | peak RSS samples (KiB) |
 | --- | --- | --- | --- | --- |
-| small (8,4) | 0.15, 0.14, 0.14, 0.14, 0.15 | 0.07, 0.06, 0.07, 0.06, 0.06 | 0.08, 0.08, 0.07, 0.09, 0.09 | 4916, 4908, 4924, 4900, 4904 |
-| large (31,32) | 0.43, 0.42, 0.42, 0.42, 0.42 | 0.23, 0.19, 0.21, 0.21, 0.21 | 0.20, 0.23, 0.21, 0.21, 0.21 | 7144, 7148, 7148, 7148, 7152 |
+| small | 0.14, 0.14, 0.14, 0.13, 0.14 | 0.07, 0.07, 0.07, 0.07, 0.06 | 0.06, 0.06, 0.06, 0.06, 0.07 | 4924, 4924, 4912, 4896, 4920 |
+| large | 0.27, 0.28, 0.28, 0.27, 0.27 | 0.14, 0.14, 0.15, 0.13, 0.13 | 0.13, 0.13, 0.13, 0.13, 0.13 | 6188, 6204, 6192, 6188, 6196 |
 
-The observed approximately 3x wall increase is below the necessary 31x
-candidate-product growth and shows no materially worse scaling. Deferred
-classification remains typed and fact-free until selection; no text-keyed
-cache or speculative semantic fact was added.
+Median wall time is about 1.9x while C*F is 31x; the timing includes the
+larger parse, semantic traversal, and cold dump, so it is evidence against a
+worse-than-bounded candidate path rather than an isolated resolver benchmark.
+Repeated dumps were byte-identical. Deferred classification remains typed and
+fact-free until selection; no text-keyed cache or speculative semantic fact
+was added.
+
+## Next checkpoint
+
+The next checkpoint is a separately authorized residual-family pass, beginning
+with the namespace/using and expression/control paths in the 53-path map (for
+example `general/200-block-scope-using-declaration.t` and
+`general/200-builtin-constant-p-propagated-expression.t`). It must preserve
+the current exact failure baseline while addressing those families; this
+checkpoint does not claim PA12 complete.
 
 ## checkpoint ledger
 
 | row | evidence / ownership |
 | --- | --- |
-| turn-start | Clean `498043c5`; PA12 **103/166**, 63 failures, all 166 covered; supplied through-PA11 **685/685**; complete failure set listed above. |
-| implementation | Three implementation paths plus this plan; no tests, refs, grammar, harnesses, or scripts changed. |
-| focused result | Build pass; checkpoint/control focus **28/28**; adjacent controls **7/9** with two pre-existing residual failures named above. |
-| performance | Corrected immutable executable; nested C/F probe 5x40 interleaved, 200/200 successful per case, measurements and structural counts recorded above. |
-| broad PA12 | `make test-pa12`: **113/166 passed, 53 failed**, all 166 covered; ten checkpoint failures cleared, no extra regressions, exact residual set listed above. |
-| through-PA11 | `n=12; make test-report-through-pa11`: **ALL TESTS PASSED SUCCESSFULLY! (685 / 685)**. |
-| file audit | `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: passed with the two existing header-division warnings. |
-| diff check | `git diff --check`: passed. |
-| final state | This checkpoint commit contains the final plan state; the worktree is clean and no pending mutations remain. |
+| turn-start | Clean `5fa28b37`; supplied PA12 **113/166**, 53 failures, all 166 covered; supplied through-PA11 **685/685**; complete failure set listed above. |
+| implementation | Three implementation paths plus this plan and audit; bounded repairs make ordinary `nullptr_t` lookup win over the synthetic fallback and keep nested named packs attached to the enclosing parameter; no tests, refs, grammar, harnesses, or scripts changed. |
+| focused result | Build pass; checkpoint/control focus **28/28**; adjacent controls **7/9** with two pre-existing residual failures named above; out-of-tree ownership probes passed. |
+| performance | Fresh immutable repaired executable; nested C/F probe 5x40 interleaved, 200/200 successful per case, equivalent A/D shape and measurements recorded above. |
+| broad PA12 | Required `make test-pa12` exited **2**: **113/166 passed, 53 failed**, all 166 covered; normalized against the supplied baseline: **53 current, 53 baseline, 0 current-only, 0 baseline-only**. |
+| through-PA11 | Required `n=12; if [ "$n" -le 1 ]; then ...; else make test-report-through-pa$((n - 1)); fi`: **ALL TESTS PASSED SUCCESSFULLY! (685 / 685)**. |
+| file audit | Post-repair `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: passed with exactly the two existing header-division warnings. |
+| diff check | `git diff --check`: passed; changed-path audit found only the four approved files and no tests, refs, fixtures, grammar, harnesses, scripts, generated artifacts, or unrelated files. |
+| checkpointAudit | Review anchored at `5fa28b37`; typed callable trace, exact 53-path map, fresh immutable C/A/D/F evidence, broad/through-stage gates, and the bounded alias plus nested-pack repairs are finalized in this checkpoint record. |
+| final state | PA12 remains incomplete with the 53 residual paths. The final audit commit contains the four approved changed files, and the next checkpoint is the separately authorized residual-family pass described above. |

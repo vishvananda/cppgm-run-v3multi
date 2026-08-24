@@ -590,12 +590,16 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start) 
 		return TypeId();
 	if (path.components.size() == 1)
 	{
+		const TypeId found = path.global ?
+			lookup_type_qualified(global_, path.last()) :
+			lookup_type_unqualified(start, path.last());
 		// PA12 exposes nullptr_t as a fundamental target type in the
-		// assignment vocabulary, even when no library typedef is present.
+		// assignment vocabulary when no ordinary type binding is present.
+		if (found.valid())
+			return found;
 		if (name_text(path.last()) == "nullptr_t")
 			return fundamental(FundamentalType::NullptrT);
-		return path.global ? lookup_type_qualified(global_, path.last()) :
-			lookup_type_unqualified(start, path.last());
+		return found;
 	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
 	const ScopeId scope = path.global ?
@@ -1720,6 +1724,17 @@ ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
 		throw std::runtime_error("invalid PA11 array bound");
 	return ArrayBound(static_cast<std::size_t>(value));
 }
+bool PA11SemanticModel::contains_parameter_pack(const PA10AstNode& node) const
+{
+	if (node.kind == PA10NodeKind::ParameterPack)
+		return true;
+	if (node.kind == PA10NodeKind::ParameterClause)
+		return false;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (contains_parameter_pack(node.children[i]))
+			return true;
+	return false;
+}
 std::vector<TypeId> PA11SemanticModel::parameter_types(const PA10AstNode& clause, ScopeId scope,
 	bool* variadic, std::vector<ParamFact>* facts)
 {
@@ -1745,11 +1760,8 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(const PA10AstNode& clause
 		{
 			name = declarator_name(child.children[1]);
 			type = apply_declarator(child.children[1], type, scope);
-			if (child.children[1].kind == PA10NodeKind::Declarator)
-				for (std::size_t j = 0; j < child.children[1].children.size(); ++j)
-					if (child.children[1].children[j].kind ==
-						PA10NodeKind::ParameterPack)
-						*variadic = true;
+			if (contains_parameter_pack(child.children[1]))
+				*variadic = true;
 		}
 		const bool unnamed_void = type_kind(type) == TypeKind::Fundamental &&
 			types_[type.value].fundamental == FundamentalType::Void && !name.found;

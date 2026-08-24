@@ -862,6 +862,8 @@ private:
 	;
 	ArrayBound literal_bound(const PA10AstNode& node) const
 	;
+	bool contains_parameter_pack(const PA10AstNode& node) const
+	;
 	std::vector<TypeId> parameter_types(const PA10AstNode& clause, ScopeId scope,
 	bool* variadic, std::vector<ParamFact>* facts)
 	;
