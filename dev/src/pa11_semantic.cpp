@@ -303,7 +303,8 @@ void PA11SemanticModel::dump_scope(std::ostream& output, ScopeId scope, std::siz
 	{
 	case ScopeKind::Namespace:
 		output << "scope namespace " <<
-			(current.name.valid() ? name_text(current.name) : "<global>");
+			(current.name.valid() ? name_text(current.name) :
+				(scope == global_ ? "<global>" : "<unnamed>"));
 		break;
 	case ScopeKind::Class:
 		output << "scope class " <<
@@ -393,6 +394,293 @@ void PA11SemanticModel::dump_scope(std::ostream& output, ScopeId scope, std::siz
 				++child_index;
 			}
 		}
+	}
+}
+void PA11SemanticModel::process_function_definition(const PA10AstNode& node, ScopeId scope)
+{
+	if (node.children.size() != 3)
+		throw std::runtime_error("invalid PA11 function definition");
+	const PA10AstNode& declarator = node.children[1];
+	const DeclaratorName name = declarator_name(declarator);
+	if (!name.found)
+		throw std::runtime_error("unnamed PA11 function definition");
+	const ScopeId target = declaration_scope(name.path, scope);
+	if (!target.valid())
+		throw std::runtime_error("unresolved PA11 function scope");
+	const SpecFact spec = spec_fact(node.children[0], target);
+	const TypeId type = apply_declarator(declarator, spec.base, target);
+	if (type_kind(type) != TypeKind::Function)
+		throw std::runtime_error("PA11 definition is not a function");
+	const BindingId function_binding = add_value(target, name.path.last(),
+		type, true, true, true, BindingId(), SourcePoint(node.source_begin));
+	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
+		name.path.last());
+	function_definition_points_.set(function_scope,
+		SourcePoint(node.source_begin));
+	const PA10AstNode* clause = top_parameter_clause(declarator);
+	if (clause != NULL)
+	{
+		bool variadic = false;
+		std::vector<ParamFact> facts;
+		parameter_types(*clause, target, &variadic, &facts);
+		(void)variadic;
+		for (std::size_t i = 0; i < facts.size(); ++i)
+		{
+			Binding parameter(BindingKind::Parameter, facts[i].name,
+				facts[i].type);
+			const BindingId parameter_id = store_binding(function_scope, parameter);
+			if (facts[i].name.valid())
+				append_value_index(function_scope, facts[i].name, parameter_id,
+					ScopeId(), SourcePoint(node.source_begin));
+		}
+	}
+	const ScopeId body_scope = process_compound_statement(node.children[2],
+		function_scope);
+	const FunctionFactId function_id(function_facts_.size());
+	function_facts_.push_back(FunctionFact(&node, target, function_binding,
+		function_scope, body_scope));
+	function_fact_index_.set(&node, function_id);
+}
+ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
+{
+	if (node.kind != PA10NodeKind::CompoundStatement)
+		throw std::runtime_error("invalid PA11 compound statement");
+	const ScopeId block = create_scope(ScopeKind::Block, parent, NameId());
+	compound_facts_.push_back(CompoundFact(&node, block));
+	compound_scope_index_.set(&node, block);
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& child = node.children[i];
+		switch (child.kind)
+		{
+		case PA10NodeKind::SimpleDeclaration:
+		case PA10NodeKind::AliasDeclaration:
+		case PA10NodeKind::NamespaceAliasDefinition:
+		case PA10NodeKind::UsingDirective:
+		case PA10NodeKind::UsingDeclaration:
+			// Block declarations are formed once, in source order, before
+			// PA12 traverses their statement facts.
+			process_declaration(child, block);
+			break;
+		case PA10NodeKind::ClassSpecifier:
+			// A standalone block anonymous union is a declaration whose
+			// backing storage is synthesized by the typed PA11 owner.
+			process_declaration(child, block);
+			break;
+		case PA10NodeKind::EnumSpecifier:
+			// A block enum publishes its typed enumerator bindings before
+			// PA12 analyzes the following expressions.
+			process_declaration(child, block);
+			break;
+		case PA10NodeKind::CompoundStatement:
+			process_compound_statement(child, block);
+			break;
+		case PA10NodeKind::EmptyDeclaration:
+			break;
+		default:
+			// PA11's first semantic layer creates block scopes; expression
+			// and statement semantics belong to later assignments.
+			break;
+		}
+	}
+	return block;
+}
+void PA11SemanticModel::process_namespace(const PA10AstNode& node, ScopeId parent)
+{
+	ScopeId namespace_id;
+	const SourcePoint declaration_point(node.source_begin);
+	if (node.producer_spelling == 0)
+	{
+		const ScopeId* existing = unnamed_namespace_index_.find(parent);
+		if (existing != NULL)
+			namespace_id = *existing;
+		else
+		{
+			namespace_id = create_scope(ScopeKind::Namespace, parent,
+				NameId());
+			unnamed_namespace_index_.set(parent, namespace_id);
+			scope_declaration_points_.set(namespace_id, declaration_point);
+			// An unnamed namespace is visible through a typed implicit
+			// using-directive in its enclosing namespace.  The relation is
+			// installed once, even when the syntax is reopened later.
+			scopes_[parent.value].using_directives.push_back(
+				UsingDirectiveRelation(namespace_id, declaration_point));
+			scopes_[parent.value].effective_using_directives.push_back(
+				EffectiveUsingDirective(namespace_id, parent,
+					declaration_point));
+		}
+	}
+	else
+	{
+		const NameId name = name_from_spelling(node.producer_spelling);
+		namespace_id = named_namespace(parent, name);
+		if (scope_declaration_points_.find(namespace_id) == NULL)
+			scope_declaration_points_.set(namespace_id, declaration_point);
+	}
+	const NamespaceFactId namespace_fact_id(namespace_facts_.size());
+	namespace_facts_.push_back(NamespaceFact(&node, namespace_id));
+	namespace_fact_index_.set(&node, namespace_fact_id);
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (node.children[i].kind == PA10NodeKind::InlineMarker)
+			scopes_[namespace_id.value].inline_namespace = true;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		if (node.children[i].kind == PA10NodeKind::InlineMarker)
+			continue;
+		process_declaration(node.children[i], namespace_id);
+	}
+}
+void PA11SemanticModel::process_namespace_alias(const PA10AstNode& node, ScopeId scope)
+{
+	if (node.producer_spelling == 0 || node.children.size() != 1)
+		throw std::runtime_error("invalid PA11 namespace alias");
+	const NameId name = name_from_spelling(node.producer_spelling);
+	const NamePath target_name = name_path(node.children.front());
+	const ScopeId target = resolve_namespace_path(target_name, scope);
+	if (!target.valid())
+		throw std::runtime_error("namespace alias target is not a namespace");
+	Scope& current = scopes_[scope.value];
+	if (current.namespaces.find(name) != NULL ||
+		current.types.find(name) != NULL ||
+		direct_value_exists(scope, name))
+		throw std::runtime_error("namespace alias conflicts with binding");
+	const ScopeId* old = current.namespace_aliases.find(name);
+	if (old != NULL && *old != target)
+		throw std::runtime_error("namespace alias redefinition");
+	current.namespace_aliases.set(name, target);
+}
+void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId scope)
+{
+	if (node.children.size() != 1)
+		throw std::runtime_error("invalid PA11 using directive");
+	const ScopeId target = resolve_namespace_path(name_path(node.children.front()), scope);
+	if (!target.valid())
+		throw std::runtime_error("using directive target is not a namespace");
+	const ScopeId effective = common_ancestor(scope, target);
+	if (!effective.valid())
+		throw std::runtime_error("using directive has no common ancestor");
+	const SourcePoint declaration_point(node.source_begin);
+	scopes_[scope.value].using_directives.push_back(
+		UsingDirectiveRelation(target, declaration_point));
+	scopes_[effective.value].effective_using_directives.push_back(
+		EffectiveUsingDirective(target, scope, declaration_point));
+}
+void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
+{
+	if (node.children.size() != 1)
+		throw std::runtime_error("invalid PA11 using declaration");
+	const NamePath target_name = name_path(node.children.front());
+	const TypeId type = lookup_type_path(target_name, scope);
+	const NameId introduced = target_name.last();
+	Scope& current = scopes_[scope.value];
+	if (current.types.find(introduced) != NULL ||
+		direct_namespace_exists(scope, introduced))
+		throw std::runtime_error("using declaration conflicts with binding");
+	if (type.valid())
+	{
+		if (direct_value_exists(scope, introduced))
+			throw std::runtime_error("using declaration conflicts with binding");
+		current.types.set(introduced, type);
+		current.using_types.set(introduced, type);
+		BindingKind kind = BindingKind::TypeAlias;
+		if (target_name.components.size() > 1)
+		{
+			std::vector<NameId> prefix(target_name.components.begin(),
+				target_name.components.end() - 1);
+			const ScopeId owner = target_name.global ?
+				resolve_global_qualifier_scope(prefix) :
+				resolve_qualifier_scope(prefix, scope);
+			if (owner.valid())
+			{
+				const Scope& source = scopes_[owner.value];
+				for (std::size_t i = 0; i < source.bindings.size(); ++i)
+					if (binding(source.bindings[i]).name == introduced &&
+						binding(source.bindings[i]).type == type &&
+						binding(source.bindings[i]).kind == BindingKind::Type)
+						kind = BindingKind::Type;
+			}
+		}
+		store_binding(scope, Binding(kind, introduced, type));
+		return;
+	}
+	const std::vector<ValueRef> values = lookup_value_path(target_name, scope);
+	if (values.empty())
+		throw std::runtime_error("using declaration target is not a binding");
+	const ValueList* existing = current.values.find(introduced);
+	bool existing_functions = existing != NULL && !existing->entries.empty();
+	if (existing_functions)
+	{
+		for (std::size_t i = 0; i < existing->entries.size(); ++i)
+		{
+			const Binding& old = binding(existing->entries[i].binding);
+			if (old.kind != BindingKind::Function ||
+				type_kind(old.type) != TypeKind::Function)
+			{
+				existing_functions = false;
+				break;
+			}
+		}
+	}
+	bool incoming_functions = true;
+	bool incoming_nonfunctions = true;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
+		const Binding& imported = binding(values[i].binding);
+		const bool is_function = imported.kind == BindingKind::Function &&
+			type_kind(imported.type) == TypeKind::Function;
+		incoming_functions = incoming_functions && is_function;
+		incoming_nonfunctions = incoming_nonfunctions && !is_function;
+	}
+	if (!incoming_functions && !incoming_nonfunctions)
+		throw std::runtime_error("using declaration mixes value kinds");
+	std::vector<ValueRef> additions;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
+		bool duplicate = false;
+		if (existing != NULL)
+			for (std::size_t j = 0; j < existing->entries.size(); ++j)
+				if (existing->entries[j].binding == values[i].binding &&
+					existing->entries[j].origin == values[i].scope)
+				{
+					duplicate = true;
+					break;
+				}
+		if (!duplicate)
+			for (std::size_t j = 0; j < additions.size(); ++j)
+				if (additions[j].binding == values[i].binding &&
+					additions[j].scope == values[i].scope)
+				{
+					duplicate = true;
+					break;
+				}
+		if (duplicate)
+			continue;
+		const Binding& imported = binding(values[i].binding);
+		const bool is_function = imported.kind == BindingKind::Function &&
+			type_kind(imported.type) == TypeKind::Function;
+		if (existing != NULL && (!existing_functions || !is_function))
+			throw std::runtime_error("using declaration conflicts with binding");
+		additions.push_back(values[i]);
+	}
+	for (std::size_t i = 0; i < additions.size(); ++i)
+	{
+		append_value_index(scope, introduced, additions[i].binding,
+			additions[i].scope, SourcePoint(node.source_begin));
+		// Keep one PA11 dump view per imported canonical binding in this
+		// scope.  Lookup retains the full (BindingId, origin ScopeId) pair.
+		bool have_view = false;
+		for (std::size_t j = 0; j < current.binding_views.size(); ++j)
+		{
+			const DumpBindingViewId view_id = current.binding_views[j];
+			if (view_id.valid() && view_id.value < dump_binding_views_.size() &&
+				dump_binding_views_[view_id.value].binding == additions[i].binding)
+			{
+				have_view = true;
+				break;
+			}
+		}
+		if (!have_view)
+			add_dump_binding_view(scope, additions[i].binding);
 	}
 }
 } // namespace pa11_semantic_internal
@@ -731,8 +1019,8 @@ void PA11SemanticModel::dump_pa12_top_node(std::ostream& output,
 			throw std::runtime_error("PA12 namespace dump fact is missing");
 		for (std::size_t indent = 0; indent < depth; ++indent)
 			output << "  ";
-		output << "namespace-definition " << ast_.producer_spelling(
-			node.producer_spelling) << '\n';
+		output << "namespace-definition " << (node.producer_spelling == 0 ?
+			"<unnamed>" : ast_.producer_spelling(node.producer_spelling)) << '\n';
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 			if (node.children[i].kind != PA10NodeKind::InlineMarker)
 				dump_pa12_top_node(output, node.children[i], namespace_scope,

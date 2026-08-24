@@ -115,6 +115,21 @@ struct NamePath
 	}
 };
 
+// Source positions are semantic declaration-point facts, not rendered names.
+// An invalid point means that the relation is not subject to a namespace
+// declaration-point filter (for example, a local block relation formed by
+// the existing PA12 preparation pass).
+struct SourcePoint
+{
+	std::size_t value;
+
+	explicit SourcePoint(std::size_t value = InvalidIdentityValue)
+		: value(value)
+	{}
+
+	bool valid() const { return value != InvalidIdentityValue; }
+};
+
 enum class BindingKind
 {
 	Type,
@@ -167,9 +182,11 @@ struct ValueEntry
 	// A using-declaration retains the canonical source scope beside the
 	// binding identity; the pair cannot become length-mismatched.
 	ScopeId origin;
+	SourcePoint declaration_point;
 
-	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId())
-		: binding(binding), origin(origin)
+	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId(),
+		SourcePoint declaration_point = SourcePoint())
+		: binding(binding), origin(origin), declaration_point(declaration_point)
 	{}
 };
 
@@ -188,14 +205,28 @@ struct ValueRef
 	{}
 };
 
+struct UsingDirectiveRelation
+{
+	ScopeId target;
+	SourcePoint declaration_point;
+
+	UsingDirectiveRelation(ScopeId target = ScopeId(),
+		SourcePoint declaration_point = SourcePoint())
+		: target(target), declaration_point(declaration_point)
+	{}
+};
+
 struct EffectiveUsingDirective
 {
 	ScopeId target;
 	ScopeId lexical_scope;
+	SourcePoint declaration_point;
 
 	EffectiveUsingDirective(ScopeId target = ScopeId(),
-		ScopeId lexical_scope = ScopeId())
-		: target(target), lexical_scope(lexical_scope)
+		ScopeId lexical_scope = ScopeId(),
+		SourcePoint declaration_point = SourcePoint())
+		: target(target), lexical_scope(lexical_scope),
+		  declaration_point(declaration_point)
 	{}
 };
 
@@ -223,7 +254,7 @@ struct Scope
 	FlatIndex<NameId, ScopeId, IdentityHash<NameId> > namespace_aliases;
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> > values;
 	FlatIndex<NameId, TypeId, IdentityHash<NameId> > using_types;
-	std::vector<ScopeId> using_directives;
+	std::vector<UsingDirectiveRelation> using_directives;
 	// Entries are placed at their common ancestor once, then filtered by the
 	// typed lexical owner during an unqualified lookup.
 	std::vector<EffectiveUsingDirective> effective_using_directives;
@@ -755,6 +786,12 @@ private:
 	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
 		named_record_sidecars_;
 	std::vector<Scope> scopes_;
+	FlatIndex<ScopeId, ScopeId, IdentityHash<ScopeId> >
+		unnamed_namespace_index_;
+	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
+		scope_declaration_points_;
+	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
+		function_definition_points_;
 	std::vector<Binding> bindings_;
 	FlatIndex<BindingId, BindingSidecar, IdentityHash<BindingId> >
 		binding_sidecars_;
@@ -862,6 +899,13 @@ private:
 	;
 	ScopeId lookup_namespace_here(ScopeId scope, NameId name) const
 	;
+	SourcePoint lookup_source_point(ScopeId start) const
+	;
+	bool scope_visible_at(ScopeId scope, SourcePoint point) const
+	;
+	bool relation_visible_at(ScopeId owner, SourcePoint declaration_point,
+		SourcePoint point) const
+	;
 	void begin_lookup() const
 	;
 	bool mark_lookup_scope(ScopeId scope) const
@@ -873,37 +917,47 @@ private:
 	ScopeId common_ancestor(ScopeId left, ScopeId right) const
 	;
 	void append_effective_using_targets(ScopeId level,
-		std::vector<ScopeId>* targets) const
+		std::vector<ScopeId>* targets, SourcePoint point = SourcePoint()) const
 	;
 	void reset_lookup_frames(LookupGraphKind kind, ScopeId start) const
 	;
 	ScopeId lookup_namespace_graph(ScopeId start, NameId name,
-		bool include_using = true) const
+		bool include_using = true, SourcePoint point = SourcePoint()) const
 	;
-	ScopeId lookup_namespace_unqualified(ScopeId start, NameId name) const
+	ScopeId lookup_namespace_unqualified(ScopeId start, NameId name,
+		SourcePoint point = SourcePoint()) const
 	;
 	TypeId lookup_type_graph(ScopeId start, NameId name,
-		bool include_using = true) const
+		bool include_using = true, SourcePoint point = SourcePoint()) const
 	;
-	TypeId lookup_type_unqualified(ScopeId start, NameId name) const
+	TypeId lookup_type_unqualified(ScopeId start, NameId name,
+		SourcePoint point = SourcePoint()) const
 	;
-	TypeId lookup_type_qualified(ScopeId scope, NameId name) const
+	TypeId lookup_type_qualified(ScopeId scope, NameId name,
+		SourcePoint point = SourcePoint()) const
 	;
 	bool lookup_value_graph(ScopeId start, NameId name,
-	std::vector<ValueRef>* result, bool include_using = true) const
+	std::vector<ValueRef>* result, bool include_using = true,
+		SourcePoint point = SourcePoint()) const
 	;
-	std::vector<ValueRef> lookup_value_unqualified(ScopeId start, NameId name) const
+	std::vector<ValueRef> lookup_value_unqualified(ScopeId start, NameId name,
+		SourcePoint point = SourcePoint()) const
 	;
-	std::vector<ValueRef> lookup_value_path(const NamePath& path, ScopeId start) const
+	std::vector<ValueRef> lookup_value_path(const NamePath& path, ScopeId start,
+		SourcePoint point = SourcePoint()) const
 	;
 	ScopeId resolve_qualifier_scope(const std::vector<NameId>& components,
-	ScopeId start) const
+		ScopeId start, SourcePoint point = SourcePoint()) const
 	;
-	TypeId lookup_type_path(const NamePath& path, ScopeId start) const
+	TypeId lookup_type_path(const NamePath& path, ScopeId start,
+		SourcePoint point = SourcePoint()) const
 	;
-	ScopeId resolve_global_qualifier_scope(const std::vector<NameId>& components) const
+	ScopeId resolve_global_qualifier_scope(
+		const std::vector<NameId>& components,
+		SourcePoint point = SourcePoint()) const
 	;
-	ScopeId resolve_namespace_path(const NamePath& path, ScopeId start) const
+	ScopeId resolve_namespace_path(const NamePath& path, ScopeId start,
+		SourcePoint point = SourcePoint()) const
 	;
 	BindingId store_binding(ScopeId scope, const Binding& binding,
 		std::size_t position = InvalidIdentityValue)
@@ -924,7 +978,8 @@ private:
 	Binding& binding(BindingId id)
 	;
 	void append_value_index(ScopeId scope, NameId name, BindingId id,
-		ScopeId origin = ScopeId())
+		ScopeId origin = ScopeId(),
+		SourcePoint declaration_point = SourcePoint())
 	;
 	TypeId ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -959,7 +1014,7 @@ private:
 	NamedRecordId* anonymous_record)
 	;
 	void add_enumerator(ScopeId scope, NameId name, TypeId type,
-	std::int64_t value)
+		std::int64_t value, SourcePoint declaration_point = SourcePoint())
 	;
 	bool integral_type(FundamentalType type) const
 	;
@@ -992,7 +1047,8 @@ private:
 	;
 	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
 	bool definition = false, bool lexical_view = false,
-	BindingId backing_storage = BindingId())
+	BindingId backing_storage = BindingId(),
+	SourcePoint declaration_point = SourcePoint())
 	;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;

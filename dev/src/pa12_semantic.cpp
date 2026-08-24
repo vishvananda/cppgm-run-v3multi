@@ -112,7 +112,7 @@ void PA11SemanticModel::process_condition_declaration(
 		throw std::runtime_error("unresolved PA12 condition scope");
 	const TypeId type = apply_declarator(node.children[1], spec.base, target);
 	const BindingId binding_id = add_value(target, name.path.last(), type, false,
-		false, true);
+		false, true, BindingId(), SourcePoint(node.source_begin));
 	DeclarationFact declaration(&node, target);
 	declaration.binding_begin = declaration_bindings_.size();
 	declaration_bindings_.push_back(binding_id);

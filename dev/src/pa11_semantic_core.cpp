@@ -6,7 +6,9 @@ using namespace pa11_semantic_storage;
 
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  named_record_sidecars_(), scopes_(), bindings_(), binding_sidecars_(),
+	  named_record_sidecars_(), scopes_(), unnamed_namespace_index_(),
+	  scope_declaration_points_(), function_definition_points_(),
+	  bindings_(), binding_sidecars_(),
 	  global_(), deferred_scopes_(),
 	  dump_binding_views_(), dump_scope_views_(),
 	  anonymous_union_count_(0), anonymous_enum_count_(0), creation_order_(0),
@@ -530,6 +532,37 @@ ScopeId PA11SemanticModel::lookup_namespace_here(ScopeId scope, NameId name) con
 	found = current.namespace_aliases.find(name);
 	return found == NULL ? ScopeId() : *found;
 }
+SourcePoint PA11SemanticModel::lookup_source_point(ScopeId start) const
+{
+	for (ScopeId scope = start; scope.valid();
+		scope = scopes_[scope.value].parent)
+	{
+		const SourcePoint* found = function_definition_points_.find(scope);
+		if (found != NULL)
+			return *found;
+	}
+	return SourcePoint();
+}
+bool PA11SemanticModel::scope_visible_at(ScopeId scope, SourcePoint point) const
+{
+	if (!scope.valid() || !point.valid() || scope == global_ ||
+		scopes_[scope.value].kind != ScopeKind::Namespace)
+		return true;
+	const SourcePoint* declaration = scope_declaration_points_.find(scope);
+	return declaration == NULL || !declaration->valid() ||
+		declaration->value <= point.value;
+}
+bool PA11SemanticModel::relation_visible_at(ScopeId owner,
+	SourcePoint declaration_point, SourcePoint point) const
+{
+	// Local block using directives retain their existing PA12 formation
+	// behavior.  Namespace relations, including the implicit unnamed-
+	// namespace relation, obey the function declaration point.
+	if (!point.valid() || !declaration_point.valid() ||
+		scopes_[owner.value].kind != ScopeKind::Namespace)
+		return true;
+	return declaration_point.value <= point.value;
+}
 void PA11SemanticModel::begin_lookup() const
 {
 	if (lookup_marks_.size() < scopes_.size())
@@ -585,14 +618,15 @@ ScopeId PA11SemanticModel::common_ancestor(ScopeId left, ScopeId right) const
 	return left;
 }
 void PA11SemanticModel::append_effective_using_targets(ScopeId level,
-	std::vector<ScopeId>* targets) const
+	std::vector<ScopeId>* targets, SourcePoint point) const
 {
 	const Scope& current = scopes_[level.value];
 	for (std::size_t i = current.effective_using_directives.size(); i != 0; --i)
 	{
 		const EffectiveUsingDirective& directive =
 			current.effective_using_directives[i - 1];
-		if (!lexical_scope_is_applicable(directive.lexical_scope))
+		if (!lexical_scope_is_applicable(directive.lexical_scope) ||
+			!relation_visible_at(level, directive.declaration_point, point))
 			continue;
 		// Repeated target edges are harmless: the graph generation mark
 		// suppresses a second traversal without a per-level deduplication scan.
@@ -605,7 +639,7 @@ void PA11SemanticModel::reset_lookup_frames(LookupGraphKind kind, ScopeId start)
 	lookup_frames_.push_back(LookupFrame(kind, start));
 }
 ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name,
-	bool include_using) const
+	bool include_using, SourcePoint point) const
 {
 	reset_lookup_frames(LookupGraphKind::Namespace, start);
 	while (!lookup_frames_.empty())
@@ -619,40 +653,49 @@ ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name,
 				lookup_frames_.pop_back();
 				continue;
 			}
+			if (!scope_visible_at(frame.scope, point))
+			{
+				lookup_frames_.pop_back();
+				continue;
+			}
 			const ScopeId direct = lookup_namespace_here(frame.scope, name);
-			if (direct.valid())
+			if (direct.valid() && scope_visible_at(direct, point))
 				return direct;
 			frame.next_using = include_using ?
 				scopes_[frame.scope.value].using_directives.size() : 0;
 		}
 		if (frame.next_using != 0)
 		{
-			const ScopeId target = scopes_[frame.scope.value].using_directives[
-				--frame.next_using];
+			const UsingDirectiveRelation& relation =
+				scopes_[frame.scope.value].using_directives[--frame.next_using];
+			if (!relation_visible_at(frame.scope, relation.declaration_point,
+				point))
+				continue;
 			lookup_frames_.push_back(
-				LookupFrame(LookupGraphKind::Namespace, target));
+				LookupFrame(LookupGraphKind::Namespace, relation.target));
 			continue;
 		}
 		lookup_frames_.pop_back();
 	}
 	return ScopeId();
 }
-ScopeId PA11SemanticModel::lookup_namespace_unqualified(ScopeId start, NameId name) const
+ScopeId PA11SemanticModel::lookup_namespace_unqualified(ScopeId start,
+	NameId name, SourcePoint point) const
 {
 	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
 	while (scope.valid())
 	{
 		begin_lookup();
-		const ScopeId direct = lookup_namespace_graph(scope, name, false);
+		const ScopeId direct = lookup_namespace_graph(scope, name, false, point);
 		if (direct.valid())
 			return direct;
 		std::vector<ScopeId> targets;
-		append_effective_using_targets(scope, &targets);
+		append_effective_using_targets(scope, &targets, point);
 		ScopeId found;
 		for (std::size_t i = 0; i < targets.size(); ++i)
 		{
-			found = lookup_namespace_graph(targets[i], name);
+			found = lookup_namespace_graph(targets[i], name, true, point);
 			if (found.valid())
 				return found;
 		}
@@ -663,7 +706,7 @@ ScopeId PA11SemanticModel::lookup_namespace_unqualified(ScopeId start, NameId na
 	return ScopeId();
 }
 TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
-	bool include_using) const
+	bool include_using, SourcePoint point) const
 {
 	reset_lookup_frames(LookupGraphKind::Type, start);
 	while (!lookup_frames_.empty())
@@ -673,6 +716,11 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
 		{
 			frame.entered = true;
 			if (!mark_lookup_scope(frame.scope))
+			{
+				lookup_frames_.pop_back();
+				continue;
+			}
+			if (!scope_visible_at(frame.scope, point))
 			{
 				lookup_frames_.pop_back();
 				continue;
@@ -689,10 +737,13 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
 		}
 		if (frame.next_using != 0)
 		{
-			const ScopeId target = scopes_[frame.scope.value].using_directives[
-				--frame.next_using];
+			const UsingDirectiveRelation& relation =
+				scopes_[frame.scope.value].using_directives[--frame.next_using];
+			if (!relation_visible_at(frame.scope, relation.declaration_point,
+				point))
+				continue;
 			lookup_frames_.push_back(
-				LookupFrame(LookupGraphKind::Type, target));
+				LookupFrame(LookupGraphKind::Type, relation.target));
 			continue;
 		}
 		bool pushed = false;
@@ -700,7 +751,8 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
 		{
 			const ScopeId child = scopes_[frame.scope.value].children[
 				--frame.next_inline_child];
-			if (!scopes_[child.value].inline_namespace)
+			if (!scopes_[child.value].inline_namespace ||
+				!scope_visible_at(child, point))
 				continue;
 			lookup_frames_.push_back(
 				LookupFrame(LookupGraphKind::Type, child));
@@ -713,22 +765,23 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
 	}
 	return TypeId();
 }
-TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name) const
+TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name,
+	SourcePoint point) const
 {
 	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
 	while (scope.valid())
 	{
 		begin_lookup();
-		const TypeId direct = lookup_type_graph(scope, name, false);
+		const TypeId direct = lookup_type_graph(scope, name, false, point);
 		if (direct.valid())
 			return direct;
 		std::vector<ScopeId> targets;
-		append_effective_using_targets(scope, &targets);
+		append_effective_using_targets(scope, &targets, point);
 		TypeId found;
 		for (std::size_t i = 0; i < targets.size(); ++i)
 		{
-			found = lookup_type_graph(targets[i], name);
+			found = lookup_type_graph(targets[i], name, true, point);
 			if (found.valid())
 				return found;
 		}
@@ -738,13 +791,14 @@ TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name) co
 	}
 	return TypeId();
 }
-TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name) const
+TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name,
+	SourcePoint point) const
 {
 	begin_lookup();
-	return lookup_type_graph(scope, name);
+	return lookup_type_graph(scope, name, true, point);
 }
 bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
-	std::vector<ValueRef>* result, bool include_using) const
+	std::vector<ValueRef>* result, bool include_using, SourcePoint point) const
 {
 	reset_lookup_frames(LookupGraphKind::Value, start);
 	while (!lookup_frames_.empty())
@@ -758,24 +812,40 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 				lookup_frames_.pop_back();
 				continue;
 			}
+			if (!scope_visible_at(frame.scope, point))
+			{
+				lookup_frames_.pop_back();
+				continue;
+			}
 			const Scope& current = scopes_[frame.scope.value];
 			const ValueList* found = current.values.find(name);
 			if (found != NULL)
 			{
+				bool have_visible = false;
 				for (std::size_t i = 0; i < found->entries.size(); ++i)
-					result->push_back(ValueRef(found->entries[i].origin,
-						found->entries[i].binding));
-				return true;
+				{
+					const ValueEntry& entry = found->entries[i];
+					if (!relation_visible_at(frame.scope, entry.declaration_point,
+						point))
+						continue;
+					result->push_back(ValueRef(entry.origin, entry.binding));
+					have_visible = true;
+				}
+				if (have_visible)
+					return true;
 			}
 			frame.next_using = include_using ? current.using_directives.size() : 0;
 			frame.next_inline_child = current.children.size();
 		}
 		if (frame.next_using != 0)
 		{
-			const ScopeId target = scopes_[frame.scope.value].using_directives[
-				--frame.next_using];
+			const UsingDirectiveRelation& relation =
+				scopes_[frame.scope.value].using_directives[--frame.next_using];
+			if (!relation_visible_at(frame.scope, relation.declaration_point,
+				point))
+				continue;
 			lookup_frames_.push_back(
-				LookupFrame(LookupGraphKind::Value, target));
+				LookupFrame(LookupGraphKind::Value, relation.target));
 			continue;
 		}
 		bool pushed = false;
@@ -783,7 +853,8 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 		{
 			const ScopeId child = scopes_[frame.scope.value].children[
 				--frame.next_inline_child];
-			if (!scopes_[child.value].inline_namespace)
+			if (!scopes_[child.value].inline_namespace ||
+				!scope_visible_at(child, point))
 				continue;
 			lookup_frames_.push_back(
 				LookupFrame(LookupGraphKind::Value, child));
@@ -796,7 +867,8 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 	}
 	return false;
 }
-std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(ScopeId start, NameId name) const
+std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
+	ScopeId start, NameId name, SourcePoint point) const
 {
 	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
@@ -804,17 +876,20 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(ScopeId start,
 	{
 		begin_lookup();
 		std::vector<ValueRef> found;
-		const bool have_direct = lookup_value_graph(scope, name, &found, false);
+		const bool have_direct = lookup_value_graph(scope, name, &found, false,
+			point);
+		if (have_direct)
+			return found;
 		std::vector<ScopeId> targets;
-		append_effective_using_targets(scope, &targets);
+		append_effective_using_targets(scope, &targets, point);
 		for (std::size_t i = 0; i < targets.size(); ++i)
 		{
 			std::vector<ValueRef> nominated;
-			if (!lookup_value_graph(targets[i], name, &nominated))
+			if (!lookup_value_graph(targets[i], name, &nominated, true, point))
 				continue;
 			found.insert(found.end(), nominated.begin(), nominated.end());
 		}
-		if (have_direct || !found.empty())
+		if (!found.empty())
 			return found;
 		if (scope == global_)
 			break;
@@ -822,39 +897,45 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(ScopeId start,
 	}
 	return std::vector<ValueRef>();
 }
-std::vector<ValueRef> PA11SemanticModel::lookup_value_path(const NamePath& path, ScopeId start) const
+std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
+	const NamePath& path, ScopeId start, SourcePoint point) const
 {
 	if (path.components.empty())
 		return std::vector<ValueRef>();
+	if (!point.valid())
+		point = lookup_source_point(start);
 	if (path.components.size() == 1)
 	{
 		if (!path.global)
-			return lookup_value_unqualified(start, path.last());
+			return lookup_value_unqualified(start, path.last(), point);
 		begin_lookup();
 		std::vector<ValueRef> result;
-		lookup_value_graph(global_, path.last(), &result);
+		lookup_value_graph(global_, path.last(), &result, true, point);
 		return result;
 	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
-	const ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix) :
-		resolve_qualifier_scope(prefix, start);
+	const ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix,
+		point) :
+		resolve_qualifier_scope(prefix, start, point);
 	if (!scope.valid())
 		return std::vector<ValueRef>();
 	begin_lookup();
 	std::vector<ValueRef> result;
-	lookup_value_graph(scope, path.last(), &result);
+	lookup_value_graph(scope, path.last(), &result, true, point);
 	return result;
 }
 ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& components,
-	ScopeId start) const
+	ScopeId start, SourcePoint point) const
 {
 	if (components.empty())
 		return ScopeId();
-	ScopeId scope = lookup_namespace_unqualified(start, components[0]);
+	if (!point.valid())
+		point = lookup_source_point(start);
+	ScopeId scope = lookup_namespace_unqualified(start, components[0], point);
 	std::size_t at = 1;
 	if (!scope.valid())
 	{
-		const TypeId type = lookup_type_unqualified(start, components[0]);
+		const TypeId type = lookup_type_unqualified(start, components[0], point);
 		scope = scope_for_type(type);
 		if (!scope.valid())
 			return ScopeId();
@@ -862,28 +943,32 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 	for (; at < components.size(); ++at)
 	{
 		begin_lookup();
-		const ScopeId next_namespace = lookup_namespace_graph(scope, components[at]);
+		const ScopeId next_namespace = lookup_namespace_graph(scope, components[at],
+			true, point);
 		if (next_namespace.valid())
 		{
 			scope = next_namespace;
 			continue;
 		}
-		const TypeId type = lookup_type_qualified(scope, components[at]);
+		const TypeId type = lookup_type_qualified(scope, components[at], point);
 		scope = scope_for_type(type);
 		if (!scope.valid())
 			return ScopeId();
 	}
 	return scope;
 }
-TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start) const
+TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
+	SourcePoint point) const
 {
 	if (path.components.empty())
 		return TypeId();
+	if (!point.valid())
+		point = lookup_source_point(start);
 	if (path.components.size() == 1)
 	{
 		const TypeId found = path.global ?
-			lookup_type_qualified(global_, path.last()) :
-			lookup_type_unqualified(start, path.last());
+			lookup_type_qualified(global_, path.last(), point) :
+			lookup_type_unqualified(start, path.last(), point);
 		// PA12 exposes nullptr_t as a fundamental target type in the
 		// assignment vocabulary when no ordinary type binding is present.
 		if (found.valid())
@@ -894,48 +979,53 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start) 
 	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
 	const ScopeId scope = path.global ?
-		resolve_global_qualifier_scope(prefix) :
-		resolve_qualifier_scope(prefix, start);
+		resolve_global_qualifier_scope(prefix, point) :
+		resolve_qualifier_scope(prefix, start, point);
 	return !scope.valid() ? TypeId() :
-		lookup_type_qualified(scope, path.last());
+		lookup_type_qualified(scope, path.last(), point);
 }
-ScopeId PA11SemanticModel::resolve_global_qualifier_scope(const std::vector<NameId>& components) const
+ScopeId PA11SemanticModel::resolve_global_qualifier_scope(
+	const std::vector<NameId>& components, SourcePoint point) const
 {
 	if (components.empty())
 		return global_;
 	begin_lookup();
-	ScopeId scope = lookup_namespace_graph(global_, components[0]);
+	ScopeId scope = lookup_namespace_graph(global_, components[0], true, point);
 	if (!scope.valid())
 	{
-		const TypeId type = lookup_type_qualified(global_, components[0]);
+		const TypeId type = lookup_type_qualified(global_, components[0], point);
 		scope = scope_for_type(type);
 	}
 	for (std::size_t i = 1; i < components.size() && scope.valid(); ++i)
 	{
 		begin_lookup();
-		const ScopeId next_namespace = lookup_namespace_graph(scope, components[i]);
+		const ScopeId next_namespace = lookup_namespace_graph(scope,
+			components[i], true, point);
 		if (next_namespace.valid())
 			scope = next_namespace;
 		else
 			scope = scope_for_type(lookup_type_qualified(scope,
-				components[i]));
+				components[i], point));
 	}
 	return scope;
 }
-ScopeId PA11SemanticModel::resolve_namespace_path(const NamePath& path, ScopeId start) const
+ScopeId PA11SemanticModel::resolve_namespace_path(const NamePath& path,
+	ScopeId start, SourcePoint point) const
 {
 	if (path.components.empty())
 		return ScopeId();
+	if (!point.valid())
+		point = lookup_source_point(start);
 	if (path.components.size() == 1)
-		return path.global ? lookup_namespace_here(global_, path.last()) :
-			lookup_namespace_unqualified(start, path.last());
+		return path.global ? lookup_namespace_graph(global_, path.last(),
+			false, point) : lookup_namespace_unqualified(start, path.last(), point);
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
-	ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix) :
-		resolve_qualifier_scope(prefix, start);
+	ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix, point) :
+		resolve_qualifier_scope(prefix, start, point);
 	if (!scope.valid())
 		return ScopeId();
 	begin_lookup();
-	return lookup_namespace_graph(scope, path.last());
+	return lookup_namespace_graph(scope, path.last(), true, point);
 }
 BindingId PA11SemanticModel::store_binding(ScopeId scope, const Binding& binding,
 	std::size_t position )
@@ -995,7 +1085,7 @@ Binding& PA11SemanticModel::binding(BindingId id)
 		static_cast<const PA11SemanticModel*>(this)->binding(id));
 }
 void PA11SemanticModel::append_value_index(ScopeId scope, NameId name,
-	BindingId id, ScopeId origin)
+	BindingId id, ScopeId origin, SourcePoint declaration_point)
 {
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> >& index =
 		scopes_[scope.value].values;
@@ -1005,7 +1095,8 @@ void PA11SemanticModel::append_value_index(ScopeId scope, NameId name,
 		index.set(name, ValueList());
 		list = index.find(name);
 	}
-	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope));
+	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope,
+		declaration_point));
 }
 TypeId PA11SemanticModel::ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -1330,14 +1421,15 @@ TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeI
 			value.value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
 			throw std::runtime_error("enumerator value overflow");
 		add_enumerator(value_scope, name_from_spelling(child.producer_spelling),
-			type, static_cast<std::int64_t>(value.value));
+			type, static_cast<std::int64_t>(value.value),
+			SourcePoint(node.source_begin));
 		next_value = static_cast<std::int64_t>(value.value) + 1;
 		have_next = true;
 	}
 	return type;
 }
 void PA11SemanticModel::add_enumerator(ScopeId scope, NameId name, TypeId type,
-	std::int64_t value)
+	std::int64_t value, SourcePoint declaration_point)
 {
 	Scope& current = scopes_[scope.value];
 	if (current.types.find(name) != NULL ||
@@ -1347,7 +1439,7 @@ void PA11SemanticModel::add_enumerator(ScopeId scope, NameId name, TypeId type,
 	enumerator.has_value = true;
 	enumerator.value = value;
 	const BindingId index = store_binding(scope, enumerator);
-	append_value_index(scope, name, index);
+	append_value_index(scope, name, index, ScopeId(), declaration_point);
 }
 bool PA11SemanticModel::integral_type(FundamentalType type) const
 {
@@ -1503,6 +1595,62 @@ TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope
 		if (node.children.empty())
 			throw std::runtime_error("empty parenthesized expression");
 		return expression_type(node.children.front(), scope);
+	}
+	if (node.kind == PA10NodeKind::CallExpression)
+	{
+		if (node.children.size() != 2)
+			throw std::runtime_error("invalid call expression type");
+		const PA10AstNode& callee = node.children.front();
+		const PA10AstNode& arguments = node.children.back();
+		const std::size_t argument_count = arguments.children.size();
+		if (callee.kind == PA10NodeKind::IdExpression)
+		{
+			const std::vector<ValueRef> candidates = lookup_value_path(
+				name_path(callee), scope);
+			bool has_direct_function = false;
+			bool has_matching_function = false;
+			TypeId matching_result;
+			for (std::size_t i = 0; i < candidates.size(); ++i)
+			{
+				const Binding& candidate = binding(candidates[i].binding);
+				if (candidate.kind != BindingKind::Function ||
+					type_kind(candidate.type) != TypeKind::Function)
+					continue;
+				const TypeKey& function = types_[candidate.type.value];
+				has_direct_function = true;
+				if ((!function.variadic &&
+					argument_count != function.parameters.size()) ||
+					(function.variadic && argument_count <
+					function.parameters.size()))
+					continue;
+				if (has_matching_function)
+					throw std::runtime_error("ambiguous call expression type");
+				has_matching_function = true;
+				matching_result = function.result;
+			}
+			if (has_matching_function)
+				return matching_result;
+			if (has_direct_function)
+				throw std::runtime_error("no matching function for call expression type");
+		}
+		TypeId callee_type = expression_type(callee, scope);
+		if (type_kind(callee_type) == TypeKind::LvalueReference ||
+			type_kind(callee_type) == TypeKind::RvalueReference)
+			callee_type = types_[callee_type.value].child;
+		callee_type = strip_cv_type(callee_type);
+		if (type_kind(callee_type) == TypeKind::Pointer)
+			callee_type = strip_cv_type(types_[callee_type.value].child);
+		if (type_kind(callee_type) == TypeKind::Function)
+		{
+			const TypeKey& function = types_[callee_type.value];
+			if ((!function.variadic &&
+				argument_count != function.parameters.size()) ||
+				(function.variadic && argument_count <
+				function.parameters.size()))
+				throw std::runtime_error("no matching function for call expression type");
+			return function.result;
+		}
+		throw std::runtime_error("call expression has no function type");
 	}
 	if (node.kind == PA10NodeKind::IdExpression)
 	{
@@ -1817,7 +1965,9 @@ TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 	}
 	return changed ? intern_type(normalized) : type;
 }
-BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type, bool function, bool definition, bool lexical_view, BindingId backing_storage)
+BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
+	bool function, bool definition, bool lexical_view, BindingId backing_storage,
+	SourcePoint declaration_point)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -1855,7 +2005,7 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type, 
 	value.has_definition = function && definition;
 	const BindingId binding_id = store_binding(scope, value);
 	if (backing_storage.valid()) { BindingSidecar sidecar; sidecar.backing_storage = backing_storage; set_binding_sidecar(binding_id, sidecar); }
-	append_value_index(scope, name, binding_id);
+	append_value_index(scope, name, binding_id, ScopeId(), declaration_point);
 	return binding_id;
 }
 ScopeId PA11SemanticModel::declaration_scope(const NamePath& path, ScopeId current) const
@@ -2496,7 +2646,8 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
 			binding_id = add_value(target, name.path.last(), type,
-				function, false, true);
+				function, false, true, BindingId(),
+				SourcePoint(node.source_begin));
 			const NamedRecordId constant_record = named_record_for_type(type);
 			const bool ordinary_const_record = !spec.is_constexpr &&
 				((spec.cv & 1u) != 0) && constant_record.valid() &&
@@ -2528,263 +2679,6 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	const DeclarationFactId declaration_id(declaration_facts_.size());
 	declaration_facts_.push_back(declaration);
 	declaration_fact_index_.set(&node, declaration_id);
-}
-void PA11SemanticModel::process_function_definition(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.children.size() != 3)
-		throw std::runtime_error("invalid PA11 function definition");
-	const PA10AstNode& declarator = node.children[1];
-	const DeclaratorName name = declarator_name(declarator);
-	if (!name.found)
-		throw std::runtime_error("unnamed PA11 function definition");
-	const ScopeId target = declaration_scope(name.path, scope);
-	if (!target.valid())
-		throw std::runtime_error("unresolved PA11 function scope");
-	const SpecFact spec = spec_fact(node.children[0], target);
-	const TypeId type = apply_declarator(declarator, spec.base, target);
-	if (type_kind(type) != TypeKind::Function)
-		throw std::runtime_error("PA11 definition is not a function");
-	const BindingId function_binding = add_value(target, name.path.last(),
-		type, true, true, true);
-	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
-		name.path.last());
-	const PA10AstNode* clause = top_parameter_clause(declarator);
-	if (clause != NULL)
-	{
-		bool variadic = false;
-		std::vector<ParamFact> facts;
-		parameter_types(*clause, target, &variadic, &facts);
-		(void)variadic;
-		for (std::size_t i = 0; i < facts.size(); ++i)
-		{
-			Binding parameter(BindingKind::Parameter, facts[i].name,
-				facts[i].type);
-			const BindingId parameter_id = store_binding(function_scope, parameter);
-			if (facts[i].name.valid())
-				append_value_index(function_scope, facts[i].name, parameter_id);
-		}
-	}
-	const ScopeId body_scope = process_compound_statement(node.children[2],
-		function_scope);
-	const FunctionFactId function_id(function_facts_.size());
-	function_facts_.push_back(FunctionFact(&node, target, function_binding,
-		function_scope, body_scope));
-	function_fact_index_.set(&node, function_id);
-}
-ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
-{
-	if (node.kind != PA10NodeKind::CompoundStatement)
-		throw std::runtime_error("invalid PA11 compound statement");
-	const ScopeId block = create_scope(ScopeKind::Block, parent, NameId());
-	compound_facts_.push_back(CompoundFact(&node, block));
-	compound_scope_index_.set(&node, block);
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		const PA10AstNode& child = node.children[i];
-		switch (child.kind)
-		{
-		case PA10NodeKind::SimpleDeclaration:
-		case PA10NodeKind::AliasDeclaration:
-		case PA10NodeKind::NamespaceAliasDefinition:
-		case PA10NodeKind::UsingDirective:
-		case PA10NodeKind::UsingDeclaration:
-			// Block declarations are formed once, in source order, before
-			// PA12 traverses their statement facts.
-			process_declaration(child, block);
-			break;
-		case PA10NodeKind::ClassSpecifier:
-			// A standalone block anonymous union is a declaration whose
-			// backing storage is synthesized by the typed PA11 owner.
-			process_declaration(child, block);
-			break;
-		case PA10NodeKind::EnumSpecifier:
-			// A block enum publishes its typed enumerator bindings before
-			// PA12 analyzes the following expressions.
-			process_declaration(child, block);
-			break;
-		case PA10NodeKind::CompoundStatement:
-			process_compound_statement(child, block);
-			break;
-		case PA10NodeKind::EmptyDeclaration:
-			break;
-		default:
-			// PA11's first semantic layer creates block scopes; expression
-			// and statement semantics belong to later assignments.
-			break;
-		}
-	}
-	return block;
-}
-void PA11SemanticModel::process_namespace(const PA10AstNode& node, ScopeId parent)
-{
-	ScopeId namespace_id;
-	if (node.producer_spelling == 0)
-		unsupported("anonymous namespaces");
-	const NameId name = name_from_spelling(node.producer_spelling);
-	namespace_id = named_namespace(parent, name);
-	const NamespaceFactId namespace_fact_id(namespace_facts_.size());
-	namespace_facts_.push_back(NamespaceFact(&node, namespace_id));
-	namespace_fact_index_.set(&node, namespace_fact_id);
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-		if (node.children[i].kind == PA10NodeKind::InlineMarker)
-			scopes_[namespace_id.value].inline_namespace = true;
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		if (node.children[i].kind == PA10NodeKind::InlineMarker)
-			continue;
-		process_declaration(node.children[i], namespace_id);
-	}
-}
-void PA11SemanticModel::process_namespace_alias(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.producer_spelling == 0 || node.children.size() != 1)
-		throw std::runtime_error("invalid PA11 namespace alias");
-	const NameId name = name_from_spelling(node.producer_spelling);
-	const NamePath target_name = name_path(node.children.front());
-	const ScopeId target = resolve_namespace_path(target_name, scope);
-	if (!target.valid())
-		throw std::runtime_error("namespace alias target is not a namespace");
-	Scope& current = scopes_[scope.value];
-	if (current.namespaces.find(name) != NULL ||
-		current.types.find(name) != NULL ||
-		direct_value_exists(scope, name))
-		throw std::runtime_error("namespace alias conflicts with binding");
-	const ScopeId* old = current.namespace_aliases.find(name);
-	if (old != NULL && *old != target)
-		throw std::runtime_error("namespace alias redefinition");
-	current.namespace_aliases.set(name, target);
-}
-void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.children.size() != 1)
-		throw std::runtime_error("invalid PA11 using directive");
-	const ScopeId target = resolve_namespace_path(name_path(node.children.front()), scope);
-	if (!target.valid())
-		throw std::runtime_error("using directive target is not a namespace");
-	const ScopeId effective = common_ancestor(scope, target);
-	if (!effective.valid())
-		throw std::runtime_error("using directive has no common ancestor");
-	scopes_[scope.value].using_directives.push_back(target);
-	scopes_[effective.value].effective_using_directives.push_back(
-		EffectiveUsingDirective(target, scope));
-}
-void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.children.size() != 1)
-		throw std::runtime_error("invalid PA11 using declaration");
-	const NamePath target_name = name_path(node.children.front());
-	const TypeId type = lookup_type_path(target_name, scope);
-	const NameId introduced = target_name.last();
-	Scope& current = scopes_[scope.value];
-	if (current.types.find(introduced) != NULL ||
-		direct_namespace_exists(scope, introduced))
-		throw std::runtime_error("using declaration conflicts with binding");
-	if (type.valid())
-	{
-		if (direct_value_exists(scope, introduced))
-			throw std::runtime_error("using declaration conflicts with binding");
-		current.types.set(introduced, type);
-		current.using_types.set(introduced, type);
-		BindingKind kind = BindingKind::TypeAlias;
-		if (target_name.components.size() > 1)
-		{
-			std::vector<NameId> prefix(target_name.components.begin(),
-				target_name.components.end() - 1);
-			const ScopeId owner = target_name.global ?
-				resolve_global_qualifier_scope(prefix) :
-				resolve_qualifier_scope(prefix, scope);
-			if (owner.valid())
-			{
-				const Scope& source = scopes_[owner.value];
-				for (std::size_t i = 0; i < source.bindings.size(); ++i)
-					if (binding(source.bindings[i]).name == introduced &&
-						binding(source.bindings[i]).type == type &&
-						binding(source.bindings[i]).kind == BindingKind::Type)
-						kind = BindingKind::Type;
-			}
-		}
-		store_binding(scope, Binding(kind, introduced, type));
-		return;
-	}
-	const std::vector<ValueRef> values = lookup_value_path(target_name, scope);
-	if (values.empty())
-		throw std::runtime_error("using declaration target is not a binding");
-	const ValueList* existing = current.values.find(introduced);
-	bool existing_functions = existing != NULL && !existing->entries.empty();
-	if (existing_functions)
-	{
-		for (std::size_t i = 0; i < existing->entries.size(); ++i)
-		{
-			const Binding& old = binding(existing->entries[i].binding);
-			if (old.kind != BindingKind::Function ||
-				type_kind(old.type) != TypeKind::Function)
-			{
-				existing_functions = false;
-				break;
-			}
-		}
-	}
-	bool incoming_functions = true;
-	bool incoming_nonfunctions = true;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
-		const Binding& imported = binding(values[i].binding);
-		const bool is_function = imported.kind == BindingKind::Function &&
-			type_kind(imported.type) == TypeKind::Function;
-		incoming_functions = incoming_functions && is_function;
-		incoming_nonfunctions = incoming_nonfunctions && !is_function;
-	}
-	if (!incoming_functions && !incoming_nonfunctions)
-		throw std::runtime_error("using declaration mixes value kinds");
-	std::vector<ValueRef> additions;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
-		bool duplicate = false;
-		if (existing != NULL)
-			for (std::size_t j = 0; j < existing->entries.size(); ++j)
-				if (existing->entries[j].binding == values[i].binding &&
-					existing->entries[j].origin == values[i].scope)
-				{
-					duplicate = true;
-					break;
-				}
-		if (!duplicate)
-			for (std::size_t j = 0; j < additions.size(); ++j)
-				if (additions[j].binding == values[i].binding &&
-					additions[j].scope == values[i].scope)
-				{
-					duplicate = true;
-					break;
-				}
-		if (duplicate)
-			continue;
-		const Binding& imported = binding(values[i].binding);
-		const bool is_function = imported.kind == BindingKind::Function &&
-			type_kind(imported.type) == TypeKind::Function;
-		if (existing != NULL && (!existing_functions || !is_function))
-			throw std::runtime_error("using declaration conflicts with binding");
-		additions.push_back(values[i]);
-	}
-	for (std::size_t i = 0; i < additions.size(); ++i)
-	{
-		append_value_index(scope, introduced, additions[i].binding,
-			additions[i].scope);
-		// Keep one PA11 dump view per imported canonical binding in this
-		// scope.  Lookup retains the full (BindingId, origin ScopeId) pair.
-		bool have_view = false;
-		for (std::size_t j = 0; j < current.binding_views.size(); ++j)
-		{
-			const DumpBindingViewId view_id = current.binding_views[j];
-			if (view_id.valid() && view_id.value < dump_binding_views_.size() &&
-				dump_binding_views_[view_id.value].binding == additions[i].binding)
-			{
-				have_view = true;
-				break;
-			}
-		}
-		if (!have_view)
-			add_dump_binding_view(scope, additions[i].binding);
-	}
 }
 NameId PA11SemanticModel::template_parameter_name(const PA10AstNode& node)
 {
