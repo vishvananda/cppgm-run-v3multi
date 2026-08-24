@@ -161,4 +161,7 @@ Expected failure — template and using restrictions (2):
 - Required audit: `perl scripts/cppgm_file_audit.pl --stage pa11 --paths dev/src`
   passed, with one pre-existing `cpp_semantic_core.h` substantial-header-body
   warning.
-- Commit and final clean-tree verification are the remaining handoff actions.
+- Coherent implementation commit: `1154916b` (`Implement PA11 semantic type
+  owner`); all seven intended files were the only staged paths.
+- Final plan-ledger update is the only follow-up mutation; verify `git status
+  --short` is empty after it.
