@@ -589,8 +589,14 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start) 
 	if (path.components.empty())
 		return TypeId();
 	if (path.components.size() == 1)
+	{
+		// PA12 exposes nullptr_t as a fundamental target type in the
+		// assignment vocabulary, even when no library typedef is present.
+		if (name_text(path.last()) == "nullptr_t")
+			return fundamental(FundamentalType::NullptrT);
 		return path.global ? lookup_type_qualified(global_, path.last()) :
 			lookup_type_unqualified(start, path.last());
+	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
 	const ScopeId scope = path.global ?
 		resolve_global_qualifier_scope(prefix) :
@@ -1739,6 +1745,11 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(const PA10AstNode& clause
 		{
 			name = declarator_name(child.children[1]);
 			type = apply_declarator(child.children[1], type, scope);
+			if (child.children[1].kind == PA10NodeKind::Declarator)
+				for (std::size_t j = 0; j < child.children[1].children.size(); ++j)
+					if (child.children[1].children[j].kind ==
+						PA10NodeKind::ParameterPack)
+						*variadic = true;
 		}
 		const bool unnamed_void = type_kind(type) == TypeKind::Fundamental &&
 			types_[type.value].fundamental == FundamentalType::Void && !name.found;

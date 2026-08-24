@@ -721,6 +721,19 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			type_kind(target_referred) == TypeKind::Cv &&
 			qualification_convertible(source_value, target_referred))
 			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
+		if (type_kind(target_referred) == TypeKind::Cv)
+		{
+			const ConversionChoice temporary = conversion_for(source, category,
+				target_referred, source_node);
+			const bool same_lvalue_value = source_lvalue &&
+				temporary.kind == ConversionKind::LvalueToRvalue &&
+				temporary.rank == 0;
+			if (temporary.valid &&
+				(target_kind != TypeKind::RvalueReference || !same_lvalue_value))
+				return ConversionChoice(true,
+					temporary.rank + (target_kind == TypeKind::LvalueReference ? 1 : 0),
+					ConversionKind::ReferenceBinding);
+		}
 		return ConversionChoice();
 	}
 
@@ -747,9 +760,13 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		qualification_convertible(by_value_source,
 			types_[by_value_target.value].child))
 		return ConversionChoice(true, 1, ConversionKind::FunctionToPointer);
+	FundamentalType target_fundamental;
+	if (source_node != NULL && integer_zero(*source_node) &&
+		fundamental_of(by_value_target, &target_fundamental) &&
+		target_fundamental == FundamentalType::NullptrT)
+		return ConversionChoice(true, 2, ConversionKind::NullIntegerToNullptr);
 
 	FundamentalType source_fundamental;
-	FundamentalType target_fundamental;
 	if (fundamental_of(by_value_source, &source_fundamental) &&
 		fundamental_of(by_value_target, &target_fundamental) &&
 		integral_type(source_fundamental) &&
@@ -787,7 +804,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			ConversionKind::PointerQualification);
 	}
 	if (bool_id(by_value_target) && pointer_id(by_value_source))
-		return ConversionChoice(true, 2, ConversionKind::PointerToBool);
+		return ConversionChoice(true, 3, ConversionKind::PointerToBool);
 	return ConversionChoice();
 }
 ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
@@ -797,16 +814,133 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 		expression.category, target, source_node);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid conversion");
+	if (choice.kind == ConversionKind::ReferenceBinding &&
+		(type_kind(target) == TypeKind::LvalueReference ||
+			type_kind(target) == TypeKind::RvalueReference))
+	{
+		const TypeId referred = types_[target.value].child;
+		const TypeId source_value = expression_object_type(expression.type);
+		if (type_kind(referred) == TypeKind::Cv &&
+			!qualification_convertible(source_value, referred))
+		{
+			const ConversionChoice temporary = conversion_for(expression.type,
+				expression.category, referred, source_node);
+			const PA10AstNode* cast_source = source_node != NULL ? source_node :
+				semantic_facts_[expression.fact.value].source;
+			if (temporary.valid && cast_source != NULL)
+			{
+				const SemanticFactId cast = make_expression_fact(
+					SemanticFactKind::CastExpression, referred,
+					SemanticValueCategory::Prvalue, *cast_source,
+					std::vector<SemanticFactId>(1, expression.fact));
+				set_fact_conversion(cast, add_conversion(expression.type, referred,
+					temporary.kind, temporary.rank));
+				set_fact_conversion(cast, add_conversion(referred, target,
+					choice.kind, choice.rank));
+				return ExprInfo(cast, referred, SemanticValueCategory::Prvalue,
+					false);
+			}
+		}
+	}
 	const ConversionFactId conversion = add_conversion(expression.type, target,
 		choice.kind, choice.rank);
 	set_fact_conversion(expression.fact, conversion);
 	ExprInfo result = expression;
-	if (choice.kind == ConversionKind::NullIntegerToPointer)
+	if (choice.kind == ConversionKind::NullIntegerToPointer ||
+		choice.kind == ConversionKind::NullIntegerToNullptr)
 	{
 		semantic_facts_[result.fact.value].type = target;
 		result.type = target;
 	}
 	return result;
+}
+const PA10AstNode* PA11SemanticModel::target_function_id(
+	const PA10AstNode& node, ScopeId scope)
+{
+	if (node.kind == PA10NodeKind::ParenthesizedExpression)
+	{
+		if (node.children.size() != 1)
+			return NULL;
+		return target_function_id(node.children.front(), scope);
+	}
+	if (node.kind != PA10NodeKind::IdExpression)
+		return NULL;
+	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
+	if (values.size() <= 1)
+		return NULL;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
+		const Binding& value = binding(values[i].binding);
+		if (value.kind != BindingKind::Function ||
+			type_kind(value.type) != TypeKind::Function)
+			return NULL;
+	}
+	return &node;
+}
+FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
+	const PA10AstNode& node, ScopeId scope, TypeId target)
+{
+	if (node.kind != PA10NodeKind::IdExpression)
+		return FunctionIdResolution();
+	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
+	ValueRef selected;
+	ConversionChoice selected_conversion;
+	bool have_selected = false;
+	bool ambiguous = false;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
+		const Binding& value = binding(values[i].binding);
+		if (value.kind != BindingKind::Function ||
+			type_kind(value.type) != TypeKind::Function)
+			continue;
+		const ConversionChoice conversion = conversion_for(value.type,
+			SemanticValueCategory::Lvalue, target, &node);
+		if (!conversion.valid)
+			continue;
+		if (!have_selected || conversion.rank < selected_conversion.rank)
+		{
+			have_selected = true;
+			selected = values[i];
+			selected_conversion = conversion;
+			ambiguous = false;
+		}
+		else if (conversion.rank == selected_conversion.rank)
+		{
+			ambiguous = true;
+		}
+	}
+	return have_selected && !ambiguous ? FunctionIdResolution(true, selected,
+		selected_conversion) : FunctionIdResolution();
+}
+ExprInfo PA11SemanticModel::semantic_id_expression_selected(
+	const PA10AstNode& node, ScopeId scope,
+	const FunctionIdResolution& resolution)
+{
+	(void)scope;
+	if (!resolution.valid)
+		throw std::runtime_error("PA12 target does not select a function");
+	const Binding& value = binding(resolution.selected.binding);
+	if (value.kind != BindingKind::Function ||
+		type_kind(value.type) != TypeKind::Function)
+		throw std::runtime_error("PA12 target selected a non-function");
+	SemanticFact fact(SemanticFactKind::IdExpression, value.type,
+		SemanticValueCategory::Lvalue, &node);
+	fact.binding = resolution.selected.binding;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_name(result, name_path(node));
+	return ExprInfo(result, value.type, SemanticValueCategory::Lvalue, false);
+}
+ExprInfo PA11SemanticModel::semantic_expression_for_target(
+	const PA10AstNode& node, ScopeId scope, TypeId target)
+{
+	const PA10AstNode* function_id = target_function_id(node, scope);
+	if (function_id == NULL)
+		return semantic_expression(node, scope);
+	const FunctionIdResolution resolution = resolve_function_id_target(
+		*function_id, scope, target);
+	if (!resolution.valid)
+		throw std::runtime_error("PA12 no function matches target type");
+	return semantic_id_expression_selected(*function_id, scope, resolution);
 }
 TypeId PA11SemanticModel::common_integral_type(TypeId left, TypeId right) const
 {
@@ -1229,30 +1363,80 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 			SemanticValueCategory::Prvalue, false);
 	}
 
-	std::vector<ExprInfo> arguments;
-	for (std::size_t i = 0; i < argument_node.children.size(); ++i)
-		arguments.push_back(semantic_expression(argument_node.children[i], scope));
-
 	std::vector<ValueRef> candidates;
-	bool direct = callee_node.kind == PA10NodeKind::IdExpression;
+	bool direct = false;
 	ExprInfo indirect_callee;
-	if (direct)
+	TypeId indirect_type;
+	if (callee_node.kind == PA10NodeKind::IdExpression)
 	{
 		const NamePath path = name_path(callee_node);
 		candidates = lookup_value_path(path, scope);
-		if (candidates.empty())
-			throw std::runtime_error("PA12 call target not found");
+		direct = !candidates.empty();
+		for (std::size_t i = 0; direct && i < candidates.size(); ++i)
+		{
+			const Binding& candidate = binding(candidates[i].binding);
+			if (candidate.kind != BindingKind::Function ||
+				type_kind(candidate.type) != TypeKind::Function)
+				direct = false;
+		}
+	}
+	if (!direct)
+	{
+		indirect_callee = semantic_expression(callee_node, scope);
+		indirect_type = callable_function_type(indirect_callee.type);
+		if (!indirect_type.valid())
+			throw std::runtime_error("PA12 call target is not callable");
+		const TypeKey& function = types_[indirect_type.value];
+		if ((!function.variadic && argument_node.children.size() !=
+			function.parameters.size()) ||
+			(function.variadic && argument_node.children.size() <
+			function.parameters.size()))
+			throw std::runtime_error("PA12 indirect call arity mismatch");
+	}
+
+	std::vector<ExprInfo> arguments;
+	if (!direct)
+	{
+		const TypeKey& function = types_[indirect_type.value];
+		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+		{
+			if (i < function.parameters.size())
+				arguments.push_back(semantic_expression_for_target(
+					argument_node.children[i], scope, function.parameters[i]));
+			else
+				arguments.push_back(semantic_expression(argument_node.children[i],
+					scope));
+		}
 	}
 	else
-		indirect_callee = semantic_expression(callee_node, scope);
+	{
+		// An overloaded function ID has no expression type until a target
+		// function pointer/reference parameter is selected.  Keep it deferred;
+		// all ordinary arguments are still analyzed exactly once here.
+		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+		{
+			if (target_function_id(argument_node.children[i], scope) != NULL)
+				arguments.push_back(ExprInfo());
+			else
+				arguments.push_back(semantic_expression(argument_node.children[i],
+					scope));
+		}
+	}
 
 	ValueRef selected;
 	TypeId selected_type;
-	bool have_selected = false;
-	unsigned int selected_worst = std::numeric_limits<unsigned int>::max();
-	unsigned int selected_sum = std::numeric_limits<unsigned int>::max();
 	if (direct)
 	{
+		struct CandidateScore
+		{
+			ValueRef value;
+			TypeId type;
+			bool variadic;
+			std::vector<unsigned int> ranks;
+		};
+		std::vector<CandidateScore> viable_candidates;
+		const unsigned int ellipsis_rank =
+			std::numeric_limits<unsigned int>::max() / 4;
 		for (std::size_t i = 0; i < candidates.size(); ++i)
 		{
 			const Binding& candidate = binding(candidates[i].binding);
@@ -1260,56 +1444,99 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 				type_kind(candidate.type) != TypeKind::Function)
 				continue;
 			const TypeKey& function = types_[candidate.type.value];
-			if ((!function.variadic && arguments.size() != function.parameters.size()) ||
-				(function.variadic && arguments.size() < function.parameters.size()))
+			if ((!function.variadic && arguments.size() !=
+				function.parameters.size()) ||
+				(function.variadic && arguments.size() <
+				function.parameters.size()))
 				continue;
-			unsigned int worst = 0;
-			unsigned int sum = 0;
-			bool viable = true;
-			for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
+			CandidateScore score;
+			score.value = candidates[i];
+			score.type = candidate.type;
+			score.variadic = function.variadic;
+			score.ranks.reserve(arguments.size());
+			bool candidate_viable = true;
+			for (std::size_t arg = 0; arg < arguments.size(); ++arg)
 			{
-				const ConversionChoice choice = conversion_for(arguments[arg].type,
-					arguments[arg].category, function.parameters[arg],
-					semantic_facts_[arguments[arg].fact.value].source);
+				if (arg >= function.parameters.size())
+				{
+					if (!arguments[arg].fact.valid())
+					{
+						candidate_viable = false;
+						break;
+					}
+					score.ranks.push_back(ellipsis_rank);
+					continue;
+				}
+				ConversionChoice choice;
+				if (arguments[arg].fact.valid())
+					choice = conversion_for(arguments[arg].type,
+						arguments[arg].category, function.parameters[arg],
+						semantic_facts_[arguments[arg].fact.value].source);
+				else
+				{
+					const PA10AstNode* function_id = target_function_id(
+						argument_node.children[arg], scope);
+					if (function_id != NULL)
+					{
+						const FunctionIdResolution resolution =
+							resolve_function_id_target(*function_id, scope,
+								function.parameters[arg]);
+						choice = resolution.conversion;
+					}
+				}
 				if (!choice.valid)
 				{
-					viable = false;
+					candidate_viable = false;
 					break;
 				}
-				worst = std::max(worst, choice.rank);
-				sum += choice.rank;
+				score.ranks.push_back(choice.rank);
 			}
-			if (!viable)
+			if (!candidate_viable)
 				continue;
-			if (!have_selected || worst < selected_worst ||
-				(worst == selected_worst && sum < selected_sum))
-			{
-				have_selected = true;
-				selected = candidates[i];
-				selected_type = candidate.type;
-				selected_worst = worst;
-				selected_sum = sum;
-			}
-			else if (worst == selected_worst && sum == selected_sum)
-				throw std::runtime_error("PA12 ambiguous call");
+			viable_candidates.push_back(score);
 		}
-		if (!have_selected)
+		if (viable_candidates.empty())
 			throw std::runtime_error("PA12 no viable call");
+		const auto better = [](const CandidateScore& left,
+			const CandidateScore& right) -> bool
+		{
+			bool strict = false;
+			for (std::size_t i = 0; i < left.ranks.size(); ++i)
+			{
+				if (left.ranks[i] > right.ranks[i])
+					return false;
+				if (left.ranks[i] < right.ranks[i])
+					strict = true;
+			}
+			if (strict)
+				return true;
+			return left.variadic != right.variadic && !left.variadic;
+		};
+		std::size_t best_index = 0;
+		for (std::size_t i = 1; i < viable_candidates.size(); ++i)
+			if (better(viable_candidates[i], viable_candidates[best_index]))
+				best_index = i;
+		for (std::size_t i = 0; i < viable_candidates.size(); ++i)
+			if (i != best_index && !better(viable_candidates[best_index],
+				viable_candidates[i]))
+				throw std::runtime_error("PA12 ambiguous call");
+		selected = viable_candidates[best_index].value;
+		selected_type = viable_candidates[best_index].type;
 		const TypeKey& function = types_[selected_type.value];
 		for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
+		{
+			if (!arguments[arg].fact.valid())
+				arguments[arg] = semantic_expression_for_target(
+					argument_node.children[arg], scope, function.parameters[arg]);
 			arguments[arg] = apply_context_conversion(arguments[arg],
 				function.parameters[arg],
 				semantic_facts_[arguments[arg].fact.value].source);
+		}
 	}
 	else
 	{
-		selected_type = callable_function_type(indirect_callee.type);
-		if (!selected_type.valid())
-			throw std::runtime_error("PA12 call target is not callable");
+		selected_type = indirect_type;
 		const TypeKey& function = types_[selected_type.value];
-		if ((!function.variadic && arguments.size() != function.parameters.size()) ||
-			(function.variadic && arguments.size() < function.parameters.size()))
-			throw std::runtime_error("PA12 indirect call arity mismatch");
 		for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
 			arguments[arg] = apply_context_conversion(arguments[arg],
 				function.parameters[arg],
@@ -1429,8 +1656,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			initializer.kind != PA10NodeKind::ParenInitializer) ||
 			initializer.children.size() != 1)
 			throw std::runtime_error("PA12 invalid condition initializer");
-		const ExprInfo expression = semantic_expression(
-			initializer.children.front(), declaration->scope);
+		const ExprInfo expression = semantic_expression_for_target(
+			initializer.children.front(), declaration->scope, value.type);
 		apply_context_conversion(expression, value.type,
 			semantic_facts_[expression.fact.value].source);
 		set_semantic_children(variable,
@@ -1465,8 +1692,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				throw std::runtime_error("PA12 unsupported initializer");
 			if (initializer.children.size() != 1)
 				throw std::runtime_error("PA12 initializer arity mismatch");
-			const ExprInfo expression = semantic_expression(
-				initializer.children.front(), declaration->scope);
+			const ExprInfo expression = semantic_expression_for_target(
+				initializer.children.front(), declaration->scope, value.type);
 			apply_context_conversion(expression, value.type,
 				semantic_facts_[expression.fact.value].source);
 			set_semantic_children(variable,
@@ -2298,8 +2525,10 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output, const PA10AstNo
 			continue;
 		for (std::size_t indent = 0; indent < depth + 1; ++indent)
 			output << "  ";
-		output << "parameter " << name_text(parameter.name) << ' ' <<
-			render_type(parameter_index < function_type.parameters.size() ?
+		output << "parameter ";
+		if (parameter.name.valid())
+			output << name_text(parameter.name);
+		output << ' ' << render_type(parameter_index < function_type.parameters.size() ?
 			function_type.parameters[parameter_index] : parameter.type) << '\n';
 		++parameter_index;
 	}

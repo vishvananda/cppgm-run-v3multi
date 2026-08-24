@@ -1,41 +1,45 @@
-# PA12 checkpoint plan
+# PA12 callable-resolution checkpoint plan
 
-## 1. Stage design and spec alignment
+## Stage Design
 
 The production route remains one typed owner:
 
 `PPPreprocessingSession -> PPTokenBuffer -> PA10Ast -> PA11SemanticModel -> PA12 typed facts -> cold deterministic dump`
 
-PA10 owns structured statement identities and child order. PA11 owns canonical
-types, bindings, ordinary scopes, and lookup. PA12 extends that same model with
-pointer-keyed `StatementFact` preparation, hidden control/substatement scopes,
-condition/for-init `DeclarationFact` records, contextual `ConversionFact`
-records, and typed `SemanticFact` nodes for compound, if/else, switch/case/
-default, while, do, for, break, and continue.
+PA11 owns canonical types, bindings, scopes, and lookup. PA12 now classifies a
+call as direct only when the resolved `IdExpression` names a function binding
+set; an `IdExpression` naming a variable or parameter of function,
+function-reference, or function-pointer type is analyzed as the indirect
+callee. Overloaded function IDs are represented by a deferred typed
+`FunctionIdResolution`. Target pointer/reference contexts inspect only the
+relevant function candidates, then create one selected ID fact and its
+conversion after the target is known. No candidate trial creates dump facts,
+and no rendered name is reparsed.
 
-The reviewed path preserves typed identity and cold presentation boundaries:
-producer spellings are retained by PA10, no rendered text is reparsed, and no
-reference or host tool participates in required output. Preparation and
-semantic traversal are linear in consumed statements, declarations, and
-expressions; lexical lookup follows relevant parent scopes; switch labels use
-one local typed `FlatIndex` for expected-O(1) duplicate checks. No sibling or
-whole-arena scan, retry-until-stable loop, or hash-order output is present.
+Direct-call candidates retain deterministic lookup order. Each viable
+candidate records one conversion rank per argument; an ellipsis tail receives
+a rank above every supported standard conversion. A typed component-wise
+ordering selects one maximal candidate or rejects ambiguity/no-viable-call.
+Null integer zero conversion to pointer and `nullptr_t` is recorded at the
+selected expression; reference temporary materialization records the required
+typed cast fact. Ordinary arguments are analyzed once per call. With `C`
+outer candidates, `A` arguments, `D` distinct deferred target slots, and `F`
+relevant inner function candidates per target, ordinary scoring is O(C*A) and
+uncached deferred classification adds O(C*D*F), hence O(C*A*F) in the bounded
+case `D <= A`. The ordinary-argument probe is not evidence for that deferred
+term. There are no whole-arena scans, retry loops, text-keyed semantic
+caches, or hash-order output.
 
-This checkpoint repairs adjusted switch-condition promotion and case-label
-conversion legality, preserves full unsigned case values for canonical
-synthesized labels, compacts that payload, and omits invalid placeholders for
-valid empty control substatements. The fixed Linux x86_64 promotion helper
-covers bool, the narrow character/integer types, char16_t, and wchar_t to int,
-and char32_t to unsigned int; fixed-underlying unscoped enums reuse it while
-scoped enums remain unpromoted. A case value must be representable in the
-promoted target range before duplicate comparison; no out-of-range modulo
-normalization is accepted. It does not expand the independent residual PA12
-call, class, pointer, namespace, parser, or broader expression families.
+The PA11 core edits are limited to the two typed ownership gaps exposed by the
+checkpoint: the assignment vocabulary's unqualified `nullptr_t` type lookup
+and the AST representation of a named variadic parameter pack. They preserve
+the existing canonical type and binding owners.
 
-## 2. Failure map and coverage
+## Failure Map
 
-The clean turn-start full-suite baseline supplied for this checkpoint is
-**103/166 passing, 63 failures**, with all 166 tests covered. Its partition is:
+The clean turn-start baseline is **103/166 passing, 63 failures**, with all
+166 tests covered. The supplied earlier-stage baseline is **685/685 through
+PA11**. Partition:
 
 | checked-in partition | total | passed | failed |
 | --- | ---: | ---: | ---: |
@@ -47,90 +51,179 @@ The clean turn-start full-suite baseline supplied for this checkpoint is
 | `tests/general/300-*.t` | 77 | 33 | 44 |
 | **all PA12 tests** | **166** | **103** | **63** |
 
-The prior checkpoint comparison recorded 13 baseline-only repairs and 0
-current-only regressions against the 90/166, 76-failure start. The authorized
-final rerun is unchanged from the supplied baseline: 63 unique baseline
-failures, 63 unique current failures, 0 current-only paths, 0 baseline-only
-paths, and **103 + 63 = 166** covered tests. The complete 166-test inventory
-remains unchanged.
+The complete turn-start failure ownership is recorded below. After this
+increment, full PA12 is **113/166 passing, 53 failing**, with all 166 covered:
+all ten active-checkpoint paths pass, the exact current failure set is the same
+53 residual paths listed below, and there are no extra failures or regressions.
+The ten paths in the active checkpoint are the only callable/conversion
+failures being changed; the remaining 53 retain explicit residual ownership
+and are not hidden by added passing probes.
 
-## 3. Active checkpoint
+Checkpoint-owned paths (10):
 
-At `47ca58bec4e11a5defd67a7ca44db7145ba936ff` relative to `eee242c6`, the
-structured-statement boundary is audited as follows:
+```text
+pa12/tests/general/200-bad-overloaded-function-id.t
+pa12/tests/general/200-function-reference-call.t
+pa12/tests/general/200-overloaded-function-argument.t
+pa12/tests/general/200-qualified-overloaded-function-argument.t
+pa12/tests/spec/200-function-pointer-call.t
+pa12/tests/spec/300-ellipsis-worse-than-pointer-overload.t
+pa12/tests/spec/300-nullptr-t-from-zero-overload.t
+pa12/tests/spec/300-ranked-prefix-before-ellipsis-slot.t
+pa12/tests/general/300-pointer-conversion-ranking.t
+pa12/tests/general/300-reference-binding-ranking.t
+```
 
-- condition declarations bind in their control scope; for-init declarations
-  bind in the for scope; unbraced branches and iteration bodies get distinct
-  hidden child scopes;
-- contextual bool and switch-condition conversions are recorded at the
-  expression/condition fact, and switch labels use adjusted integral promotion
-  types for legality and duplicate comparison;
-- scoped enum labels require the same enum type, unscoped enums and integral
-  labels use the supported implicit conversion path, and synthesized labels
-  retain one uint64_t payload with signed/unsigned/negative metadata without
-  changing ordinary literal source spelling;
-- case values are checked against the exact mathematical range of the promoted
-  fundamental target before canonicalization, so a negative-to-unsigned or
-  other narrowing value is rejected rather than modulo-normalized;
-- case/default facts, child order, lexical loop/switch validation, deterministic
-  rendering, and empty control substatements are checked without invalid child
-  IDs.
+Current residual failure paths (53), owned by later checkpoints or unrelated
+PA12 families:
 
-Focused validation after the repair:
+```text
+pa12/tests/general/200-block-scope-using-declaration.t
+pa12/tests/general/200-builtin-constant-p-propagated-expression.t
+pa12/tests/general/200-constexpr-complete-object-cv.t
+pa12/tests/general/200-function-pointer-array-deduced-bound.t
+pa12/tests/general/200-local-alias-postfix-cv-declaration.t
+pa12/tests/general/200-local-alias-statement.t
+pa12/tests/general/200-local-anonymous-union-variable.t
+pa12/tests/general/200-local-direct-initialization.t
+pa12/tests/general/200-local-using-directive-preserves-nearer-namespace-type.t
+pa12/tests/general/200-using-declaration-call.t
+pa12/tests/general/300-array-xvalue-subscript.t
+pa12/tests/general/300-block-anonymous-union-injected-members.t
+pa12/tests/general/300-block-elaborated-enum-type-use.t
+pa12/tests/general/300-builtin-abort-semantics.t
+pa12/tests/general/300-builtin-constant-p-call.t
+pa12/tests/general/300-decltype-functional-cast.t
+pa12/tests/general/300-deref-function-returning-pointer-reference.t
+pa12/tests/general/300-deref-string-literal.t
+pa12/tests/general/300-elaborated-local-struct-copy-init.t
+pa12/tests/general/300-enum-comparisons.t
+pa12/tests/general/300-floating-arithmetic-comparisons.t
+pa12/tests/general/300-floating-conditional-common-type.t
+pa12/tests/general/300-floating-inc-dec.t
+pa12/tests/general/300-integral-compound-assign-unscoped-enum.t
+pa12/tests/general/300-local-extern-function-declaration.t
+pa12/tests/general/300-member-function-pointer-return-pointer-const.t
+pa12/tests/general/300-member-function-pointer-type-alias-and-function.t
+pa12/tests/general/300-member-pointer-type-alias-and-function.t
+pa12/tests/general/300-multidimensional-array-const-reference-binding.t
+pa12/tests/general/300-namespace-function-body-later-anonymous-overload.t
+pa12/tests/general/300-nullptr-equality.t
+pa12/tests/general/300-pointer-bool-conversion.t
+pa12/tests/general/300-pointer-nullptr-conditional.t
+pa12/tests/general/300-pointer-plus-anonymous-enum.t
+pa12/tests/general/300-pointer-subtraction-cv-compatible.t
+pa12/tests/general/300-postfix-reference-return-call-inc.t
+pa12/tests/general/300-prefix-reference-return-call-inc.t
+pa12/tests/general/300-qualified-direct-function-hides-using-directive.t
+pa12/tests/general/300-reference-binding-pointee-const-pointer.t
+pa12/tests/general/300-reopened-unnamed-namespace-call.t
+pa12/tests/general/300-scoped-enum-functional-cast-integral.t
+pa12/tests/general/300-simple-assignment-reference-lhs.t
+pa12/tests/general/300-static-cast-member-overload-prefers-nontemplate.t
+pa12/tests/general/300-static-cast-overloaded-function-template-argument.t
+pa12/tests/general/300-subscript-commuted-expression.t
+pa12/tests/general/300-subscript-unscoped-enum-index.t
+pa12/tests/general/300-switch-scoped-enum-condition.t
+pa12/tests/general/300-unnamed-namespace-definition.t
+pa12/tests/general/300-unnamed-namespace-qualified-call.t
+pa12/tests/general/300-unnamed-namespace-unqualified-call.t
+pa12/tests/general/300-unscoped-enum-integral-operators.t
+pa12/tests/general/300-zero-arg-functional-cast-alias.t
+pa12/tests/spec/300-block-scope-namespace-alias-qualified-call.t
+```
 
-`make -C pa12` passed, with only the pre-existing warning in the unchanged
-cast path. The focused checked-in command
-`make -C pa12 check TEST='tests/spec/200-if-control-flow.t tests/spec/200-do-statement.t tests/spec/200-for-loop.t tests/spec/200-switch-statement.t tests/spec/300-condition-declaration-scope.t tests/spec/300-nullptr-pointer-conversion.t tests/general/200-condition-declaration.t tests/general/200-if-substatement-sibling-declaration-scopes.t tests/general/200-loop-jumps.t tests/general/200-switch-case-declaration.t tests/general/200-switch-default-declaration.t tests/general/200-while-loop.t tests/general/300-bad-default-outside-switch.t tests/general/300-bad-scoped-enum-if-condition.t tests/general/300-break-outside-loop-bad.t tests/general/300-continue-outside-loop-bad.t tests/general/300-nonconstant-case-label-bad.t tests/general/300-qualified-using-directive-enumerator-case.t tests/general/100-string-literal-array-type.t tests/general/100-variadic-call-fixed-prefix.t tests/general/200-paren-argument-list-call.t tests/general/300-floating-literal-classification.t'` passed **22/22**.
+## Active Checkpoint
 
-Temporary probes outside the repository passed **17/17 expected outcomes**:
-the new promotion/representability matrix was **9/9** (three valid outputs,
-including full-width unsigned and same-type scoped-enum cases, plus six
-expected rejections, including the former modulo case), existing
-condition/for/switch scope checks were **3/3**, and empty control-substatement
-checks were **5/5**. Two cold dumps of the same input were byte-identical. The
-compact layout probe measured the landed `SemanticFact` at 144 bytes and the
-repaired layout at 136 bytes. The known
-`general/300-switch-scoped-enum-condition` ordinary-enumerator dump mismatch
-remains a residual and was not expanded.
+Implemented in the coherent checkpoint commit:
 
-Final authorized validation passed as follows: `make test-pa12` reported
-**103/166** with **63 failures** (exit 2); the exact through-PA11 command
-reported **685/685**; the PA12 file audit passed with the two known
-header-division warnings; and `git diff --check` passed. The five changed paths
-are exactly the approved three implementation files plus `pa12/plan.md` and
-`pa12/audit.md`; no tests, refs, harnesses, grammar, or scripts changed.
+- direct namespace/function overload-set calls are separated from indirect
+  variable/parameter calls, preserving the selected `BindingId`, `ScopeId`,
+  canonical type, value category, and call result/reference category;
+- overloaded IDs, including qualified IDs, resolve against pointer/reference
+  initialization and argument targets only after the target type is known;
+- direct overload ordering compares every fixed argument, treats ellipsis as
+  worse than a valid standard conversion, handles ranked fixed prefixes, and
+  rejects incomparable maxima; target-directed function-ID ranking tracks the
+  global best conversion and only rejects a final best-rank tie;
+- supported null integer zero and `nullptr_t` conversions preserve the cold
+  dump shape, while temporary reference conversions publish the expected cast
+  fact;
+- unnamed parameters retain the checked-in two-space dump spelling.
 
-## 4. Performance evidence
+Changed paths are exactly:
 
-The preserved immutable evidence belongs to the landed
-`47ca58bec4e11a5defd67a7ca44db7145ba936ff` checkpoint binary and its copy; it
-is not the hash of the repaired build. The landed source executable and
-immutable copy were both 1,133,096 bytes with SHA-256
-`d9683d357e23c632502bc9c6b43ae4f2f9fde423274d8e18d0d0a34ce713a6aa`; the
-source mode was 775 and the immutable copy mode was 555.
+```text
+dev/src/pa12_semantic.cpp
+dev/src/pa11_semantic_model.h
+dev/src/pa11_semantic_core.cpp
+pa12/plan.md
+```
 
-| workload | source lines | source bytes | functions | statements | control nodes | dump lines |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 200 functions | 4,200 | 89,090 | 200 | 4,600 | 2,200 | 20,404 |
-| 800 functions | 16,800 | 356,690 | 800 | 18,400 | 8,800 | 81,604 |
+Build and focused validation:
 
-Seven interleaved `/usr/bin/time -f '%e'` samples were 0.09, 0.09, 0.09,
-0.09, 0.09, 0.09, 0.09 seconds for 200 and 0.39, 0.39, 0.39, 0.39, 0.39,
-0.40, 0.39 seconds for 800; medians were **0.09s** and **0.39s**. The
-roughly 4x structural increase produced roughly 4.3x median time. The repaired
-build is a separate executable from that landed immutable copy. The
-source/workload shape and the smaller hot `SemanticFact` layout keep the landed
-measurements representative by analysis; no new timing probe is required, and
-these timings are not claimed as measurements of the repaired binary.
+```text
+make -C pa12
+```
 
-## 5. Next checkpoint and ledger
+passed, with only the pre-existing cast-path warning. The focused checked-in
+command covered the ten checkpoint paths plus 18 nearby positive/negative
+controls and passed **28/28**, with exact success dumps and expected failure
+statuses. The exact command was:
 
-The structured-statement checkpoint is validated and recorded by this audit
-commit. Future residual-family work requires separate authorization; this
-record does not claim the PA12 stage is complete.
+```text
+make -C pa12 check TEST='tests/spec/200-function-pointer-call.t tests/general/200-function-reference-call.t tests/general/200-bad-overloaded-function-id.t tests/general/200-overloaded-function-argument.t tests/general/200-qualified-overloaded-function-argument.t tests/spec/300-ellipsis-worse-than-pointer-overload.t tests/spec/300-ranked-prefix-before-ellipsis-slot.t tests/spec/300-nullptr-t-from-zero-overload.t tests/general/300-pointer-conversion-ranking.t tests/general/300-reference-binding-ranking.t tests/general/100-variadic-call-fixed-prefix.t tests/general/200-paren-argument-list-call.t tests/general/100-integer-zero-to-pointer-call.t tests/general/100-nullptr-to-pointer-return.t tests/spec/300-nullptr-pointer-conversion.t tests/spec/100-simple-call.t tests/spec/100-overload-exact.t tests/spec/100-overload-ranking.t tests/spec/300-bad-ambiguous-overload.t tests/general/300-overload-no-global-best-bad.t tests/general/300-bad-indirect-call-too-few-arguments.t tests/general/300-bad-indirect-call-too-many-arguments.t tests/general/300-indirect-call-argument-conversion-bad.t tests/general/200-function-decay-deref-call.t tests/general/200-deep-pointer-qualification-conversion.t tests/general/300-bad-deep-pointer-qualification-conversion.t tests/spec/300-nullptr-t-vs-long-overload-bad.t tests/spec/300-enumerator-is-not-null-pointer-constant-bad.t'
+```
 
-| row | result |
+An adjacent nine-test control command passed **7/9**; its two failures,
+`general/300-pointer-bool-conversion.t` and
+`general/300-pointer-nullptr-conditional.t`, are both in the supplied
+turn-start failure set and remain residual explicit-cast/conditional families.
+The authorized broad `make test-pa12` run passed **113/166**, covered all 166,
+and left exactly the 53 residual paths listed above. The required through-PA11
+report passed **685/685**.
+
+## Performance Evidence
+
+The earlier immutable direct-argument probe is ordinary-only and does not
+measure deferred target-ID work. The corrected executable used for the
+representative probe was `/tmp/pa12-cppgm-corrected-immutable`, SHA-256
+`abe033b89584757bf759eac15247d434356323621da0fc08e30fb947dfd39c95`.
+The out-of-tree target-directed probes each contain one `use(inner)` call,
+where `inner` is an overload set and `use` has function-pointer/reference
+parameter overloads. The small case `/tmp/pa12-nested-c8-f4.t` has C=8 outer
+and F=4 inner candidates, 14 source lines, a 27-line dump, two call
+expressions, one selected inner ID, and one reference callee. The larger
+`/tmp/pa12-nested-c32-f32.t` has C=31 outer and F=32 inner candidates, 65
+source lines, a 78-line dump, two call expressions, one selected inner ID,
+and one reference callee. Thus C*F grows from 32 to 992 (31x).
+Each repetition invoked
+`/tmp/pa12-cppgm-corrected-immutable --emit-semantics -o <dump> <probe>`;
+the executable and both probe inputs remained unchanged throughout timing.
+
+Five interleaved samples ran each immutable probe 40 times. Every sample was
+**40/40 successful** for each case (200/200 per case overall):
+
+| case (C,F) | wall samples (s) | user samples (s) | system samples (s) | peak RSS samples (KiB) |
+| --- | --- | --- | --- | --- |
+| small (8,4) | 0.15, 0.14, 0.14, 0.14, 0.15 | 0.07, 0.06, 0.07, 0.06, 0.06 | 0.08, 0.08, 0.07, 0.09, 0.09 | 4916, 4908, 4924, 4900, 4904 |
+| large (31,32) | 0.43, 0.42, 0.42, 0.42, 0.42 | 0.23, 0.19, 0.21, 0.21, 0.21 | 0.20, 0.23, 0.21, 0.21, 0.21 | 7144, 7148, 7148, 7148, 7152 |
+
+The observed approximately 3x wall increase is below the necessary 31x
+candidate-product growth and shows no materially worse scaling. Deferred
+classification remains typed and fact-free until selection; no text-keyed
+cache or speculative semantic fact was added.
+
+## checkpoint ledger
+
+| row | evidence / ownership |
 | --- | --- |
-| turn-start baseline | Clean `47ca58be`; PA12 **103/166**, 63 failures, all 166 covered; through-PA11 evidence **685/685**. |
-| completed validation | `make test-pa12` exit 2 with **103/166**, **63 failures**; through-PA11 **685/685**; file audit pass with exactly two known header-division warnings; `git diff --check` pass; normalized paths 63 baseline/63 current, 0 current-only, 0 baseline-only, coverage **166/166**. |
-| final result / commit | This audit commit records the bounded structured-statement checkpoint. Future residual-family work requires separate authorization; PA12 remains an incomplete stage with documented residual families. |
+| turn-start | Clean `498043c5`; PA12 **103/166**, 63 failures, all 166 covered; supplied through-PA11 **685/685**; complete failure set listed above. |
+| implementation | Three implementation paths plus this plan; no tests, refs, grammar, harnesses, or scripts changed. |
+| focused result | Build pass; checkpoint/control focus **28/28**; adjacent controls **7/9** with two pre-existing residual failures named above. |
+| performance | Corrected immutable executable; nested C/F probe 5x40 interleaved, 200/200 successful per case, measurements and structural counts recorded above. |
+| broad PA12 | `make test-pa12`: **113/166 passed, 53 failed**, all 166 covered; ten checkpoint failures cleared, no extra regressions, exact residual set listed above. |
+| through-PA11 | `n=12; make test-report-through-pa11`: **ALL TESTS PASSED SUCCESSFULLY! (685 / 685)**. |
+| file audit | `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: passed with the two existing header-division warnings. |
+| diff check | `git diff --check`: passed. |
+| final state | This checkpoint commit contains the final plan state; the worktree is clean and no pending mutations remain. |

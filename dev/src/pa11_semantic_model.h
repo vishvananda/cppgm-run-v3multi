@@ -409,6 +409,7 @@ enum class ConversionKind
 	NullptrToPointer,
 	NullIntegerToPointer,
 	NullptrToBool,
+	NullIntegerToNullptr,
 	ArrayToPointer,
 	FunctionToPointer,
 	ReferenceBinding,
@@ -437,6 +438,18 @@ struct ConversionChoice
 	ConversionChoice(bool valid = false, unsigned int rank = 0,
 		ConversionKind kind = ConversionKind::Identity)
 		: valid(valid), rank(rank), kind(kind)
+	{}
+};
+
+struct FunctionIdResolution
+{
+	bool valid;
+	ValueRef selected;
+	ConversionChoice conversion;
+
+	FunctionIdResolution(bool valid = false, ValueRef selected = ValueRef(),
+		ConversionChoice conversion = ConversionChoice())
+		: valid(valid), selected(selected), conversion(conversion)
 	{}
 };
 
@@ -979,6 +992,18 @@ private:
 	ConversionChoice conversion_for(TypeId source,
 	SemanticValueCategory category, TypeId target,
 	const PA10AstNode* source_node) const
+	;
+	const PA10AstNode* target_function_id(const PA10AstNode& node,
+	ScopeId scope)
+	;
+	FunctionIdResolution resolve_function_id_target(const PA10AstNode& node,
+	ScopeId scope, TypeId target)
+	;
+	ExprInfo semantic_id_expression_selected(const PA10AstNode& node,
+	ScopeId scope, const FunctionIdResolution& resolution)
+	;
+	ExprInfo semantic_expression_for_target(const PA10AstNode& node,
+	ScopeId scope, TypeId target)
 	;
 	ExprInfo apply_context_conversion(const ExprInfo& expression,
 	TypeId target, const PA10AstNode* source_node)
