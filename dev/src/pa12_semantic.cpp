@@ -485,6 +485,7 @@ bool PA11SemanticModel::builtin_cast_target(const PA10AstNode& node,
 	case SimpleTokenType::KW_INT: fundamental_type = FundamentalType::Int; break;
 	case SimpleTokenType::KW_LONG: fundamental_type = FundamentalType::LongInt; break;
 	case SimpleTokenType::KW_SHORT: fundamental_type = FundamentalType::ShortInt; break;
+	case SimpleTokenType::KW_SIGNED: fundamental_type = FundamentalType::Int; break;
 	case SimpleTokenType::KW_UNSIGNED: fundamental_type = FundamentalType::UnsignedInt; break;
 	case SimpleTokenType::KW_VOID: fundamental_type = FundamentalType::Void; break;
 	case SimpleTokenType::KW_WCHAR_T: fundamental_type = FundamentalType::WcharT; break;
@@ -1231,6 +1232,13 @@ void PA11SemanticModel::record_builtin_conversion(const ExprInfo& expression,
 	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source, expression.integer_zero);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid built-in conversion");
+	// A cast owns its selected source-to-target conversion.  An exact-target
+	// prvalue needs no later contextual identity conversion.
+	if (choice.kind == ConversionKind::Identity && expression.fact.valid() &&
+		expression.fact.value < semantic_facts_.size() &&
+		semantic_facts_[expression.fact.value].kind ==
+			SemanticFactKind::CastExpression && expression.type == target)
+		return;
 	set_fact_conversion(expression.fact, add_conversion(expression.type, target,
 		choice.kind, choice.rank));
 }
@@ -1733,80 +1741,14 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 		SemanticFactKind::ConditionalExpression, type, category, node, children),
 		type, category, false);
 }
-ExprInfo PA11SemanticModel::semantic_cast_expression(const PA10AstNode& node, ScopeId scope)
+ExprInfo PA11SemanticModel::semantic_cast_expression(
+	const PA10AstNode& node, ScopeId scope)
 {
 	if (node.children.size() < 2)
 		throw std::runtime_error("PA12 invalid cast expression");
 	const TypeId target = type_from_type_id(node.children.front(), scope);
 	const ExprInfo operand = semantic_expression(node.children.back(), scope);
-	const TypeId source = expression_object_type(operand.type);
-	const TypeKind target_kind = type_kind(target);
-	if (target_kind == TypeKind::LvalueReference ||
-		target_kind == TypeKind::RvalueReference)
-	{
-		const TypeId referred = types_[target.value].child;
-		if (!qualification_convertible(source, referred))
-			throw std::runtime_error("PA12 invalid reference cast");
-		if (operand.category == SemanticValueCategory::Lvalue)
-		{
-			const SemanticValueCategory category =
-				target_kind == TypeKind::RvalueReference ?
-				SemanticValueCategory::Xvalue : SemanticValueCategory::Lvalue;
-			semantic_facts_[operand.fact.value].type = target;
-			semantic_facts_[operand.fact.value].category = category;
-			return ExprInfo(operand.fact, target, category, false);
-		}
-		throw std::runtime_error("PA12 invalid reference cast category");
-	}
-	bool valid = false;
-	ConversionKind kind = ConversionKind::Integral;
-	if (void_id(target))
-		valid = scalar_id(source) || type_kind(source) == TypeKind::Function;
-	else if (integral_id(target))
-	{
-		if (bool_id(target))
-		{
-			const ConversionChoice choice = conversion_for(source, operand.category, target, semantic_facts_[operand.fact.value].source, operand.integer_zero);
-			valid = choice.valid;
-			kind = choice.kind;
-		}
-		else
-		{
-			valid = integral_id(source) ||
-				(type_kind(strip_cv_type(source)) == TypeKind::Named &&
-				 named_record_for_type(source).valid()) ||
-				nullptr_id(source);
-			kind = ConversionKind::Integral;
-		}
-	}
-	else if (floating_id(target) || pointer_id(target))
-	{
-			const ConversionChoice choice = conversion_for(source, operand.category, target, semantic_facts_[operand.fact.value].source, operand.integer_zero);
-		valid = choice.valid;
-		kind = choice.kind;
-	}
-	else if (type_kind(strip_cv_type(target)) == TypeKind::MemberPointer)
-	{
-		valid = type_kind(strip_cv_type(source)) == TypeKind::MemberPointer &&
-			strip_cv_type(source) == strip_cv_type(target);
-		kind = ConversionKind::Identity;
-	}
-	else if (type_kind(strip_cv_type(target)) == TypeKind::Named)
-		valid = integral_id(source) || source == target;
-	if (!valid)
-		throw std::runtime_error("PA12 invalid explicit cast");
-	if (node.token == SimpleTokenType::KW_STATIC_CAST &&
-		type_kind(strip_cv_type(target)) == TypeKind::MemberPointer &&
-		kind == ConversionKind::Identity &&
-		strip_cv_type(source) == strip_cv_type(target))
-		return operand;
-	const ConversionFactId conversion = add_conversion(source, target, kind, 0);
-	const SemanticFactId result = make_expression_fact(
-		SemanticFactKind::CastExpression, target,
-		SemanticValueCategory::Prvalue, node,
-		std::vector<SemanticFactId>(1, operand.fact));
-	set_fact_conversion(result, conversion);
-	return ExprInfo(result, target, SemanticValueCategory::Prvalue, false);
+	return semantic_cast_to_target(node, target, operand);
 }
 ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, ScopeId scope)
 {
@@ -1821,28 +1763,13 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
 
-	// PA10 intentionally retains built-in function-style casts as a
-	// call-shaped syntax node.  Resolve that typed vocabulary here without
-	// turning the rendered AST back into a semantic input.
-	TypeId builtin_target;
-	if (argument_node.kind == PA10NodeKind::ParenArgumentList &&
-		builtin_cast_target(callee_node, &builtin_target))
-	{
-		if (argument_node.children.size() != 1)
-			throw std::runtime_error("PA12 invalid functional cast arity");
-		const ExprInfo operand = semantic_expression(
-			argument_node.children.front(), scope);
-		const TypeId source = expression_object_type(operand.type);
-		if (!void_id(builtin_target) && !scalar_id(source) &&
-			type_kind(source) != TypeKind::Function)
-			throw std::runtime_error("PA12 invalid functional cast");
-		const SemanticFactId result = make_expression_fact(
-			SemanticFactKind::CastExpression, builtin_target,
-			SemanticValueCategory::Prvalue, node,
-			std::vector<SemanticFactId>(1, operand.fact));
-		return ExprInfo(result, builtin_target,
-			SemanticValueCategory::Prvalue, false);
-	}
+	// PA10 retains function-style casts as call-shaped syntax.  Resolve the
+	// typed target here; aliases are considered only after value lookup so a
+	// real function or hiding value keeps ordinary call semantics.
+	TypeId functional_target;
+	if (functional_cast_target(callee_node, scope, &functional_target))
+		return semantic_functional_cast(node, scope, functional_target,
+			argument_node);
 
 	std::vector<ValueRef> candidates;
 	bool direct = false;

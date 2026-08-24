@@ -1657,8 +1657,9 @@ TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope
 			throw std::runtime_error("invalid cast expression");
 		return type_from_type_id(node.children.front(), scope);
 	}
-	if (node.kind == PA10NodeKind::SizeofExpression ||
-		node.kind == PA10NodeKind::TypeTraitExpression)
+	if (node.kind == PA10NodeKind::SizeofExpression)
+		return fundamental(FundamentalType::UnsignedLongInt);
+	if (node.kind == PA10NodeKind::TypeTraitExpression)
 		return fundamental(FundamentalType::LongLongInt);
 	throw std::runtime_error("unsupported expression type");
 }

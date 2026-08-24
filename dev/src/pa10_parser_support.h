@@ -24,6 +24,34 @@ bool virt_specifier_start(const std::vector<PA10Token>& tokens,
 bool is_builtin_function_style_cast_keyword(SimpleTokenType type);
 bool is_operator_function_token(SimpleTokenType type);
 
+enum class PA10FunctionStyleCastKind : unsigned char
+{
+	None,
+	LegacyBuiltin,
+	TypeId
+};
+
+struct PA10FunctionStyleCastClassification
+{
+	PA10FunctionStyleCastKind kind;
+	std::size_t consumed;
+	std::size_t charged_work;
+
+	PA10FunctionStyleCastClassification()
+		: kind(PA10FunctionStyleCastKind::None), consumed(0),
+		  charged_work(0)
+	{}
+};
+
+// Classify the function-style cast prefix beginning at position.  Built-in
+// and cv specifiers are scanned once; decltype uses the indexed delimiter
+// table.  consumed and charged_work are published for every result so the
+// parser can charge this bounded classification exactly once.
+PA10FunctionStyleCastClassification classify_function_style_cast(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position);
+
 struct PA10LambdaIntroducerFacts
 {
 	PA10LambdaCaptureDefault capture_default;

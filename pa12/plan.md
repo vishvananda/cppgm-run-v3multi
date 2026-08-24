@@ -1,87 +1,83 @@
-# PA12 canonical declarator/type checkpoint
+# PA12 functional-cast/type-name checkpoint
 
 ## Stage Design
 
 `PA11SemanticModel` remains the sole semantic owner in the forward PA10 ->
 PA11 -> PA12 pipeline. `TypeKey`/`TypeId` is the only semantic type identity;
-member-pointer class ownership is a typed `NamedRecordId`, function cv is a
-typed flag, and equality remains O(1). Canonical type construction and
-declarator application now live in `pa11_semantic_types.cpp`; PA12
-target-directed function/member selection lives in
-`pa12_semantic_resolution.cpp`. Declarator work is O(depth): prefix operators,
-reverse suffix binding, nested operators, array cv recursion, and structural
-array qualification are resolved before PA12 use. The renderer is cold and
-derives member display types on demand; there is no reparsing, parallel model,
-or string-based identity.
+canonical type construction stays in `pa11_semantic_types.cpp`, and
+target-directed selection stays in `pa12_semantic_resolution.cpp`. There is no
+parallel parser/type model, rendered-string recovery, or cold-renderer input.
 
-The PA12 extension is narrow: exact owner/function `TypeId` matching supports
-the active member-pointer overload case. Static member functions are retained
-in a sparse binding sidecar and do not acquire an implicit object parameter.
-Class-aware calls and general template semantics remain outside this checkpoint.
+The retained member-pointer work uses typed `TypeKey.named` ownership,
+function cv flags, sparse static-member sidecars, reverse suffix binding, and
+recursive array qualification. Its prior structural/declarator evidence and
+ledger are retained below; this checkpoint is the functional-cast/type-name
+increment.
 
-## Spec Alignment
-
-Sections 1–3 remain a single forward production pipeline with one PA11
-semantic owner, typed fact continuity, stable `TypeKey`/`TypeId` identity, and
-cold deterministic rendering. Section 4 is met by the typed canonical key,
-sparse static-member sidecar, bounded vector/index storage, and O(depth)
-declarator and qualification work. Section 7 is met by deterministic output
-and the inherited structural/depth evidence; this checkpoint adds no new
-timing claim.
+PA10 preserves the call-shaped boundary. The bounded
+`classify_function_style_cast` result in `pa10_parser_support.cpp` owns
+None/legacy/typed classification, the contiguous builtin/cv scan, indexed
+`decltype` close lookup, and exact `charged_work`; `PA10Parser` charges that
+result once and consumes it. A single-token built-in cast keeps its legacy
+identifier form. A contiguous multi-keyword fundamental type or
+`decltype(expr)` target remains a typed `TypeId` child. In PA12,
+`pa12_semantic_resolution.cpp` owns functional target resolution, support
+validation, and source-to-target cast construction through `builtin_cast_target`,
+`type_from_type_id`, or relevant-scope typed lookup. Value lookup precedes alias
+lookup, so ordinary calls and hiding remain intact.
 
 ## Failure Map
 
-The supplied turn-start baseline is `166/166` covered and `160/166` passing,
-with exactly these six residuals; no focused change replaces one with a new
-failure:
+The supplied turn-start baseline covered all 166 paths and passed `160/166`.
+Its exact residuals were:
 
-1. `pa12/tests/general/300-decltype-functional-cast.t` — expected success, got failure.
-2. `pa12/tests/general/300-local-extern-function-declaration.t` — expected success, got failure.
-3. `pa12/tests/general/300-reference-binding-pointee-const-pointer.t` — checked-output mismatch.
-4. `pa12/tests/general/300-scoped-enum-functional-cast-integral.t` — expected success, got failure.
-5. `pa12/tests/general/300-static-cast-overloaded-function-template-argument.t` — expected success, got failure.
-6. `pa12/tests/general/300-zero-arg-functional-cast-alias.t` — expected success, got failure.
+1. `pa12/tests/general/300-decltype-functional-cast.t`
+2. `pa12/tests/general/300-local-extern-function-declaration.t`
+3. `pa12/tests/general/300-reference-binding-pointee-const-pointer.t`
+4. `pa12/tests/general/300-scoped-enum-functional-cast-integral.t`
+5. `pa12/tests/general/300-static-cast-overloaded-function-template-argument.t`
+6. `pa12/tests/general/300-zero-arg-functional-cast-alias.t`
 
-The increment's earlier pre-implementation baseline was `155/166` with
-eleven failures; relative to that baseline, it fixed these five paths:
-`300-member-function-pointer-return-pointer-const.t`,
-`300-member-function-pointer-type-alias-and-function.t`,
-`300-member-pointer-type-alias-and-function.t`,
-`300-multidimensional-array-const-reference-binding.t`, and
-`300-static-cast-member-overload-prefers-nontemplate.t`. Separately, the
-turn-start audit baseline was `160/166` with the exact six residuals above;
-fresh final PA12 has the same six paths, with zero current-only and zero
-baseline-only paths. No residual family was admitted by this checkpoint.
+The earlier pre-implementation `155/166` baseline and its five fixed
+member-pointer/array paths remain historical evidence. The retained audit
+history is `90/166`, `103/166`, `113/166`, `120/166`, `142/166`, `146/166`,
+`149/166`, `155/166`, then the turn-start `160/166` baseline.
+
+Final PA12 covered all 166 paths and passed `163/166`. The three owned
+functional-cast residuals are gone. The exact remaining residuals are paths
+2, 3, and 5 above; through-PA12 is `848/851` with that same set and no earlier
+regression.
 
 ## Active Checkpoint
 
-- `TypeKind::MemberPointer` uses `TypeKey.named` for its class owner, `child`
-  for the data/function member type, and `cv` for top-level qualifiers;
-  plain pointers and data/function member pointers remain distinct.
-- Function cv is canonical and member-function expression types use one typed
-  implicit-object helper. PA12 preparation adds the synthetic `this` binding
-  only after PA11 analysis, so PA11 class-scope output is unchanged. The cold
-  renderer derives the member definition view without storing a dump-only
-  `FunctionFact` field.
-- Nested arrays bind in reverse source order. Qualifying an array alias
-  recursively qualifies its element type, and qualification conversion checks
-  bounds and element structure. The bounded repair also makes
-  `cv_qualifiers` recurse through array elements and preserve direct
-  pointer/member-pointer cv, so const array and const pointer objects cannot
-  incorrectly convert to unqualified `void*`. Static member declarations are
-  tracked sparsely and render/select as ordinary function pointers.
+- `decltype(expr)(arg)`, multi-keyword fundamental casts such as
+  `unsigned long(e)`, visible aliases, and supported scalar zero-initialization
+  share one call-shaped AST boundary and one typed semantic target path. PA10's
+  bounded classifier is owned by `pa10_parser_support.cpp`; PA12's typed cast
+  target/validator and conversion builder are owned by
+  `pa12_semantic_resolution.cpp`.
+- Supported one-argument casts reuse explicit-cast validation, including the
+  scoped-enum-to-integral case. `semantic_cast_to_target` records the selected
+  source-to-target `ConversionFact` on the resulting `CastExpression` for both
+  explicit and functional casts.
+- When a later context asks for the exact type of an already-created cast
+  prvalue, `record_builtin_conversion` performs no additional identity
+  conversion. This preserves the cast owner’s contiguous conversion range; it
+  does not drop the selected cast conversion. The sibling functional/explicit
+  cast probe is `/tmp/pa12-sibling-cast-range.cpp` and succeeds.
+- Zero-argument supported scalar targets produce typed prvalue zero literals;
+  unsupported class construction is rejected. Existing ordinary calls,
+  invalid arity, name hiding, cast-to-void, and static-cast behavior remain
+  covered by focused checks.
 
 ## Performance Evidence
 
-The landed increment's retained structural measurements are: `TypeKey 80`,
-`Scope 440`, `DeclaratorOp 40`, `FunctionFact 48`, `BindingSidecar 32`, and
-`SpecFact 32` bytes. This repair adds no fields, so no layout rerun was needed;
-these remain structural measurements, not timing claims.
+Retained member-pointer structural measurements are: `TypeKey 80`, `Scope
+440`, `DeclaratorOp 40`, `FunctionFact 48`, `BindingSidecar 32`, and `SpecFact
+32` bytes. The functional-cast increment adds no persistent record fields.
 
-Fresh performance evidence used the newly built executable copied to an
-immutable out-of-tree path. Five interleaved rounds each compiled equivalent
-generated inputs containing 200 typedef declarations with pointer-prefix
-declarator depths 32, 128, and 512; every run exited `0`.
+The retained declarator-depth measurement used five interleaved rounds over
+200 typedef declarations; every run exited `0`:
 
 | depth | wall samples (ms) | median wall (ms) | median user (ms) | median sys (ms) | median max RSS (KiB) |
 |---:|---|---:|---:|---:|---:|
@@ -89,33 +85,50 @@ declarator depths 32, 128, and 512; every run exited `0`.
 | 128 | 60, 50, 50, 50, 60 | 50 | 20 | 30 | 26892 |
 | 512 | 230, 220, 230, 220, 220 | 220 | 120 | 100 | 91860 |
 
-Startup, process, and timer-resolution effects are included. This is bounded
-representative evidence only and makes no broader timing or asymptotic claim.
+Fresh cast-family evidence used the newly built compiler copied to the
+immutable path `/tmp/cppgm-pa12-functional-cast-immutable-final`. Five
+interleaved rounds compiled equivalent generated inputs containing 128, 512,
+and 2048 functions; each function included `unsigned long(x)`,
+`decltype(x)(1)`, and zero-argument `size_t()`. Medians were:
+
+| functions | median wall | median max RSS |
+|---:|---:|---:|
+| 128 | 0.02 s | 11520 KiB |
+| 512 | 0.09 s | 34312 KiB |
+| 2048 | 0.41 s | 124884 KiB |
+
+Repeated hashes matched at every size: 128=`03c34dd8c84bf3bdbd3d1e83d29f3b8a05cd71349f51da2c0c395eb4e424e93f`,
+512=`c940bc38dc8c51c8bc094df6c332539d29f8e5080b3d74b1f4dfc0f9e48723fb`,
+and 2048=`40c86b4490f5e3a50fc9fd92849c0c5a640bd28dc52a53e1eb0dc9bd0ca02137`.
+These are bounded observations, not a broader timing coefficient or
+asymptotic claim. The parser risk itself is bounded by the consumed O(k)
+specifier scan, indexed `decltype` close lookup, relevant-scope lookup, and
+one operand semantic walk.
 
 ## Checkpoint Ledger
 
-The audit history preserves prior progress at `90/166`, `103/166`, `113/166`,
-`120/166`, `142/166`, `146/166`, `149/166`, and `155/166`, followed by the
-increment's `160/166` turn-start baseline. The later broad records covered all
-166 PA12 paths; through-PA11 remained `685/685`, and the known file-audit
-result retains two header-division warnings.
-
-| checkpoint | evidence | result |
+| checkpoint | retained evidence | outcome |
 |---|---|---|
-| PA12 canonical declarator/member-target checkpoint | landed `4f890322` plus the bounded `cv_qualifiers` repair; focused PA12 `20/20`; PA10 `4/4`; 12 probes; two rendering assertions; fresh broad PA12 `160/166`; through-PA11 `685/685` | complete; the exact six turn-start residuals are unchanged |
+| PA12 canonical declarator/member-target | landed `4f890322`; focused PA12 `20/20`; PA10 `4/4`; 12 probes; two rendering assertions; broad PA12 `160/166`; through-PA11 `685/685` | complete; exact six residuals remained for the next family |
+| PA12 functional-cast/type-name | focused PA12 `11/11`; PA10 `5/5`; sibling-cast probe success; broad PA12 `163/166` with 166 covered; through-PA11 `685/685`; through-PA12 `848/851`; final audit exit `0` with two retained header-division warnings; diff check clean | complete for the owned family; residuals 2, 3, and 5 remain outside scope |
 
-## Next Checkpoint
+## Validation Status
 
-The next separately authorized checkpoint is the remaining
-functional-cast/alias residual family: `decltype` functional cast,
-scoped-enum functional cast, and zero-argument functional-cast alias. Local
-extern declarations, pointee-const-pointer reference binding, and overloaded
-function-template target selection remain residual and outside this audit.
+The focused PA12 suite passed `11/11`; the focused PA10 parser suite passed
+`5/5`. The sibling functional/explicit cast `/tmp` probe exited `0`.
+
+Required final commands and results:
+
+- `make test-pa12`: `163/166`, all 166 covered.
+- `n=12; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: `685/685`.
+- `make test-report-through-pa12`: `848/851`.
+- `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: exit `0`, passed with two retained header-division warnings for `dev/src/cpp_semantic_core.h` and `dev/src/pa11_semantic_model.h`; no fatal findings.
+- `git diff --check`: clean.
 
 ## Remaining Scope
 
-The six final residuals remain visible for later checkpoints: functional-cast
-`decltype`, local extern declarations, pointee-const-pointer reference
-binding, scoped-enum functional casts, overloaded function-template target
-selection, and zero-argument functional-cast aliases. No general class-aware
-calls or template semantics were added.
+The final residuals are `300-local-extern-function-declaration.t`,
+`300-reference-binding-pointee-const-pointer.t`, and
+`300-static-cast-overloaded-function-template-argument.t`. They remain outside
+this checkpoint. No general class-aware calls, class construction, or template
+semantics were added.

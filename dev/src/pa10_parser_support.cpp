@@ -933,6 +933,69 @@ bool is_builtin_function_style_cast_keyword(SimpleTokenType type)
 	return is_builtin_function_style_cast_keyword_impl(type);
 }
 
+PA10FunctionStyleCastClassification classify_function_style_cast(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position)
+{
+	PA10FunctionStyleCastClassification result;
+	std::size_t work = 0;
+	const auto finish = [&result, &work]() {
+		result.charged_work = work;
+		return result;
+	};
+	if (position >= tokens.size())
+		return finish();
+	if (tokens[position].kind == PA10TokenKind::Fixed &&
+		tokens[position].fixed == SimpleTokenType::KW_DECLTYPE)
+	{
+		++work;
+		const std::size_t open = position + 1;
+		if (!token_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN))
+			return finish();
+		++work;
+		if (open >= delimiter_close_index.size())
+			return finish();
+		const std::size_t close = delimiter_close_index[open];
+		++work;
+		if (close >= tokens.size() ||
+			!token_fixed_at(tokens, close + 1, 0,
+				SimpleTokenType::OP_LPAREN))
+			return finish();
+		++work;
+		result.kind = PA10FunctionStyleCastKind::TypeId;
+		result.consumed = close - position + 1;
+		return finish();
+	}
+
+	std::size_t offset = 0;
+	bool saw_type = false;
+	while (offset < tokens.size() - position)
+	{
+		++work;
+		const PA10Token& token = tokens[position + offset];
+		if (token.kind != PA10TokenKind::Fixed ||
+			(!is_builtin_function_style_cast_keyword_impl(token.fixed) &&
+				!is_cv_impl(token.fixed)))
+			break;
+		saw_type = saw_type ||
+			is_builtin_function_style_cast_keyword_impl(token.fixed);
+		++offset;
+	}
+	result.consumed = offset;
+	if (!saw_type || offset >= tokens.size() - position)
+		return finish();
+	++work;
+	if (!token_fixed_at(tokens, position + offset, 0,
+		SimpleTokenType::OP_LPAREN))
+		return finish();
+	result.kind = offset == 1 &&
+		is_builtin_function_style_cast_keyword_impl(tokens[position].fixed) ?
+		PA10FunctionStyleCastKind::LegacyBuiltin :
+		PA10FunctionStyleCastKind::TypeId;
+	return finish();
+}
+
 bool is_operator_function_token(SimpleTokenType type)
 {
 	return is_operator_function_token_impl(type);

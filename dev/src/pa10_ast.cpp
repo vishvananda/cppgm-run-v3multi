@@ -456,8 +456,6 @@ private:
 	PA10AstNode parse_postfix_expression();
 	PA10AstNode parse_postfix_expression_seed();
 	PA10AstNode parse_postfix_suffixes(PA10AstNode result);
-	bool builtin_function_style_cast_start() const;
-	PA10AstNode parse_builtin_function_style_cast();
 	PA10AstNode parse_primary_expression();
 	PA10AstNode parse_lambda_expression();
 	PA10AstNode parse_lambda_declarator();
@@ -2078,32 +2076,38 @@ PA10AstNode PA10Parser::parse_delete_expression()
 	result.children.push_back(parse_unary_expression());
 	return result;
 }
-bool PA10Parser::builtin_function_style_cast_start() const
-{
-	return look().kind == PA10TokenKind::Fixed &&
-		PA10ParserSupport::is_builtin_function_style_cast_keyword(look().fixed) &&
-		fixed(SimpleTokenType::OP_LPAREN, 1);
-}
-PA10AstNode PA10Parser::parse_builtin_function_style_cast()
-{
-	if (!builtin_function_style_cast_start())
-		fail("expected built-in function-style cast");
-	const PA10Token type = consume_token();
-	PA10AstNode callee = node(PA10NodeKind::IdExpression);
-	callee.has_token = true;
-	callee.token = type.fixed;
-	callee.token_spelling = intern(type.source);
-	PA10AstNode result = node(PA10NodeKind::CallExpression);
-	result.children.push_back(std::move(callee));
-	result.children.push_back(parse_paren_argument_list());
-	return result;
-}
 PA10AstNode PA10Parser::parse_postfix_expression_seed()
 {
 	if (fixed(SimpleTokenType::KW_TYPEID))
 		return parse_type_trait(SimpleTokenType::KW_TYPEID);
-	if (builtin_function_style_cast_start())
-		return parse_builtin_function_style_cast();
+	const PA10ParserSupport::PA10FunctionStyleCastClassification classification =
+		PA10ParserSupport::classify_function_style_cast(
+			tokens_, delimiter_close_index_, position_);
+	for (std::size_t i = 0; i < classification.charged_work; ++i)
+		charge();
+	if (classification.kind ==
+		PA10ParserSupport::PA10FunctionStyleCastKind::LegacyBuiltin)
+	{
+		const PA10Token type = consume_token();
+		PA10AstNode callee = node(PA10NodeKind::IdExpression);
+		callee.has_token = true;
+		callee.token = type.fixed;
+		callee.token_spelling = intern(type.source);
+		PA10AstNode result = node(PA10NodeKind::CallExpression);
+		result.children.push_back(std::move(callee));
+		result.children.push_back(parse_paren_argument_list());
+		return result;
+	}
+	if (classification.kind ==
+		PA10ParserSupport::PA10FunctionStyleCastKind::TypeId)
+	{
+		PA10AstNode type_id = node(PA10NodeKind::TypeId);
+		type_id.children.push_back(parse_decl_specifier_seq(true));
+		PA10AstNode result = node(PA10NodeKind::CallExpression);
+		result.children.push_back(std::move(type_id));
+		result.children.push_back(parse_paren_argument_list());
+		return result;
+	}
 	return parse_primary_expression();
 }
 PA10AstNode PA10Parser::parse_postfix_suffixes(PA10AstNode result)

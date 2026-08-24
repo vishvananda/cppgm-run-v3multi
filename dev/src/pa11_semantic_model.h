@@ -1428,6 +1428,17 @@ private:
 	;
 	bool builtin_cast_target(const PA10AstNode& node, TypeId* target) const
 	;
+	bool functional_cast_target(const PA10AstNode& node, ScopeId scope,
+	TypeId* target)
+	;
+	bool functional_cast_target_supported(TypeId target) const
+	;
+	ExprInfo semantic_cast_to_target(const PA10AstNode& node, TypeId target,
+	const ExprInfo& operand)
+	;
+	ExprInfo semantic_functional_cast(const PA10AstNode& node, ScopeId scope,
+	TypeId target, const PA10AstNode& argument_node)
+	;
 	ExprInfo semantic_cast_expression(const PA10AstNode& node, ScopeId scope)
 	;
 	ExprInfo semantic_call_expression(const PA10AstNode& node, ScopeId scope)
