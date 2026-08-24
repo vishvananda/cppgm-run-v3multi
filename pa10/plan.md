@@ -7,84 +7,26 @@ phase-7 typed tokens/indexes -> PA10ParserSupport typed elaborated classificatio
     -> PA10Parser canonical class/enum/specifier owner -> deterministic renderer
 ```
 
-`PA10ParserSupport::classify_elaborated_specifier` owns the bounded context
-decision over typed tokens and existing delimiter/template/RShift indexes.  It
-returns context, body/colon facts, and exact `charged_work`; the parser wrapper
-charges that count before AST construction and semicolon ownership.  The
-support template-follower API uses the same contract.  The renderer remains a
-cold presentation boundary.  No source reparse, retry/backtracking parser,
-duplicate AST path, semantic lookup expansion, host/reference shortcut, or
+The c16 boundary is owned by `PA10ParserSupport::classify_elaborated_specifier`
+and its parser wrapper.  The support result classifies the current class/enum
+header as non-elaborated, embedded/declarator-bearing, standalone forward, or
+standalone definition, and returns the exact bounded lookahead work that the
+parser charges before AST construction.  Existing template-close,
+top-level-or, split-RShift, and delimiter indexes remain the typed fact owners.
+The renderer is observation-only.  No source reparse, retry/backtracking
+parser, duplicate AST path, semantic lookup, host/reference shortcut, or
 fixture/reference edit is in scope.
+
+The path matches PA10's structured class/struct/union/enum declarations,
+members, class bases and class-key attributes, scoped/underlying-type enums,
+structured type-ids in `sizeof`, and embedded definitions followed by
+declarators.  Direct forwards/definitions own their semicolon; embedded forms
+remain `simple-declaration` children of the canonical decl-specifier path.
 
 ## Failure Map
 
-Turn-start state is **159 discovered, 145 passed, 14 failed**.  The residual
-identities remain grouped by owning boundary:
-
-| owning boundary | status | exact residuals |
-| --- | --- | --- |
-| elaborated class/enum specifier ownership | **active** | `200-elaborated-enum-member-declarators.t`, `200-friend-type-declaration.t`, `200-sizeof-elaborated-class-type-id.t` |
-| general declaration/declarator ambiguity | inactive | `200-global-struct-paren-declaration.t`, `200-local-typedef-paren-declaration.t`, `200-mock-type-declaration-ambiguity.t` |
-| template/name/expression ownership | inactive | `200-forward-unknown-nested-template-in-ctor-body.t`, `200-friend-function-template-declaration.t`, `200-member-template-parameter-value-vs-template-name.t`, `200-qualified-enumerator-call-argument.t`, `200-template-member-definition-inherited-typedef-cast.t` |
-| lambda capture ownership | inactive | `200-lambda-capture-forms.t` |
-| trailing-parameter attribute ownership | inactive | `200-trailing-parameter-carries-dependency-attribute.t`, `200-trailing-parameter-vendor-attribute.t` |
-
-No inactive family is being widened into by this checkpoint.
-
-## Active Checkpoint
-
-Completed bounded increment; PA10 residuals remain.  Scope is the
-elaborated-type boundary in `dev/src/pa10_parser_support.cpp/.h`, parser
-ownership in `dev/src/pa10_ast.cpp`, and this plan.  The typed support result
-distinguishes non-elaborated, embedded/declarator-bearing, standalone forward,
-and standalone definition contexts; the parser constructs the canonical AST
-and owns semicolons.  `sizeof(struct X)` owns a `type-id` and
-`type-specifier-seq`.  Enum forwards with an underlying type and no body are
-direct enum declarations; enum bodies followed by declarators remain simple
-declarations.
-
-Invariants are exact existing AST rendering for standalone forwards, named and
-anonymous class definitions, scoped and defined enums, class members, and
-unrelated declarations/type traits; one production is consumed once; no
-semantic lookup is introduced; and no test, reference, status fixture, or
-grammar file is changed.  The correction explicitly covers unscoped/scoped
-underlying-type forwards and preserves body/declarator routing.  Remaining
-uncertainty is limited to unusual attributes, base/underlying-type clauses,
-and declarator-bearing anonymous forms; inactive residual families remain out
-of scope.
-
-## Checkpoint Evidence
-
-```text
-make -C pa10 check TEST='tests/general/200-elaborated-enum-member-declarators.t tests/general/200-friend-type-declaration.t tests/general/200-sizeof-elaborated-class-type-id.t'
-```
-
-Exit 0; stdout: `pa10 check: running 3 tests`, `pa10 check: PASS (3/3)`.
-The harness compared generated `.check` ASTs and `.check.exit_status` files
-to the checked-in refs; stale `.my` files are separate scratch output.
-
-```text
-make -C pa10 run INPUT=/tmp/pa10-elaborated-enum-boundary.t RUN_OUTPUT=/tmp/pa10-elaborated-enum-boundary.out
-```
-
-Exit 0; stdout rendered `enum-specifier E`, `enum-specifier Scoped`, the
-defined scoped enum, and a `simple-declaration` containing
-`DefinedWithDeclarator` and `value`.
-
-```text
-make -C pa10 check TEST='tests/general/100-class-alignas-after-class-key.t tests/general/100-scoped-enum-underlying-type.t tests/general/100-structured-type-id.t tests/general/100-typedef-anonymous-enum.t tests/general/100-typedef-anonymous-union.t tests/general/100-typedef-struct-union.t tests/general/200-dependent-sizeof-pointer-type-id.t tests/general/200-function-throw-typed-specification.t tests/general/200-sizeof-zero-arg-functional-cast.t tests/spec/100-enum.t tests/spec/200-class-bases-and-ctor-init.t tests/spec/300-type-id-expression-contexts.t tests/general/100-conditional-sizeof.t tests/general/100-new-delete-traits.t'
-```
-
-Exit 0; stdout: `pa10 check: running 14 tests`, `pa10 check: PASS (14/14)`.
-No refs or fixtures were edited.
-
-```text
-make test-pa10
-```
-
-Exit 2 because residual tests remain; all 159 tests were discovered and the
-summary was `===== TEST SUMMARY: 148 / 159 TESTS PASSED =====`.  The exact
-remaining 11 identities are:
+Turn-start required-stage evidence is **159 discovered, 148 passed, 11
+failed**.  The exact inactive residual identities are:
 
 ```text
 pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t
@@ -100,42 +42,103 @@ pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
 pa10/tests/general/200-trailing-parameter-vendor-attribute.t
 ```
 
-These are exactly the 11 inactive turn-start residuals; the three active
-elaborated-type identities passed and no new failure appeared.
+The three checkpoint-owned elaborated-type identities are outside this
+residual set and pass the focused rerun below.  No inactive family is being
+widened into.
+
+## Active Checkpoint
+
+Phase A review of landed `c16e04ef82e93bb0c628d2f495cc7132d47dd749`
+(`PA10: own elaborated type syntax boundary`, parent `a7c20b87`) is complete
+with bounded same-path support corrections.  The classifier now stops at an
+immediate enclosing `)`, `]`, `}`, or typed EOF while examining a colon clause,
+so malformed/truncated input cannot borrow a later declaration's body or
+semicolon.  The support template-follower helper rejects an out-of-range close
+before doing `+ 1`; malformed index facts fail closed.  Attribute scans now
+initialize and publish `after`/`consumed` on every path, including the failing
+token, and the parser charges that published work before throwing.
+
+The parser still constructs the existing canonical AST exactly once: direct
+class/enum forwards and definitions are dispatched directly, while body-plus-
+declarator forms enter `parse_decl_specifier_seq` and remain simple
+declarations.  `sizeof(struct X)` uses `type-id`/`type-specifier-seq`; enum
+underlying-type forwards and split-`>>` template names remain on their prior
+typed paths.
+
+## Focused Evidence
+
+Fresh Phase A checks on the corrected source:
 
 ```text
+make -C dev cppgm++                                      exit 0
+make -C pa10 check TEST='<three checkpoint-owned tests>' exit 0, PASS (3/3)
+make -C pa10 check TEST='<16 sibling/malformed/index tests>'
+                                                          exit 0, PASS (16/16)
+g++ -std=gnu++11 -Wall -Wextra -O0 -ffunction-sections -fdata-sections -Idev/src /tmp/pa10_support_boundary_harness.cpp dev/src/pa10_parser_support.cpp -Wl,--gc-sections -o /tmp/pa10_support_boundary_harness
+/tmp/pa10_support_boundary_harness                         exit 0, PASS
+git diff --check                                         exit 0
+```
+
+The 16-case matrix covered class-key attributes, scoped/underlying-type
+enums, anonymous embedded class/enum definitions, structured type-ids,
+class bases, split-RShift/nested-template names, and malformed class/template
+boundaries.  Direct production probes for `struct X :`, `enum E :`, and an
+elaborated clause followed by an enclosing close all returned exit 1 within a
+5-second timeout.  The temporary support harness directly verified sentinel
+and out-of-range template closes (`false`, zero follower work), truncated
+`__attribute__(((` publication (`after=4`, `consumed=4`, classifier work 4,
+`EmbeddedOrDeclarator`), missing-`(` publication (`after=1`, `consumed=2`)
+with null output pointers, immediate-close and EOF stopping, deterministic
+index reset/reuse, and valid attribute/base/scoped-enum split-RShift cases.
+The harness was outside the repository and was not a compiler-output oracle.
+
+## Performance and Bounds Evidence
+
+This Phase A review makes no comparative timing claim.  The bounded equivalent
+structural evidence is:
+
+| path | bounded work fact |
+| --- | --- |
+| `build_indexes` | resets every side vector, performs one token pass, then one reverse delimiter-group pass; missing closes retain the token-count sentinel |
+| template/base/underlying clauses | indexed template closes and split-RShift markers jump over nested angle groups; indexed delimiter closes jump over parenthesized/bracketed groups |
+| elaborated classifier | advances through only the current header, stops at the immediate body/semicolon/close/EOF boundary, and returns `charged_work` for the wrapper to charge |
+| template follower | examines at most the split-RShift pair and one follower token, rejecting an invalid close before indexing |
+
+Representative valid and malformed class/enum/template fixtures exercised
+these paths.  There is no text reparse, semantic lookup, retry, or body scan
+after the indexed class body is found; parser, recursion, nesting, and global
+work limits remain active.
+
+## Required Broad Evidence
+
+Fresh Phase B gates completed after the accounting correction:
+
+```text
+make test-pa10                                             exit 2
+159 discovered, 148 passed, 11 failed; exact residual set unchanged
 n=10; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
-```
-
-Exit 0; `===== ALL TESTS PASSED SUCCESSFULLY! (457 / 457) =====` through PA9.
-
-```text
+                                                          exit 0, 457/457
 perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src
-```
-
-Exit 0; `File audit passed for pa10 with 1 warning(s).`  The sole warning is
-the known pre-existing `dev/src/cpp_semantic_core.h:1` bad-division warning;
-there is no new audit finding.
-
-```text
+                                                          exit 0, one known warning
 git diff --check
+                                                          exit 0
+make -C dev clean; make -C dev cppgm++
+                                                          exit 0
 ```
 
-Exit 0.  The clean syntax/build check `make -C dev cppgm++` also exited 0
-with no compiler warnings.
+The PA10 exit-2 residuals are exactly the 11 identities listed above; no new
+failure identity or coverage reduction occurred.  The file-audit warning is
+the pre-existing `bad-division` warning at
+`dev/src/cpp_semantic_core.h:1` for substantial header implementation body.
+The clean rebuild completed after the broad run; no implementation source
+changed between those validations.
 
-## Performance Evidence
+## Next Checkpoint
 
-`classify_elaborated_specifier` scans only the current header, jumps over
-matched parentheses/brackets and template argument groups through existing
-indexes, and stops at the class/enum body opener without scanning the body.
-Attribute tokens, cursor steps, indexed template closes, RShift nested-close
-pieces, and delimiter jumps contribute to its returned `charged_work`; the
-parser charges exactly that value.  `template_follow_is_valid` returns the
-same exact work contract.  There is no new global index or cache: disjoint
-headers give aggregate O(n) lookahead work and existing indexes remain O(n)
-storage.  This is a structural bound only; no comparative timing claim is
-made.
+After Phase B, the next checkpoint is a separately assigned inactive-residual
+family audit.  Preserve the exact 11 identities above and do not enter lambda,
+general declaration/declarator, qualified-name, trailing-attribute, or other
+unrelated PA10 work.
 
 ## Checkpoint Ledger
 
@@ -148,4 +151,4 @@ made.
 | `017eb658` structured-name audit | historical starting point | clean at 158/136 with 22 failures |
 | `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | landed historical | historical 142/159 with exact original 17 failures; prior focused postfix evidence |
 | `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | landed historical | bounded indexed abstract-declarator correction; final gates and evidence retained in repository history |
-| current elaborated-type boundary | **completed; residuals remain; committed** | typed support classification/follower ownership; `dev/src/pa10_ast.cpp` 2945 lines; 148/159 with exactly 11 inactive residuals; focused 3/3, sibling 14/14, ad hoc exit 0, through-PA9 457/457, audit exit 0 with one known warning, diff check clean |
+| `c16e04ef82e93bb0c628d2f495cc7132d47dd749` current elaborated-type boundary | completed; residuals remain | focused 3/3, sibling/malformed/index 16/16, direct support harness PASS, PA10 148/159 with exact 11 residuals, through-PA9 457/457, file audit exit 0 with one known warning, clean dev rebuild and diff check pass |

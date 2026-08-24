@@ -306,14 +306,33 @@ bool special_name_start_at(const std::vector<PA10Token>& tokens,
 bool skip_balanced_delimiters(const std::vector<PA10Token>& tokens,
 	std::size_t position, std::size_t* after, std::size_t* consumed)
 {
+	if (after != NULL)
+		*after = position;
+	if (consumed != NULL)
+		*consumed = 0;
 	std::vector<SimpleTokenType> closes;
 	std::size_t cursor = position;
 	std::size_t count = 0;
+	const auto publish = [&after, &consumed, &cursor, &count]() {
+		if (after != NULL)
+			*after = cursor;
+		if (consumed != NULL)
+			*consumed = count;
+	};
 	while (true)
 	{
-		if (cursor >= tokens.size() || tokens[cursor].kind == PA10TokenKind::End)
+		if (cursor >= tokens.size())
+		{
+			publish();
 			return false;
+		}
 		const PA10Token& token = tokens[cursor];
+		++count;
+		if (token.kind == PA10TokenKind::End)
+		{
+			publish();
+			return false;
+		}
 		if (token.kind == PA10TokenKind::Fixed)
 		{
 			SimpleTokenType close = SimpleTokenType::OP_SEMICOLON;
@@ -336,7 +355,10 @@ bool skip_balanced_delimiters(const std::vector<PA10Token>& tokens,
 			case SimpleTokenType::OP_RSQUARE:
 			case SimpleTokenType::OP_RBRACE:
 				if (closes.empty() || closes.back() != token.fixed)
+				{
+					publish();
 					return false;
+				}
 				closes.pop_back();
 				break;
 			default:
@@ -346,11 +368,9 @@ bool skip_balanced_delimiters(const std::vector<PA10Token>& tokens,
 				closes.push_back(close);
 		}
 		++cursor;
-		++count;
 		if (closes.empty())
 		{
-			*after = cursor;
-			*consumed = count;
+			publish();
 			return true;
 		}
 	}
@@ -808,6 +828,8 @@ bool template_follow_is_valid(
 			*charged_work = work;
 		return result;
 	};
+	if (absolute_close >= tokens.size())
+		return finish(false);
 	std::size_t next = absolute_close + 1;
 	if (absolute_close < tokens.size() &&
 		tokens[absolute_close].kind == PA10TokenKind::RShiftPiece1 &&
@@ -953,8 +975,18 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	std::size_t position, std::size_t* after, std::size_t* consumed)
 {
+	if (after != NULL)
+		*after = position;
+	if (consumed != NULL)
+		*consumed = 0;
 	std::size_t cursor = position;
 	std::size_t count = 0;
+	const auto publish = [&after, &consumed, &cursor, &count]() {
+		if (after != NULL)
+			*after = cursor;
+		if (consumed != NULL)
+			*consumed = count;
+	};
 	while (attribute_start_at(tokens, cursor))
 	{
 		if (token_identifier_at(tokens, cursor) ||
@@ -963,17 +995,26 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 			++cursor;
 			++count;
 			if (!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN))
+			{
+				if (cursor < tokens.size())
+					++count;
+				publish();
 				return false;
+			}
 		}
 		std::size_t next = 0;
 		std::size_t nested = 0;
 		if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
+		{
+			cursor = next;
+			count += nested;
+			publish();
 			return false;
+		}
 		cursor = next;
 		count += nested;
 	}
-	*after = cursor;
-	*consumed = count;
+	publish();
 	return true;
 }
 
@@ -1002,6 +1043,8 @@ PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
 	{
 		if (!skip_attribute_specifiers(tokens, cursor, &after, &consumed))
 		{
+			result.context =
+				PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
 			result.charged_work = consumed;
 			return result;
 		}
@@ -1067,6 +1110,16 @@ PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
 	while (cursor < tokens.size())
 	{
 		++work;
+		if (tokens[cursor].kind == PA10TokenKind::End ||
+			token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_RPAREN) ||
+			token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_RSQUARE) ||
+			token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_RBRACE))
+		{
+			result.context =
+				PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;
+			result.charged_work = work;
+			return result;
+		}
 		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LBRACE))
 		{
 			if (cursor >= delimiter_close_index.size() ||

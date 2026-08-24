@@ -42,6 +42,9 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, bool in_class_member, std::size_t* charged_work);
 
+// after and consumed are initialized and published on both success and
+// failure.  consumed is the number of token positions examined by the
+// bounded attribute scan, including a present failing token.
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	std::size_t position, std::size_t* after, std::size_t* consumed);
 

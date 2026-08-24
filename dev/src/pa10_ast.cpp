@@ -2716,11 +2716,12 @@ void PA10Parser::skip_attribute_specifiers()
 {
 	std::size_t after = 0;
 	std::size_t consumed = 0;
-	if (!PA10ParserSupport::skip_attribute_specifiers(tokens_, position_,
-			&after, &consumed))
-		fail("unterminated attribute");
+	const bool valid = PA10ParserSupport::skip_attribute_specifiers(tokens_,
+		position_, &after, &consumed);
 	for (std::size_t i = 0; i < consumed; ++i)
 		charge();
+	if (!valid)
+		fail("unterminated attribute");
 	position_ = after;
 }
 PA10AstNode PA10Parser::parse_member_specifiers()
