@@ -35,6 +35,7 @@ struct DeclarationFactDomain;
 struct FunctionFactDomain;
 struct NamespaceFactDomain;
 struct CompoundFactDomain;
+struct StatementFactDomain;
 struct SemanticFactDomain;
 struct ConversionFactDomain;
 
@@ -49,6 +50,7 @@ typedef DomainId<DeclarationFactDomain> DeclarationFactId;
 typedef DomainId<FunctionFactDomain> FunctionFactId;
 typedef DomainId<NamespaceFactDomain> NamespaceFactId;
 typedef DomainId<CompoundFactDomain> CompoundFactId;
+typedef DomainId<StatementFactDomain> StatementFactId;
 typedef DomainId<SemanticFactDomain> SemanticFactId;
 typedef DomainId<ConversionFactDomain> ConversionFactId;
 

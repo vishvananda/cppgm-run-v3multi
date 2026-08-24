@@ -374,7 +374,22 @@ enum class SemanticFactKind
 	ConditionalExpression,
 	CastExpression,
 	SubscriptExpression,
-	SizeofExpression
+	SizeofExpression,
+	IfStatement,
+	ThenBranch,
+	ElseBranch,
+	SwitchStatement,
+	WhileStatement,
+	DoStatement,
+	ForStatement,
+	ForInitStatement,
+	Condition,
+	ConditionDeclaration,
+	Iteration,
+	CaseStatement,
+	DefaultStatement,
+	BreakStatement,
+	ContinueStatement
 };
 
 enum class SemanticValueCategory
@@ -393,6 +408,7 @@ enum class ConversionKind
 	PointerToVoid,
 	NullptrToPointer,
 	NullIntegerToPointer,
+	NullptrToBool,
 	ArrayToPointer,
 	FunctionToPointer,
 	ReferenceBinding,
@@ -456,6 +472,8 @@ struct SemanticFact
 	std::size_t conversion_begin;
 	std::size_t conversion_count;
 	std::size_t literal_element_count;
+	bool has_literal_value;
+	std::int64_t literal_value;
 	bool has_callee;
 
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
@@ -468,7 +486,8 @@ struct SemanticFact
 		  name_begin(0), name_count(0), name_global(false),
 		  child_begin(InvalidIdentityValue), child_count(0),
 		  conversion_begin(InvalidIdentityValue), conversion_count(0),
-		  literal_element_count(0), has_callee(false)
+		  literal_element_count(0), has_literal_value(false), literal_value(0),
+		  has_callee(false)
 	{}
 };
 
@@ -525,6 +544,72 @@ struct CompoundFact
 	{}
 };
 
+enum class StatementFactKind
+{
+	If,
+	Switch,
+	While,
+	Do,
+	For
+};
+
+struct StatementFact
+{
+	const PA10AstNode* node;
+	StatementFactKind kind;
+	ScopeId scope;
+
+	StatementFact(const PA10AstNode* node = NULL,
+		StatementFactKind kind = StatementFactKind::If,
+		ScopeId scope = ScopeId())
+		: node(node), kind(kind), scope(scope)
+	{}
+};
+
+struct SwitchCaseKey
+{
+	std::uint64_t bits;
+	unsigned int width;
+	bool is_unsigned;
+
+	SwitchCaseKey(std::uint64_t bits = 0, unsigned int width = 0,
+		bool is_unsigned = false)
+		: bits(bits), width(width), is_unsigned(is_unsigned)
+	{}
+
+	bool operator==(const SwitchCaseKey& other) const
+	{
+		return bits == other.bits && width == other.width &&
+			is_unsigned == other.is_unsigned;
+	}
+};
+
+struct SwitchCaseKeyHash
+{
+	std::size_t operator()(const SwitchCaseKey& key) const
+	{
+		std::size_t result = static_cast<std::size_t>(key.bits);
+		result ^= result >> 17;
+		result *= static_cast<std::size_t>(0xed5ad4bbU);
+		result ^= static_cast<std::size_t>(key.width) *
+			static_cast<std::size_t>(0x9e3779b9U);
+		result ^= key.is_unsigned ? static_cast<std::size_t>(0x85ebca6bU) :
+			static_cast<std::size_t>(0xc2b2ae35U);
+		return result;
+	}
+};
+
+struct SwitchValidationContext
+{
+	TypeId type;
+	FlatIndex<SwitchCaseKey, bool, SwitchCaseKeyHash> case_values;
+	bool has_default;
+
+	explicit SwitchValidationContext(TypeId type = TypeId())
+		: type(type), case_values(), has_default(false)
+	{}
+};
+
 class PA11SemanticModel
 {
 public:
@@ -571,6 +656,11 @@ private:
 	std::vector<CompoundFact> compound_facts_;
 	FlatIndex<const PA10AstNode*, ScopeId, PointerHash>
 		compound_scope_index_;
+	std::vector<StatementFact> statement_facts_;
+	FlatIndex<const PA10AstNode*, StatementFactId, PointerHash>
+		statement_fact_index_;
+	FlatIndex<const PA10AstNode*, ScopeId, PointerHash>
+		substatement_scope_index_;
 	std::vector<SemanticFact> semantic_facts_;
 	std::vector<SemanticFactId> semantic_children_;
 	std::vector<ConversionFact> conversion_facts_;
@@ -722,6 +812,8 @@ private:
 	;
 	TypeId expression_type(const PA10AstNode& node, ScopeId scope)
 	;
+	bool enumeration_id(TypeId type) const
+	;
 	TypeId sizeof_operand_type(const PA10AstNode& node, ScopeId scope)
 	;
 	ConstValue eval_constexpr(const PA10AstNode& node, ScopeId scope)
@@ -802,6 +894,28 @@ private:
 	const NamespaceFact* namespace_fact(const PA10AstNode& node) const
 	;
 	ScopeId compound_scope(const PA10AstNode& node) const
+	;
+	ScopeId create_internal_scope(ScopeId parent)
+	;
+	void process_condition_declaration(const PA10AstNode& node, ScopeId scope)
+	;
+	void prepare_pa12()
+	;
+	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
+	;
+	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
+	;
+	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
+	;
+	void prepare_pa12_condition(const PA10AstNode& node, ScopeId scope)
+	;
+	void prepare_pa12_substatement(const PA10AstNode& node, ScopeId parent)
+	;
+	StatementFactId add_statement_fact(const StatementFact& fact)
+	;
+	const StatementFact* statement_fact(const PA10AstNode& node) const
+	;
+	ScopeId substatement_scope(const PA10AstNode& node) const
 	;
 	TypeId strip_cv_type(TypeId type) const
 	;
@@ -902,10 +1016,26 @@ private:
 	ScopeId scope)
 	;
 	SemanticFactId semantic_compound(const PA10AstNode& node, ScopeId parent,
-	const FunctionFact& function)
+	const FunctionFact& function, unsigned int loop_depth,
+	unsigned int switch_depth, SwitchValidationContext* switch_context)
+	;
+	SemanticFactId semantic_condition(const PA10AstNode& node, ScopeId scope,
+		bool switch_condition)
+	;
+	SemanticFactId semantic_case_label(const PA10AstNode& node, ScopeId scope,
+		SwitchValidationContext& switch_context)
+	;
+	SwitchCaseKey switch_case_key(TypeId switch_type, __int128 value) const
+	;
+	SemanticFactId semantic_for_init(const PA10AstNode& node, ScopeId scope)
+	;
+	SemanticFactId semantic_substatement(const PA10AstNode& wrapper,
+		ScopeId parent, const FunctionFact& function, unsigned int loop_depth,
+		unsigned int switch_depth, SwitchValidationContext* switch_context)
 	;
 	SemanticFactId semantic_statement(const PA10AstNode& node, ScopeId scope,
-	const FunctionFact& function)
+	const FunctionFact& function, unsigned int loop_depth,
+	unsigned int switch_depth, SwitchValidationContext* switch_context)
 	;
 	void analyze_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;

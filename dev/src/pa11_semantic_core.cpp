@@ -12,10 +12,11 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	lookup_generation_(0), lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
 	function_fact_index_(), namespace_facts_(), namespace_fact_index_(),
-	compound_facts_(), compound_scope_index_(), semantic_facts_(),
+	compound_facts_(), compound_scope_index_(), statement_facts_(),
+	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(),
-	  conversion_facts_(), declaration_semantic_ids_(),
-	  semantic_name_components_()
+	conversion_facts_(), declaration_semantic_ids_(),
+	semantic_name_components_()
 {
 	global_ = create_scope(ScopeKind::Namespace, ScopeId(), NameId());
 	for (int i = static_cast<int>(FundamentalType::SignedChar);

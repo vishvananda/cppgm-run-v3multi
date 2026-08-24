@@ -1,14 +1,330 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
 
+#include <algorithm>
+
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
+
+bool PA11SemanticModel::enumeration_id(TypeId type) const
+{
+	const NamedRecordId record = named_record_for_type(type);
+	return record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum;
+}
+
+ScopeId PA11SemanticModel::create_internal_scope(ScopeId parent)
+{
+	const ScopeId result(scopes_.size());
+	scopes_.push_back(Scope(ScopeKind::Block, parent, NameId(),
+		NamedRecordId(), false, creation_order_++));
+	return result;
+}
+
+void PA11SemanticModel::process_condition_declaration(
+	const PA10AstNode& node, ScopeId scope)
+{
+	if (declaration_fact(node) != NULL)
+		return;
+	if (node.kind != PA10NodeKind::ConditionDeclaration ||
+		node.children.size() != 3 ||
+		node.children[0].kind != PA10NodeKind::DeclSpecifierSeq ||
+		node.children[1].kind != PA10NodeKind::Declarator)
+		throw std::runtime_error("invalid PA12 condition declaration");
+	const SpecFact spec = spec_fact(node.children[0], scope);
+	if (spec.is_typedef)
+		throw std::runtime_error("condition declaration cannot be a typedef");
+	const DeclaratorName name = declarator_name(node.children[1]);
+	if (!name.found || name.path.components.size() != 1)
+		throw std::runtime_error("invalid PA12 condition declarator");
+	const ScopeId target = declaration_scope(name.path, scope);
+	if (!target.valid())
+		throw std::runtime_error("unresolved PA12 condition scope");
+	const TypeId type = apply_declarator(node.children[1], spec.base, target);
+	const BindingId binding_id = add_value(target, name.path.last(), type, false,
+		false, true);
+	DeclarationFact declaration(&node, target);
+	declaration.binding_begin = declaration_bindings_.size();
+	declaration_bindings_.push_back(binding_id);
+	declaration.binding_count = 1;
+	const DeclarationFactId declaration_id(declaration_facts_.size());
+	declaration_facts_.push_back(declaration);
+	declaration_fact_index_.set(&node, declaration_id);
+}
+
+StatementFactId PA11SemanticModel::add_statement_fact(
+	const StatementFact& fact)
+{
+	if (fact.node == NULL)
+		throw std::runtime_error("PA12 statement fact has no node");
+	const StatementFactId result(statement_facts_.size());
+	statement_facts_.push_back(fact);
+	statement_fact_index_.set(fact.node, result);
+	return result;
+}
+
+const StatementFact* PA11SemanticModel::statement_fact(
+	const PA10AstNode& node) const
+{
+	const StatementFactId* found = statement_fact_index_.find(&node);
+	if (found == NULL || !found->valid() ||
+		found->value >= statement_facts_.size())
+		return NULL;
+	return &statement_facts_[found->value];
+}
+
+ScopeId PA11SemanticModel::substatement_scope(const PA10AstNode& node) const
+{
+	const ScopeId* found = substatement_scope_index_.find(&node);
+	return found == NULL ? ScopeId() : *found;
+}
+
+void PA11SemanticModel::prepare_pa12_condition(const PA10AstNode& node,
+	ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::Condition || node.children.size() > 1)
+		throw std::runtime_error("invalid PA12 condition");
+	if (!node.children.empty() &&
+		node.children.front().kind == PA10NodeKind::ConditionDeclaration)
+		process_condition_declaration(node.children.front(), scope);
+}
+
+void PA11SemanticModel::prepare_pa12_substatement(
+	const PA10AstNode& node, ScopeId parent)
+{
+	if (node.kind == PA10NodeKind::CompoundStatement)
+	{
+		prepare_pa12_compound(node, parent);
+		return;
+	}
+	const ScopeId* old = substatement_scope_index_.find(&node);
+	ScopeId substatement;
+	if (old != NULL)
+		substatement = *old;
+	else
+	{
+		substatement = create_internal_scope(parent);
+		substatement_scope_index_.set(&node, substatement);
+	}
+	if (!substatement.valid())
+		throw std::runtime_error("PA12 substatement scope is missing");
+	prepare_pa12_statement(node, substatement);
+}
+
+void PA11SemanticModel::prepare_pa12_compound(const PA10AstNode& node,
+	ScopeId parent)
+{
+	if (node.kind != PA10NodeKind::CompoundStatement)
+		throw std::runtime_error("PA12 expected compound statement");
+	const ScopeId* old = compound_scope_index_.find(&node);
+	ScopeId block;
+	if (old == NULL)
+	{
+		block = process_compound_statement(node, parent);
+	}
+	else
+	{
+		block = *old;
+		if (!block.valid() || !parent.valid() || block == parent ||
+			scopes_[block.value].parent != parent)
+			throw std::runtime_error("PA12 compound scope is missing");
+	}
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		prepare_pa12_statement(node.children[i], block);
+}
+
+void PA11SemanticModel::prepare_pa12_statement(const PA10AstNode& node,
+	ScopeId scope)
+{
+	switch (node.kind)
+	{
+	case PA10NodeKind::CompoundStatement:
+		prepare_pa12_compound(node, scope);
+		return;
+	case PA10NodeKind::SimpleDeclaration:
+		if (declaration_fact(node) == NULL)
+			process_simple_declaration(node, scope);
+		return;
+	case PA10NodeKind::IfStatement:
+	{
+		if (node.children.size() < 2 || node.children[0].kind !=
+			PA10NodeKind::Condition)
+			throw std::runtime_error("invalid PA12 if statement");
+		const StatementFact* old = statement_fact(node);
+		ScopeId control;
+		if (old != NULL)
+			control = old->scope;
+		else
+		{
+			control = create_internal_scope(scope);
+			add_statement_fact(StatementFact(&node, StatementFactKind::If,
+				control));
+		}
+		prepare_pa12_condition(node.children[0], control);
+		for (std::size_t i = 1; i < node.children.size(); ++i)
+		{
+			const PA10AstNode& branch = node.children[i];
+			if ((branch.kind != PA10NodeKind::ThenBranch &&
+				branch.kind != PA10NodeKind::ElseBranch) ||
+				branch.children.size() != 1)
+				throw std::runtime_error("invalid PA12 if branch");
+			prepare_pa12_substatement(branch.children.front(), control);
+		}
+		return;
+	}
+	case PA10NodeKind::SwitchStatement:
+	{
+		if (node.children.size() != 2 || node.children[0].kind !=
+			PA10NodeKind::Condition)
+			throw std::runtime_error("invalid PA12 switch statement");
+		const StatementFact* old = statement_fact(node);
+		ScopeId control;
+		if (old != NULL)
+			control = old->scope;
+		else
+		{
+			control = create_internal_scope(scope);
+			add_statement_fact(StatementFact(&node, StatementFactKind::Switch,
+				control));
+		}
+		prepare_pa12_condition(node.children[0], control);
+		prepare_pa12_substatement(node.children[1], control);
+		return;
+	}
+	case PA10NodeKind::WhileStatement:
+	{
+		if (node.children.size() != 2 || node.children[0].kind !=
+			PA10NodeKind::Condition)
+			throw std::runtime_error("invalid PA12 while statement");
+		const StatementFact* old = statement_fact(node);
+		ScopeId control;
+		if (old != NULL)
+			control = old->scope;
+		else
+		{
+			control = create_internal_scope(scope);
+			add_statement_fact(StatementFact(&node, StatementFactKind::While,
+				control));
+		}
+		prepare_pa12_condition(node.children[0], control);
+		prepare_pa12_substatement(node.children[1], control);
+		return;
+	}
+	case PA10NodeKind::DoStatement:
+	{
+		if (node.children.size() != 2 || node.children[1].kind !=
+			PA10NodeKind::Condition)
+			throw std::runtime_error("invalid PA12 do statement");
+		const StatementFact* old = statement_fact(node);
+		ScopeId control;
+		if (old != NULL)
+			control = old->scope;
+		else
+		{
+			control = create_internal_scope(scope);
+			add_statement_fact(StatementFact(&node, StatementFactKind::Do,
+				control));
+		}
+		prepare_pa12_substatement(node.children[0], control);
+		prepare_pa12_condition(node.children[1], control);
+		return;
+	}
+	case PA10NodeKind::ForStatement:
+	{
+		if (node.children.size() < 3 || node.children[0].kind !=
+			PA10NodeKind::ForInitStatement)
+			throw std::runtime_error("invalid PA12 for statement");
+		const StatementFact* old = statement_fact(node);
+		ScopeId control;
+		if (old != NULL)
+			control = old->scope;
+		else
+		{
+			control = create_internal_scope(scope);
+			add_statement_fact(StatementFact(&node, StatementFactKind::For,
+				control));
+		}
+		const PA10AstNode& init = node.children[0];
+		if (!init.children.empty())
+		{
+			const PA10AstNode& init_child = init.children.front();
+			if (init_child.kind == PA10NodeKind::SimpleDeclaration)
+			{
+				if (declaration_fact(init_child) == NULL)
+					process_simple_declaration(init_child, control);
+			}
+		}
+		for (std::size_t i = 1; i + 1 < node.children.size(); ++i)
+		{
+			if (node.children[i].kind == PA10NodeKind::Condition)
+				prepare_pa12_condition(node.children[i], control);
+		}
+		prepare_pa12_substatement(node.children.back(), control);
+		return;
+	}
+	case PA10NodeKind::CaseStatement:
+		if (node.children.size() != 2)
+			throw std::runtime_error("invalid PA12 case statement");
+		prepare_pa12_statement(node.children.back(), scope);
+		return;
+	case PA10NodeKind::DefaultStatement:
+		if (node.children.size() != 1)
+			throw std::runtime_error("invalid PA12 default statement");
+		prepare_pa12_statement(node.children.front(), scope);
+		return;
+	case PA10NodeKind::LabeledStatement:
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			prepare_pa12_statement(node.children[i], scope);
+		return;
+	default:
+		return;
+	}
+}
+
+void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
+	ScopeId scope)
+{
+	switch (node.kind)
+	{
+	case PA10NodeKind::NamespaceDefinition:
+	{
+		const NamespaceFact* namespace_fact = this->namespace_fact(node);
+		if (namespace_fact == NULL)
+			throw std::runtime_error("PA12 namespace fact is missing");
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			if (node.children[i].kind != PA10NodeKind::InlineMarker)
+				prepare_pa12_node(node.children[i], namespace_fact->scope);
+		return;
+	}
+	case PA10NodeKind::LinkageSpecification:
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			prepare_pa12_node(node.children[i], scope);
+		return;
+	case PA10NodeKind::FunctionDefinition:
+	{
+		const FunctionFact* function = function_fact(node);
+		if (function == NULL || node.children.empty())
+			throw std::runtime_error("PA12 function fact is missing");
+		prepare_pa12_compound(node.children.back(), function->function_scope);
+		return;
+	}
+	default:
+		return;
+	}
+}
+
+void PA11SemanticModel::prepare_pa12()
+{
+	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
+		prepare_pa12_node(ast_.root.children[i], global_);
+}
 
 void PA11SemanticModel::analyze_pa12()
 {
 	if (ast_.root.kind != PA10NodeKind::TranslationUnit)
 		throw std::runtime_error("PA12 root is not a translation unit");
+	prepare_pa12();
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		analyze_pa12_node(ast_.root.children[i], global_);
 }
@@ -396,6 +712,10 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
 		pointer_id(by_value_target))
 		return ConversionChoice(true, 1, ConversionKind::NullptrToPointer);
+	if (type_kind(by_value_source) == TypeKind::Fundamental &&
+		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
+		bool_id(by_value_target))
+		return ConversionChoice(true, 1, ConversionKind::NullptrToBool);
 	if (source_node != NULL && integer_zero(*source_node) &&
 		pointer_id(by_value_target))
 		return ConversionChoice(true, 1, ConversionKind::NullIntegerToPointer);
@@ -1037,6 +1357,33 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		throw std::runtime_error("PA12 declaration fact is missing");
 	if (declaration->semantic_begin != InvalidIdentityValue)
 		return declaration_semantic_ids_[declaration->semantic_begin];
+	if (node.kind == PA10NodeKind::ConditionDeclaration)
+	{
+		if (node.children.size() != 3 || declaration->binding_count != 1)
+			throw std::runtime_error("PA12 invalid condition declaration fact");
+		const BindingId binding_id = declaration_bindings_[
+			declaration->binding_begin];
+		const Binding& value = binding(binding_id);
+		SemanticFact fact(SemanticFactKind::Variable, value.type,
+			SemanticValueCategory::Prvalue, &node);
+		fact.binding = binding_id;
+		const SemanticFactId variable = make_semantic_fact(fact);
+		const PA10AstNode& initializer = node.children[2];
+		if ((initializer.kind != PA10NodeKind::Initializer &&
+			initializer.kind != PA10NodeKind::ParenInitializer) ||
+			initializer.children.size() != 1)
+			throw std::runtime_error("PA12 invalid condition initializer");
+		const ExprInfo expression = semantic_expression(
+			initializer.children.front(), declaration->scope);
+		apply_context_conversion(expression, value.type,
+			semantic_facts_[expression.fact.value].source);
+		set_semantic_children(variable,
+			std::vector<SemanticFactId>(1, expression.fact));
+		declaration->semantic_begin = declaration_semantic_ids_.size();
+		declaration->semantic_count = 1;
+		declaration_semantic_ids_.push_back(variable);
+		return variable;
+	}
 	if (node.children.size() != 2 ||
 		node.children[1].kind != PA10NodeKind::InitDeclaratorList)
 		throw std::runtime_error("PA12 invalid declaration fact");
@@ -1136,8 +1483,173 @@ SemanticFactId PA11SemanticModel::semantic_ambiguous_call_statement(const PA10As
 		TypeId(), SemanticValueCategory::Prvalue, node,
 		std::vector<SemanticFactId>(1, call));
 }
-SemanticFactId PA11SemanticModel::semantic_compound(const PA10AstNode& node, ScopeId parent,
-	const FunctionFact& function)
+SemanticFactId PA11SemanticModel::semantic_condition(const PA10AstNode& node,
+	ScopeId scope, bool switch_condition)
+{
+	if (node.kind != PA10NodeKind::Condition || node.children.size() > 1)
+		throw std::runtime_error("invalid PA12 condition");
+	std::vector<SemanticFactId> children;
+	if (!node.children.empty())
+	{
+		const PA10AstNode& child = node.children.front();
+		if (child.kind == PA10NodeKind::ConditionDeclaration)
+		{
+			const SemanticFactId variable = semantic_declaration(child, scope);
+			const DeclarationFact* declaration = declaration_fact(child);
+			if (declaration == NULL || declaration->binding_count != 1)
+				throw std::runtime_error("invalid PA12 condition binding");
+			const BindingId id = declaration_bindings_[declaration->binding_begin];
+			const TypeId type = binding(id).type;
+			if (switch_condition)
+			{
+				if (!integral_id(type) && !enumeration_id(type))
+					throw std::runtime_error("PA12 switch condition is not integral");
+			}
+			else
+			{
+				const ExprInfo condition(variable, type,
+					SemanticValueCategory::Lvalue, false);
+				apply_context_conversion(condition,
+					fundamental(FundamentalType::Bool),
+					semantic_facts_[variable.value].source);
+			}
+			children.push_back(make_expression_fact(
+				SemanticFactKind::ConditionDeclaration, TypeId(),
+				SemanticValueCategory::Prvalue, child,
+				std::vector<SemanticFactId>(1, variable)));
+		}
+		else
+		{
+			const ExprInfo expression = semantic_expression(child, scope);
+			if (switch_condition)
+			{
+				const TypeId type = expression_object_type(expression.type);
+				if (!integral_id(type) && !enumeration_id(type))
+					throw std::runtime_error("PA12 switch condition is not integral");
+			}
+			else
+				apply_context_conversion(expression,
+					fundamental(FundamentalType::Bool),
+					semantic_facts_[expression.fact.value].source);
+			children.push_back(expression.fact);
+		}
+	}
+	return make_expression_fact(SemanticFactKind::Condition, TypeId(),
+		SemanticValueCategory::Prvalue, node, children);
+}
+
+SwitchCaseKey PA11SemanticModel::switch_case_key(TypeId switch_type,
+	__int128 value) const
+{
+	TypeId target = strip_cv_type(switch_type);
+	const NamedRecordId record = named_record_for_type(target);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum)
+		target = named_[record.value].has_underlying ?
+			strip_cv_type(named_[record.value].underlying) :
+			fundamental(FundamentalType::Int);
+	FundamentalType target_fundamental;
+	if (!fundamental_of(target, &target_fundamental) ||
+		!integral_type(target_fundamental))
+		throw std::runtime_error("PA12 switch case type is not integral");
+	const std::size_t byte_count = type_size(target);
+	if (byte_count == 0 || byte_count > sizeof(std::uint64_t))
+		throw std::runtime_error("PA12 switch case type is too wide");
+	const unsigned int width = static_cast<unsigned int>(byte_count * 8);
+	const __int128 modulus = static_cast<__int128>(1) << width;
+	__int128 normalized = value % modulus;
+	if (normalized < 0)
+		normalized += modulus;
+	return SwitchCaseKey(static_cast<std::uint64_t>(normalized), width,
+		unsigned_type(target_fundamental));
+}
+
+SemanticFactId PA11SemanticModel::semantic_case_label(const PA10AstNode& node,
+	ScopeId scope, SwitchValidationContext& switch_context)
+{
+	if (node.kind != PA10NodeKind::CaseStatement || node.children.size() != 2)
+		throw std::runtime_error("invalid PA12 case label");
+	const PA10AstNode& expression = node.children.front();
+	const ConstValue value = eval_constexpr(expression, scope);
+	if (!value.valid || (!integral_id(switch_context.type) &&
+		!enumeration_id(switch_context.type)))
+		throw std::runtime_error("PA12 case label is not integral constant");
+	const TypeId label_type = expression_object_type(
+		expression_type(expression, scope));
+	if (!integral_id(label_type) && !enumeration_id(label_type))
+		throw std::runtime_error("PA12 case label has invalid type");
+	if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
+		value.value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
+		throw std::runtime_error("PA12 case label overflow");
+	const SwitchCaseKey key = switch_case_key(switch_context.type, value.value);
+	if (switch_context.case_values.find(key) != NULL)
+		throw std::runtime_error("PA12 duplicate case label");
+	switch_context.case_values.set(key, true);
+	SemanticFact fact(SemanticFactKind::Literal, switch_context.type,
+		SemanticValueCategory::Prvalue, &expression);
+	fact.has_literal_value = true;
+	fact.literal_value = static_cast<std::int64_t>(value.value);
+	return make_semantic_fact(fact);
+}
+
+SemanticFactId PA11SemanticModel::semantic_for_init(const PA10AstNode& node,
+	ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::ForInitStatement)
+		throw std::runtime_error("invalid PA12 for-init statement");
+	std::vector<SemanticFactId> children;
+	if (!node.children.empty())
+	{
+		const PA10AstNode& child = node.children.front();
+		/* The parser preserves an empty for-init as an empty declaration. */
+		if (child.kind == PA10NodeKind::SimpleDeclaration)
+		{
+			const DeclarationFact* declaration = declaration_fact(child);
+			if (declaration == NULL)
+				throw std::runtime_error("PA12 for-init declaration is missing");
+			semantic_declaration(child, scope);
+			std::vector<SemanticFactId> variables;
+			for (std::size_t i = 0; i < declaration->semantic_count; ++i)
+				variables.push_back(declaration_semantic_ids_[
+					declaration->semantic_begin + i]);
+			children.push_back(make_expression_fact(
+				SemanticFactKind::SimpleDeclaration, TypeId(),
+				SemanticValueCategory::Prvalue, child, variables));
+		}
+		else if (child.kind != PA10NodeKind::EmptyDeclaration)
+		{
+			const ExprInfo expression = semantic_expression(child, scope);
+			children.push_back(expression.fact);
+		}
+	}
+	return make_expression_fact(SemanticFactKind::ForInitStatement, TypeId(),
+		SemanticValueCategory::Prvalue, node, children);
+}
+
+SemanticFactId PA11SemanticModel::semantic_substatement(
+	const PA10AstNode& wrapper, ScopeId parent, const FunctionFact& function,
+	unsigned int loop_depth, unsigned int switch_depth,
+	SwitchValidationContext* switch_context)
+{
+	if ((wrapper.kind != PA10NodeKind::ThenBranch &&
+		wrapper.kind != PA10NodeKind::ElseBranch) || wrapper.children.size() != 1)
+		throw std::runtime_error("invalid PA12 substatement wrapper");
+	const PA10AstNode& child = wrapper.children.front();
+	const ScopeId body = child.kind == PA10NodeKind::CompoundStatement ?
+		compound_scope(child) : substatement_scope(child);
+	if (!body.valid())
+		throw std::runtime_error("PA12 substatement scope is missing");
+	const SemanticFactId statement = semantic_statement(child, body, function,
+		loop_depth, switch_depth, switch_context);
+	return make_expression_fact(wrapper.kind == PA10NodeKind::ThenBranch ?
+		SemanticFactKind::ThenBranch : SemanticFactKind::ElseBranch,
+		TypeId(), SemanticValueCategory::Prvalue, wrapper,
+		std::vector<SemanticFactId>(1, statement));
+}
+
+SemanticFactId PA11SemanticModel::semantic_compound(const PA10AstNode& node,
+	ScopeId parent, const FunctionFact& function, unsigned int loop_depth,
+	unsigned int switch_depth, SwitchValidationContext* switch_context)
 {
 	if (node.kind != PA10NodeKind::CompoundStatement)
 		throw std::runtime_error("PA12 expected compound statement");
@@ -1150,7 +1662,8 @@ SemanticFactId PA11SemanticModel::semantic_compound(const PA10AstNode& node, Sco
 		const PA10AstNode& child = node.children[i];
 		if (child.kind == PA10NodeKind::EmptyDeclaration)
 			continue;
-		const SemanticFactId fact = semantic_statement(child, block, function);
+		const SemanticFactId fact = semantic_statement(child, block, function,
+			loop_depth, switch_depth, switch_context);
 		if (fact.valid())
 			children.push_back(fact);
 	}
@@ -1160,8 +1673,10 @@ SemanticFactId PA11SemanticModel::semantic_compound(const PA10AstNode& node, Sco
 	(void)parent;
 	return result;
 }
-SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node, ScopeId scope,
-	const FunctionFact& function)
+
+SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
+	ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
+	unsigned int switch_depth, SwitchValidationContext* switch_context)
 {
 	switch (node.kind)
 	{
@@ -1212,7 +1727,182 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node, Sc
 			std::vector<SemanticFactId>(1, expression.fact));
 	}
 	case PA10NodeKind::CompoundStatement:
-		return semantic_compound(node, scope, function);
+		return semantic_compound(node, scope, function, loop_depth, switch_depth,
+			switch_context);
+	case PA10NodeKind::IfStatement:
+	{
+		const StatementFact* statement = statement_fact(node);
+		if (statement == NULL || statement->kind != StatementFactKind::If ||
+			node.children.size() < 2)
+			throw std::runtime_error("PA12 if statement fact is missing");
+		std::vector<SemanticFactId> children;
+		children.push_back(semantic_condition(node.children[0],
+			statement->scope, false));
+		children.push_back(semantic_substatement(node.children[1],
+			statement->scope, function, loop_depth, switch_depth, switch_context));
+		if (node.children.size() > 2)
+			children.push_back(semantic_substatement(node.children[2],
+				statement->scope, function, loop_depth, switch_depth,
+				switch_context));
+		return make_expression_fact(SemanticFactKind::IfStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node, children);
+	}
+	case PA10NodeKind::SwitchStatement:
+	{
+		const StatementFact* statement = statement_fact(node);
+		if (statement == NULL || statement->kind != StatementFactKind::Switch ||
+			node.children.size() != 2)
+			throw std::runtime_error("PA12 switch statement fact is missing");
+		const SemanticFactId condition = semantic_condition(node.children[0],
+			statement->scope, true);
+		const SemanticFact& condition_fact = semantic_facts_[condition.value];
+		if (condition_fact.child_count != 1)
+			throw std::runtime_error("PA12 switch condition is empty");
+		const SemanticFact& condition_value = semantic_facts_[
+			semantic_children_[condition_fact.child_begin].value];
+		SemanticFactId condition_value_id = semantic_children_[
+			condition_fact.child_begin];
+		if (condition_value.kind == SemanticFactKind::ConditionDeclaration)
+		{
+			if (condition_value.child_count != 1)
+				throw std::runtime_error("PA12 switch condition declaration is empty");
+			condition_value_id = semantic_children_[condition_value.child_begin];
+		}
+		const SemanticFact& resolved_condition_value = semantic_facts_[
+			condition_value_id.value];
+		const TypeId switch_type = strip_cv_type(resolved_condition_value.type);
+		SwitchValidationContext current_switch(switch_type);
+		const PA10AstNode& body_node = node.children[1];
+		const ScopeId body = body_node.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body_node) : substatement_scope(body_node);
+		if (!body.valid())
+			throw std::runtime_error("PA12 switch body scope is missing");
+		std::vector<SemanticFactId> children;
+		children.push_back(condition);
+		children.push_back(semantic_statement(body_node, body, function,
+			loop_depth, switch_depth + 1, &current_switch));
+		return make_expression_fact(SemanticFactKind::SwitchStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node, children);
+	}
+	case PA10NodeKind::WhileStatement:
+	case PA10NodeKind::DoStatement:
+	{
+		const StatementFact* statement = statement_fact(node);
+		const bool is_while = node.kind == PA10NodeKind::WhileStatement;
+		if (statement == NULL ||
+			(is_while && statement->kind != StatementFactKind::While) ||
+			(!is_while && statement->kind != StatementFactKind::Do) ||
+			node.children.size() != 2)
+			throw std::runtime_error("PA12 iteration statement fact is missing");
+		const std::size_t body_index = is_while ? 1 : 0;
+		const std::size_t condition_index = is_while ? 0 : 1;
+		const PA10AstNode& body_node = node.children[body_index];
+		const ScopeId body = body_node.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body_node) : substatement_scope(body_node);
+		if (!body.valid())
+			throw std::runtime_error("PA12 iteration body scope is missing");
+		const SemanticFactId condition = semantic_condition(
+			node.children[condition_index], statement->scope, false);
+		const SemanticFactId body_fact = semantic_statement(body_node, body,
+			function, loop_depth + 1, switch_depth, switch_context);
+		std::vector<SemanticFactId> children;
+		if (is_while)
+		{
+			children.push_back(condition);
+			children.push_back(body_fact);
+		}
+		else
+		{
+			children.push_back(body_fact);
+			children.push_back(condition);
+		}
+		return make_expression_fact(is_while ? SemanticFactKind::WhileStatement :
+			SemanticFactKind::DoStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node, children);
+	}
+	case PA10NodeKind::ForStatement:
+	{
+		const StatementFact* statement = statement_fact(node);
+		if (statement == NULL || statement->kind != StatementFactKind::For ||
+			node.children.size() < 3)
+			throw std::runtime_error("PA12 for statement fact is missing");
+		std::vector<SemanticFactId> children;
+		children.push_back(semantic_for_init(node.children[0],
+			statement->scope));
+		std::size_t body_index = node.children.size() - 1;
+		for (std::size_t i = 1; i < body_index; ++i)
+		{
+			if (node.children[i].kind == PA10NodeKind::Condition)
+				children.push_back(semantic_condition(node.children[i],
+					statement->scope, false));
+			else if (node.children[i].kind == PA10NodeKind::Iteration)
+			{
+				if (node.children[i].children.size() != 1)
+					throw std::runtime_error("invalid PA12 for iteration");
+				const ExprInfo iteration = semantic_expression(
+					node.children[i].children.front(), statement->scope);
+				children.push_back(make_expression_fact(SemanticFactKind::Iteration,
+					TypeId(), SemanticValueCategory::Prvalue, node.children[i],
+					std::vector<SemanticFactId>(1, iteration.fact)));
+			}
+		}
+		const PA10AstNode& body_node = node.children[body_index];
+		const ScopeId body = body_node.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body_node) : substatement_scope(body_node);
+		if (!body.valid())
+			throw std::runtime_error("PA12 for body scope is missing");
+		children.push_back(semantic_statement(body_node, body, function,
+			loop_depth + 1, switch_depth, switch_context));
+		return make_expression_fact(SemanticFactKind::ForStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node, children);
+	}
+	case PA10NodeKind::CaseStatement:
+	{
+		if (switch_depth == 0 || switch_context == NULL ||
+			node.children.size() != 2)
+			throw std::runtime_error("PA12 case outside switch");
+		const PA10AstNode& body_node = node.children.back();
+		const ScopeId body = body_node.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body_node) : scope;
+		if (!body.valid())
+			throw std::runtime_error("PA12 case body scope is missing");
+		std::vector<SemanticFactId> children;
+		children.push_back(semantic_case_label(node, scope, *switch_context));
+		children.push_back(semantic_statement(body_node, body, function,
+			loop_depth, switch_depth, switch_context));
+		return make_expression_fact(SemanticFactKind::CaseStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node, children);
+	}
+	case PA10NodeKind::DefaultStatement:
+		if (switch_depth == 0 || switch_context == NULL ||
+			node.children.size() != 1)
+			throw std::runtime_error("PA12 default outside switch");
+	{
+		if (switch_context->has_default)
+			throw std::runtime_error("PA12 duplicate default label");
+		switch_context->has_default = true;
+		const PA10AstNode& body_node = node.children.front();
+		const ScopeId body = body_node.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body_node) : scope;
+		if (!body.valid())
+			throw std::runtime_error("PA12 default body scope is missing");
+		return make_expression_fact(SemanticFactKind::DefaultStatement,
+			TypeId(), SemanticValueCategory::Prvalue, node,
+			std::vector<SemanticFactId>(1, semantic_statement(body_node, body,
+				function, loop_depth, switch_depth, switch_context)));
+	}
+	case PA10NodeKind::BreakStatement:
+		if (loop_depth == 0 && switch_depth == 0)
+			throw std::runtime_error("PA12 break outside loop or switch");
+		return make_expression_fact(SemanticFactKind::BreakStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node,
+			std::vector<SemanticFactId>());
+	case PA10NodeKind::ContinueStatement:
+		if (loop_depth == 0)
+			throw std::runtime_error("PA12 continue outside loop");
+		return make_expression_fact(SemanticFactKind::ContinueStatement, TypeId(),
+			SemanticValueCategory::Prvalue, node,
+			std::vector<SemanticFactId>());
 	default:
 		throw std::runtime_error("PA12 unsupported statement form");
 	}
@@ -1245,7 +1935,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		if (function == NULL || function->body_fact.valid())
 			throw std::runtime_error("PA12 function fact is missing");
 		function->body_fact = semantic_compound(node.children.back(),
-			function->function_scope, *function);
+			function->function_scope, *function, 0, 0, NULL);
 		break;
 	}
 	default:
@@ -1276,6 +1966,12 @@ std::string PA11SemanticModel::semantic_literal_token(const SemanticFact& fact) 
 {
 	if (fact.source == NULL)
 		return std::string();
+	if (fact.has_literal_value)
+	{
+		std::ostringstream result;
+		result << fact.literal_value;
+		return result.str();
+	}
 	std::ostringstream result;
 	if (fact.source->kind == PA10NodeKind::KeywordLiteral)
 		result << simple_token_type_name(fact.source->token) << ':';
@@ -1398,6 +2094,51 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 		output << "sizeof-expression " << semantic_category_name(fact.category) <<
 			' ' << type << '\n';
 		return;
+	case SemanticFactKind::IfStatement:
+		output << "if-statement\n";
+		break;
+	case SemanticFactKind::ThenBranch:
+		output << "then\n";
+		break;
+	case SemanticFactKind::ElseBranch:
+		output << "else\n";
+		break;
+	case SemanticFactKind::SwitchStatement:
+		output << "switch-statement\n";
+		break;
+	case SemanticFactKind::WhileStatement:
+		output << "while-statement\n";
+		break;
+	case SemanticFactKind::DoStatement:
+		output << "do-statement\n";
+		break;
+	case SemanticFactKind::ForStatement:
+		output << "for-statement\n";
+		break;
+	case SemanticFactKind::ForInitStatement:
+		output << "for-init-statement\n";
+		break;
+	case SemanticFactKind::Condition:
+		output << "condition\n";
+		break;
+	case SemanticFactKind::ConditionDeclaration:
+		output << "condition-declaration\n";
+		break;
+	case SemanticFactKind::Iteration:
+		output << "iteration\n";
+		break;
+	case SemanticFactKind::CaseStatement:
+		output << "case-statement\n";
+		break;
+	case SemanticFactKind::DefaultStatement:
+		output << "default-statement\n";
+		break;
+	case SemanticFactKind::BreakStatement:
+		output << "break-statement\n";
+		break;
+	case SemanticFactKind::ContinueStatement:
+		output << "continue-statement\n";
+		break;
 	}
 	for (std::size_t i = 0; i < fact.child_count; ++i)
 		dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
