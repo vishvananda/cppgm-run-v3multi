@@ -286,6 +286,11 @@ static const std::size_t PA10_MAX_AST_NESTING = 1024;
 struct PA10AstNode
 {
 	PA10NodeKind kind;
+	// Token-index interval retained for deterministic synthetic semantic
+	// identities such as anonymous record names.  It is structural metadata,
+	// not rendered source text.
+	std::size_t source_begin;
+	std::size_t source_end;
 	bool has_token;
 	SimpleTokenType token;
 	PA10StringId token_spelling;
@@ -324,7 +329,7 @@ struct PA10AstNode
 	std::vector<PA10AstNode> children;
 
 	PA10AstNode(PA10NodeKind kind = PA10NodeKind::TranslationUnit)
-		: kind(kind), has_token(false),
+		: kind(kind), source_begin(0), source_end(0), has_token(false),
 		  token(SimpleTokenType::OP_SEMICOLON), token_spelling(0),
 		  identifier_declspecifier(false), text(0),
 		  global_name(false), name_parts(), name_prefix_begin(0),

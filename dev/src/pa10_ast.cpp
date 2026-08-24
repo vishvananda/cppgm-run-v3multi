@@ -300,7 +300,10 @@ private:
 	}
 	PA10AstNode node(PA10NodeKind kind) const
 	{
-		return PA10AstNode(kind);
+		PA10AstNode result(kind);
+		result.source_begin = position_;
+		result.source_end = position_;
+		return result;
 	}
 	PA10AstNode fixed_node(PA10NodeKind kind)
 	{
@@ -2488,7 +2491,10 @@ PA10AstNode PA10Parser::parse_class_declaration(bool in_decl_specifier)
 	}
 	PA10AstNode result = parse_class_specifier();
 	if (!in_decl_specifier)
+	{
 		consume_fixed(SimpleTokenType::OP_SEMICOLON);
+		result.source_end = position_;
+	}
 	return result;
 }
 PA10AstNode PA10Parser::parse_class_specifier()
@@ -2536,6 +2542,7 @@ PA10AstNode PA10Parser::parse_class_specifier()
 	}
 	consume_fixed(SimpleTokenType::OP_RBRACE);
 	leave();
+	result.source_end = position_;
 	return result;
 }
 PA10AstNode PA10Parser::parse_base_specifier()
@@ -2777,8 +2784,15 @@ PA10AstNode PA10Parser::parse_enum_specifier()
 		result.children.push_back(fixed_node(PA10NodeKind::EnumKey));
 	if (identifier())
 	{
-		const PA10Token name = consume_identifier_token();
-		result.producer_spelling = name.spelling;
+		const PA10Name name = parse_name(true);
+		if (!name.global && name.parts.size() == 1 &&
+			!name.parts.front().has_template_id)
+			result.producer_spelling = name.parts.front().spelling;
+		else
+		{
+			result.global_name = name.global;
+			result.name_parts = name.parts;
+		}
 	}
 	if (fixed(SimpleTokenType::OP_COLON))
 	{

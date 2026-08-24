@@ -2,6 +2,7 @@
 
 #include "exceptions.h"
 #include "pa10_ast.h"
+#include "pa11_semantic.h"
 #include "preproc_session.h"
 #include "tool_help_text.h"
 
@@ -458,8 +459,52 @@ int run_emit_ast_mode(const vector<string> & args)
 
 int run_emit_types_mode(const vector<string> & args)
 {
-  parse_source_output_invocation(args, false);
-  return run_unimplemented_mode("--emit-types", "PA11");
+  const SourceOutputInvocation invocation =
+      parse_source_output_invocation(args, false);
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    if(paths_alias(invocation.outfile, invocation.inputs[i])) {
+      throw logic_error("output file aliases source file: " +
+          invocation.inputs[i]);
+    }
+  }
+  ofstream output(invocation.outfile.c_str());
+  if(!output) {
+    throw runtime_error("unable to open output file: " + invocation.outfile);
+  }
+
+  output << invocation.inputs.size() << " translation units\n";
+  if(!output) {
+    throw runtime_error("unable to write output file: " + invocation.outfile);
+  }
+  PPPreprocessConfig config;
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    const string & source_path = invocation.inputs[i];
+    ifstream input(source_path.c_str(), ios::in | ios::binary);
+    if(!input) {
+      throw runtime_error("unable to open source file: " + source_path);
+    }
+    ostringstream source;
+    source << input.rdbuf();
+    if(!input.good() && !input.eof()) {
+      throw runtime_error("unable to read source file: " + source_path);
+    }
+
+    PPPreprocessingSession preprocessing(config);
+    const PPTokenBuffer & tokens = preprocessing.preprocess(source_path,
+        source.str());
+    const PA10Ast ast = parse_pa10_ast(tokens);
+    output << "start translation unit " << (i + 1) << "\n";
+    emit_pa11_types(ast, output);
+    output << "end translation unit\n";
+    if(!output) {
+      throw runtime_error("unable to write output file: " + invocation.outfile);
+    }
+  }
+  output.flush();
+  if(!output) {
+    throw runtime_error("unable to finalize output file: " + invocation.outfile);
+  }
+  return EXIT_SUCCESS;
 }
 
 int run_emit_semantics_mode(const vector<string> & args)
