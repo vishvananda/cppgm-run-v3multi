@@ -232,6 +232,27 @@ bool attribute_start_at(const std::vector<PA10Token>& tokens,
 	 token_fixed_at(tokens, absolute, 1, SimpleTokenType::OP_LSQUARE));
 }
 
+bool standard_attribute_wrapper_at(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t absolute)
+{
+	if (!token_fixed_at(tokens, absolute, 0, SimpleTokenType::OP_LSQUARE) ||
+		!token_fixed_at(tokens, absolute, 1, SimpleTokenType::OP_LSQUARE))
+		return false;
+	const std::size_t inner_open = absolute + 1;
+	if (absolute >= delimiter_close_index.size() ||
+		inner_open >= delimiter_close_index.size())
+		return false;
+	const std::size_t outer_close = delimiter_close_index[absolute];
+	const std::size_t inner_close = delimiter_close_index[inner_open];
+	if (outer_close >= tokens.size() || inner_close >= tokens.size())
+		return false;
+	return inner_close < outer_close && inner_close + 1 == outer_close &&
+		token_fixed_at(tokens, inner_close, 0, SimpleTokenType::OP_RSQUARE) &&
+		token_fixed_at(tokens, outer_close, 0, SimpleTokenType::OP_RSQUARE);
+}
+
 bool attribute_after_at(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t absolute, std::size_t* after)
@@ -263,8 +284,8 @@ bool attribute_after_at(const std::vector<PA10Token>& tokens,
 	if (token_fixed_at(tokens, absolute, 0, SimpleTokenType::OP_LSQUARE) &&
 		token_fixed_at(tokens, absolute, 1, SimpleTokenType::OP_LSQUARE))
 	{
-		if (absolute >= delimiter_close_index.size() ||
-			delimiter_close_index[absolute] >= tokens.size())
+		if (!standard_attribute_wrapper_at(tokens, delimiter_close_index,
+			absolute))
 			return false;
 		*after = delimiter_close_index[absolute] + 1;
 		return true;
@@ -1054,6 +1075,7 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 }
 
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, std::size_t* after, std::size_t* consumed)
 {
 	if (after != NULL)
@@ -1083,6 +1105,23 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 				return false;
 			}
 		}
+		else if (!standard_attribute_wrapper_at(tokens, delimiter_close_index,
+			cursor))
+		{
+			std::size_t next = 0;
+			std::size_t nested = 0;
+			if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
+			{
+				cursor = next;
+				count += nested;
+				publish();
+				return false;
+			}
+			cursor = next;
+			count += nested;
+			publish();
+			return false;
+		}
 		std::size_t next = 0;
 		std::size_t nested = 0;
 		if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
@@ -1100,9 +1139,17 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 }
 
 bool attribute_specifier_start(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position)
 {
-	return attribute_start_at(tokens, position);
+	if (token_identifier_at(tokens, position) &&
+		tokens[position].contextual_identifier ==
+			PA10ContextualIdentifierKind::AttributeIntroducer)
+		return true;
+	if (token_fixed_at(tokens, position, 0, SimpleTokenType::KW_ALIGNAS))
+		return true;
+	return standard_attribute_wrapper_at(tokens, delimiter_close_index,
+		position);
 }
 
 PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
@@ -1128,7 +1175,8 @@ PA10ElaboratedSpecifierClassification classify_elaborated_specifier(
 	std::size_t consumed = 0;
 	if (class_key)
 	{
-		if (!skip_attribute_specifiers(tokens, cursor, &after, &consumed))
+		if (!skip_attribute_specifiers(tokens, delimiter_close_index, cursor,
+			&after, &consumed))
 		{
 			result.context =
 				PA10ElaboratedSpecifierContext::EmbeddedOrDeclarator;

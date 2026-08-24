@@ -1,105 +1,123 @@
 # PA10 Checkpoint Plan and Evidence
 
-## Stage Design
+## Spec alignment and ownership
 
 ```text
 typed phase-7 tokens
-    -> support-owned constant-time attribute-start predicate/query over typed
-       tokens, plus bounded balanced scan
-    -> parameter-declaration routing: optional declarator/pack, attribute scan,
-       optional default argument
+    -> PA10Token collection with contextual AttributeIntroducer facts
+    -> support-owned constant-time attribute-start query
+       (indexed true [[...]] wrapper) and bounded balanced attribute scan
+    -> parameter-declaration routing: declarator/abstract/pack,
+       trailing attributes, then optional default argument
     -> canonical PA10 AST
-    -> deterministic renderer
+    -> unchanged deterministic renderer
 ```
 
-The token collector classifies GNU attribute introducers with the existing
-typed contextual-identifier classification.  The support-owned
-`attribute_specifier_start` predicate/query is constant-time over those typed
-tokens and reuses that classifier.  `skip_attribute_specifiers` owns the
-complete bounded attribute recognition and delimiter scan.  The parser's one
-wrapper charges the published scan count and advances only after a valid scan;
-attributes are
-intentionally absent from the canonical AST because the checked refs omit
-them.  The renderer is unchanged.
+PA10 remains a syntax-only AST stage.  The active grammar boundary is
+`declarator` -> `direct-declarator` -> `declarator-suffix` and
+`parameter-clause` -> `parameter-declaration`; `pa10.gram` wins for accepted
+syntax.  The token collector owns typed contextual classification.  The
+support layer owns `attribute_specifier_start` and
+`skip_attribute_specifiers`, including indexed standard-wrapper recognition,
+balanced delimiter traversal, and failure accounting.  The parser owns only
+contextual parameter routing and the canonical AST path.  A lambda-leading
+array bound is kept in that path when the indexed facts show it is not a true
+standard wrapper; the existing empty-capture lambda parser preserves its
+structured node.  Attributes are intentionally omitted from the AST because
+the checked references omit them.
 
-`parse_parameter_declaration` routes the scanner after every applicable
-optional declarator form, including an abstract/no-declarator form and the
-existing pack form, and before default-argument parsing.  Its declarator call
-has one parameter-only boundary flag: the declarator suffix loop stops before
-an attribute-start predicate matches rather than misreading `[[` as an array
-suffix.  All other declarator callers retain their prior behavior.  No
-source-text downgrade, reparse, trial AST, or backtracking was added.
+This satisfies `spec.md` §§1, 2, 4, and 7: one forward pipeline, typed fact
+continuity, one owner for the attribute boundary, bounded work, and no source
+text downgrade, reparse, trial AST, backtracking, duplicate parser, or
+unsupported semantic attribute interpretation.  The new declarator stop flag
+is passed only at the parameter root; all other declarator callers retain their
+prior behavior.  Review rejected a context-specific nonempty-capture parser
+expansion; the final lambda parser and array-bound expression calls are
+unchanged.
 
-This aligns the PA10 grammar boundary with `spec.md` §1's single forward
-pipeline, §2's typed-fact continuity and single owner, §4's bounded work, and
-§7's conformance/measurement requirements.  It remains syntax-only; no name
-lookup or semantic attribute interpretation is introduced.
+## Exact failure map and coverage
 
-## Failure Map
+The authoritative turn-start evidence supplied for this checkpoint was
+**154/159 passing; 159 discovered**, with exactly these five residuals:
 
-The authoritative turn-start result was **152/159 passing; 159 discovered**.
-The final PA10 result is **154/159 passing; 159 discovered**, with exactly the
-five residual identities below.  Prior through PA9 is **457/457**.  The two
-checkpoint targets are resolved in the final result; the exact turn-start
-identity map is:
+- `pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t`
+- `pa10/tests/general/200-lambda-capture-forms.t`
+- `pa10/tests/general/200-member-template-parameter-value-vs-template-name.t`
+- `pa10/tests/general/200-qualified-enumerator-call-argument.t`
+- `pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t`
 
-- **resolved checkpoint target:**
-  `pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t`
-- **resolved checkpoint target:**
-  `pa10/tests/general/200-trailing-parameter-vendor-attribute.t`
-- **residual:** `pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t`
-- **residual:** `pa10/tests/general/200-lambda-capture-forms.t`
-- **residual:** `pa10/tests/general/200-member-template-parameter-value-vs-template-name.t`
-- **residual:** `pa10/tests/general/200-qualified-enumerator-call-argument.t`
-- **residual:** `pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t`
+The two resolved checkpoint identities are:
 
-The focused matrix was diagnostic evidence only; the final broad count is
-authoritative and no added test was used to inflate it.  The five residual
-identities remain untouched.
+- `pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t`
+- `pa10/tests/general/200-trailing-parameter-vendor-attribute.t`
 
-## Active Checkpoint
+The exact progress rule is unchanged: retain all 159 discovered tests, keep
+both resolved identities at their checked-in success status and exact AST
+bytes, and introduce no new or replaced failure identity.  Prior-through-PA9
+evidence remains the recorded `457/457`.  Fresh broad results are PA10
+`154/159`, `159 discovered`, with exactly the five listed residual identities;
+the through-PA9 report exits 0 at `457/457`.
 
-- **Invariant:** after the complete optional parameter declarator, one
-  support-owned scanner consumes zero or more valid attributes before `=` or
-  the parameter-list delimiter; malformed recognition fails closed and all
-  scanned positions are charged.
-- **Implementation boundary:** `dev/src/pa10_ast.cpp` adds the parameter-only
-  declarator stop and boundary routing; `dev/src/pa10_parser_support.{h,cpp}`
-  exposes only the shared typed start predicate/query.  No AST or renderer
-  attribute node is introduced.
-- **Uncertainty/risk:** `[[` conflicts lexically with the existing array-suffix
-  loop, so the stop is deliberately scoped to parameter declarators.  GNU
-  special-member attribute paths remain covered by the focused sibling checks;
-  the unrelated named-pack/lambda residual is not expanded here.
-- **Exact progress rule:** the two named target identities must match their
-  checked-in success refs exactly, 159 tests must remain discoverable, and no
-  new or replaced failure identity may appear.  Final evidence satisfies this
-  rule: both targets pass broadly and only the five listed residuals fail.
+## Active path checks
 
-## Performance Evidence
+- Named, no-declarator, abstract pointer/reference, and `OP_DOTS` pack
+  parameters route attributes after the complete optional declarator shape.
+- `[3]` remains an array suffix; function, array, nested-function, and
+  nested-array suffixes finish before the parameter-root stop.
+- Repeated GNU/standard attributes are consumed before default arguments.
+- Malformed and truncated delimiters fail closed; the support scanner publishes
+  `after` and `consumed` on both success and failure, including a present
+  failing token.
+- Indexed close facts distinguish a true standard `[[...]]` wrapper from the
+  empty-capture lambda-leading array-bound shape `int x[[](){...}]`; the latter
+  emits `ArraySuffix` with the existing `LambdaExpression`.  Nonempty lambda
+  captures remain in the named residual family and are not expanded here.
+  Malformed/truncated candidates still fail closed.
 
-The support scanner advances a single cursor through each contiguous
-attribute sequence and delegates nested delimiters to the existing balanced
-scan.  Its `consumed` result includes a present failing token and is published
-on success and failure.  The parser charges every published position, while
-the start query is a constant-size typed-token check; malformed delimiters
-remain bounded by the token vector.  The parser's existing ceiling remains
-`96 * token_count + 2048`, with recursion and nesting limits unchanged.
+## Focused evidence
 
-Focused exact check: `make -C pa10 check TEST='...'` ran 9 cases and passed
-9/9, including both targets, default arguments, malformed parameters, and
-GNU/standard attributed special-member siblings.  A temporary uncommitted
-paired probe compared exact AST bytes for named, unnamed/no-declarator,
-abstract, pack, array-then-attribute, and default-after-attribute forms; all
-six pairs were identical.  Malformed GNU and malformed `[[...]]` probes both
-exited failure, with the GNU case reporting `unterminated attribute`.
-Final gates were: `make test-pa10` exit 2 with 154/159 and exactly the five
-residuals; the through-PA9 report exit 0 with 457/457; the PA10 file audit
-exit 0 with one known pre-existing `bad-division` warning; and
-`git diff --check` exit 0.  No timing or aggregate-complexity claim is made;
-this is structural bounded scan/counter evidence only.
+```text
+make -C dev cppgm++
+  exit 0
 
-## Checkpoint Ledger
+make -C pa10 check TEST='tests/general/200-trailing-parameter-carries-dependency-attribute.t tests/general/200-trailing-parameter-vendor-attribute.t tests/general/200-attributed-partial-specialization-current-class-constructor.t tests/general/200-attributed-virtual-destructor-member.t tests/general/200-template-qualified-inline-attribute-constructor-definition.t tests/general/200-malformed-function-parameter-list.t tests/spec/100-array-declarator.t tests/general/100-function-pointer-typedef-parameter.t tests/general/200-member-pointer-function-declarator.t'
+  exit 0; pa10 check: PASS (9/9)
+
+/tmp paired implementation-only probes
+  named/no-declarator/abstract: exact AST match after attribute stripping
+  pack/array/function/nested/default: exact AST match after stripping
+
+/tmp/pa10_attribute_cases_array.t
+  exit 0; lambda_array parameter contains ArraySuffix -> LambdaExpression
+  -> LambdaIntroducer []
+
+/tmp/pa10_attribute_support_harness
+  PASS: true-wrapper versus array+empty-lambda recognition, nested/repeated valid
+  scans, GNU/alignas, reset/sentinels, malformed/truncated failure, and exact
+  after/consumed accounting
+```
+
+No reference binary or host compiler was used to produce required compiler
+output.  The file audit exits 0 with the known pre-existing
+`[warning][bad-division] dev/src/cpp_semantic_core.h:1` warning; no fatal size
+finding remains.
+
+## Structural performance evidence
+
+The start query is constant-size typed-token plus indexed-close lookahead.
+Each attribute scan uses one forward cursor and a delimiter stack bounded by
+the token vector; malformed input stops at the first failing/end token.  The
+parser charges published scanner positions against its existing
+`96 * token_count + 2048` ceiling.  No timing, RSS, or aggregate-O(n) claim is
+made; the evidence is a structural bound and accounting harness only.  The
+lambda parser and array-bound expression calls remain unchanged.
+
+## Next checkpoint
+
+The next checkpoint is the separately assigned residual-family audit.  Do not
+expand the named nonempty-capture family in this checkpoint.
+
+## Checkpoint ledger
 
 | checkpoint | status | compact evidence/state |
 | --- | --- | --- |
@@ -112,4 +130,4 @@ this is structural bounded scan/counter evidence only.
 | `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | landed historical | bounded indexed abstract-declarator correction; final gates retained in history |
 | `c16e04ef82e93bb0c628d2f495cc7132d47dd749` elaborated-type boundary | completed historical; residuals remain | focused 3/3 + 16/16; historical PA10 148/159 with exact 11 residuals |
 | `90e9687c759a39d9b4844cdc01deed3ab1e80250` declaration/declarator ambiguity | completed historical; seven residuals remain | focused 21/21; PA10 152/159 with exact seven identities; through-PA9 457/457 |
-| current trailing-parameter attribute boundary | **completed in this commit** | based at audit commit `7a35c9a9`; shared support predicate/query plus parameter routing; focused 9/9; final PA10 154/159 with exactly five residuals; through-PA9 457/457; audit exit 0 with one known warning; diff check exit 0 |
+| `87f0b94bc50c0f3658c94d1dbb9215ace5296140` trailing parameter attributes | completed landed increment; audit current with bounded correction | focused 9/9, exact pairs, empty-capture lambda AST, and expanded wrapper/accounting harness; lambda parser unchanged; PA10 154/159 with exact five residuals; through-PA9 457/457; file audit exit 0 with one pre-existing `bad-division` warning |

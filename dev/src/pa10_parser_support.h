@@ -58,10 +58,14 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 
 // after and consumed are initialized and published on both success and
 // failure.  consumed is the number of token positions examined by the
-// bounded attribute scan, including a present failing token.
+// bounded attribute scan, including a present failing token.  Standard
+// attributes must have a delimiter-indexed [[...]] wrapper; GNU and alignas
+// retain their existing parenthesis-owned paths.
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, std::size_t* after, std::size_t* consumed);
 bool attribute_specifier_start(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position);
 
 enum class PA10ElaboratedSpecifierContext

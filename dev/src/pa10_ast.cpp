@@ -1681,7 +1681,7 @@ PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
 	else if (!allow_abstract)
 		fail("expected declarator-id");
 	while (fixed(SimpleTokenType::OP_LPAREN) ||
-		(fixed(SimpleTokenType::OP_LSQUARE) && !(stop_at_parameter_attributes && PA10ParserSupport::attribute_specifier_start(tokens_, position_))))
+		(fixed(SimpleTokenType::OP_LSQUARE) && !(stop_at_parameter_attributes && PA10ParserSupport::attribute_specifier_start(tokens_, delimiter_close_index_, position_))))
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN) &&
 			(force_parameter_suffix || looks_like_parameter_clause()))
@@ -1755,7 +1755,7 @@ PA10AstNode PA10Parser::parse_parameter_declaration()
 		result.children.push_back(std::move(declarator));
 	}
 	else if (!fixed(SimpleTokenType::OP_COMMA) && !fixed(SimpleTokenType::OP_RPAREN) &&
-		!fixed(SimpleTokenType::OP_DOTS) && !PA10ParserSupport::attribute_specifier_start(tokens_, position_))
+		!fixed(SimpleTokenType::OP_DOTS) && !PA10ParserSupport::attribute_specifier_start(tokens_, delimiter_close_index_, position_))
 		result.children.push_back(parse_declarator(true, false, true, true));
 	skip_attribute_specifiers();
 	if (fixed(SimpleTokenType::OP_ASS))
@@ -2770,8 +2770,7 @@ void PA10Parser::skip_attribute_specifiers()
 {
 	std::size_t after = 0;
 	std::size_t consumed = 0;
-	const bool valid = PA10ParserSupport::skip_attribute_specifiers(tokens_,
-		position_, &after, &consumed);
+	const bool valid = PA10ParserSupport::skip_attribute_specifiers(tokens_, delimiter_close_index_, position_, &after, &consumed);
 	for (std::size_t i = 0; i < consumed; ++i)
 		charge();
 	if (!valid)
