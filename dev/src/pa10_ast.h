@@ -58,6 +58,44 @@ enum class PA10OperatorFunctionKind
 	DeleteArray
 };
 
+enum class PA10LambdaCaptureDefault : unsigned char
+{
+	None,
+	Reference,
+	Copy
+};
+
+enum class PA10LambdaCaptureKind : unsigned char
+{
+	This,
+	Identifier,
+	ReferenceIdentifier
+};
+
+// A checked PA10 fixture extends the grammar's non-type parameter form with
+// an anonymous built-in parameter such as `int = 0`.  Keep that contextual
+// presentation fact typed at the default-argument owner.
+enum class PA10DefaultTemplateArgumentForm : unsigned char
+{
+	Normal,
+	AnonymousNonTypeLiteral
+};
+
+// Lambda capture syntax is a typed fact owned by the lambda introducer.  The
+// renderer derives its cold spelling from this side arena on demand.
+struct PA10LambdaCapture
+{
+	PA10LambdaCaptureKind kind;
+	PPSpellingId spelling;
+	bool pack;
+
+	PA10LambdaCapture(PA10LambdaCaptureKind kind =
+		PA10LambdaCaptureKind::This, PPSpellingId spelling = 0,
+		bool pack = false)
+		: kind(kind), spelling(spelling), pack(pack)
+	{}
+};
+
 enum class PA10TemplateArgumentKind
 {
 	TypeId,
@@ -277,6 +315,10 @@ struct PA10AstNode
 	std::size_t operator_presentation_count;
 	std::size_t semantic_child_begin;
 	std::size_t semantic_child_count;
+	PA10LambdaCaptureDefault lambda_capture_default;
+	std::size_t lambda_capture_begin;
+	std::size_t lambda_capture_count;
+	PA10DefaultTemplateArgumentForm default_template_argument_form;
 	bool has_literal;
 	LiteralData literal;
 	std::vector<PA10AstNode> children;
@@ -295,6 +337,9 @@ struct PA10AstNode
 		  operator_token(SimpleTokenType::OP_SEMICOLON),
 		  operator_presentation_begin(0), operator_presentation_count(0),
 		  semantic_child_begin(0), semantic_child_count(0),
+		  lambda_capture_default(PA10LambdaCaptureDefault::None),
+		  lambda_capture_begin(0), lambda_capture_count(0),
+		  default_template_argument_form(PA10DefaultTemplateArgumentForm::Normal),
 		  has_literal(false), literal(),
 		  children()
 	{}
@@ -325,6 +370,7 @@ struct PA10Ast
 	// conversion type-ids are sparse semantic children owned by the AST.
 	std::vector<PA10StringId> operator_presentation_spellings;
 	std::vector<PA10AstNode> semantic_child_nodes;
+	std::vector<PA10LambdaCapture> lambda_captures;
 	// Template arguments are structured syntax owners. Name components refer
 	// to this vector by range instead of retaining a flattened spelling.
 	std::vector<PA10TemplateArgument> template_arguments;
@@ -335,6 +381,7 @@ struct PA10Ast
 		: producer_spellings(1, std::string()),
 		  presentation_spellings(1, std::string()),
 		  operator_presentation_spellings(), semantic_child_nodes(),
+		  lambda_captures(),
 		  template_arguments(),
 		  name_prefix_nodes(),
 		  root(PA10NodeKind::TranslationUnit)

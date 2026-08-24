@@ -1,44 +1,51 @@
 # PA10 Checkpoint Plan and Evidence
 
-## Spec alignment and ownership
+## 1. Stage Design
 
 ```text
 typed phase-7 tokens
-    -> PA10Token collection with contextual AttributeIntroducer facts
-    -> support-owned constant-time attribute-start query
-       (indexed true [[...]] wrapper) and bounded balanced attribute scan
-    -> parameter-declaration routing: declarator/abstract/pack,
-       trailing attributes, then optional default argument
-    -> canonical PA10 AST
-    -> unchanged deterministic renderer
+    -> indexed facts: template/rshift closes, delimiters, parenthesized groups,
+       and lexical-angle top-level commas
+    -> parser owners: class-member context, parameter/declarator routing,
+       template-angle ownership, typename decl-specifiers, and lambda facts
+       (with bounded token-shape facts supplied by PA10ParserSupport)
+    -> canonical PA10 AST and typed side arenas
+    -> deterministic renderer
 ```
 
-PA10 remains a syntax-only AST stage.  The active grammar boundary is
-`declarator` -> `direct-declarator` -> `declarator-suffix` and
-`parameter-clause` -> `parameter-declaration`; `pa10.gram` wins for accepted
-syntax.  The token collector owns typed contextual classification.  The
-support layer owns `attribute_specifier_start` and
-`skip_attribute_specifiers`, including indexed standard-wrapper recognition,
-balanced delimiter traversal, and failure accounting.  The parser owns only
-contextual parameter routing and the canonical AST path.  A lambda-leading
-array bound is kept in that path when the indexed facts show it is not a true
-standard wrapper; the existing empty-capture lambda parser preserves its
-structured node.  Attributes are intentionally omitted from the AST because
-the checked references omit them.
+This remains one production parser and one canonical AST path (§1).  Existing
+PA10Name and PA10TemplateArgument facts continue to own qualified names and
+template arguments (§2).  LambdaIntroducer owns a compact typed capture range
+(`this`, identifier, reference-identifier, default, and pack facts); the
+renderer derives cold spelling on demand.  Class context propagates through
+template declarations to the in-class special-member owner, and dependent
+`typename` remains a typed qualified decl-specifier.  A leading parameter
+ellipsis is standalone only at the parameter separator/end; otherwise the
+ordinary declarator owns both pack and identifier.
 
-This satisfies `spec.md` §§1, 2, 4, and 7: one forward pipeline, typed fact
-continuity, one owner for the attribute boundary, bounded work, and no source
-text downgrade, reparse, trial AST, backtracking, duplicate parser, or
-unsupported semantic attribute interpretation.  The new declarator stop flag
-is passed only at the parameter root; all other declarator callers retain their
-prior behavior.  Review rejected a context-specific nonempty-capture parser
-expansion; the final lambda parser and array-bound expression calls are
-unchanged.
+The checked course fixture convention extends the grammar's non-type template
+parameter form with an anonymous built-in parameter such as `int = 0`.  The
+parser preserves decoded literal data and marks that default owner with a
+typed anonymous-NTP presentation form; only the renderer emits its required
+`TT_LITERAL:` leaf spelling.  No source spelling, filename, lookup, or
+semantic classification is used.
 
-## Exact failure map and coverage
+The existing indexed close/delimiter/parenthesis work is extended with one
+byte-sized top-level-comma fact per token.  The parser uses constant-time
+indexed ownership checks and one forward capture-list/declarator pass.  Pure
+declaration/operator vocabulary, declaration-follow and virt-specifier tests,
+new-expression type-routing facts, and the bounded member-pointer shape scan
+are owned by `PA10ParserSupport`; the parser charges their published work and
+retains all token consumption and AST construction.  The typed lambda
+introducer scanner likewise returns capture/default/pack facts plus its exact
+consumed and charged counts; the parser publishes those facts into the lambda
+side arena.  All index, parser, and bounded lookahead work remains charged
+under `96 * token_count + 2048` (§4), with no second parser or source reparse.
 
-The authoritative turn-start evidence supplied for this checkpoint was
-**154/159 passing; 159 discovered**, with exactly these five residuals:
+## 2. Failure Map
+
+Turn-start authority was 154/159 PA10 tests passing, all 159 discovered, with
+exactly these five failures:
 
 - `pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t`
 - `pa10/tests/general/200-lambda-capture-forms.t`
@@ -46,78 +53,52 @@ The authoritative turn-start evidence supplied for this checkpoint was
 - `pa10/tests/general/200-qualified-enumerator-call-argument.t`
 - `pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t`
 
-The two resolved checkpoint identities are:
+The reviewed uncommitted milestone was focused 15/17: the three qualified or
+dependent residuals were exact-green; the forward case had only the anonymous
+NTP `TT_LITERAL:0` leaf mismatch; and lambda parsing stopped at token 37.
 
-- `pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t`
-- `pa10/tests/general/200-trailing-parameter-vendor-attribute.t`
+Final validation has no remaining identities: PA10 is exact `159/159` with
+all `159` tests discovered; through-PA9 is `457/457`; through-PA10 is
+`616/616`.
 
-The exact progress rule is unchanged: retain all 159 discovered tests, keep
-both resolved identities at their checked-in success status and exact AST
-bytes, and introduce no new or replaced failure identity.  Prior-through-PA9
-evidence remains the recorded `457/457`.  Fresh broad results are PA10
-`154/159`, `159 discovered`, with exactly the five listed residual identities;
-the through-PA9 report exits 0 at `457/457`.
+## 3. Active Checkpoint
 
-## Active path checks
+Scope is the complete residual family: attributed in-class special-member
+definitions with dependent body names; grammar-listed lambda capture/default/
+pack forms; non-type template angle ambiguity; qualified-id primary
+expressions; and dependent `typename` decl-specifiers with inherited typedef
+casts.
 
-- Named, no-declarator, abstract pointer/reference, and `OP_DOTS` pack
-  parameters route attributes after the complete optional declarator shape.
-- `[3]` remains an array suffix; function, array, nested-function, and
-  nested-array suffixes finish before the parameter-root stop.
-- Repeated GNU/standard attributes are consumed before default arguments.
-- Malformed and truncated delimiters fail closed; the support scanner publishes
-  `after` and `consumed` on both success and failure, including a present
-  failing token.
-- Indexed close facts distinguish a true standard `[[...]]` wrapper from the
-  empty-capture lambda-leading array-bound shape `int x[[](){...}]`; the latter
-  emits `ArraySuffix` with the existing `LambdaExpression`.  Nonempty lambda
-  captures remain in the named residual family and are not expanded here.
-  Malformed/truncated candidates still fail closed.
+Invariants are typed fact continuity, deterministic exact rendering,
+fail-closed malformed syntax, no lookup or semantic classification, no source
+reparse/host or reference tool, no trial AST/rollback/parallel parser, and no
+language accepted beyond `pa10.gram` except the documented checked-fixture
+anonymous-NTP convention.
 
-## Focused evidence
+Validation completed with the unchanged 17-test focused matrix (`17/17`),
+including all five residuals and nearby empty-lambda/lambda-declarator,
+qualified/template-id, cast/type-id, and special-member-attribute checks.
+Direct temporary probes for `[=,]` and `[&,]` both failed closed with rc=1.
+Broad validation is exact-green: PA10 `159/159` with all `159` discovered,
+through-PA9 `457/457`, through-PA10 `616/616`, and the required full
+`dev/src` audit exits 0 with only the known nonfatal
+`cpp_semantic_core.h:1` implementation-body warning.  `git diff --check`
+also exits 0.
 
-```text
-make -C dev cppgm++
-  exit 0
+## 4. Performance Evidence
 
-make -C pa10 check TEST='tests/general/200-trailing-parameter-carries-dependency-attribute.t tests/general/200-trailing-parameter-vendor-attribute.t tests/general/200-attributed-partial-specialization-current-class-constructor.t tests/general/200-attributed-virtual-destructor-member.t tests/general/200-template-qualified-inline-attribute-constructor-definition.t tests/general/200-malformed-function-parameter-list.t tests/spec/100-array-declarator.t tests/general/100-function-pointer-typedef-parameter.t tests/general/200-member-pointer-function-declarator.t'
-  exit 0; pa10 check: PASS (9/9)
+The new template-comma fact is written once during the existing forward index
+walk: O(n) storage/work, one byte per token, and one charged constant-time
+parser query per candidate.  The member-pointer support probe follows one
+qualified component/template-id spine and returns one charged step per
+component attempt; the new-expression routing helpers are indexed constant-
+time predicates.  Lambda captures and `Args... args` are consumed once by
+their owning parser boundaries; renderer work is proportional to the typed
+capture range.  No new unbounded scan, source-text pass, trial parse, or
+rollback was added.  This is structural bound/accounting evidence only; no
+timing or RSS claim is made.
 
-/tmp paired implementation-only probes
-  named/no-declarator/abstract: exact AST match after attribute stripping
-  pack/array/function/nested/default: exact AST match after stripping
-
-/tmp/pa10_attribute_cases_array.t
-  exit 0; lambda_array parameter contains ArraySuffix -> LambdaExpression
-  -> LambdaIntroducer []
-
-/tmp/pa10_attribute_support_harness
-  PASS: true-wrapper versus array+empty-lambda recognition, nested/repeated valid
-  scans, GNU/alignas, reset/sentinels, malformed/truncated failure, and exact
-  after/consumed accounting
-```
-
-No reference binary or host compiler was used to produce required compiler
-output.  The file audit exits 0 with the known pre-existing
-`[warning][bad-division] dev/src/cpp_semantic_core.h:1` warning; no fatal size
-finding remains.
-
-## Structural performance evidence
-
-The start query is constant-size typed-token plus indexed-close lookahead.
-Each attribute scan uses one forward cursor and a delimiter stack bounded by
-the token vector; malformed input stops at the first failing/end token.  The
-parser charges published scanner positions against its existing
-`96 * token_count + 2048` ceiling.  No timing, RSS, or aggregate-O(n) claim is
-made; the evidence is a structural bound and accounting harness only.  The
-lambda parser and array-bound expression calls remain unchanged.
-
-## Next checkpoint
-
-The next checkpoint is the separately assigned residual-family audit.  Do not
-expand the named nonempty-capture family in this checkpoint.
-
-## Checkpoint ledger
+## 5. Checkpoint Ledger
 
 | checkpoint | status | compact evidence/state |
 | --- | --- | --- |
@@ -126,8 +107,10 @@ expand the named nonempty-capture family in this checkpoint.
 | `b9b58b9c` declarator audit | landed historical | historical 123/157; through-PA9 457/457; one pre-existing audit warning |
 | `08c38115` structured names/special members | landed historical | removed 12 prior residuals; retained course boundary fixture |
 | `017eb658` structured-name audit | historical starting point | clean at 158/136 with 22 failures |
-| `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | landed historical | historical 142/159 with exact original 17 failures; prior focused postfix evidence |
-| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | landed historical | bounded indexed abstract-declarator correction; final gates retained in history |
-| `c16e04ef82e93bb0c628d2f495cc7132d47dd749` elaborated-type boundary | completed historical; residuals remain | focused 3/3 + 16/16; historical PA10 148/159 with exact 11 residuals |
-| `90e9687c759a39d9b4844cdc01deed3ab1e80250` declaration/declarator ambiguity | completed historical; seven residuals remain | focused 21/21; PA10 152/159 with exact seven identities; through-PA9 457/457 |
-| `87f0b94bc50c0f3658c94d1dbb9215ace5296140` trailing parameter attributes | completed landed increment; audit current with bounded correction | focused 9/9, exact pairs, empty-capture lambda AST, and expanded wrapper/accounting harness; lambda parser unchanged; PA10 154/159 with exact five residuals; through-PA9 457/457; file audit exit 0 with one pre-existing `bad-division` warning |
+| `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | landed historical | historical 142/159 with exact original 17 failures |
+| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | landed historical | bounded indexed abstract-declarator correction |
+| `c16e04ef82e93bb0c628d2f495cc7132d47dd749` elaborated-type boundary | completed historical | focused 3/3 and 16/16; residuals retained |
+| `90e9687c759a39d9b4844cdc01deed3ab1e80250` declaration/declarator ambiguity | completed historical | focused 21/21; PA10 152/159 with exact seven residuals |
+| `87f0b94bc50c0f3658c94d1dbb9215ace5296140` trailing parameter attributes | landed historical | focused 9/9; PA10 154/159 with exact five residuals; audit exit 0 with one warning |
+| reviewed uncommitted residual structured-syntax milestone | reviewed/superseded | focused 15/17; forward anonymous-NTP presentation mismatch and lambda token-37 boundary remained |
+| final residual structured-syntax checkpoint | amended in `HEAD` as `PA10: complete residual structured syntax` | restored readable parser formatting; moved bounded token-shape ownership into `PA10ParserSupport`; focused 17/17 plus malformed-default probes; PA10 159/159; through-PA9 457/457; through-PA10 616/616; audit exit 0 with one known warning; commit hash is recorded in the final handoff |

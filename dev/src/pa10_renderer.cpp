@@ -173,6 +173,10 @@ bool has_non_token_payload(const PA10AstNode& node)
 		node.operator_presentation_begin != 0 ||
 		node.operator_presentation_count != 0 ||
 		node.semantic_child_begin != 0 || node.semantic_child_count != 0 ||
+		node.lambda_capture_default != PA10LambdaCaptureDefault::None ||
+		node.lambda_capture_begin != 0 || node.lambda_capture_count != 0 ||
+		node.default_template_argument_form !=
+			PA10DefaultTemplateArgumentForm::Normal ||
 		node.has_literal;
 }
 
@@ -240,6 +244,17 @@ void validate_node_sidecar_ranges(const PA10Ast& ast,
 		node.semantic_child_count > ast.semantic_child_nodes.size() -
 			node.semantic_child_begin)
 		throw std::runtime_error("invalid PA10 semantic child range");
+	if (node.lambda_capture_begin > ast.lambda_captures.size() ||
+		node.lambda_capture_count > ast.lambda_captures.size() -
+			node.lambda_capture_begin)
+		throw std::runtime_error("invalid PA10 lambda capture range");
+	if (node.default_template_argument_form !=
+		PA10DefaultTemplateArgumentForm::Normal &&
+		(node.kind != PA10NodeKind::DefaultTemplateArgument ||
+			node.children.size() != 1 ||
+			node.children.front().kind != PA10NodeKind::Literal ||
+			!node.children.front().has_literal))
+		throw std::runtime_error("invalid PA10 default template argument form");
 	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
 	{
 		const PA10NameComponent& component = node.name_parts[i];
@@ -819,8 +834,52 @@ void render_function_qualifier(const PA10Ast& ast,
 		output << ast.spelling(node.token_spelling);
 }
 
+void append_lambda_introducer(const PA10Ast& ast,
+	const PA10AstNode& node, std::ostream& output)
+{
+	if (node.lambda_capture_begin > ast.lambda_captures.size() ||
+		node.lambda_capture_count > ast.lambda_captures.size() -
+			node.lambda_capture_begin)
+		throw std::runtime_error("invalid PA10 lambda capture range");
+	output << " [";
+	if (node.lambda_capture_default == PA10LambdaCaptureDefault::Reference)
+		output << '&';
+	else if (node.lambda_capture_default == PA10LambdaCaptureDefault::Copy)
+		output << '=';
+	for (std::size_t i = 0; i < node.lambda_capture_count; ++i)
+	{
+		if (i != 0 || node.lambda_capture_default !=
+			PA10LambdaCaptureDefault::None)
+			output << ',';
+		const PA10LambdaCapture& capture =
+			ast.lambda_captures[node.lambda_capture_begin + i];
+		switch (capture.kind)
+		{
+		case PA10LambdaCaptureKind::This:
+			output << "this";
+			break;
+		case PA10LambdaCaptureKind::Identifier:
+			if (capture.spelling == 0 ||
+				capture.spelling >= ast.producer_spellings.size())
+				throw std::runtime_error("invalid PA10 lambda capture identifier");
+			output << ast.producer_spelling(capture.spelling);
+			break;
+		case PA10LambdaCaptureKind::ReferenceIdentifier:
+			if (capture.spelling == 0 ||
+				capture.spelling >= ast.producer_spellings.size())
+				throw std::runtime_error("invalid PA10 lambda reference capture");
+			output << '&' << ast.producer_spelling(capture.spelling);
+			break;
+		}
+		if (capture.pack)
+			output << "...";
+	}
+	output << ']';
+}
+
 void render_node(const PA10Ast& ast, const PA10AstNode& node,
-	std::ostream& output, std::size_t indent)
+	std::ostream& output, std::size_t indent,
+	bool anonymous_ntp_literal = false)
 {
 	if (indent >= PA10_MAX_AST_NESTING)
 		throw std::runtime_error("PA10 renderer nesting limit reached");
@@ -992,21 +1051,33 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 	case PA10NodeKind::ArrayDeleteMarker:
 		break;
 	case PA10NodeKind::Literal:
-		output << ' ' << node_text(ast, node.text);
+		if (anonymous_ntp_literal)
+			output << " TT_LITERAL:";
+		else
+			output << ' ';
+		output << node_text(ast, node.text);
 		break;
 	case PA10NodeKind::KeywordLiteral:
 		if (node.has_token)
 			render_fixed_suffix(ast, node, output);
 		break;
 	case PA10NodeKind::LambdaIntroducer:
-		output << ' ' << node_text(ast, node.text);
+		append_lambda_introducer(ast, node, output);
 		break;
 	default:
 		break;
 	}
 	output << '\n';
 	for (std::size_t i = 0; i < node.children.size(); ++i)
-		render_node(ast, node.children[i], output, indent + 1);
+	{
+		const bool child_anonymous_ntp_literal =
+			node.kind == PA10NodeKind::DefaultTemplateArgument &&
+			node.default_template_argument_form ==
+				PA10DefaultTemplateArgumentForm::AnonymousNonTypeLiteral &&
+			i == 0;
+		render_node(ast, node.children[i], output, indent + 1,
+			child_anonymous_ntp_literal);
+	}
 }
 
 } // namespace

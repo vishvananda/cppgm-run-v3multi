@@ -101,6 +101,42 @@ bool is_cv_impl(SimpleTokenType type)
 		type == SimpleTokenType::KW_VOLATILE;
 }
 
+bool is_decl_specifier_impl(SimpleTokenType type)
+{
+	switch (type)
+	{
+	case SimpleTokenType::KW_AUTO:
+	case SimpleTokenType::KW_BOOL:
+	case SimpleTokenType::KW_CHAR:
+	case SimpleTokenType::KW_CHAR16_T:
+	case SimpleTokenType::KW_CHAR32_T:
+	case SimpleTokenType::KW_CONST:
+	case SimpleTokenType::KW_CONSTEXPR:
+	case SimpleTokenType::KW_DOUBLE:
+	case SimpleTokenType::KW_EXTERN:
+	case SimpleTokenType::KW_FLOAT:
+	case SimpleTokenType::KW_FRIEND:
+	case SimpleTokenType::KW_INLINE:
+	case SimpleTokenType::KW_INT:
+	case SimpleTokenType::KW_LONG:
+	case SimpleTokenType::KW_MUTABLE:
+	case SimpleTokenType::KW_REGISTER:
+	case SimpleTokenType::KW_STATIC:
+	case SimpleTokenType::KW_THREAD_LOCAL:
+	case SimpleTokenType::KW_TYPEDEF:
+	case SimpleTokenType::KW_UNSIGNED:
+	case SimpleTokenType::KW_SHORT:
+	case SimpleTokenType::KW_SIGNED:
+	case SimpleTokenType::KW_VIRTUAL:
+	case SimpleTokenType::KW_VOID:
+	case SimpleTokenType::KW_VOLATILE:
+	case SimpleTokenType::KW_WCHAR_T:
+		return true;
+	default:
+		return false;
+	}
+}
+
 bool is_type_keyword_impl(SimpleTokenType type)
 {
 	switch (type)
@@ -194,6 +230,55 @@ bool is_operator_function_token_impl(SimpleTokenType type)
 		return true;
 	default:
 		return false;
+	}
+}
+
+bool is_assignment_operator_impl(SimpleTokenType type)
+{
+	switch (type)
+	{
+	case SimpleTokenType::OP_ASS:
+	case SimpleTokenType::OP_PLUSASS:
+	case SimpleTokenType::OP_MINUSASS:
+	case SimpleTokenType::OP_STARASS:
+	case SimpleTokenType::OP_DIVASS:
+	case SimpleTokenType::OP_MODASS:
+	case SimpleTokenType::OP_XORASS:
+	case SimpleTokenType::OP_BANDASS:
+	case SimpleTokenType::OP_BORASS:
+	case SimpleTokenType::OP_LSHIFTASS:
+	case SimpleTokenType::OP_RSHIFTASS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool is_binary_operator_impl(int level, SimpleTokenType type)
+{
+	switch (level)
+	{
+	case 0: return type == SimpleTokenType::OP_LOR;
+	case 1: return type == SimpleTokenType::OP_LAND;
+	case 2: return type == SimpleTokenType::OP_BOR;
+	case 3: return type == SimpleTokenType::OP_XOR;
+	case 4: return type == SimpleTokenType::OP_AMP;
+	case 5: return type == SimpleTokenType::OP_EQ ||
+		type == SimpleTokenType::OP_NE;
+	case 6: return type == SimpleTokenType::OP_LT ||
+		type == SimpleTokenType::OP_GT ||
+		type == SimpleTokenType::OP_LE ||
+		type == SimpleTokenType::OP_GE;
+	case 7: return type == SimpleTokenType::OP_LSHIFT ||
+		type == SimpleTokenType::OP_RSHIFT;
+	case 8: return type == SimpleTokenType::OP_PLUS ||
+		type == SimpleTokenType::OP_MINUS;
+	case 9: return type == SimpleTokenType::OP_STAR ||
+		type == SimpleTokenType::OP_DIV ||
+		type == SimpleTokenType::OP_MOD;
+	case 10: return type == SimpleTokenType::OP_DOTSTAR ||
+		type == SimpleTokenType::OP_ARROWSTAR;
+	default: return false;
 	}
 }
 
@@ -433,6 +518,29 @@ bool fact_cv_at(const std::vector<PA10Token>& tokens,
 		is_cv_impl(tokens[absolute].fixed);
 }
 
+bool fact_parameter_specifier_start_at(
+	const std::vector<PA10Token>& tokens, std::size_t absolute,
+	std::size_t& work)
+{
+	fact_step(work);
+	if (absolute >= tokens.size() || tokens[absolute].kind != PA10TokenKind::Fixed)
+		return false;
+	const SimpleTokenType type = tokens[absolute].fixed;
+	return is_type_keyword_impl(type) || is_cv_impl(type) ||
+		type == SimpleTokenType::KW_TYPEDEF ||
+		type == SimpleTokenType::KW_EXTERN ||
+		type == SimpleTokenType::KW_STATIC ||
+		type == SimpleTokenType::KW_INLINE ||
+		type == SimpleTokenType::KW_VIRTUAL ||
+		type == SimpleTokenType::KW_CONSTEXPR ||
+		type == SimpleTokenType::KW_THREAD_LOCAL ||
+		type == SimpleTokenType::KW_MUTABLE ||
+		type == SimpleTokenType::KW_REGISTER ||
+		type == SimpleTokenType::KW_FRIEND ||
+		type == SimpleTokenType::KW_TYPENAME ||
+		type == SimpleTokenType::KW_DECLTYPE;
+}
+
 PA10ParenthesizedGroupKind fact_parenthesized_group_kind_at(
 	const std::vector<PA10ParenthesizedGroupKind>& groups,
 	std::size_t absolute, std::size_t& work)
@@ -561,6 +669,12 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 			}
 		}
 		if (valid && cursor == end)
+			return NewParameterAmbiguous;
+		// The first parameter may use a mock type-name while a later parameter
+		// begins with a fixed decl-specifier, as in (kind, int).  This indexed
+		// constant-time discriminator keeps the whole group on the parameter
+		// owner without scanning or constructing a trial AST.
+		if (fact_parameter_specifier_start_at(tokens, open + 3, work))
 			return NewParameterAmbiguous;
 	}
 	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work))
@@ -799,6 +913,21 @@ bool is_type_keyword(SimpleTokenType type)
 	return is_type_keyword_impl(type);
 }
 
+bool is_decl_specifier(SimpleTokenType type)
+{
+	return is_decl_specifier_impl(type);
+}
+
+bool is_assignment_operator(SimpleTokenType type)
+{
+	return is_assignment_operator_impl(type);
+}
+
+bool is_binary_operator(int level, SimpleTokenType type)
+{
+	return is_binary_operator_impl(level, type);
+}
+
 bool is_builtin_function_style_cast_keyword(SimpleTokenType type)
 {
 	return is_builtin_function_style_cast_keyword_impl(type);
@@ -807,6 +936,276 @@ bool is_builtin_function_style_cast_keyword(SimpleTokenType type)
 bool is_operator_function_token(SimpleTokenType type)
 {
 	return is_operator_function_token_impl(type);
+}
+
+bool declaration_follow_is_valid(const std::vector<PA10Token>& tokens,
+	std::size_t close)
+{
+	if (close >= tokens.size() || close + 1 >= tokens.size() ||
+		tokens[close + 1].kind != PA10TokenKind::Fixed)
+		return false;
+	const SimpleTokenType follower = tokens[close + 1].fixed;
+	return follower == SimpleTokenType::OP_SEMICOLON ||
+		follower == SimpleTokenType::OP_COMMA ||
+		follower == SimpleTokenType::OP_ASS ||
+		follower == SimpleTokenType::OP_LBRACE ||
+		follower == SimpleTokenType::OP_LPAREN ||
+		follower == SimpleTokenType::OP_LSQUARE;
+}
+
+bool virt_specifier_start(const std::vector<PA10Token>& tokens,
+	std::size_t position)
+{
+	if (!token_identifier_at(tokens, position))
+		return false;
+	return tokens[position].contextual_identifier ==
+			PA10ContextualIdentifierKind::Override ||
+		tokens[position].contextual_identifier ==
+			PA10ContextualIdentifierKind::Final;
+}
+
+bool new_type_id_start_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute)
+{
+	if (absolute >= tokens.size())
+		return false;
+	const PA10Token& token = tokens[absolute];
+	if (token.kind == PA10TokenKind::Identifier)
+		return true;
+	if (token.kind != PA10TokenKind::Fixed)
+		return false;
+	return is_builtin_function_style_cast_keyword_impl(token.fixed) ||
+		is_cv_impl(token.fixed) ||
+		token.fixed == SimpleTokenType::KW_TYPENAME ||
+		token.fixed == SimpleTokenType::KW_DECLTYPE ||
+		token.fixed == SimpleTokenType::KW_CLASS ||
+		token.fixed == SimpleTokenType::KW_STRUCT ||
+		token.fixed == SimpleTokenType::KW_UNION ||
+		token.fixed == SimpleTokenType::KW_ENUM ||
+		token.fixed == SimpleTokenType::OP_COLON2;
+}
+
+bool parenthesized_type_id_start_at(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t absolute)
+{
+	if (!token_fixed_at(tokens, absolute, 0, SimpleTokenType::OP_LPAREN) ||
+		absolute + 1 >= tokens.size() ||
+		absolute >= delimiter_close_index.size())
+		return false;
+	const std::size_t close = delimiter_close_index[absolute];
+	return close < tokens.size() && close > absolute + 1 &&
+		new_type_id_start_at(tokens, absolute + 1);
+}
+
+bool new_parenthesized_abstract_declarator_start(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind,
+	std::size_t position, bool parenthesized_new_type_id)
+{
+	if (!token_fixed_at(tokens, position, 0, SimpleTokenType::OP_LPAREN) ||
+		position >= delimiter_close_index.size())
+		return false;
+	const std::size_t close = delimiter_close_index[position];
+	if (close >= tokens.size())
+		return false;
+	const bool indexed_abstract =
+		position < parenthesized_group_kind.size() &&
+		parenthesized_group_kind[position] ==
+			PA10ParenthesizedGroupKind::AbstractDeclarator;
+	const bool indexed_nested =
+		position < parenthesized_group_kind.size() &&
+		parenthesized_group_kind[position] !=
+			PA10ParenthesizedGroupKind::None;
+	return indexed_abstract ||
+		(parenthesized_new_type_id && indexed_nested);
+}
+
+bool new_first_parenthesized_group_is_placement(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position, std::size_t* charged_work)
+{
+	if (charged_work != NULL)
+		*charged_work = 0;
+	if (!token_fixed_at(tokens, position, 0, SimpleTokenType::OP_LPAREN) ||
+		position >= delimiter_close_index.size())
+		return false;
+	const std::size_t close = delimiter_close_index[position];
+	if (close >= tokens.size() || close <= position + 1 ||
+		close + 1 >= tokens.size())
+		return false;
+	if (charged_work != NULL)
+		*charged_work = 1;
+	return new_type_id_start_at(tokens, close + 1) ||
+		parenthesized_type_id_start_at(tokens, delimiter_close_index, close + 1);
+}
+
+bool member_pointer_operator_start(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	std::size_t position, std::size_t* charged_work)
+{
+	std::size_t work = 0;
+	const auto finish = [&work, charged_work](bool result) {
+		if (charged_work != NULL)
+			*charged_work = work;
+		return result;
+	};
+	std::size_t cursor = position;
+	if (cursor >= tokens.size())
+		return finish(false);
+	if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON2))
+		++cursor;
+	bool have_component = false;
+	while (cursor < tokens.size())
+	{
+		++work;
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_TEMPLATE))
+			++cursor;
+		if (!token_identifier_at(tokens, cursor))
+			return finish(false);
+		have_component = true;
+		++cursor;
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LT))
+		{
+			std::size_t close = 0;
+			if (!find_template_close_impl(tokens, template_close_index,
+				cursor, &close) || close >= tokens.size())
+				return finish(false);
+			cursor = close + 1;
+			if (tokens[close].kind == PA10TokenKind::RShiftPiece1 &&
+				cursor < tokens.size() &&
+				tokens[cursor].kind == PA10TokenKind::RShiftPiece2 &&
+				close < rshift_piece1_nested_close.size() &&
+				rshift_piece1_nested_close[close])
+				++cursor;
+		}
+		if (!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_COLON2))
+			return finish(false);
+		++cursor;
+		if (token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_STAR))
+			return finish(have_component);
+		if (cursor >= tokens.size() ||
+			(tokens[cursor].kind != PA10TokenKind::Identifier &&
+			 !(tokens[cursor].kind == PA10TokenKind::Fixed &&
+				tokens[cursor].fixed == SimpleTokenType::KW_TEMPLATE)))
+			return finish(false);
+	}
+	return finish(false);
+}
+
+bool scan_lambda_introducer_facts(
+	const std::vector<PA10Token>& tokens, std::size_t position,
+	PA10LambdaIntroducerFacts* facts)
+{
+	if (facts == NULL)
+		return false;
+	PA10LambdaIntroducerFacts parsed;
+	std::size_t cursor = position;
+	std::size_t work = 0;
+	const auto at_fixed = [&tokens, &work](std::size_t absolute,
+		SimpleTokenType type) {
+		++work;
+		return absolute < tokens.size() &&
+			tokens[absolute].kind == PA10TokenKind::Fixed &&
+			tokens[absolute].fixed == type;
+	};
+	const auto at_identifier = [&tokens, &work](std::size_t absolute) {
+		++work;
+		return absolute < tokens.size() &&
+			tokens[absolute].kind == PA10TokenKind::Identifier;
+	};
+	const auto publish = [&parsed, &facts, &cursor, &position, &work]() {
+		parsed.consumed = cursor - position;
+		parsed.charged_work = work;
+		*facts = parsed;
+	};
+	const auto fail = [&publish]() {
+		publish();
+		return false;
+	};
+
+	if (at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+	{
+		++cursor;
+		publish();
+		return true;
+	}
+	if (at_fixed(cursor, SimpleTokenType::OP_AMP) &&
+		(at_fixed(cursor + 1, SimpleTokenType::OP_RSQUARE) ||
+		 at_fixed(cursor + 1, SimpleTokenType::OP_COMMA)))
+	{
+		parsed.capture_default = PA10LambdaCaptureDefault::Reference;
+		++cursor;
+		if (at_fixed(cursor, SimpleTokenType::OP_COMMA))
+		{
+			++cursor;
+			if (at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+				return fail();
+		}
+		else if (!at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+			return fail();
+	}
+	else if (at_fixed(cursor, SimpleTokenType::OP_ASS))
+	{
+		parsed.capture_default = PA10LambdaCaptureDefault::Copy;
+		++cursor;
+		if (at_fixed(cursor, SimpleTokenType::OP_COMMA))
+		{
+			++cursor;
+			if (at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+				return fail();
+		}
+		else if (!at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+			return fail();
+	}
+	if (!at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+	{
+		while (true)
+		{
+			PA10LambdaCapture capture;
+			if (at_fixed(cursor, SimpleTokenType::OP_AMP))
+			{
+				++cursor;
+				if (!at_identifier(cursor))
+					return fail();
+				capture.kind = PA10LambdaCaptureKind::ReferenceIdentifier;
+				capture.spelling = tokens[cursor++].spelling;
+			}
+			else if (at_fixed(cursor, SimpleTokenType::KW_THIS))
+			{
+				capture.kind = PA10LambdaCaptureKind::This;
+				++cursor;
+			}
+			else if (at_identifier(cursor))
+			{
+				capture.kind = PA10LambdaCaptureKind::Identifier;
+				capture.spelling = tokens[cursor++].spelling;
+			}
+			else
+				return fail();
+			if (at_fixed(cursor, SimpleTokenType::OP_DOTS))
+			{
+				capture.pack = true;
+				++cursor;
+			}
+			parsed.captures.push_back(capture);
+			if (!at_fixed(cursor, SimpleTokenType::OP_COMMA))
+				break;
+			++cursor;
+			if (at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+				return fail();
+		}
+	}
+	if (!at_fixed(cursor, SimpleTokenType::OP_RSQUARE))
+		return fail();
+	++cursor;
+	publish();
+	return true;
 }
 
 bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens)
@@ -822,12 +1221,14 @@ bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens)
 std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
+	std::vector<unsigned char>& template_top_level_comma,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index,
 	std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind)
 {
 	template_close_index.assign(tokens.size(), tokens.size());
 	template_top_level_or.assign(tokens.size(), 0);
+	template_top_level_comma.assign(tokens.size(), 0);
 	rshift_piece1_nested_close.assign(tokens.size(), 0);
 	delimiter_close_index.assign(tokens.size(), tokens.size());
 	std::vector<std::vector<std::size_t> > angle_stacks(1);
@@ -901,6 +1302,10 @@ std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 		case SimpleTokenType::OP_LOR:
 			if (!angle_stacks.back().empty())
 				template_top_level_or[angle_stacks.back().back()] = 1;
+			break;
+		case SimpleTokenType::OP_COMMA:
+			if (!angle_stacks.back().empty())
+				template_top_level_comma[angle_stacks.back().back()] = 1;
 			break;
 		default:
 			break;
