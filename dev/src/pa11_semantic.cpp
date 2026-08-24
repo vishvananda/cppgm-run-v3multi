@@ -522,13 +522,137 @@ void PA11SemanticModel::process_namespace(const PA10AstNode& node, ScopeId paren
 	namespace_fact_index_.set(&node, namespace_fact_id);
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 		if (node.children[i].kind == PA10NodeKind::InlineMarker)
+		{
 			scopes_[namespace_id.value].inline_namespace = true;
+			const SourcePoint* existing =
+				inline_namespace_declaration_points_.find(namespace_id);
+			if (existing == NULL || !existing->valid() ||
+				(existing->value > declaration_point.value))
+				inline_namespace_declaration_points_.set(namespace_id,
+					declaration_point);
+		}
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 	{
 		if (node.children[i].kind == PA10NodeKind::InlineMarker)
 			continue;
 		process_declaration(node.children[i], namespace_id);
 	}
+}
+template<typename Relation>
+bool source_point_relation_visible(const std::vector<Relation>& entries,
+	NameId name, SourcePoint point)
+{
+	for (std::size_t i = 0; i < entries.size(); ++i)
+		if (entries[i].name == name)
+			return !entries[i].declaration_point.valid() ||
+				entries[i].declaration_point.value <= point.value;
+	return true;
+}
+bool namespace_source_point_applicable(const std::vector<Scope>& scopes,
+	ScopeId scope, SourcePoint point)
+{
+	return point.valid() && scope.valid() && scope.value < scopes.size() &&
+		scopes[scope.value].kind == ScopeKind::Namespace;
+}
+void PA11SemanticModel::record_namespace_alias(ScopeId scope, NameId name,
+	SourcePoint declaration_point)
+{
+	NamespaceAliasList* list = namespace_alias_declaration_points_.find(scope);
+	if (list == NULL)
+	{
+		namespace_alias_declaration_points_.set(scope, NamespaceAliasList());
+		list = namespace_alias_declaration_points_.find(scope);
+	}
+	for (std::size_t i = 0; i < list->entries.size(); ++i)
+		if (list->entries[i].name == name)
+			return;
+	list->entries.push_back(NamespaceAliasRelation(name, declaration_point));
+}
+bool PA11SemanticModel::namespace_alias_visible_at(ScopeId scope,
+	NameId name, SourcePoint point) const
+{
+	if (!namespace_source_point_applicable(scopes_, scope, point))
+		return true;
+	const NamespaceAliasList* list =
+		namespace_alias_declaration_points_.find(scope);
+	return list == NULL ? true : source_point_relation_visible(
+		list->entries, name, point);
+}
+void PA11SemanticModel::record_type_declaration(ScopeId scope, NameId name,
+	SourcePoint declaration_point, BindingId declaration)
+{
+	if (!namespace_source_point_applicable(scopes_, scope, declaration_point))
+		return;
+	TypeDeclarationList* list = type_declaration_points_.find(scope);
+	if (list == NULL)
+	{
+		type_declaration_points_.set(scope, TypeDeclarationList());
+		list = type_declaration_points_.find(scope);
+	}
+	for (std::size_t i = 0; i < list->entries.size(); ++i)
+	{
+		TypeDeclarationRelation& entry = list->entries[i];
+		if (entry.name == name)
+		{
+			const bool earlier = !entry.declaration_point.valid() ||
+				(declaration_point.valid() && declaration_point.value <
+					entry.declaration_point.value);
+			if (earlier)
+			{
+				entry.declaration_point = declaration_point;
+				if (declaration.valid())
+					entry.declaration = declaration;
+			}
+			else if (!entry.declaration.valid() && declaration.valid())
+				entry.declaration = declaration;
+			return;
+		}
+	}
+	list->entries.push_back(TypeDeclarationRelation(name, declaration_point,
+		declaration));
+}
+bool PA11SemanticModel::type_visible_at(ScopeId scope, NameId name,
+	SourcePoint point) const
+{
+	if (!namespace_source_point_applicable(scopes_, scope, point))
+		return true;
+	const TypeDeclarationList* list = type_declaration_points_.find(scope);
+	return list == NULL ? true : source_point_relation_visible(
+		list->entries, name, point);
+}
+BindingId PA11SemanticModel::type_declaration_identity(ScopeId scope,
+	NameId name) const
+{
+	const TypeDeclarationList* list = type_declaration_points_.find(scope);
+	if (list != NULL)
+		for (std::size_t i = 0; i < list->entries.size(); ++i)
+			if (list->entries[i].name == name &&
+				list->entries[i].declaration.valid())
+				return list->entries[i].declaration;
+	const TypeId* type = scopes_[scope.value].types.find(name);
+	if (type == NULL)
+		type = scopes_[scope.value].using_types.find(name);
+	if (type == NULL)
+		return BindingId();
+	const Scope& current = scopes_[scope.value];
+	for (std::size_t i = 0; i < current.bindings.size(); ++i)
+	{
+		const BindingId id = current.bindings[i];
+		const Binding& candidate = binding(id);
+		if (candidate.name == name && candidate.type == *type &&
+			(candidate.kind == BindingKind::Type ||
+				candidate.kind == BindingKind::TypeAlias))
+			return id;
+	}
+	return BindingId();
+}
+bool PA11SemanticModel::inline_namespace_visible_at(ScopeId scope,
+	SourcePoint point) const
+{
+	if (!namespace_source_point_applicable(scopes_, scope, point))
+		return true;
+	const SourcePoint* marker = inline_namespace_declaration_points_.find(scope);
+	return marker == NULL || !marker->valid() || marker->value <= point.value;
 }
 void PA11SemanticModel::process_namespace_alias(const PA10AstNode& node, ScopeId scope)
 {
@@ -547,6 +671,8 @@ void PA11SemanticModel::process_namespace_alias(const PA10AstNode& node, ScopeId
 	const ScopeId* old = current.namespace_aliases.find(name);
 	if (old != NULL && *old != target)
 		throw std::runtime_error("namespace alias redefinition");
+	if (old == NULL)
+		record_namespace_alias(scope, name, SourcePoint(node.source_begin));
 	current.namespace_aliases.set(name, target);
 }
 void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId scope)
@@ -570,7 +696,9 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	if (node.children.size() != 1)
 		throw std::runtime_error("invalid PA11 using declaration");
 	const NamePath target_name = name_path(node.children.front());
-	const TypeId type = lookup_type_path(target_name, scope);
+	BindingId origin;
+	const TypeId type = lookup_type_path(target_name, scope, SourcePoint(),
+		&origin);
 	const NameId introduced = target_name.last();
 	Scope& current = scopes_[scope.value];
 	if (current.types.find(introduced) != NULL ||
@@ -583,24 +711,13 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		current.types.set(introduced, type);
 		current.using_types.set(introduced, type);
 		BindingKind kind = BindingKind::TypeAlias;
-		if (target_name.components.size() > 1)
-		{
-			std::vector<NameId> prefix(target_name.components.begin(),
-				target_name.components.end() - 1);
-			const ScopeId owner = target_name.global ?
-				resolve_global_qualifier_scope(prefix) :
-				resolve_qualifier_scope(prefix, scope);
-			if (owner.valid())
-			{
-				const Scope& source = scopes_[owner.value];
-				for (std::size_t i = 0; i < source.bindings.size(); ++i)
-					if (binding(source.bindings[i]).name == introduced &&
-						binding(source.bindings[i]).type == type &&
-						binding(source.bindings[i]).kind == BindingKind::Type)
-						kind = BindingKind::Type;
-			}
-		}
-		store_binding(scope, Binding(kind, introduced, type));
+		if (origin.valid() && binding(origin).kind == BindingKind::Type)
+			kind = BindingKind::Type;
+		const BindingId introduced_binding = store_binding(scope,
+			Binding(kind, introduced, type));
+		record_type_declaration(scope, introduced,
+			SourcePoint(node.source_begin), origin.valid() ? origin :
+			introduced_binding);
 		return;
 	}
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope);

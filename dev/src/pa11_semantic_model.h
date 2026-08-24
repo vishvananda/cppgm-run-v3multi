@@ -230,6 +230,68 @@ struct EffectiveUsingDirective
 	{}
 };
 
+// Namespace aliases are rare declaration-point relations.  Keep their
+// source points in a sparse side index rather than enlarging every Scope or
+// replacing the canonical NameId -> ScopeId alias map.
+struct NamespaceAliasRelation
+{
+	NameId name;
+	SourcePoint declaration_point;
+
+	NamespaceAliasRelation(NameId name = NameId(),
+		SourcePoint declaration_point = SourcePoint())
+		: name(name), declaration_point(declaration_point)
+	{}
+};
+
+struct NamespaceAliasList
+{
+	std::vector<NamespaceAliasRelation> entries;
+};
+
+// Namespace-owned type declarations are formed before deferred function-body
+// semantics.  Retain their declaration points sparsely so a later typedef,
+// alias, class, enum, or using-declaration cannot enter an earlier lookup.
+struct TypeDeclarationRelation
+{
+	NameId name;
+	SourcePoint declaration_point;
+	BindingId declaration;
+
+	TypeDeclarationRelation(NameId name = NameId(),
+		SourcePoint declaration_point = SourcePoint(),
+		BindingId declaration = BindingId())
+		: name(name), declaration_point(declaration_point),
+		  declaration(declaration)
+	{}
+};
+
+struct TypeDeclarationList
+{
+	std::vector<TypeDeclarationRelation> entries;
+};
+
+// Lookup returns TypeId at the consumer boundary, but ambiguity is decided
+// by the canonical declaration identity when one is available.
+struct TypeLookupCandidate
+{
+	TypeId type;
+	BindingId declaration;
+
+	TypeLookupCandidate(TypeId type = TypeId(),
+		BindingId declaration = BindingId())
+		: type(type), declaration(declaration)
+	{}
+
+	bool operator==(const TypeLookupCandidate& other) const
+	{
+		if (declaration.valid() || other.declaration.valid())
+			return declaration.valid() && other.declaration.valid() &&
+				declaration == other.declaration;
+		return type == other.type;
+	}
+};
+
 enum class ScopeKind
 {
 	Namespace,
@@ -788,6 +850,12 @@ private:
 	std::vector<Scope> scopes_;
 	FlatIndex<ScopeId, ScopeId, IdentityHash<ScopeId> >
 		unnamed_namespace_index_;
+	FlatIndex<ScopeId, NamespaceAliasList, IdentityHash<ScopeId> >
+		namespace_alias_declaration_points_;
+	FlatIndex<ScopeId, TypeDeclarationList, IdentityHash<ScopeId> >
+		type_declaration_points_;
+	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
+		inline_namespace_declaration_points_;
 	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
 		scope_declaration_points_;
 	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
@@ -897,7 +965,26 @@ private:
 	;
 	ScopeId create_named_namespace(ScopeId parent, NameId name)
 	;
-	ScopeId lookup_namespace_here(ScopeId scope, NameId name) const
+	ScopeId lookup_namespace_here(ScopeId scope, NameId name,
+		SourcePoint point = SourcePoint()) const
+	;
+	void record_namespace_alias(ScopeId scope, NameId name,
+		SourcePoint declaration_point)
+	;
+	bool namespace_alias_visible_at(ScopeId scope, NameId name,
+		SourcePoint point) const
+	;
+	void record_type_declaration(ScopeId scope, NameId name,
+		SourcePoint declaration_point,
+		BindingId declaration = BindingId())
+	;
+	bool type_visible_at(ScopeId scope, NameId name,
+		SourcePoint point) const
+	;
+	BindingId type_declaration_identity(ScopeId scope, NameId name) const
+	;
+	bool inline_namespace_visible_at(ScopeId scope,
+		SourcePoint point) const
 	;
 	SourcePoint lookup_source_point(ScopeId start) const
 	;
@@ -928,13 +1015,14 @@ private:
 		SourcePoint point = SourcePoint()) const
 	;
 	TypeId lookup_type_graph(ScopeId start, NameId name,
-		bool include_using = true, SourcePoint point = SourcePoint()) const
+		bool include_using = true, SourcePoint point = SourcePoint(),
+		BindingId* declaration = NULL) const
 	;
 	TypeId lookup_type_unqualified(ScopeId start, NameId name,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), BindingId* declaration = NULL) const
 	;
 	TypeId lookup_type_qualified(ScopeId scope, NameId name,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), BindingId* declaration = NULL) const
 	;
 	bool lookup_value_graph(ScopeId start, NameId name,
 	std::vector<ValueRef>* result, bool include_using = true,
@@ -950,7 +1038,7 @@ private:
 		ScopeId start, SourcePoint point = SourcePoint()) const
 	;
 	TypeId lookup_type_path(const NamePath& path, ScopeId start,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), BindingId* declaration = NULL) const
 	;
 	ScopeId resolve_global_qualifier_scope(
 		const std::vector<NameId>& components,
@@ -993,7 +1081,8 @@ private:
 	TypeId create_anonymous_enum(ScopeId owner, bool scoped, bool has_underlying,
 	TypeId underlying, bool definition)
 	;
-	void finalize_anonymous_record(TypeId type, NameId name, ScopeId owner)
+	void finalize_anonymous_record(TypeId type, NameId name, ScopeId owner,
+		SourcePoint declaration_point = SourcePoint())
 	;
 	void inject_anonymous_union(TypeId type, ScopeId owner,
 		bool create_storage = false, const PA10AstNode* origin = NULL)
@@ -1037,9 +1126,10 @@ private:
 	TypeId decltype_type(const PA10AstNode& node, ScopeId scope)
 	;
 	void add_type_binding(ScopeId scope, NameId name, TypeId type, ClassTag tag,
-	bool has_tag)
+	bool has_tag, SourcePoint declaration_point = SourcePoint())
 	;
-	BindingId add_type_alias(ScopeId scope, NameId name, TypeId type)
+	BindingId add_type_alias(ScopeId scope, NameId name, TypeId type,
+		SourcePoint declaration_point = SourcePoint())
 	;
 	TypeId normalize_parameter_type(TypeId type)
 	;

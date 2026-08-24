@@ -2,27 +2,83 @@
 
 ## Current Checkpoint Review
 
-This final `checkpointAudit` reviews landed commit `e45d0795b61bc42bf9ff62d3592614ae05b43748` (`pa12: implement typed local record-object semantics`) relative to baseline `bf67e445`, plus one bounded declaration-formation repair in the same owner. The supplied clean baseline was PA12 `146/166` passing, exactly `20` failing, and `166/166` covered. The supplied post-landed result was `149/166` passing, exactly `17` failing, and `166/166` covered; the three active paths that became passing are the ordinary local anonymous-union object, standalone block anonymous-union storage/injected members, and elaborated local record copy-initialization tests. The fresh final broad gate is exit `2`, `149/166`, all `166/166` covered, with the exact same 17 paths: `0` current-only and `0` supplied-only.
+This `checkpointAudit` reviews landed commit `1a150235` (`pa12: implement
+namespace scope and lookup checkpoint`) and the bounded repairs made in its
+same PA11 owner. The complete path is one forward pipeline: PA10 source-node
+identity and source points feed the sole `PA11SemanticModel` owner of typed
+`NameId`, `TypeId`, `ScopeId`, `BindingId`, `ValueRef`, and `SourcePoint` facts;
+PA12 selects from those facts and the cold renderer prints them without
+reparsing or name-based lookup.
 
-The complete ownership path is one forward typed pipeline. `PPPreprocessingSession` and the phase-3 `PPTokenBuffer` feed `parse_pa10_ast`; each `PA10AstNode` retains structural identity, source token interval, child order, qualified-name components, and decoded literal facts. One `PA11SemanticModel` interns canonical `TypeId`, `NamedRecordId`, `ScopeId`, `BindingId`, and `NamePath` facts, then owns declaration formation, lookup, function types, and constant values. `spec_fact` creates anonymous records with generated kind/owner/source/ordinal identity; `process_class_body` forms the canonical member bindings in the record scope; `process_simple_declaration` forms object bindings and declaration ranges. The repair in that owner publishes an unqualified `NamedRecordId` type for ordinary cv-qualified anonymous record objects while preserving the qualified type for typedef aliases, so object cv remains on the object rather than poisoning the record-name lookup entry.
+Namespace formation preserves one stable unnamed-namespace `ScopeId` per
+enclosing namespace, one implicit typed using relation, and source-pointed
+values and relations across reopening. Function-definition scopes provide the
+single lookup point. Namespace scopes, values, using edges, effective
+common-ancestor edges, aliases, and inline children are filtered through the
+same generation-marked graph. Direct declarations hide nominated edges; cycles
+and repeated edges terminate through typed marks; qualified and global paths
+use the same ownership chain.
 
-Rare relations remain sparse and typed. `NamedRecordSidecar` is keyed by `NamedRecordId` for local-object naming, standalone backing storage, and synthetic constructor binding. `BindingSidecar` is keyed by `BindingId` for backing storage, generated record naming, and constructor ownership. `AnonymousUnionFact` is keyed directly by the originating PA10 class-specifier node and records the canonical record, owner scope, and storage binding. `inject_anonymous_union` creates one generated storage binding and injects member bindings with their backing-storage relation; subsequent PA12 use reads the existing typed relation directly rather than scanning or recovering a name. Ordinary named local anonymous-union objects use the record scope directly for dot/arrow access.
+The first repair added inline-child traversal for namespace paths and a sparse
+`ScopeId`-keyed alias declaration-point sidecar, preventing a later alias from
+leaking into an earlier body. This review found and repaired the corresponding
+namespace-owned type leak: typedefs, alias declarations, named class/enum
+declarations, anonymous named records, template-owned namespace types, and
+type using-declarations record sparse declaration points. `lookup_type_graph`
+filters both `Scope::types` and `Scope::using_types`, including qualified and
+global paths, without enlarging hot `Scope`, `Binding`, or `NamedRecord`.
 
-PA12 consumes those facts once. `semantic_declaration` follows the PA11 declaration binding range, performs target-directed copy-initialization, preserves the object cv, and records one constructor action for an ordinary local anonymous-union object. `semantic_member_expression` resolves the operand's canonical record/class scope, rejects non-record dot operands, non-pointer arrow operands, missing members, and function members, and applies the object's cv to the selected member type. Injected identifiers use their `BindingSidecar` storage relation. `ensure_anonymous_union_constructor` publishes one synthetic function binding and one `SyntheticFunctionFact` per record; storage IDs, address/call children, value categories, and member children are all typed IDs and arena ranges. The active elaborated-record path preserves `const struct S` and produces `const float` for member access. The cv-qualified anonymous-record pointer probe produces `pointer to const union __local_type1` and `const int` member facts without changing integral/constexpr behavior.
+The optional declaration identity now travels through qualified and unqualified
+type lookup and `lookup_type_path` into `process_using_declaration`. Formation
+therefore records the graph-resolved originating `BindingId` directly; it does
+not reconstruct identity by scanning only the immediate qualifier scope.
 
-The cold renderer walks semantic fact IDs, binding/type IDs, source-node provenance, and typed sidecars. It renders generated local type/storage/constructor names only at the requested output boundary; synthetic facts are emitted in stable vector order. No identity is rendered and reparsed, and no PA10 or PA11 semantic fact is duplicated in a second production model.
+The shared namespace/type graph now collects canonical candidates rather than
+returning traversal order. Distinct same-named namespace targets nominated by
+using directives or inline siblings are rejected by `ScopeId`; distinct
+same-named type declarations are rejected by their stable originating
+`BindingId`, even when their canonical `TypeId` is identical. Repeated
+nominations of one namespace scope or one originating type declaration are
+deduplicated, including repeated using paths and supported transitive and
+graph-exposed type-using declarations, while direct declarations retain hiding.
+Inline-namespace
+marker points are sparse as well, so reopening a namespace with a later
+`inline` marker cannot retroactively expose its earlier children to a preceding
+function body. Conflict checks, redeclarations, and the bounded call-shaped
+`decltype` arity/ambiguity behavior remain in their existing owners; no
+conversion, overload, or other residual family was broadened.
 
-The architecture review found no whole-arena scan, retry-until-stable loop, broad invalidation, timeout downgrade, test-specific answer, host/reference-compiler call, or parallel semantic owner. `FlatIndex` lookup and vector-owned fact ranges are bounded by the participating scope/record/statement; the repair adds no hot-record field or per-node allocation. `sizeof(Binding)` and `sizeof(NamedRecord)` remain the recorded `80` and `120` bytes, and the rare sidecar values remain 24 bytes each. No unsupported asymptotic or scaling claim is made.
+The ownership review found no second semantic owner, host/reference compiler
+call, timeout shortcut, whole-program retry, broad invalidation, rendered-name
+lookup, or nondeterministic hash iteration. The final layout is `Binding 80`,
+`NamedRecord 120`, `Scope 440`, `ValueEntry 24`,
+`UsingDirectiveRelation 16`, `EffectiveUsingDirective 24`,
+`NamespaceAliasRelation 16`, `NamespaceAliasList 24`,
+`TypeDeclarationRelation 24`, `TypeDeclarationList 24`, and `SourcePoint 8`
+bytes. The new relation/point sidecars are sparse; the lookup core remains
+within the file-audit limit at `3000` lines after keeping sidecar ownership in
+the PA11 formation `.cpp`.
 
-Focused validation after the bounded repair was:
+Focused evidence is `make -C pa12 -j2` exit `0`, the six checkpoint tests plus
+thirteen nearby PA12 controls `19/19`, twelve PA11 namespace/using controls
+`12/12`, nine late-type declaration-point probes with the required rejection,
+distinct same-`TypeId` declaration ambiguity, same-origin repeated-path,
+transitive, and graph-exposed type-using deduplication, direct hiding, and
+namespace/inline ambiguity probes with expected statuses, and late-versus-
+early inline-marker probes `1/0`. Four checked-in namespace shapes were
+compiled twice with `cmp` exit `0` and retained one stable SHA-256 each:
+`b188ba30a9e560d9d28c472b05dfeea38c849f33237ae9a8de12a8882067f293`,
+`51b3d86bc87e2e3d69bad287c38c23d89f0f90cc1dd0e089ac9e975c3ed2d968`,
+`e96947e6b28aea4012231d6869db1cd40709749cb694cb42838081ee309e34a9`, and
+`bb94887ce1da0d9b5cf4eea0c406e24618f3276b6bc326282e56916c5ee6b3e`.
 
-```sh
-make -C pa12 -j2
-make -C pa12 check TEST='tests/general/200-local-anonymous-union-variable.t tests/general/300-block-anonymous-union-injected-members.t tests/general/300-elaborated-local-struct-copy-init.t tests/general/300-most-vexing-local-function-member-call-bad.t tests/general/200-bad-noncallable-variable.t tests/spec/100-simple-call.t tests/spec/100-local-arith.t tests/general/100-cast-to-void-expression.t tests/general/200-constexpr-complete-object-cv.t tests/general/300-pointer-plus-anonymous-enum.t tests/spec/100-integral-conversions.t tests/general/100-builtin-prefix-user-function-call.t'
-make -C pa11 check TEST='tests/spec/200-namespace-anonymous-union-injected-members.t'
-```
-
-The build passed; the exact focused PA12 set passed `12/12`, the PA11 anonymous-union control passed `1/1`, and the additional structural probes returned the expected statuses: ordinary object, block storage, elaborated const record, cv-qualified anonymous-record pointer, and named const-member paths `0`; non-record dot, non-pointer arrow, missing member, and member-function access `1`. Five interleaved rounds on immutable executable `/tmp/pa12-record-checkpoint.PJtyG8/cppgm++-immutable` (mode `555`) produced one output hash per shape: local object `1cae118288362f66d28a2f4862c14a5175630289669d9e67492bb7fe2b01b639` (27 lines, 2 members, 1 constructor), block storage `b9801b8e58907189f3562058b2186343513bc2468629848a9ac6ea37e687794b` (26 lines, 2 members, 1 constructor), and elaborated record `d5e2807e90812a10fba4e675e93de4f4ee8f291c510c42273ca1aebb24ddaae1` (17 lines, 1 member, no constructor). Median timed runs were `0.00/0.00/0.00` wall/user/system seconds with peak RSS `4360/4376/4384 KiB`; timer resolution makes these tiny-input values structural only, not a scaling claim. Final gates were `make test-pa12` exit `2` with `149/166`, the exact through-PA11 command exit `0` with `685/685`, and the exact file audit exit `0` with the two known header-division warnings. The final commit contains only the bounded source repair and these records, and the tree is clean.
+Final broad evidence is PA12 `155/166` with exit `2`, all `166/166` paths
+covered, and an exact normalized comparison to the supplied eleven residual
+paths (`0` current-only and `0` supplied-only); through-PA11 is `685/685`.
+The required file audit passes with exactly the two existing header-division
+warnings. The exact eleven residual paths remain excluded as separate
+decltype functional-cast, local-extern, member-pointer, reference-binding,
+scoped-enum-cast, and static-cast families.
 
 ## Prior checkpoint context
 
@@ -39,3 +95,4 @@ The preceding audit row at `eee242c6` established the shared PA12 semantic-fact 
 | 2026-08-24 PA12 `checkpointAudit` at `47a64a66` | Re-audited the scalar/conversion increment end to end. Preserved the array-conditional decay and source-owned conversion facts; repaired object-only pointer-to-cv-void conversion, complete same-object-type subtraction, and the limited `const T*`/`volatile T*` conditional composite; added the contiguous conversion-range guard. Confirmed enum promotion/common arithmetic, reference-preserving assignment, declaration-shaped assignment ambiguity, single-argument selection, anonymous-enum identity, block-enum publication, deterministic child order, and cold typed rendering. | Fresh post-repair build; exact active family 20/20; exact nine controls 9/9; five neighboring controls 5/5; object/function/void/subtraction/composite `/tmp` probes matched expected exits; retained pre-supervisor immutable structural probes were 0/0 with byte-identical outputs and 8/8/7 versus 64/64/63 counters; prior performance and progress evidence preserved. Fresh broad PA12 142/166, exactly 24 paths, all 166 covered; normalized supplied/fresh 24/24 with 0-only on either side; through-PA11 685/685; file audit passed with exactly two known warnings. | The exact 24 residual paths and excluded builtin, declaration/anonymous-union, member-pointer/cast/reference-binding, lookup/namespace, and scoped-enum functional-cast/control families remain outside scope. The composite helper is intentionally limited to same unqualified pointee identity with direct cv union; no general nested composite-pointer completeness is claimed. No timing/RSS/scaling claim is made. | Fresh `make -C pa12 -j2`; exact 20-path, nine-control, and five-neighbor checks; bounded valid/invalid probes; exact `make test-pa12`; supplied-log normalization against `/tmp/pa12-final-test.log`; exact prior-through command; exact file audit; `git diff --check`; final changed-path audit. |
 | 2026-08-24 PA12 `checkpointAudit` at `f8b8c49b` with final bounded repair | Landed intrinsic ownership was traced from exact builtin spelling through PA11 model identity, constexpr declaration facts, and safe integral folding to PA12 call/literal/conversion facts and cold rendering. Repaired typed-zero propagation into conversion ranking, narrowed fold suppression to `NonConstantExpression`, added four-vector `SemanticTailGuard` rollback, and bounded multiply/shift/signed-divide folding. | Fresh final PA12 `146/166`, exactly 20 failures, all `166/166` covered; normalized against the supplied post-landed log with `0` current-only and `0` supplied-only paths; focused active `4/4`, controls `13/13`, evaluator/typed-zero/invalid probes passed their expected statuses; through-PA11 `685/685`; file audit passed with exactly two known header warnings. | Exact 20 residual paths remain excluded; qualified/global/parenthesized builtin source-shape variants and nonintegral query semantics beyond the required fold set are not broadened. Retained structural measurements are landed/historical only and do not prove repaired behavior. PA12 is not complete. | Fresh `make test-pa12` (exit 2), exact prior-through command, exact file audit (exit 0), focused commands and `/tmp/pa12-checkpoint-final-test.log`; `git diff --check` and exact five-path status audit pass before the single authorized commit. |
 | 2026-08-24 PA12 `checkpointAudit` at `e45d0795` with bounded cv repair | Traced PA10 source/node identity through PA11 canonical record/scope/binding formation, sparse storage/member/constructor sidecars, PA12 construction/member/copy facts, and cold deterministic rendering. Repaired ordinary cv-qualified anonymous record objects by publishing the unqualified `NamedRecordId` type for the record name while preserving typedef alias qualification; confirmed cv propagation, invalid member rejection, generated identities, and no integral/constexpr poisoning. | Fresh final PA12 `149/166`, exactly 17 failures, all `166/166`; normalized against the supplied post-landed set with `0` current-only and `0` supplied-only paths. Fresh build and focused PA12 controls passed `12/12`; PA11 anonymous-union control passed `1/1`; cv, reuse, invalid-operand/member, and constexpr probes had expected exits; five interleaved immutable rounds produced one hash per representative shape and median peak RSS `4360/4376/4384 KiB` with timer-resolution-limited `0.00` wall/user/system values. Through-PA11 passed `685/685`; file audit passed with exactly two known header-division warnings. | The exact 17 residual paths remain outside this checkpoint: local extern/parser, member-pointer/cast/reference, and namespace/lookup families. No broad timing or asymptotic claim is made; the two file-audit warnings are retained known findings. | `make test-pa12` exit `2`; exact through-PA11 command exit `0`; exact file audit exit `0`; `make -C pa12 -j2`; exact 12-test PA12 check; exact PA11 control check; bounded valid/invalid `/dev/fd` probes; immutable five-round structural/determinism probe at `/tmp/pa12-record-checkpoint.PJtyG8`; `git diff --check`; exact changed-path audit; one final commit containing only `dev/src/pa11_semantic_core.cpp`, `pa12/audit.md`, and `pa12/plan.md`, followed by clean `git status --short`. |
+| 2026-08-24 PA12 `checkpointAudit` at `1a150235` with bounded namespace/type audit | Traced PA10 source identities and points through the sole PA11 namespace/type/binding/lookup owner into PA12 selection and cold rendering. Preserved stable unnamed-namespace reopening and implicit visibility; retained direct-vs-using hiding, source-order value/relation filtering, conflict and redeclaration ownership, cycle marks, and bounded call-shaped `decltype`. Repaired namespace aliases with sparse declaration points, inline-child traversal, namespace-owned type declaration-point filtering for `types`/`using_types`, stable originating `BindingId` candidate identity (rather than `TypeId`) for ambiguity/deduplication, optional identity propagation through qualified/unqualified `lookup_type_path` into type-using formation, including transitive and graph-exposed chains, and later-inline-marker source-order leakage. The new type and inline facts are sparse and the hot `Scope`, `Binding`, and `NamedRecord` layouts are unchanged; the sidecar helpers remain in the PA11 formation `.cpp` and the lookup core is 3000 lines. | Final PA12 `155/166`, exactly 11 failures, all `166/166` paths covered; normalized supplied/final failure sets match with `0` current-only and `0` supplied-only; focused PA12 `19/19`; focused PA11 `12/12`; nine late-type probes rejected; distinct same-`TypeId` declarations were ambiguous, repeated same-origin paths, transitive chains, and graph-exposed type-using imports deduplicated, direct hiding passed, distinct inline siblings were ambiguous, and late/early inline-marker probes had expected exits; four repeated namespace-shape dumps had `cmp` exit `0` with one hash each; layout was `Binding 80`, `NamedRecord 120`, `Scope 440`, `NamespaceAliasRelation/List 16/24`, `TypeDeclarationRelation/List 24/24`, and `SourcePoint 8`; through-PA11 `685/685`; file audit passed with exactly two known warnings. | The exact eleven residual paths remain outside this checkpoint: decltype functional-cast, local-extern, member-pointer, reference-binding, scoped-enum-cast, and static-cast families. No broad conversion/overload semantics, timing/scaling claim, or new test/reference/harness/grammar/script change is claimed; the two header-division warnings remain known findings. | Final `make test-pa12` (exit `2`); exact residual normalization and 166-path count; exact through-PA11 command; `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` (pass, 2 warnings); focused PA12/PA11 checks and bounded `/dev/fd` probes; deterministic `cmp`/SHA-256 and layout probes; `git diff --check`; exact five-path audit; amended existing checkpoint commit followed by clean `git status --short`. |
