@@ -1924,7 +1924,9 @@ PA10AstNode PA10Parser::parse_unary_expression_base()
 		(fixed(SimpleTokenType::OP_COLON2) &&
 		 fixed(SimpleTokenType::KW_NEW, 1)))
 		return parse_new_expression();
-	if (fixed(SimpleTokenType::KW_DELETE))
+	if (fixed(SimpleTokenType::KW_DELETE) ||
+		(fixed(SimpleTokenType::OP_COLON2) &&
+			fixed(SimpleTokenType::KW_DELETE, 1)))
 		return parse_delete_expression();
 	return parse_postfix_expression();
 }
@@ -2015,8 +2017,10 @@ PA10AstNode PA10Parser::parse_new_expression()
 }
 PA10AstNode PA10Parser::parse_delete_expression()
 {
-	consume_fixed(SimpleTokenType::KW_DELETE);
 	PA10AstNode result = node(PA10NodeKind::DeleteExpression);
+	if (fixed(SimpleTokenType::OP_COLON2))
+		result.children.push_back(fixed_node(PA10NodeKind::GlobalScope));
+	consume_fixed(SimpleTokenType::KW_DELETE);
 	if (fixed(SimpleTokenType::OP_LSQUARE))
 	{
 		consume_fixed(SimpleTokenType::OP_LSQUARE);
