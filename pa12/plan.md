@@ -88,7 +88,7 @@ formal complexity proof.
 | File audit | `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` | exit `0`; two existing header-division warnings only |
 | Full PA12 | `make test-pa12`, all `166/166` covered | `160/166` pass; exact six residuals are cases 1, 2, 7, 8, 10, 11 |
 | Through PA11 | required `n=12` / `make test-report-through-pa11` command | `685/685` passed |
-| Source integrity | `git diff --check` | clean before commit; final clean-tree check pending commit |
+| Source integrity | commit `4f890322`; post-commit `git status --short` empty; `git diff --check` clean | verified |
 
 ## Remaining Scope
 
