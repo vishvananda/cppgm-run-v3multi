@@ -863,7 +863,9 @@ const PA10AstNode* PA11SemanticModel::target_function_id(
 			return NULL;
 		return target_function_id(node.children.front(), scope);
 	}
-	if (node.kind != PA10NodeKind::IdExpression)
+	if (node.kind != PA10NodeKind::IdExpression &&
+		!(node.kind == PA10NodeKind::DeclSpecifier &&
+			node.identifier_declspecifier))
 		return NULL;
 	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
 	if (values.size() <= 1)
@@ -880,7 +882,9 @@ const PA10AstNode* PA11SemanticModel::target_function_id(
 FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
 	const PA10AstNode& node, ScopeId scope, TypeId target)
 {
-	if (node.kind != PA10NodeKind::IdExpression)
+	if (node.kind != PA10NodeKind::IdExpression &&
+		!(node.kind == PA10NodeKind::DeclSpecifier &&
+			node.identifier_declspecifier))
 		return FunctionIdResolution();
 	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
 	ValueRef selected;
@@ -935,7 +939,12 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 {
 	const PA10AstNode* function_id = target_function_id(node, scope);
 	if (function_id == NULL)
+	{
+		if (node.kind == PA10NodeKind::DeclSpecifier &&
+			node.identifier_declspecifier)
+			return semantic_id_expression(node, scope);
 		return semantic_expression(node, scope);
+	}
 	const FunctionIdResolution resolution = resolve_function_id_target(
 		*function_id, scope, target);
 	if (!resolution.valid)
@@ -1650,6 +1659,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		SemanticFact fact(SemanticFactKind::Variable, value.type,
 			SemanticValueCategory::Prvalue, &node);
 		fact.binding = binding_id;
+		fact.selected_scope = declaration->scope;
 		const SemanticFactId variable = make_semantic_fact(fact);
 		const PA10AstNode& initializer = node.children[2];
 		if ((initializer.kind != PA10NodeKind::Initializer &&
@@ -1683,8 +1693,19 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		SemanticFact fact(SemanticFactKind::Variable, value.type,
 			SemanticValueCategory::Prvalue, &init);
 		fact.binding = binding_id;
+		fact.selected_scope = declaration->scope;
 		SemanticFactId variable = make_semantic_fact(fact);
-		if (init.children.size() > 1)
+		const PA10AstNode* direct_operand = NULL;
+		if (direct_initializer_operand(init, declaration->scope, &direct_operand))
+		{
+			const ExprInfo expression = semantic_expression_for_target(
+				*direct_operand, declaration->scope, value.type);
+			apply_context_conversion(expression, value.type,
+				semantic_facts_[expression.fact.value].source);
+			set_semantic_children(variable,
+				std::vector<SemanticFactId>(1, expression.fact));
+		}
+		else if (init.children.size() > 1)
 		{
 			const PA10AstNode& initializer = init.children[1];
 			if (initializer.kind != PA10NodeKind::Initializer &&
@@ -2019,14 +2040,29 @@ SemanticFactId PA11SemanticModel::semantic_jump_statement(
 		std::vector<SemanticFactId>());
 }
 
-SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
-	ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
-	unsigned int switch_depth, SwitchValidationContext* switch_context)
+SemanticFactId PA11SemanticModel::semantic_declaration_statement(
+	const PA10AstNode& node, ScopeId scope)
 {
 	switch (node.kind)
 	{
-	case PA10NodeKind::EmptyDeclaration:
+	case PA10NodeKind::NamespaceAliasDefinition:
+	case PA10NodeKind::UsingDirective:
+	case PA10NodeKind::UsingDeclaration:
+		// Lookup-only declarations have no PA12 statement line.
 		return SemanticFactId();
+	case PA10NodeKind::AliasDeclaration:
+	{
+		const DeclarationFact* declaration = declaration_fact(node);
+		if (declaration == NULL || declaration->binding_count != 1)
+			throw std::runtime_error("PA12 alias declaration fact is missing");
+		const BindingId binding_id = declaration_bindings_[
+			declaration->binding_begin];
+		const Binding& value = binding(binding_id);
+		SemanticFact fact(SemanticFactKind::TypeAlias, value.type,
+			SemanticValueCategory::Prvalue, &node);
+		fact.binding = binding_id;
+		return make_semantic_fact(fact);
+	}
 	case PA10NodeKind::SimpleDeclaration:
 	{
 		const DeclarationFact* declaration = declaration_fact(node);
@@ -2040,6 +2076,24 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 		return make_expression_fact(SemanticFactKind::SimpleDeclaration,
 			TypeId(), SemanticValueCategory::Prvalue, node, variables);
 	}
+	default:
+		throw std::runtime_error("PA12 unsupported declaration statement");
+	}
+}
+SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
+	ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
+	unsigned int switch_depth, SwitchValidationContext* switch_context)
+{
+	switch (node.kind)
+	{
+	case PA10NodeKind::EmptyDeclaration:
+		return SemanticFactId();
+	case PA10NodeKind::AliasDeclaration:
+	case PA10NodeKind::NamespaceAliasDefinition:
+	case PA10NodeKind::UsingDirective:
+	case PA10NodeKind::UsingDeclaration:
+	case PA10NodeKind::SimpleDeclaration:
+		return semantic_declaration_statement(node, scope);
 	case PA10NodeKind::ReturnStatement:
 	{
 		const Binding& function_binding = binding(function.binding);
@@ -2364,10 +2418,21 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 			output << "function-declaration ";
 		else
 			output << "variable ";
-		output << name_text(value.name) << ' ' << render_binding_type(value) << '\n';
+		if (value.kind == BindingKind::Function && fact.selected_scope.valid())
+			output << qualified_binding_name(fact.selected_scope, value.name);
+		else
+			output << name_text(value.name);
+		output << ' ' << render_binding_type(value) << '\n';
 		for (std::size_t i = 0; i < fact.child_count; ++i)
 			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
 				depth + 1);
+		return;
+	}
+	case SemanticFactKind::TypeAlias:
+	{
+		const Binding& value = binding(fact.binding);
+		output << "type-alias " << name_text(value.name) << ' ' <<
+			render_binding_type(value) << '\n';
 		return;
 	}
 	case SemanticFactKind::SimpleDeclaration:

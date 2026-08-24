@@ -9,7 +9,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	  scopes_(), bindings_(), global_(), deferred_scopes_(),
 	  dump_binding_views_(), dump_scope_views_(),
 	  anonymous_union_count_(0), creation_order_(0), lookup_marks_(),
-	lookup_generation_(0), lookup_frames_(), declaration_facts_(),
+	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
+	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
 	function_fact_index_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
@@ -164,8 +165,10 @@ ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId n
 	bool inline_namespace , bool attach )
 {
 	const ScopeId result(scopes_.size());
+	const std::size_t depth = parent.valid() ?
+		scopes_[parent.value].depth + 1 : 0;
 	scopes_.push_back(Scope(kind, parent, name, record,
-		inline_namespace, creation_order_++));
+		inline_namespace, creation_order_++, depth));
 	if (parent.valid() && attach)
 		scopes_[parent.value].children.push_back(result);
 	if (parent.valid() && !attach)
@@ -288,7 +291,7 @@ ScopeId PA11SemanticModel::scope_for_type(TypeId type) const
 bool PA11SemanticModel::direct_value_exists(ScopeId scope, NameId name) const
 {
 	const ValueList* found = scopes_[scope.value].values.find(name);
-	return found != NULL && !found->bindings.empty();
+	return found != NULL && !found->entries.empty();
 }
 bool PA11SemanticModel::direct_namespace_exists(ScopeId scope, NameId name) const
 {
@@ -343,12 +346,62 @@ bool PA11SemanticModel::mark_lookup_scope(ScopeId scope) const
 	lookup_marks_[scope.value] = lookup_generation_;
 	return true;
 }
+void PA11SemanticModel::prepare_unqualified_lookup(ScopeId start) const
+{
+	if (lexical_marks_.size() < scopes_.size())
+		lexical_marks_.resize(scopes_.size(), 0);
+	++lexical_generation_;
+	if (lexical_generation_ == 0)
+	{
+		std::fill(lexical_marks_.begin(), lexical_marks_.end(), 0);
+		lexical_generation_ = 1;
+	}
+	for (ScopeId scope = start; scope.valid();
+		scope = scopes_[scope.value].parent)
+		lexical_marks_[scope.value] = lexical_generation_;
+}
+bool PA11SemanticModel::lexical_scope_is_applicable(ScopeId scope) const
+{
+	return scope.valid() && scope.value < lexical_marks_.size() &&
+		lexical_marks_[scope.value] == lexical_generation_;
+}
+ScopeId PA11SemanticModel::common_ancestor(ScopeId left, ScopeId right) const
+{
+	if (!left.valid() || !right.valid())
+		return ScopeId();
+	while (scopes_[left.value].depth > scopes_[right.value].depth)
+		left = scopes_[left.value].parent;
+	while (scopes_[right.value].depth > scopes_[left.value].depth)
+		right = scopes_[right.value].parent;
+	while (left != right)
+	{
+		left = scopes_[left.value].parent;
+		right = scopes_[right.value].parent;
+	}
+	return left;
+}
+void PA11SemanticModel::append_effective_using_targets(ScopeId level,
+	std::vector<ScopeId>* targets) const
+{
+	const Scope& current = scopes_[level.value];
+	for (std::size_t i = current.effective_using_directives.size(); i != 0; --i)
+	{
+		const EffectiveUsingDirective& directive =
+			current.effective_using_directives[i - 1];
+		if (!lexical_scope_is_applicable(directive.lexical_scope))
+			continue;
+		// Repeated target edges are harmless: the graph generation mark
+		// suppresses a second traversal without a per-level deduplication scan.
+		targets->push_back(directive.target);
+	}
+}
 void PA11SemanticModel::reset_lookup_frames(LookupGraphKind kind, ScopeId start) const
 {
 	lookup_frames_.clear();
 	lookup_frames_.push_back(LookupFrame(kind, start));
 }
-ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name) const
+ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name,
+	bool include_using) const
 {
 	reset_lookup_frames(LookupGraphKind::Namespace, start);
 	while (!lookup_frames_.empty())
@@ -365,7 +418,8 @@ ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name) co
 			const ScopeId direct = lookup_namespace_here(frame.scope, name);
 			if (direct.valid())
 				return direct;
-			frame.next_using = scopes_[frame.scope.value].using_directives.size();
+			frame.next_using = include_using ?
+				scopes_[frame.scope.value].using_directives.size() : 0;
 		}
 		if (frame.next_using != 0)
 		{
@@ -381,20 +435,31 @@ ScopeId PA11SemanticModel::lookup_namespace_graph(ScopeId start, NameId name) co
 }
 ScopeId PA11SemanticModel::lookup_namespace_unqualified(ScopeId start, NameId name) const
 {
+	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
 	while (scope.valid())
 	{
 		begin_lookup();
-		const ScopeId found = lookup_namespace_graph(scope, name);
-		if (found.valid())
-			return found;
+		const ScopeId direct = lookup_namespace_graph(scope, name, false);
+		if (direct.valid())
+			return direct;
+		std::vector<ScopeId> targets;
+		append_effective_using_targets(scope, &targets);
+		ScopeId found;
+		for (std::size_t i = 0; i < targets.size(); ++i)
+		{
+			found = lookup_namespace_graph(targets[i], name);
+			if (found.valid())
+				return found;
+		}
 		if (scope == global_)
 			break;
 		scope = scopes_[scope.value].parent;
 	}
 	return ScopeId();
 }
-TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name) const
+TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name,
+	bool include_using) const
 {
 	reset_lookup_frames(LookupGraphKind::Type, start);
 	while (!lookup_frames_.empty())
@@ -415,7 +480,7 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name) const
 			found = current.using_types.find(name);
 			if (found != NULL)
 				return *found;
-			frame.next_using = current.using_directives.size();
+			frame.next_using = include_using ? current.using_directives.size() : 0;
 			frame.next_inline_child = current.children.size();
 		}
 		if (frame.next_using != 0)
@@ -446,13 +511,23 @@ TypeId PA11SemanticModel::lookup_type_graph(ScopeId start, NameId name) const
 }
 TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name) const
 {
+	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
 	while (scope.valid())
 	{
 		begin_lookup();
-		const TypeId found = lookup_type_graph(scope, name);
-		if (found.valid())
-			return found;
+		const TypeId direct = lookup_type_graph(scope, name, false);
+		if (direct.valid())
+			return direct;
+		std::vector<ScopeId> targets;
+		append_effective_using_targets(scope, &targets);
+		TypeId found;
+		for (std::size_t i = 0; i < targets.size(); ++i)
+		{
+			found = lookup_type_graph(targets[i], name);
+			if (found.valid())
+				return found;
+		}
 		if (scope == global_)
 			break;
 		scope = scopes_[scope.value].parent;
@@ -465,7 +540,7 @@ TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name) cons
 	return lookup_type_graph(scope, name);
 }
 bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
-	std::vector<ValueRef>* result) const
+	std::vector<ValueRef>* result, bool include_using) const
 {
 	reset_lookup_frames(LookupGraphKind::Value, start);
 	while (!lookup_frames_.empty())
@@ -483,11 +558,12 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 			const ValueList* found = current.values.find(name);
 			if (found != NULL)
 			{
-				for (std::size_t i = 0; i < found->bindings.size(); ++i)
-					result->push_back(ValueRef(frame.scope, found->bindings[i]));
+				for (std::size_t i = 0; i < found->entries.size(); ++i)
+					result->push_back(ValueRef(found->entries[i].origin,
+						found->entries[i].binding));
 				return true;
 			}
-			frame.next_using = current.using_directives.size();
+			frame.next_using = include_using ? current.using_directives.size() : 0;
 			frame.next_inline_child = current.children.size();
 		}
 		if (frame.next_using != 0)
@@ -518,12 +594,23 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 }
 std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(ScopeId start, NameId name) const
 {
+	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
 	while (scope.valid())
 	{
 		begin_lookup();
 		std::vector<ValueRef> found;
-		if (lookup_value_graph(scope, name, &found))
+		const bool have_direct = lookup_value_graph(scope, name, &found, false);
+		std::vector<ScopeId> targets;
+		append_effective_using_targets(scope, &targets);
+		for (std::size_t i = 0; i < targets.size(); ++i)
+		{
+			std::vector<ValueRef> nominated;
+			if (!lookup_value_graph(targets[i], name, &nominated))
+				continue;
+			found.insert(found.end(), nominated.begin(), nominated.end());
+		}
+		if (have_direct || !found.empty())
 			return found;
 		if (scope == global_)
 			break;
@@ -680,7 +767,8 @@ Binding& PA11SemanticModel::binding(BindingId id)
 	return const_cast<Binding&>(
 		static_cast<const PA11SemanticModel*>(this)->binding(id));
 }
-void PA11SemanticModel::append_value_index(ScopeId scope, NameId name, BindingId id)
+void PA11SemanticModel::append_value_index(ScopeId scope, NameId name,
+	BindingId id, ScopeId origin)
 {
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> >& index =
 		scopes_[scope.value].values;
@@ -690,7 +778,7 @@ void PA11SemanticModel::append_value_index(ScopeId scope, NameId name, BindingId
 		index.set(name, ValueList());
 		list = index.find(name);
 	}
-	list->bindings.push_back(id);
+	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope));
 }
 TypeId PA11SemanticModel::ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -1427,9 +1515,9 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	const ValueList* existing_values = current.values.find(name);
 	if (existing_values != NULL)
 	{
-		for (std::size_t i = 0; i < existing_values->bindings.size(); ++i)
+		for (std::size_t i = 0; i < existing_values->entries.size(); ++i)
 		{
-			const BindingId existing_id = existing_values->bindings[i];
+			const BindingId existing_id = existing_values->entries[i].binding;
 			const Binding& existing = binding(existing_id);
 			if (!function || existing.kind != BindingKind::Function)
 				throw std::runtime_error("incompatible value redeclaration");
@@ -1955,6 +2043,41 @@ bool PA11SemanticModel::ambiguous_call_statement(const PA10AstNode& node, ScopeI
 		*argument = &inner.children.front();
 	return true;
 }
+bool PA11SemanticModel::direct_initializer_operand(const PA10AstNode& node,
+	ScopeId scope, const PA10AstNode** operand)
+{
+	if (node.kind != PA10NodeKind::InitDeclarator || node.children.size() != 1)
+		return false;
+	const PA10AstNode& declarator = node.children.front();
+	if (declarator.kind != PA10NodeKind::Declarator ||
+		declarator.children.size() != 2 ||
+		declarator.children[0].kind != PA10NodeKind::Identifier ||
+		declarator.children[1].kind != PA10NodeKind::ParameterClause)
+		return false;
+	const PA10AstNode& clause = declarator.children[1];
+	if (clause.children.size() != 1 ||
+		clause.children.front().kind != PA10NodeKind::ParameterDeclaration)
+		return false;
+	const PA10AstNode& parameter = clause.children.front();
+	if (parameter.children.size() != 1 ||
+		parameter.children.front().kind != PA10NodeKind::DeclSpecifierSeq)
+		return false;
+	const PA10AstNode& spec = parameter.children.front();
+	if (spec.children.size() != 1 ||
+		spec.children.front().kind != PA10NodeKind::DeclSpecifier)
+		return false;
+	const PA10AstNode& name_node = spec.children.front();
+	if (!name_node.identifier_declspecifier || name_node.has_token ||
+		name_node.name_parts.empty())
+		return false;
+	const NamePath name = name_path(name_node);
+	if (lookup_type_path(name, scope).valid() ||
+		lookup_value_path(name, scope).empty())
+		return false;
+	if (operand != NULL)
+		*operand = &name_node;
+	return true;
+}
 const PA10AstNode* PA11SemanticModel::top_parameter_clause(const PA10AstNode& node) const
 {
 	std::size_t direct = node.children.size();
@@ -2009,7 +2132,9 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			throw std::runtime_error("unresolved PA11 declaration scope");
 		if (spec.anonymous_record.valid())
 			finalize_anonymous_record(spec.base, name.path.last(), target);
-		TypeId type = apply_declarator(declarator, spec.base, target);
+		const bool direct_initializer = direct_initializer_operand(init, target, NULL);
+		TypeId type = direct_initializer ? spec.base :
+			apply_declarator(declarator, spec.base, target);
 		if (spec.is_constexpr && type_kind(type) != TypeKind::Function)
 			type = make_cv(type, 1u);
 		BindingId binding_id;
@@ -2102,7 +2227,13 @@ ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, S
 		switch (child.kind)
 		{
 		case PA10NodeKind::SimpleDeclaration:
-			process_simple_declaration(child, block);
+		case PA10NodeKind::AliasDeclaration:
+		case PA10NodeKind::NamespaceAliasDefinition:
+		case PA10NodeKind::UsingDirective:
+		case PA10NodeKind::UsingDeclaration:
+			// Block declarations are formed once, in source order, before
+			// PA12 traverses their statement facts.
+			process_declaration(child, block);
 			break;
 		case PA10NodeKind::CompoundStatement:
 			process_compound_statement(child, block);
@@ -2163,7 +2294,12 @@ void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId
 	const ScopeId target = resolve_namespace_path(name_path(node.children.front()), scope);
 	if (!target.valid())
 		throw std::runtime_error("using directive target is not a namespace");
+	const ScopeId effective = common_ancestor(scope, target);
+	if (!effective.valid())
+		throw std::runtime_error("using directive has no common ancestor");
 	scopes_[scope.value].using_directives.push_back(target);
+	scopes_[effective.value].effective_using_directives.push_back(
+		EffectiveUsingDirective(target, scope));
 }
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
 {
@@ -2207,11 +2343,10 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		throw std::runtime_error("using declaration target is not a binding");
 	for (std::size_t i = 0; i < values.size(); ++i)
 	{
-		const Binding& source = binding(values[i].binding);
-		Binding imported = source;
-		imported.name = introduced;
-		const BindingId binding_id = store_binding(scope, imported);
-		append_value_index(scope, introduced, binding_id);
+		append_value_index(scope, introduced, values[i].binding, values[i].scope);
+		// Keep the PA11 dump's imported binding view without creating a second
+		// semantic declaration.  PA12 lookup consumers retain values[i].scope.
+		add_dump_binding_view(scope, values[i].binding);
 	}
 }
 NameId PA11SemanticModel::template_parameter_name(const PA10AstNode& node)
@@ -2283,8 +2418,18 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 	case PA10NodeKind::AliasDeclaration:
 		if (node.producer_spelling == 0 || node.children.size() != 1)
 			throw std::runtime_error("invalid PA11 alias declaration");
-		add_type_alias(scope, name_from_spelling(node.producer_spelling),
-			type_from_type_id(node.children.front(), scope));
+		{
+			const BindingId binding_id = add_type_alias(scope,
+				name_from_spelling(node.producer_spelling),
+				type_from_type_id(node.children.front(), scope));
+			DeclarationFact declaration(&node, scope);
+			declaration.binding_begin = declaration_bindings_.size();
+			declaration_bindings_.push_back(binding_id);
+			declaration.binding_count = 1;
+			const DeclarationFactId declaration_id(declaration_facts_.size());
+			declaration_facts_.push_back(declaration);
+			declaration_fact_index_.set(&node, declaration_id);
+		}
 		return;
 	case PA10NodeKind::SimpleDeclaration:
 		process_simple_declaration(node, scope);

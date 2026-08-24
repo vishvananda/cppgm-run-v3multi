@@ -524,6 +524,41 @@ private:
 				charge();
 				return true;
 			}
+			std::size_t cv_type_end = position_ + 1;
+			while (token_fixed_at(cv_type_end, 0, SimpleTokenType::KW_CONST) ||
+				token_fixed_at(cv_type_end, 0, SimpleTokenType::KW_VOLATILE))
+			{
+				charge();
+				++cv_type_end;
+			}
+			if (token_identifier_at(cv_type_end) &&
+				PA10ParserSupport::declaration_follow_is_valid(tokens_,
+					cv_type_end))
+			{
+				charge();
+				return true;
+			}
+			std::size_t cv_pointer = cv_type_end;
+			while (token_fixed_at(cv_pointer, 0, SimpleTokenType::OP_STAR) ||
+				token_fixed_at(cv_pointer, 0, SimpleTokenType::OP_AMP) ||
+				token_fixed_at(cv_pointer, 0, SimpleTokenType::OP_LAND))
+			{
+				charge();
+				++cv_pointer;
+				while (token_fixed_at(cv_pointer, 0, SimpleTokenType::KW_CONST) ||
+					token_fixed_at(cv_pointer, 0, SimpleTokenType::KW_VOLATILE))
+				{
+					charge();
+					++cv_pointer;
+				}
+			}
+			if (cv_pointer != cv_type_end && token_identifier_at(cv_pointer) &&
+				PA10ParserSupport::declaration_follow_is_valid(tokens_,
+					cv_pointer))
+			{
+				charge();
+				return true;
+			}
 			std::size_t pointer = position_ + 1;
 			bool saw_pointer = false;
 			while (token_fixed_at(pointer, 0, SimpleTokenType::OP_STAR) ||

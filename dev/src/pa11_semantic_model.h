@@ -145,9 +145,21 @@ struct Binding
 	{}
 };
 
+struct ValueEntry
+{
+	BindingId binding;
+	// A using-declaration retains the canonical source scope beside the
+	// binding identity; the pair cannot become length-mismatched.
+	ScopeId origin;
+
+	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId())
+		: binding(binding), origin(origin)
+	{}
+};
+
 struct ValueList
 {
-	std::vector<BindingId> bindings;
+	std::vector<ValueEntry> entries;
 };
 
 struct ValueRef
@@ -157,6 +169,17 @@ struct ValueRef
 
 	ValueRef(ScopeId scope = ScopeId(), BindingId binding = BindingId())
 		: scope(scope), binding(binding)
+	{}
+};
+
+struct EffectiveUsingDirective
+{
+	ScopeId target;
+	ScopeId lexical_scope;
+
+	EffectiveUsingDirective(ScopeId target = ScopeId(),
+		ScopeId lexical_scope = ScopeId())
+		: target(target), lexical_scope(lexical_scope)
 	{}
 };
 
@@ -185,18 +208,23 @@ struct Scope
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> > values;
 	FlatIndex<NameId, TypeId, IdentityHash<NameId> > using_types;
 	std::vector<ScopeId> using_directives;
+	// Entries are placed at their common ancestor once, then filtered by the
+	// typed lexical owner during an unqualified lookup.
+	std::vector<EffectiveUsingDirective> effective_using_directives;
 	std::vector<DumpBindingViewId> binding_views;
 	std::vector<DumpScopeViewId> scope_views;
 	std::size_t creation_order;
+	std::size_t depth;
 
 	Scope(ScopeKind kind = ScopeKind::Namespace, ScopeId parent = ScopeId(),
 		NameId name = NameId(), NamedRecordId record = NamedRecordId(),
-		bool inline_namespace = false, std::size_t creation_order = 0)
+		bool inline_namespace = false, std::size_t creation_order = 0,
+		std::size_t depth = 0)
 		: kind(kind), parent(parent), name(name), record(record),
 		  inline_namespace(inline_namespace), children(), bindings(),
 		  types(), namespaces(), namespace_aliases(), values(), using_types(),
-		  using_directives(), binding_views(), scope_views(),
-		  creation_order(creation_order)
+		  using_directives(), effective_using_directives(), binding_views(),
+		  scope_views(), creation_order(creation_order), depth(depth)
 	{}
 };
 
@@ -359,6 +387,7 @@ struct DeclaratorOp
 // the PA10 node pointer and rendered once at the requested dump boundary.
 enum class SemanticFactKind
 {
+	TypeAlias,
 	Variable,
 	SimpleDeclaration,
 	CompoundStatement,
@@ -658,6 +687,8 @@ private:
 	std::size_t creation_order_;
 	mutable std::vector<std::uint32_t> lookup_marks_;
 	mutable std::uint32_t lookup_generation_;
+	mutable std::vector<std::uint32_t> lexical_marks_;
+	mutable std::uint32_t lexical_generation_;
 	mutable std::vector<LookupFrame> lookup_frames_;
 	std::vector<DeclarationFact> declaration_facts_;
 	FlatIndex<const PA10AstNode*, DeclarationFactId, PointerHash>
@@ -748,20 +779,31 @@ private:
 	;
 	bool mark_lookup_scope(ScopeId scope) const
 	;
+	void prepare_unqualified_lookup(ScopeId start) const
+	;
+	bool lexical_scope_is_applicable(ScopeId scope) const
+	;
+	ScopeId common_ancestor(ScopeId left, ScopeId right) const
+	;
+	void append_effective_using_targets(ScopeId level,
+		std::vector<ScopeId>* targets) const
+	;
 	void reset_lookup_frames(LookupGraphKind kind, ScopeId start) const
 	;
-	ScopeId lookup_namespace_graph(ScopeId start, NameId name) const
+	ScopeId lookup_namespace_graph(ScopeId start, NameId name,
+		bool include_using = true) const
 	;
 	ScopeId lookup_namespace_unqualified(ScopeId start, NameId name) const
 	;
-	TypeId lookup_type_graph(ScopeId start, NameId name) const
+	TypeId lookup_type_graph(ScopeId start, NameId name,
+		bool include_using = true) const
 	;
 	TypeId lookup_type_unqualified(ScopeId start, NameId name) const
 	;
 	TypeId lookup_type_qualified(ScopeId scope, NameId name) const
 	;
 	bool lookup_value_graph(ScopeId start, NameId name,
-	std::vector<ValueRef>* result) const
+	std::vector<ValueRef>* result, bool include_using = true) const
 	;
 	std::vector<ValueRef> lookup_value_unqualified(ScopeId start, NameId name) const
 	;
@@ -785,7 +827,8 @@ private:
 	;
 	Binding& binding(BindingId id)
 	;
-	void append_value_index(ScopeId scope, NameId name, BindingId id)
+	void append_value_index(ScopeId scope, NameId name, BindingId id,
+		ScopeId origin = ScopeId())
 	;
 	TypeId ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -876,6 +919,9 @@ private:
 	;
 	bool ambiguous_call_statement(const PA10AstNode& node, ScopeId scope,
 	NamePath* callee, const PA10AstNode** argument)
+	;
+	bool direct_initializer_operand(const PA10AstNode& node, ScopeId scope,
+		const PA10AstNode** operand)
 	;
 	const PA10AstNode* top_parameter_clause(const PA10AstNode& node) const
 	;
@@ -1041,6 +1087,9 @@ private:
 	ExprInfo semantic_expression(const PA10AstNode& node, ScopeId scope)
 	;
 	SemanticFactId semantic_declaration(const PA10AstNode& node, ScopeId scope)
+	;
+	SemanticFactId semantic_declaration_statement(const PA10AstNode& node,
+		ScopeId scope)
 	;
 	SemanticFactId semantic_ambiguous_call_statement(const PA10AstNode& node,
 	ScopeId scope)
