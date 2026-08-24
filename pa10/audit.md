@@ -1,213 +1,232 @@
 # Current Checkpoint Review
 
-This is the bounded Phase A audit of landed increment
-`c16e04ef82e93bb0c628d2f495cc7132d47dd749` (`PA10: own elaborated type syntax
-boundary`), whose parent is `a7c20b87`.  The review covers the exact parent
-diff, `pa10/README.md`, the relevant class/enum/simple-declaration/
-decl-specifier/type-id productions in `pa10/pa10.gram`, root `spec.md` §§1, 2,
-4, and 7, and the owned parser-support/AST path.  No supplied test, reference,
-status fixture, grammar, harness, renderer, or inactive residual source was
-changed.
+This is the bounded Phase A and Phase B review of landed increment
+`90e9687c759a39d9b4844cdc01deed3ab1e80250` (`PA10: classify declaration
+ambiguity boundary`), whose parent is `163fa9e1`.  The review also covers one
+same-path correction in this checkpoint's final working diff in
+`dev/src/pa10_parser_support.cpp`: a named member-pointer spine now receives
+the existing `NamedDeclarator` group fact.  The review used `pa10/README.md`,
+the declaration/declarator/abstract-declarator/parameter/new-expression
+productions in `pa10/pa10.gram`, root `spec.md` §§1, 2, 4, and 7, N3485 §§6.8
+and 8.2, the checkpoint diff, current owned-path code, and focused checked-in
+tests.  No test, reference, status fixture, grammar, harness, build file,
+renderer, or residual-family source was changed.
 
 ## Contract and ownership trace
 
-The representative path is one typed forward flow:
+The representative facts follow one typed forward path:
 
 ```text
-phase-7 typed tokens
-    -> template-close/top-level-or/RShift/delimiter indexes
-    -> PA10ParserSupport elaborated classification + charged_work
-    -> PA10Parser dispatch and canonical decl-specifier/type-id AST path
-    -> existing deterministic renderer (observation only)
+phase-7/posttoken typed tokens
+    -> collect_tokens PA10Token stream (fixed kinds and cold spellings)
+    -> build_indexes template/RShift/delimiter facts plus one typed
+       PA10ParenthesizedGroupKind fact per parenthesized group
+    -> declaration_start / parse_declarator / parameter and abstract-
+       declarator routing
+    -> one canonical PA10 AST construction path
+    -> existing renderer, observation only
 ```
 
-PA10 is a syntax AST assignment: class/struct/union/enum declarations,
-class members, class bases, class-key attributes, scoped and underlying-type
-enums, and structured type-ids in `sizeof` must remain structured without
-semantic lookup or source reparsing.  `classify_elaborated_specifier` owns
-only the current header and its immediate delimiter decision.  It uses typed
-template and delimiter facts, jumps over nested angle/parenthesis/bracket
-groups, and returns the bounded work that `PA10Parser` charges before it
-constructs nodes.
+`build_indexes` resets and sizes every side index on each invocation.  Its
+delimiter index uses the token-count sentinel for missing closes; its template
+and split-RShift indexes remain typed side facts.  The reverse group pass
+publishes `None`, `AbstractDeclarator`, `ParameterClause`,
+`NestedParameter`, or `NamedDeclarator` into the single typed vector.  The
+support pass is the sole producer of that group fact.  The parser owns the
+vector as an index and applies bounded contextual routing around it.  In
+particular, `parenthesized_declaration_start_at` has an exact
+single-identifier shape check and an immediate declaration-follower check.
+Those contextual decisions do not duplicate the support-owned multi-shape
+group classification; there is no second implementation of that
+classification in the parser.
 
-At the parser boundary, standalone forwards and definitions are selected by
-the outer dispatch and their canonical parser owns the declaration semicolon.
-An elaborated definition followed by a declarator is classified as embedded;
-`parse_decl_specifier_seq` consumes the class/enum specifier with
-`in_decl_specifier=true`, and `parse_simple_declaration` owns the trailing
-semicolon.  This preserves the exact AST shape for anonymous/named embedded
-definitions, class-member enum declarators, friend type declarations, and
-`sizeof` elaborated type-ids.  The cold renderer was not edited because the
-focused AST paths remain valid and deterministic.
+The declaration path consumes the fact as follows:
+
+- `declaration_start` handles fixed declaration starts and direct
+  identifier-led pointer/reference/cv spines with a bounded immediate-follower
+  check.  It also asks the indexed group owner about a single identifier or a
+  named/abstract nested declarator.  Declaration followers are limited to the
+  grammar continuations needed by this boundary (`;`, `,`, `=`, `{`, `(`, and
+  `[`); `->`, `++`, and the shift-expression form are not declaration
+  followers.
+- `parse_declarator` preserves the canonical nested-declarator AST path.
+  Only the root of a parameter declaration receives the
+  `prefer_parameter_clause_at_root` preference, which is the §8.2 redundant
+  parameter-parentheses boundary; recursive nested declarators do not inherit
+  that preference accidentally.
+- `parse_parameter_declaration` and `parse_abstract_declarator` consume the
+  same parameter/group fact.  The bounded parameter helper recognizes the
+  syntax-only mock list `(_It, _It, _It)` while rejecting a literal-led nested
+  group such as `double(3)` as a parameter declarator.
+- `parse_type_id` and the `new` path reuse the same enum through
+  `new_parenthesized_abstract_declarator_start`.  Placement detection and
+  parenthesized type-id parsing remain context decisions over the indexed
+  group, not a second group parse.
+
+For the active forms this matches the PA10 syntax-only AST contract and N3485
+§6.8: a construct that can be parsed as a declaration is declaration-routed,
+while the specified expression followers disambiguate the expression cases.
+There is an explicit checked-contract exception at the reference-led group
+boundary.  `T(&x);` is a syntactically valid reference declarator and general
+§6.8 declaration preference would choose a declaration, but PA10 deliberately
+preserves the checked `function(&spawned_thread);` expression AST because this
+syntax-only stage does not perform lookup.  The correction therefore covers
+raw-star and member-pointer named groups, while direct unparenthesized
+reference spines remain declaration-routed.
 
 ## Findings and bounded correction
 
-The c16 ownership split is sound for the active syntax boundary, but review
-found three concrete fail-closed/accounting gaps in the support path:
+The landed ownership split is sound, but review found one concrete omission in
+the owned boundary.  `parenthesized_group_kind_at` recorded a named group only
+when its pointer spine contained `*`.  A member-pointer operator (`C::*`) is
+also a declarator pointer operator under the grammar, so `T(C::*p);` was not
+declaration-routed and could fail in expression parsing.  The correction
+records a `NamedDeclarator` when the scanned spine contains a raw
+`*` or a successfully indexed member-pointer operator.  It intentionally does
+not broaden the established reference-led `(&name)` fixture boundary.
 
-1. A colon-clause lookahead treated every later token as part of the current
-   header.  On malformed/truncated input it could pass an immediate enclosing
-   close and observe a later class body or semicolon.  The classifier now
-   returns `EmbeddedOrDeclarator` at `)`, `]`, `}`, or typed EOF, while retaining
-   indexed jumps for valid nested delimiters and template groups.
-2. `template_follow_is_valid` formed `absolute_close + 1` before rejecting an
-   invalid close.  It now rejects the token-count sentinel and other
-   out-of-range closes before arithmetic and reports the bounded result.
-3. `skip_balanced_delimiters` and `skip_attribute_specifiers` could return
-   false without publishing the scan cursor/count, and the parser threw before
-   charging that count.  Both helpers now initialize/publish `after` and
-   `consumed` on success and failure; `consumed` counts examined token
-   positions, including a present failing token.  The parser charges the
-   published count before calling `fail()`.
+The correction is bounded and semantic: it changes only group ownership, not
+the parser grammar, AST node shape, or renderer.  The observed repair is
+`T(C::*p); -> simple-declaration` with a nested `ptr-operator C::*` and
+identifier `p`; `T(C::*)();` remains an abstract nested declarator.  Direct
+`T &name;` and `T &&name;` use the existing direct spine route.  The existing
+§6.8 star matrix continues to classify `T(*d)(int)`, `T(e)[5]`,
+`T(f) = {1,2}`, and `T(*g)(double(3))` as declarations, while `T(a)->m = 7`,
+`T(a)++`, and `T(a,5)<<c` remain expression statements.
 
-Malformed attribute lookahead also reports the known elaborated token as an
-embedded/fail-closed context rather than the unrelated `NonElaborated` default.
-These corrections are confined to the owned support/parser path; they do not
-add a parser, AST, semantic model, or renderer path.
-
-All side indexes are reset/sized by `build_indexes` on each invocation.  The
-template-close and delimiter helpers check their vector bounds, split-RShift
-access is marker-guarded, and missing indexed closes use the token-count
-sentinel.  The index pass and reverse group pass return counted work, and the
-parser charges that returned work against its global limit.  The classifier's
-linear cursor is input-bounded and now stops at its immediate owner on
-malformed input; no unbounded body scan, text reparse, retry, backtracking,
-duplicate AST construction, semantic lookup, or host/reference shortcut was
-introduced.
+No duplicate parser or AST path, source-text downgrade/reparse, trial AST,
+backtracking, semantic lookup, host/reference/previous-solution shortcut, or
+unbounded retry was introduced.  The renderer was not changed; source strings
+remain cold presentation spellings and the fixed/group facts remain typed.
 
 ## Phase A focused evidence
 
-Fresh checks on the corrected source:
+The implementation rebuilt successfully:
 
 ```text
 make -C dev cppgm++
+  exit 0
 ```
 
-Exit 0.
+The original checkpoint matrix and sibling boundaries, expanded with member
+pointer and new-expression cases, passed exact checked-in output/status
+comparison:
 
 ```text
-make -C pa10 check TEST='tests/general/200-elaborated-enum-member-declarators.t tests/general/200-friend-type-declaration.t tests/general/200-sizeof-elaborated-class-type-id.t'
+make -C pa10 check TEST='tests/general/200-global-struct-paren-declaration.t tests/general/200-local-typedef-paren-declaration.t tests/general/200-mock-type-declaration-ambiguity.t tests/general/200-friend-function-template-declaration.t tests/spec/300-declaration-statement-ambiguity.t tests/spec/100-nested-declarator.t tests/spec/100-params.t tests/general/100-function-pointer-typedef-parameter.t tests/general/200-function-type-alias-declaration.t tests/general/200-member-pointer-function-declarator.t tests/general/200-member-pointer-data-declarator.t tests/general/200-member-pointer-const-function-declarator.t tests/general/200-qualified-result-parenthesized-member-pointer-declarator.t tests/general/200-parenthesized-new-type-vs-placement.t tests/general/200-placement-new-identifier-led-initializer.t tests/general/200-placement-new-pack-init.t tests/general/200-sizeof-zero-arg-functional-cast.t tests/general/200-constructor-declaration-identifier-parameter.t tests/general/200-malformed-function-parameter-list.t tests/general/100-operators-pm.t tests/general/100-pointer-cv-qualifier.t'
+  exit 0; pa10 check: PASS (21/21)
 ```
 
-Exit 0; `pa10 check: PASS (3/3)` with exact checked-in AST/status
-comparisons.
+The checked malformed function-parameter test retained its expected failure
+status.  A temporary observation-only probe at
+`/tmp/pa10_phase_a_decl_ambig_probe.t` exited 0 and showed the complete matrix
+above, direct pointer/reference/cv spines, the member-pointer correction, and
+the expression followers in their expected AST node families.  It also showed
+that `T(&x);` remains the established expression-safe reference-led boundary.
 
-The representative sibling/malformed/index command covered 16 tests:
+The temporary typed-index harness was compiled outside the repository and
+passed:
 
 ```text
-100-class-alignas-after-class-key
-100-scoped-enum-underlying-type
-100-structured-type-id
-100-typedef-anonymous-enum
-100-typedef-anonymous-union
-100-typedef-struct-union
-100-rshift-piece-normalization
-200-dependent-template-keyword-nested-angle
-200-nested-qualified-template-id-template-args
-200-decltype-base-and-mem-initializer
-200-qualified-base-and-ctor-init
-spec/100-enum
-spec/200-class-bases-and-ctor-init
-spec/300-type-id-expression-contexts
-200-class-definition-missing-semicolon-bad
-200-malformed-template-parameter-clause
+g++ -std=gnu++11 -Wall -Wextra -O0 -ffunction-sections -fdata-sections -Idev/src /tmp/pa10_group_index_harness.cpp dev/src/pa10_parser_support.cpp -Wl,--gc-sections -o /tmp/pa10_group_index_harness
+/tmp/pa10_group_index_harness
+  pa10 group index harness: PASS
 ```
 
-The command exited 0 with `pa10 check: PASS (16/16)`.  Direct production
-probes for `struct X :`, `enum E :`, and an elaborated clause followed by an
-enclosing close each returned exit 1 within a 5-second timeout.
+It contains a representative `(C::*p)` token sequence and asserts the exact
+`groups[13] == PA10ParenthesizedGroupKind::NamedDeclarator` value.  It also
+checked typed group values for named raw-pointer, reference-safe, parameter,
+and abstract groups; reset/reuse after a shorter token vector; missing-close
+sentinels; and a truncated group.  No reference binary or generated fixture
+was used.
 
-The direct temporary support harness was compiled outside the repository with:
+## Structural performance and safety evidence
 
-```text
-g++ -std=gnu++11 -Wall -Wextra -O0 -ffunction-sections -fdata-sections -Idev/src /tmp/pa10_support_boundary_harness.cpp dev/src/pa10_parser_support.cpp -Wl,--gc-sections -o /tmp/pa10_support_boundary_harness
-/tmp/pa10_support_boundary_harness
-```
+No timing or comparative performance claim is made.  The
+structural bound is:
 
-It exited 0 with `pa10 support boundary harness: PASS`.
-It asserted sentinel/out-of-range template closes return false with zero
-follower work; truncated `__attribute__((((` publishes `after=4`,
-`consumed=4`, and classifier work 4 with `EmbeddedOrDeclarator`; colon clauses
-stop at an immediate close and at EOF without borrowing a later body; a
-missing attribute `(` publishes `after=1`, `consumed=2` and tolerates null
-output pointers; index reset/reuse is deterministic; and valid attribute, base,
-underlying-type, and split-RShift cases retain their expected contexts.  This
-harness directly checks support outputs; the parser charge-before-fail ordering
-is evidenced by the reviewed source sequence and the malformed production
-probes, not by an output-oracle comparison.  No reference binary or generated
-fixture was used.
-
-## Structural performance evidence
-
-No comparative timing claim is made in Phase A.  The equivalent structural
-evidence for the material bounded-lookahead claim is:
-
-| representative fact | observed source bound |
+| work | bound/owner |
 | --- | --- |
-| index setup | one forward token pass plus one reverse pass over delimiter opens; every output vector is reset and missing facts are sentinels |
-| nested templates/RShift | indexed close lookup and the existing nested-close marker jump over each matched angle group without text scanning |
-| class bases/enum underlying types | classifier advances only through the current header, jumps matched `()`/`[]` and template groups, and stops at body, semicolon, close, or EOF |
-| template follower | at most the split-RShift pair and one follower token are examined, with invalid closes rejected first |
+| ordinary indexes | one forward token/delimiter pass; all vectors are reset and missing facts are sentinels |
+| group facts | one reverse token visit; each pointer/member-pointer or mock-name scan stops at its current delimiter owner and uses indexed template closes |
+| parser routing | constant-time group-fact lookup plus the bounded contextual single-name/follower check and current-spine/group consumption |
+| accounting | `build_indexes` returns its instrumented predicate/scan counter and the parser charges that returned count against `96 * token_count + 2048`; this is an accounting ceiling, not a timing or tight aggregate-overlap proof |
 
-The 3/3 and 16/16 focused matrix exercises these valid and malformed
-representatives.  The work returned by support is charged by the parser, and
-the existing global, recursion, delimiter, angle, and renderer limits remain
-in force.  This is a structural bound, not a timing comparison.
+Malformed groups fail closed through the token-count sentinel and then follow
+the existing parser failure path.  Each individual support scan is finite and
+input-bounded; this review makes no stronger aggregate-O(n) claim for all
+possible overlapping nested-group shapes.  No source-text scan is repeated as
+a reparse, and no trial AST is constructed.  No new source file was added and
+the AST file was not touched.
 
-## Required broad evidence and residual map
+## Phase B broad evidence and residual map
 
-The turn-start required-stage baseline was 159 discovered, 148 passed, and 11
-failed.  The exact identities remain unchanged and inactive:
+The authoritative turn-start baseline was:
+
+```text
+make test-pa10
+  exit 2; 152/159 passing, 159 discovered
+```
+
+The exact seven identities are preserved and remain outside this checkpoint:
 
 ```text
 pa10/tests/general/200-forward-unknown-nested-template-in-ctor-body.t
-pa10/tests/general/200-friend-function-template-declaration.t
-pa10/tests/general/200-global-struct-paren-declaration.t
 pa10/tests/general/200-lambda-capture-forms.t
-pa10/tests/general/200-local-typedef-paren-declaration.t
 pa10/tests/general/200-member-template-parameter-value-vs-template-name.t
-pa10/tests/general/200-mock-type-declaration-ambiguity.t
 pa10/tests/general/200-qualified-enumerator-call-argument.t
 pa10/tests/general/200-template-member-definition-inherited-typedef-cast.t
 pa10/tests/general/200-trailing-parameter-carries-dependency-attribute.t
 pa10/tests/general/200-trailing-parameter-vendor-attribute.t
 ```
 
-Fresh post-review Phase B execution completed after the accounting correction:
+Fresh Phase B results were:
 
 ```text
-make test-pa10                                             exit 2
-159 discovered, 148 passed, 11 failed; exact residual set unchanged
+make test-pa10
+  exit 2; TEST SUMMARY: 152 / 159 TESTS PASSED; 159 discovered
+
 n=10; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
-                                                          exit 0, 457/457
+  exit 0; ===== ALL TESTS PASSED SUCCESSFULLY! (457 / 457) =====
+
 perl scripts/cppgm_file_audit.pl --stage pa10 --paths dev/src
-                                                          exit 0, one known warning
+  exit 0; File audit passed for pa10 with 1 warning(s).
+  [warning][bad-division] dev/src/cpp_semantic_core.h:1: header contains substantial implementation body; prefer .cpp ownership
+
 git diff --check
-                                                          exit 0
-make -C dev clean; make -C dev cppgm++
-                                                          exit 0
+  exit 0; no output
 ```
 
-The PA10 failures are exactly the 11 inactive identities listed above, with
-no coverage reduction or identity change.  The file-audit warning is the
-known pre-existing `bad-division` warning at
-`dev/src/cpp_semantic_core.h:1` for substantial header implementation body.
-The clean dev rebuild completed after the broad run; no implementation source
-changed between those validations.
+The fresh PA10 run retained exactly the seven turn-start identities above:
+every one remained an expected-`EXIT_SUCCESS`/actual-`EXIT_FAILURE` result;
+there was no coverage reduction and no new or replaced failure identity.  The
+through-PA9 report remains `457/457`.  The file-audit warning is the known
+pre-existing `dev/src/cpp_semantic_core.h:1 [bad-division]` warning; no new
+warning was introduced.  The identity rule remains the PA10 contract: failure
+tests compare only exit status, while successful tests require exact AST output
+and exit status.  Additional passes cannot mask a new failure.
 
 ## Risks and next checkpoint
 
-The focused and broad review found no remaining correctness gap in the owned
-elaborated-type path.  The 11 residual identities are explicitly out of scope
-and must not increase or change identity.  The next checkpoint is a separately
-assigned residual-family audit and must not enter lambda, general
-declaration/declarator, qualified-name, trailing-attribute, or unrelated PA10
-surfaces.
+The main uncertainty is the intentionally preserved reference-led nested-group
+boundary: `T(&x);` is syntactically a reference declaration and general §6.8
+preference would select it as a declaration, but the checked PA10 contract
+keeps `function(&spawned_thread);` as an expression because the syntax-only
+stage does not perform lookup.  This is an explicit fixture-bound exception,
+not a universal §6.8 routing claim.  Complex identifier-led parameter
+declarations and followers beyond the focused matrix remain unclaimed.  The
+member-pointer correction has focused probe coverage and the fresh broad
+identity check above preserves the exact baseline failure set.
+
+The next checkpoint is the separately assigned residual-family audit.  The
+seven listed residual families remain untouched; any future new failure or
+identity change must stop that checkpoint rather than be absorbed by the
+residual count.
 
 ## Historical checkpoint ledger
 
-The historical rows are retained below; the final row is the single current
-c16 audit row.
+Historical rows are retained below.  The final row is the single current audit
+row for `90e9687c`.
 
 | checkpoint | review result | owner action | validation state |
 | --- | --- | --- | --- |
@@ -216,5 +235,6 @@ c16 audit row.
 | `b9b58b9c` declarator audit | historical | retain nearest-derived-operator and member-pointer bounds | historical 123/157; through-PA9 457/457 |
 | `08c38115` structured names/special members | historical | retain one typed name/special-member path and validated sidecars | historical local 135/157; course 1/1 |
 | `25f784873f2a852fd825316b2188d9f157f8eae5` typed postfix checkpoint | historical (audited and committed) | use one exact cast-keyword predicate, initialize indexes, route all RShift consumers through the marker, validate synthetic renderer nodes, and retain the 3000-line source bound | historical fresh 142/159 with exact original 17 failures; through-PA9 457/457; file audit exit 0 with one pre-existing warning |
-| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | historical (prior checkpoint audited) | retain the typed indexed abstract-group fact, distinguish definite from identifier-led nested parameter clauses under pointer/member-pointer spines, route complete abstract-declarator consumption through the canonical parser, validate inline initializer sidecars, and preserve global/placement/pack ownership | historical fresh 159/145 with exactly the original 14 residuals; through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 55/55 + exact refs 4/4 + warning/index/renderer harnesses; immutable performance characterization recorded in that prior audit |
-| `c16e04ef82e93bb0c628d2f495cc7132d47dd749` current elaborated-type boundary | completed; residuals remain | publish/charge malformed attribute scan work, stop colon lookahead at immediate owners, reject invalid template closes, preserve one canonical class/enum AST path and semicolon owner | focused 3/3 + 16/16; direct support harness PASS; PA10 148/159 with exact 11 residuals; through-PA9 457/457; file audit exit 0 with one known warning; clean rebuild and diff check pass |
+| `d24f8e1689130b0449e19654ffd9e9f3dfc3b853` structured new expressions | historical (prior checkpoint audited) | retain the typed indexed abstract-group fact, distinguish definite from identifier-led nested parameter clauses under pointer/member-pointer spines, route complete abstract-declarator consumption through the canonical parser, validate inline initializer sidecars, and preserve global/placement/pack ownership | historical fresh 159/145 with exactly the original 14 residuals; through-PA9 457/457; file audit exit 0 with one pre-existing warning; focused 55/55 + exact refs 4/4 + warning/index/renderer harnesses |
+| `c16e04ef82e93bb0c628d2f495cc7132d47dd749` elaborated-type boundary | historical completed; residuals remained | publish/charge malformed attribute scan work, stop colon lookahead at immediate owners, reject invalid template closes, preserve one canonical class/enum AST path and semicolon owner | historical focused 3/3 + 16/16; PA10 148/159 with exact 11 residuals; through-PA9 457/457; file audit exit 0 with one known warning |
+| `90e9687c759a39d9b4844cdc01deed3ab1e80250` declaration/declarator ambiguity | completed; seven residuals remain | publish one typed parenthesized-group owner; preserve root-only parameter preference, contextual single-name/follower routing, and the fixture-bound reference exception; classify named member-pointer groups through the same owner | focused 21/21; corrected member-pointer harness PASS; §6.8 probe PASS; PA10 152/159 with exactly the seven turn-start identities; through-PA9 457/457; file audit exit 0 with one known warning; diff check exit 0 |

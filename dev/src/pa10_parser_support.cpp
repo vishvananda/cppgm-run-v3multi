@@ -658,7 +658,7 @@ PA10ParenthesizedGroupKind parenthesized_group_kind_at(
 	const std::size_t end = delimiter_close_index[open];
 	std::size_t cursor = open + 1;
 	bool pointer = false;
-	bool saw_star = false;
+	bool named_pointer = false;
 	while (cursor < end)
 	{
 		fact_step(work);
@@ -670,7 +670,7 @@ PA10ParenthesizedGroupKind parenthesized_group_kind_at(
 		if (star || reference)
 		{
 			if (star)
-				saw_star = true;
+				named_pointer = true;
 			pointer = true;
 			++cursor;
 			while (cursor < end && fact_cv_at(tokens, cursor, work))
@@ -681,6 +681,7 @@ PA10ParenthesizedGroupKind parenthesized_group_kind_at(
 		if (member_pointer_end_at(tokens, template_close_index,
 			rshift_piece1_nested_close, cursor, end, &after, work))
 		{
+			named_pointer = true;
 			pointer = true;
 			cursor = after;
 			while (cursor < end && fact_cv_at(tokens, cursor, work))
@@ -691,7 +692,7 @@ PA10ParenthesizedGroupKind parenthesized_group_kind_at(
 	}
 	if (pointer && cursor == end)
 		return PA10ParenthesizedGroupKind::AbstractDeclarator;
-	if (pointer && saw_star && fact_identifier_at(tokens, cursor, 0, work))
+	if (pointer && named_pointer && fact_identifier_at(tokens, cursor, 0, work))
 	{
 		++cursor;
 		if (cursor == end)
