@@ -135,12 +135,13 @@ struct Binding
 	std::vector<ClassTag> declaration_tags;
 	bool has_value;
 	std::int64_t value;
+	bool has_definition;
 
 	Binding(BindingKind kind = BindingKind::Variable, NameId name = NameId(),
 		TypeId type = TypeId())
 		: kind(kind), name(name), type(type), has_tag(false),
 		  class_tag(ClassTag::Struct), declaration_tags(),
-		  has_value(false), value(0)
+		  has_value(false), value(0), has_definition(false)
 	{}
 };
 
@@ -274,6 +275,7 @@ struct DumpBindingView
 	std::size_t position;
 	NamedRecordId record;
 	NamePath qualified_name;
+	BindingId binding;
 };
 
 struct DumpScopeView
@@ -671,6 +673,8 @@ private:
 	BindingId store_binding(ScopeId scope, const Binding& binding,
 	std::size_t position = InvalidIdentityValue)
 	;
+	void add_dump_binding_view(ScopeId scope, BindingId binding)
+	;
 	const Binding& binding(BindingId id) const
 	;
 	Binding& binding(BindingId id)
@@ -729,7 +733,12 @@ private:
 	;
 	BindingId add_type_alias(ScopeId scope, NameId name, TypeId type)
 	;
-	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function)
+	TypeId normalize_parameter_type(TypeId type)
+	;
+	TypeId normalize_function_type(TypeId type)
+	;
+	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
+	bool definition = false, bool lexical_view = false)
 	;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;
@@ -817,6 +826,12 @@ private:
 	unsigned int integral_rank(TypeId type) const
 	;
 	unsigned int cv_qualifiers(TypeId type) const
+	;
+	void qualification_decomposition(TypeId type,
+	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
+	;
+	bool qualification_convertible_impl(TypeId source, TypeId target,
+	bool outer_pointer_consumed) const
 	;
 	bool qualification_convertible(TypeId source, TypeId target) const
 	;

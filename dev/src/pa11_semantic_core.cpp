@@ -646,6 +646,18 @@ BindingId PA11SemanticModel::store_binding(ScopeId scope, const Binding& binding
 	current.bindings.insert(current.bindings.begin() + position, result);
 	return result;
 }
+void PA11SemanticModel::add_dump_binding_view(ScopeId scope, BindingId binding_id)
+{
+	DumpBindingView view;
+	view.parent = scope;
+	view.position = scopes_[scope.value].bindings.size();
+	view.record = NamedRecordId();
+	view.qualified_name = NamePath();
+	view.binding = binding_id;
+	const DumpBindingViewId view_id(dump_binding_views_.size());
+	dump_binding_views_.push_back(view);
+	scopes_[scope.value].binding_views.push_back(view_id);
+}
 const Binding& PA11SemanticModel::binding(BindingId id) const
 {
 	if (!id.valid() || id.value >= bindings_.size())
@@ -879,6 +891,7 @@ void PA11SemanticModel::add_qualified_enum_view(ScopeId parent, NamedRecordId re
 	binding_view.position = scopes_[parent.value].bindings.size();
 	binding_view.record = record;
 	binding_view.qualified_name = qualified_name;
+	binding_view.binding = BindingId();
 	const DumpBindingViewId binding_view_id(dump_binding_views_.size());
 	dump_binding_views_.push_back(binding_view);
 	scopes_[parent.value].binding_views.push_back(binding_view_id);
@@ -1356,7 +1369,39 @@ BindingId PA11SemanticModel::add_type_alias(ScopeId scope, NameId name, TypeId t
 	current.types.set(name, type);
 	return store_binding(scope, Binding(BindingKind::TypeAlias, name, type));
 }
-BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type, bool function)
+TypeId PA11SemanticModel::normalize_parameter_type(TypeId type)
+{
+	while (type_kind(type) == TypeKind::Cv)
+		type = types_[type.value].child;
+	if (type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0)
+	{
+		TypeKey normalized = types_[type.value];
+		normalized.cv = 0;
+		return intern_type(normalized);
+	}
+	return type;
+}
+TypeId PA11SemanticModel::normalize_function_type(TypeId type)
+{
+	if (type_kind(type) != TypeKind::Function)
+		return type;
+	const TypeKey& source = types_[type.value];
+	TypeKey normalized = source;
+	bool changed = false;
+	for (std::size_t i = 0; i < normalized.parameters.size(); ++i)
+	{
+		const TypeId parameter = normalize_parameter_type(
+			normalized.parameters[i]);
+		if (parameter != normalized.parameters[i])
+		{
+			normalized.parameters[i] = parameter;
+			changed = true;
+		}
+	}
+	return changed ? intern_type(normalized) : type;
+}
+BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
+	bool function, bool definition, bool lexical_view)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -1364,9 +1409,40 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type, 
 	const TypeId* type_found = current.types.find(name);
 	if (type_found != NULL && type_kind(*type_found) != TypeKind::Named)
 		throw std::runtime_error("value conflicts with type alias");
-	const BindingId binding_id = store_binding(scope,
-		Binding(function ? BindingKind::Function : BindingKind::Variable,
-			name, type));
+	if (function)
+		type = normalize_function_type(type);
+	const ValueList* existing_values = current.values.find(name);
+	if (existing_values != NULL)
+	{
+		for (std::size_t i = 0; i < existing_values->bindings.size(); ++i)
+		{
+			const BindingId existing_id = existing_values->bindings[i];
+			const Binding& existing = binding(existing_id);
+			if (!function || existing.kind != BindingKind::Function)
+				throw std::runtime_error("incompatible value redeclaration");
+			if (type_kind(existing.type) != TypeKind::Function ||
+				type_kind(type) != TypeKind::Function)
+				throw std::runtime_error("invalid function redeclaration");
+			const TypeKey& existing_function = types_[existing.type.value];
+			const TypeKey& candidate_function = types_[type.value];
+			if (existing_function.variadic != candidate_function.variadic ||
+				existing_function.parameters != candidate_function.parameters)
+				continue;
+			if (existing_function.result != candidate_function.result)
+				throw std::runtime_error("conflicting function return type");
+			if (definition && existing.has_definition)
+				throw std::runtime_error("duplicate function definition");
+			if (definition)
+				binding(existing_id).has_definition = true;
+			if (lexical_view)
+				add_dump_binding_view(scope, existing_id);
+			return existing_id;
+		}
+	}
+	Binding value(function ? BindingKind::Function : BindingKind::Variable,
+		name, type);
+	value.has_definition = function && definition;
+	const BindingId binding_id = store_binding(scope, value);
 	append_value_index(scope, name, binding_id);
 	return binding_id;
 }
@@ -1917,7 +1993,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
 			binding_id = add_value(target, name.path.last(), type,
-				function);
+				function, false, true);
 			if (spec.is_constexpr ||
 				((spec.cv & 1u) != 0 && type_kind(type) == TypeKind::Cv))
 			{
@@ -1961,7 +2037,7 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	if (type_kind(type) != TypeKind::Function)
 		throw std::runtime_error("PA11 definition is not a function");
 	const BindingId function_binding = add_value(target, name.path.last(),
-		type, true);
+		type, true, true, true);
 	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
 		name.path.last());
 	const PA10AstNode* clause = top_parameter_clause(declarator);

@@ -151,31 +151,59 @@ unsigned int PA11SemanticModel::cv_qualifiers(TypeId type) const
 {
 	return type_kind(type) == TypeKind::Cv ? types_[type.value].cv : 0;
 }
-bool PA11SemanticModel::qualification_convertible(TypeId source, TypeId target) const
+void PA11SemanticModel::qualification_decomposition(TypeId type,
+	std::vector<unsigned int>& qualifiers, TypeId* unqualified) const
+{
+	unsigned int current_cv = 0;
+	TypeId cursor = type;
+	while (type_kind(cursor) == TypeKind::Cv)
+	{
+		current_cv |= types_[cursor.value].cv;
+		cursor = types_[cursor.value].child;
+	}
+	if (type_kind(cursor) == TypeKind::Pointer)
+	{
+		current_cv |= types_[cursor.value].cv;
+		qualifiers.push_back(current_cv);
+		qualification_decomposition(types_[cursor.value].child,
+			qualifiers, unqualified);
+		return;
+	}
+	qualifiers.push_back(current_cv);
+	*unqualified = cursor;
+}
+bool PA11SemanticModel::qualification_convertible_impl(TypeId source,
+	TypeId target, bool outer_pointer_consumed) const
 {
 	if (source == target)
 		return true;
-	if (type_kind(source) == TypeKind::Cv || type_kind(target) == TypeKind::Cv)
-	{
-		const unsigned int source_cv = cv_qualifiers(source);
-		const unsigned int target_cv = cv_qualifiers(target);
-		if ((source_cv & ~target_cv) != 0)
-			return false;
-		const TypeId source_child = strip_cv_type(source);
-		const TypeId target_child = strip_cv_type(target);
-		return qualification_convertible(source_child, target_child);
-	}
-	if (type_kind(source) != type_kind(target))
+	std::vector<unsigned int> source_qualifiers;
+	std::vector<unsigned int> target_qualifiers;
+	TypeId source_unqualified;
+	TypeId target_unqualified;
+	qualification_decomposition(source, source_qualifiers,
+		&source_unqualified);
+	qualification_decomposition(target, target_qualifiers,
+		&target_unqualified);
+	if (source_unqualified != target_unqualified ||
+		source_qualifiers.size() != target_qualifiers.size())
 		return false;
-	if (type_kind(source) == TypeKind::Pointer)
+	for (std::size_t i = 0; i < source_qualifiers.size(); ++i)
 	{
-		const TypeKey& source_key = types_[source.value];
-		const TypeKey& target_key = types_[target.value];
-		if ((source_key.cv & ~target_key.cv) != 0)
+		if ((source_qualifiers[i] & ~target_qualifiers[i]) != 0)
 			return false;
-		return qualification_convertible(source_key.child, target_key.child);
+		if (source_qualifiers[i] == target_qualifiers[i])
+			continue;
+		const std::size_t first_intermediate = outer_pointer_consumed ? 0 : 1;
+		for (std::size_t j = first_intermediate; j < i; ++j)
+			if ((target_qualifiers[j] & 1u) == 0)
+				return false;
 	}
-	return false;
+	return true;
+}
+bool PA11SemanticModel::qualification_convertible(TypeId source, TypeId target) const
+{
+	return qualification_convertible_impl(source, target, false);
 }
 bool PA11SemanticModel::pointer_convertible(TypeId source, TypeId target) const
 {
@@ -197,7 +225,7 @@ bool PA11SemanticModel::pointer_convertible(TypeId source, TypeId target) const
 		return (cv_qualifiers(source_pointee) &
 			~cv_qualifiers(target_pointee)) == 0;
 	}
-	return qualification_convertible(source_pointee, target_pointee);
+	return qualification_convertible_impl(source_pointee, target_pointee, true);
 }
 bool PA11SemanticModel::integer_zero(const PA10AstNode& node) const
 {
@@ -1386,7 +1414,11 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output, const PA10AstNo
 		output << "  ";
 	output << "function-definition " << qualified_binding_name(function->owner,
 		value.name) << ' ' << render_binding_type(value) << '\n';
+	if (type_kind(value.type) != TypeKind::Function)
+		throw std::runtime_error("PA12 function binding has non-function type");
+	const TypeKey& function_type = types_[value.type.value];
 	const Scope& function_scope = scopes_[function->function_scope.value];
+	std::size_t parameter_index = 0;
 	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
 	{
 		const Binding& parameter = binding(function_scope.bindings[i]);
@@ -1395,7 +1427,9 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output, const PA10AstNo
 		for (std::size_t indent = 0; indent < depth + 1; ++indent)
 			output << "  ";
 		output << "parameter " << name_text(parameter.name) << ' ' <<
-			render_binding_type(parameter) << '\n';
+			render_type(parameter_index < function_type.parameters.size() ?
+			function_type.parameters[parameter_index] : parameter.type) << '\n';
+		++parameter_index;
 	}
 	dump_pa12_fact(output, function->body_fact, depth + 1);
 }

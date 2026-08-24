@@ -280,11 +280,16 @@ void PA11SemanticModel::dump_scope(std::ostream& output, ScopeId scope, std::siz
 		{
 			const DumpBindingView& view = dump_binding_views_[
 				current.binding_views[view_index].value];
-			for (std::size_t indent = 0; indent < depth + 1; ++indent)
-				output << "  ";
-			output << "type " << render_name_path(view.qualified_name) << ' '
-				<< render_named_record(view.record, ClassTag::Struct, false,
-					&view.qualified_name) << '\n';
+			if (view.binding.valid())
+				dump_binding(output, binding(view.binding), depth + 1);
+			else
+			{
+				for (std::size_t indent = 0; indent < depth + 1; ++indent)
+					output << "  ";
+				output << "type " << render_name_path(view.qualified_name) << ' '
+					<< render_named_record(view.record, ClassTag::Struct, false,
+						&view.qualified_name) << '\n';
+			}
 			++view_index;
 		}
 		if (binding_index == current.bindings.size())
