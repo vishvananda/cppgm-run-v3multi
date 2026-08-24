@@ -1856,6 +1856,16 @@ bool PA10Parser::looks_like_c_style_cast() const
 	if (next_kind == PA10TokenKind::Identifier ||
 		next_kind == PA10TokenKind::Literal)
 		return true;
+	if (simple_type && next_kind == PA10TokenKind::Fixed &&
+		(fixed(SimpleTokenType::OP_INC, close + 1) ||
+		 fixed(SimpleTokenType::OP_DEC, close + 1) ||
+		 fixed(SimpleTokenType::OP_STAR, close + 1) ||
+		 fixed(SimpleTokenType::OP_AMP, close + 1) ||
+		 fixed(SimpleTokenType::OP_PLUS, close + 1) ||
+		 fixed(SimpleTokenType::OP_MINUS, close + 1) ||
+		 fixed(SimpleTokenType::OP_LNOT, close + 1) ||
+		 fixed(SimpleTokenType::OP_COMPL, close + 1)))
+		return true;
 	return fixed(SimpleTokenType::OP_LPAREN, close + 1) ||
 		fixed(SimpleTokenType::KW_TRUE, close + 1) ||
 		fixed(SimpleTokenType::KW_FALSE, close + 1) ||

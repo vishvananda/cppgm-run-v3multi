@@ -31,6 +31,12 @@ struct ScopeDomain;
 struct BindingDomain;
 struct DumpBindingViewDomain;
 struct DumpScopeViewDomain;
+struct DeclarationFactDomain;
+struct FunctionFactDomain;
+struct NamespaceFactDomain;
+struct CompoundFactDomain;
+struct SemanticFactDomain;
+struct ConversionFactDomain;
 
 typedef DomainId<NameDomain> NameId;
 typedef DomainId<TypeDomain> TypeId;
@@ -39,6 +45,12 @@ typedef DomainId<ScopeDomain> ScopeId;
 typedef DomainId<BindingDomain> BindingId;
 typedef DomainId<DumpBindingViewDomain> DumpBindingViewId;
 typedef DomainId<DumpScopeViewDomain> DumpScopeViewId;
+typedef DomainId<DeclarationFactDomain> DeclarationFactId;
+typedef DomainId<FunctionFactDomain> FunctionFactId;
+typedef DomainId<NamespaceFactDomain> NamespaceFactId;
+typedef DomainId<CompoundFactDomain> CompoundFactId;
+typedef DomainId<SemanticFactDomain> SemanticFactId;
+typedef DomainId<ConversionFactDomain> ConversionFactId;
 
 struct ArrayBound
 {
@@ -72,6 +84,19 @@ struct StringHash
 			result ^= static_cast<unsigned char>(*it);
 			result *= static_cast<std::size_t>(1099511628211ULL);
 		}
+		return result;
+	}
+};
+
+struct PointerHash
+{
+	template <typename Value>
+	std::size_t operator()(const Value* value) const
+	{
+		std::size_t result = reinterpret_cast<std::size_t>(value);
+		result ^= result >> 17;
+		result *= static_cast<std::size_t>(0xed5ad4bbU);
+		result ^= result >> 11;
 		return result;
 	}
 };
