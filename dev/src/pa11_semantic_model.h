@@ -145,6 +145,22 @@ struct Binding
 	{}
 };
 
+// Rare anonymous-union and synthetic-function relations live beside the
+// canonical binding table instead of enlarging every Binding.
+struct BindingSidecar
+{
+	BindingId backing_storage;
+	NamedRecordId constructor_record;
+	NamedRecordId generated_name_record;
+
+	BindingSidecar(BindingId backing_storage = BindingId(),
+		NamedRecordId constructor_record = NamedRecordId(),
+		NamedRecordId generated_name_record = NamedRecordId())
+		: backing_storage(backing_storage), constructor_record(constructor_record),
+		  generated_name_record(generated_name_record)
+	{}
+};
+
 struct ValueEntry
 {
 	BindingId binding;
@@ -298,6 +314,34 @@ struct NamedRecord
 	{}
 };
 
+// Only named records participating in the local anonymous-union checkpoint
+// receive one of these sparse typed relation entries.
+struct NamedRecordSidecar
+{
+	bool local_object_name;
+	BindingId backing_storage;
+	BindingId constructor_binding;
+
+	NamedRecordSidecar(bool local_object_name = false,
+		BindingId backing_storage = BindingId(),
+		BindingId constructor_binding = BindingId())
+		: local_object_name(local_object_name), backing_storage(backing_storage),
+		  constructor_binding(constructor_binding)
+	{}
+};
+
+struct AnonymousUnionFact
+{
+	NamedRecordId record;
+	ScopeId owner;
+	BindingId storage;
+
+	AnonymousUnionFact(NamedRecordId record = NamedRecordId(),
+		ScopeId owner = ScopeId(), BindingId storage = BindingId())
+		: record(record), owner(owner), storage(storage)
+	{}
+};
+
 struct DumpBindingView
 {
 	ScopeId parent;
@@ -403,6 +447,7 @@ enum class SemanticFactKind
 	ExpressionStatement,
 	CallExpression,
 	IdExpression,
+	MemberExpression,
 	Literal,
 	UnaryExpression,
 	PostfixExpression,
@@ -427,7 +472,8 @@ enum class SemanticFactKind
 	CaseStatement,
 	DefaultStatement,
 	BreakStatement,
-	ContinueStatement
+	ContinueStatement,
+	ConstructorAction
 };
 
 enum class BuiltinKind
@@ -587,6 +633,17 @@ struct FunctionFact
 	{}
 };
 
+struct SyntheticFunctionFact
+{
+	NamedRecordId record;
+	BindingId binding;
+
+	SyntheticFunctionFact(NamedRecordId record = NamedRecordId(),
+		BindingId binding = BindingId())
+		: record(record), binding(binding)
+	{}
+};
+
 struct NamespaceFact
 {
 	const PA10AstNode* node;
@@ -695,8 +752,12 @@ private:
 	std::vector<TypeKey> types_;
 	FlatIndex<TypeKey, TypeId, TypeKeyHash> type_ids_;
 	std::vector<NamedRecord> named_;
+	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
+		named_record_sidecars_;
 	std::vector<Scope> scopes_;
 	std::vector<Binding> bindings_;
+	FlatIndex<BindingId, BindingSidecar, IdentityHash<BindingId> >
+		binding_sidecars_;
 	ScopeId global_;
 	std::vector<ScopeId> deferred_scopes_;
 	std::vector<DumpBindingView> dump_binding_views_;
@@ -716,6 +777,7 @@ private:
 	std::vector<FunctionFact> function_facts_;
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
+	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
 		namespace_fact_index_;
@@ -732,9 +794,12 @@ private:
 	std::vector<ConversionFact> conversion_facts_;
 	std::vector<SemanticFactId> declaration_semantic_ids_;
 	std::vector<NameId> semantic_name_components_;
+	FlatIndex<const PA10AstNode*, AnonymousUnionFact, PointerHash>
+		anonymous_union_fact_index_;
 	NameId builtin_constant_p_name_;
 	NameId builtin_abort_name_;
 	BindingId builtin_abort_binding_;
+	bool pa12_render_mode_;
 	static void unsupported(const char* feature)
 	;
 	NameId intern_name(const std::string& name)
@@ -841,7 +906,16 @@ private:
 	ScopeId resolve_namespace_path(const NamePath& path, ScopeId start) const
 	;
 	BindingId store_binding(ScopeId scope, const Binding& binding,
-	std::size_t position = InvalidIdentityValue)
+		std::size_t position = InvalidIdentityValue)
+	;
+	const BindingSidecar* binding_sidecar(BindingId id) const
+	;
+	void set_binding_sidecar(BindingId id, const BindingSidecar& sidecar)
+	;
+	const NamedRecordSidecar* named_record_sidecar(NamedRecordId id) const
+	;
+	void set_named_record_sidecar(NamedRecordId id,
+		const NamedRecordSidecar& sidecar)
 	;
 	void add_dump_binding_view(ScopeId scope, BindingId binding)
 	;
@@ -866,7 +940,13 @@ private:
 	;
 	void finalize_anonymous_record(TypeId type, NameId name, ScopeId owner)
 	;
-	void inject_anonymous_union(TypeId type, ScopeId owner)
+	void inject_anonymous_union(TypeId type, ScopeId owner,
+		bool create_storage = false, const PA10AstNode* origin = NULL)
+	;
+	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
+	;
+	const AnonymousUnionFact* anonymous_union_fact(
+		const PA10AstNode& node) const
 	;
 	bool enum_is_scoped(const PA10AstNode& node) const
 	;
@@ -911,7 +991,8 @@ private:
 	TypeId normalize_function_type(TypeId type)
 	;
 	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
-	bool definition = false, bool lexical_view = false)
+	bool definition = false, bool lexical_view = false,
+	BindingId backing_storage = BindingId())
 	;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;
@@ -1016,6 +1097,22 @@ private:
 	;
 	TypeId expression_object_type(TypeId type) const
 	;
+	TypeId member_access_type(TypeId object, TypeId member)
+	;
+	BindingId member_binding(TypeId object, NameId name) const
+	;
+	ExprInfo semantic_member_expression(const PA10AstNode& node,
+		ScopeId scope)
+	;
+	ExprInfo semantic_injected_member(const PA10AstNode& node,
+		ScopeId scope, BindingId member_id)
+	;
+	ExprInfo semantic_storage_id(BindingId storage,
+		const PA10AstNode* source = NULL)
+	;
+	SemanticFactId semantic_constructor_action(BindingId storage,
+		const PA10AstNode& source)
+	;
 	bool fundamental_of(TypeId type, FundamentalType* result) const
 	;
 	bool integral_id(TypeId type) const
@@ -1096,7 +1193,11 @@ private:
 	;
 	std::string semantic_name(const SemanticFact& fact) const
 	;
+	std::string binding_display_name(BindingId binding_id) const
+	;
 	std::string qualified_binding_name(ScopeId owner, NameId name) const
+	;
+	std::string qualified_binding_name(ScopeId owner, BindingId binding_id) const
 	;
 	TypeId function_result_type(TypeId type) const
 	;
@@ -1176,6 +1277,8 @@ private:
 	SemanticFactId semantic_declaration_statement(const PA10AstNode& node,
 		ScopeId scope)
 	;
+	SemanticFactId semantic_anonymous_union_statement(const PA10AstNode& node)
+	;
 	SemanticFactId semantic_ambiguous_call_statement(const PA10AstNode& node,
 	ScopeId scope)
 	;
@@ -1229,6 +1332,9 @@ private:
 	void dump_pa12_function(std::ostream& output, const PA10AstNode& node,
 	std::size_t depth) const
 	;
+	void dump_pa12_synthetic_function(std::ostream& output,
+		const SyntheticFunctionFact& function, std::size_t depth) const
+	;
 	void dump_pa12_top_node(std::ostream& output, const PA10AstNode& node,
 	ScopeId scope, std::size_t depth) const
 	;
@@ -1236,7 +1342,7 @@ private:
 	;
 	std::string render_generated_name(const GeneratedIdentity& generated) const
 	;
-	std::string render_record_name(const NamedRecord& record) const
+	std::string render_record_name(NamedRecordId record_id) const
 	;
 	std::string render_named_record(NamedRecordId record_id,
 	ClassTag override_tag, bool use_override,
@@ -1251,7 +1357,7 @@ private:
 	;
 	const char* binding_label(BindingKind kind) const
 	;
-	void dump_binding(std::ostream& output, const Binding& value,
+	void dump_binding(std::ostream& output, BindingId binding_id,
 	std::size_t depth, const NamePath* display_path = NULL) const
 	;
 	bool has_dump_scope_view(NamedRecordId record) const

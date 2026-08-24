@@ -392,15 +392,125 @@ void PA11SemanticModel::analyze_pa12()
 {
 	if (ast_.root.kind != PA10NodeKind::TranslationUnit)
 		throw std::runtime_error("PA12 root is not a translation unit");
+	pa12_render_mode_ = true;
 	prepare_pa12();
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		analyze_pa12_node(ast_.root.children[i], global_);
+}
+BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
+{
+	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
+		node.global_name || node.name_prefix_count != 0)
+		return BuiltinKind::None;
+	const NamePath path = name_path(node);
+	if (path.components.size() != 1)
+		return BuiltinKind::None;
+	if (path.last() == builtin_constant_p_name_)
+		return BuiltinKind::ConstantP;
+	if (path.last() == builtin_abort_name_)
+		return BuiltinKind::Abort;
+	return BuiltinKind::None;
+}
+BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
+{
+	if (kind != BuiltinKind::Abort)
+		return BindingId();
+	if (builtin_abort_binding_.valid())
+		return builtin_abort_binding_;
+	const TypeId function_type = make_function(std::vector<TypeId>(), false,
+		fundamental(FundamentalType::Void));
+	const BindingId result(bindings_.size());
+	bindings_.push_back(Binding(BindingKind::Function, builtin_abort_name_,
+		function_type));
+	builtin_abort_binding_ = result;
+	return result;
+}
+PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
+	: model_(model), semantic_begin_(model.semantic_facts_.size()),
+	  children_begin_(model.semantic_children_.size()),
+	  conversion_begin_(model.conversion_facts_.size()),
+	  names_begin_(model.semantic_name_components_.size()), active_(true)
+{}
+PA11SemanticModel::SemanticTailGuard::~SemanticTailGuard()
+{
+	discard();
+}
+void PA11SemanticModel::SemanticTailGuard::discard()
+{
+	if (!active_)
+		return;
+	model_.semantic_facts_.resize(semantic_begin_);
+	model_.semantic_children_.resize(children_begin_);
+	model_.conversion_facts_.resize(conversion_begin_);
+	model_.semantic_name_components_.resize(names_begin_);
+	active_ = false;
+}
+bool PA11SemanticModel::builtin_cast_target(const PA10AstNode& node,
+	TypeId* target) const
+{
+	if (node.kind != PA10NodeKind::IdExpression || !node.has_token)
+		return false;
+	FundamentalType fundamental_type;
+	switch (node.token)
+	{
+	case SimpleTokenType::KW_BOOL: fundamental_type = FundamentalType::Bool; break;
+	case SimpleTokenType::KW_CHAR: fundamental_type = FundamentalType::Char; break;
+	case SimpleTokenType::KW_CHAR16_T: fundamental_type = FundamentalType::Char16T; break;
+	case SimpleTokenType::KW_CHAR32_T: fundamental_type = FundamentalType::Char32T; break;
+	case SimpleTokenType::KW_DOUBLE: fundamental_type = FundamentalType::Double; break;
+	case SimpleTokenType::KW_FLOAT: fundamental_type = FundamentalType::Float; break;
+	case SimpleTokenType::KW_INT: fundamental_type = FundamentalType::Int; break;
+	case SimpleTokenType::KW_LONG: fundamental_type = FundamentalType::LongInt; break;
+	case SimpleTokenType::KW_SHORT: fundamental_type = FundamentalType::ShortInt; break;
+	case SimpleTokenType::KW_UNSIGNED: fundamental_type = FundamentalType::UnsignedInt; break;
+	case SimpleTokenType::KW_VOID: fundamental_type = FundamentalType::Void; break;
+	case SimpleTokenType::KW_WCHAR_T: fundamental_type = FundamentalType::WcharT; break;
+	default: return false;
+	}
+	*target = fundamental(fundamental_type);
+	return true;
 }
 void PA11SemanticModel::dump_pa12(std::ostream& output) const
 {
 	output << "translation-unit\n";
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		dump_pa12_top_node(output, ast_.root.children[i], global_, 1);
+	for (std::size_t i = 0; i < synthetic_function_facts_.size(); ++i)
+		dump_pa12_synthetic_function(output, synthetic_function_facts_[i], 1);
+}
+BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag != ClassTag::Union)
+		throw std::runtime_error("invalid anonymous union constructor record");
+	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
+	if (existing != NULL && existing->constructor_binding.valid())
+		return existing->constructor_binding;
+	const TypeId object = named_type(record_id);
+	const TypeId constructor_type = make_function(
+		std::vector<TypeId>(1, make_pointer(object)), false,
+		fundamental(FundamentalType::Void));
+	Binding constructor(BindingKind::Function, NameId(), constructor_type);
+	const BindingId binding_id(bindings_.size());
+	bindings_.push_back(constructor);
+	NamedRecordSidecar record_sidecar;
+	if (existing != NULL)
+		record_sidecar = *existing;
+	record_sidecar.constructor_binding = binding_id;
+	set_named_record_sidecar(record_id, record_sidecar);
+	BindingSidecar binding_sidecar;
+	binding_sidecar.constructor_record = record_id;
+	set_binding_sidecar(binding_id, binding_sidecar);
+	synthetic_function_facts_.push_back(
+		SyntheticFunctionFact(record_id, binding_id));
+	return binding_id;
+}
+const AnonymousUnionFact* PA11SemanticModel::anonymous_union_fact(
+	const PA10AstNode& node) const
+{
+	return anonymous_union_fact_index_.find(&node);
 }
 const DeclarationFact* PA11SemanticModel::declaration_fact(const PA10AstNode& node) const
 {
@@ -455,6 +565,141 @@ bool PA11SemanticModel::modifiable_lvalue(TypeId type) const
 TypeId PA11SemanticModel::expression_object_type(TypeId type) const
 {
 	return strip_reference_type(type);
+}
+TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member)
+{
+	const unsigned int qualifiers = cv_qualifiers(object);
+	return qualifiers == 0 ? member : make_cv(member, qualifiers);
+}
+BindingId PA11SemanticModel::member_binding(TypeId object, NameId name) const
+{
+	const TypeId record_type = strip_cv_type(expression_object_type(object));
+	if (type_kind(record_type) != TypeKind::Named)
+		return BindingId();
+	const ScopeId scope = class_scope_for_type(record_type);
+	if (!scope.valid())
+		return BindingId();
+	const ValueList* values = scopes_[scope.value].values.find(name);
+	if (values == NULL || values->entries.size() != 1)
+		return BindingId();
+	return values->entries.front().binding;
+}
+ExprInfo PA11SemanticModel::semantic_storage_id(BindingId storage,
+	const PA10AstNode* source)
+{
+	const Binding& value = binding(storage);
+	if (value.kind != BindingKind::Variable)
+		throw std::runtime_error("PA12 anonymous union storage is not an object");
+	SemanticFact fact(SemanticFactKind::IdExpression, value.type,
+		SemanticValueCategory::Lvalue, source);
+	fact.binding = storage;
+	const SemanticFactId result = make_semantic_fact(fact);
+	if (value.name.valid())
+	{
+		NamePath path;
+		path.components.push_back(value.name);
+		set_semantic_name(result, path);
+	}
+	return ExprInfo(result, value.type, SemanticValueCategory::Lvalue, false);
+}
+SemanticFactId PA11SemanticModel::semantic_constructor_action(
+	BindingId storage, const PA10AstNode& source)
+{
+	const Binding& storage_binding = binding(storage);
+	const NamedRecordId record = named_record_for_type(storage_binding.type);
+	if (!record.valid() || record.value >= named_.size() ||
+		named_[record.value].class_tag != ClassTag::Union)
+		throw std::runtime_error("PA12 constructor action needs a union object");
+	const BindingId constructor = ensure_anonymous_union_constructor(record);
+	const ExprInfo object = semantic_storage_id(storage, &source);
+	const TypeId pointer = make_pointer(object.type);
+	SemanticFact unary(SemanticFactKind::UnaryExpression, pointer,
+		SemanticValueCategory::Prvalue, &source);
+	unary.token = SimpleTokenType::OP_AMP;
+	const SemanticFactId address = make_semantic_fact(unary);
+	set_semantic_children(address,
+		std::vector<SemanticFactId>(1, object.fact));
+	SemanticFact call(SemanticFactKind::CallExpression,
+		fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue,
+		&source);
+	call.has_callee = true;
+	call.selected_binding = constructor;
+	call.selected_scope = named_[record.value].owner;
+	const SemanticFactId call_id = make_semantic_fact(call);
+	set_semantic_children(call_id,
+		std::vector<SemanticFactId>(1, address));
+	SemanticFact action(SemanticFactKind::ConstructorAction, TypeId(),
+		SemanticValueCategory::Prvalue, &source);
+	action.selected_binding = constructor;
+	action.selected_scope = named_[record.value].owner;
+	const SemanticFactId action_id = make_semantic_fact(action);
+	set_semantic_children(action_id,
+		std::vector<SemanticFactId>(1, call_id));
+	return action_id;
+}
+ExprInfo PA11SemanticModel::semantic_injected_member(
+	const PA10AstNode& node, ScopeId scope, BindingId member_id)
+{
+	(void)scope;
+	const Binding& member = binding(member_id);
+	const BindingSidecar* sidecar = binding_sidecar(member_id);
+	if (sidecar == NULL || !sidecar->backing_storage.valid())
+		throw std::runtime_error("PA12 injected member has no backing storage");
+	const ExprInfo object = semantic_storage_id(sidecar->backing_storage);
+	const TypeId type = member_access_type(object.type, member.type);
+	SemanticFact fact(SemanticFactKind::MemberExpression, type,
+		SemanticValueCategory::Lvalue, &node);
+	fact.token = SimpleTokenType::OP_DOT;
+	fact.binding = member_id;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_name(result, name_path(node));
+	set_semantic_children(result,
+		std::vector<SemanticFactId>(1, object.fact));
+	return ExprInfo(result, type, SemanticValueCategory::Lvalue, false);
+}
+ExprInfo PA11SemanticModel::semantic_member_expression(
+	const PA10AstNode& node, ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::MemberExpression ||
+		node.children.size() != 2 || !node.has_token ||
+		(node.token != SimpleTokenType::OP_DOT &&
+		 node.token != SimpleTokenType::OP_ARROW) ||
+		node.children[1].kind != PA10NodeKind::Identifier)
+		throw std::runtime_error("PA12 invalid member expression");
+	const ExprInfo object = semantic_expression(node.children.front(), scope);
+	const NamePath member_name = name_path(node.children.back());
+	if (member_name.global || member_name.components.size() != 1)
+		throw std::runtime_error("PA12 qualified member is unsupported");
+	TypeId record_object = object.type;
+	if (node.token == SimpleTokenType::OP_ARROW)
+	{
+		const TypeId pointer = strip_cv_type(expression_object_type(object.type));
+		if (type_kind(pointer) != TypeKind::Pointer)
+			throw std::runtime_error("PA12 arrow operand is not a pointer");
+		record_object = types_[pointer.value].child;
+		const TypeId pointer_value = strip_top_cv_type(object.type);
+		record_builtin_conversion(object, pointer_value);
+	}
+	else if (type_kind(strip_cv_type(expression_object_type(record_object))) !=
+		TypeKind::Named)
+		throw std::runtime_error("PA12 dot operand is not a record");
+	const BindingId member_id = member_binding(record_object,
+		member_name.last());
+	if (!member_id.valid())
+		throw std::runtime_error("PA12 unknown record member");
+	const Binding& member = binding(member_id);
+	if (member.kind != BindingKind::Variable)
+		throw std::runtime_error("PA12 member function access is unsupported");
+	const TypeId type = member_access_type(record_object, member.type);
+	SemanticFact fact(SemanticFactKind::MemberExpression, type,
+		SemanticValueCategory::Lvalue, &node);
+	fact.token = node.token;
+	fact.binding = member_id;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_name(result, member_name);
+	set_semantic_children(result,
+		std::vector<SemanticFactId>(1, object.fact));
+	return ExprInfo(result, type, SemanticValueCategory::Lvalue, false);
 }
 bool PA11SemanticModel::fundamental_of(TypeId type, FundamentalType* result) const
 {
@@ -1115,6 +1360,9 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 		return ExprInfo(make_semantic_fact(fact), value.type,
 			SemanticValueCategory::Prvalue, false);
 	}
+	const BindingSidecar* sidecar = binding_sidecar(values.front().binding);
+	if (sidecar != NULL && sidecar->backing_storage.valid())
+		return semantic_injected_member(node, scope, values.front().binding);
 	else if (type_kind(type) == TypeKind::LvalueReference ||
 		type_kind(type) == TypeKind::RvalueReference)
 		type = types_[type.value].child;
@@ -1855,6 +2103,8 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 	}
 	case PA10NodeKind::IdExpression:
 		return semantic_id_expression(node, scope);
+	case PA10NodeKind::MemberExpression:
+		return semantic_member_expression(node, scope);
 	case PA10NodeKind::ParenthesizedExpression:
 		if (node.children.size() != 1)
 			throw std::runtime_error("PA12 invalid parenthesized expression");
@@ -1992,6 +2242,14 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		fact.binding = binding_id;
 		fact.selected_scope = declaration->scope;
 		SemanticFactId variable = make_semantic_fact(fact);
+		const NamedRecordId record = named_record_for_type(value.type);
+		const NamedRecordSidecar* record_sidecar =
+			named_record_sidecar(record);
+		const bool anonymous_union_object = record.valid() &&
+			record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class &&
+			named_[record.value].class_tag == ClassTag::Union &&
+			record_sidecar != NULL && record_sidecar->local_object_name;
 		const PA10AstNode* direct_operand = NULL;
 		if (direct_initializer_operand(init, declaration->scope, &direct_operand))
 		{
@@ -2020,6 +2278,12 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				retarget_constexpr_literal(expression.fact, value.type);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
+		}
+		else if (anonymous_union_object)
+		{
+			set_semantic_children(variable,
+				std::vector<SemanticFactId>(1,
+					semantic_constructor_action(binding_id, init)));
 		}
 		declaration_semantic_ids_.push_back(variable);
 	}
@@ -2399,6 +2663,25 @@ SemanticFactId PA11SemanticModel::semantic_declaration_statement(
 		throw std::runtime_error("PA12 unsupported declaration statement");
 	}
 }
+SemanticFactId PA11SemanticModel::semantic_anonymous_union_statement(
+	const PA10AstNode& node)
+{
+	const AnonymousUnionFact* anonymous = anonymous_union_fact(node);
+	if (anonymous == NULL || !anonymous->storage.valid())
+		throw std::runtime_error("PA12 unsupported class statement");
+	const Binding& storage = binding(anonymous->storage);
+	SemanticFact variable(SemanticFactKind::Variable, storage.type,
+		SemanticValueCategory::Prvalue, &node);
+	variable.binding = anonymous->storage;
+	variable.selected_scope = anonymous->owner;
+	const SemanticFactId variable_id = make_semantic_fact(variable);
+	set_semantic_children(variable_id,
+		std::vector<SemanticFactId>(1,
+			semantic_constructor_action(anonymous->storage, node)));
+	return make_expression_fact(SemanticFactKind::SimpleDeclaration,
+		TypeId(), SemanticValueCategory::Prvalue, node,
+		std::vector<SemanticFactId>(1, variable_id));
+}
 SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 	ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
 	unsigned int switch_depth, SwitchValidationContext* switch_context)
@@ -2407,6 +2690,8 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 	{
 	case PA10NodeKind::EmptyDeclaration:
 		return SemanticFactId();
+	case PA10NodeKind::ClassSpecifier:
+		return semantic_anonymous_union_statement(node);
 	case PA10NodeKind::EnumSpecifier:
 		return make_expression_fact(SemanticFactKind::SimpleDeclaration,
 			TypeId(), SemanticValueCategory::Prvalue, node,
@@ -2671,316 +2956,6 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 	}
 	default:
 		break;
-	}
-}
-const char* PA11SemanticModel::semantic_category_name(SemanticValueCategory category) const
-{
-	switch (category)
-	{
-	case SemanticValueCategory::Lvalue: return "lvalue";
-	case SemanticValueCategory::Prvalue: return "prvalue";
-	case SemanticValueCategory::Xvalue: return "xvalue";
-	}
-	return "prvalue";
-}
-std::string PA11SemanticModel::semantic_operator(const SemanticFact& fact) const
-{
-	std::ostringstream result;
-	result << simple_token_type_name(fact.token) << ':';
-	if (fact.source != NULL && fact.source->has_token &&
-		fact.source->token == fact.token && fact.source->token_spelling != 0)
-		result << ast_.spelling(fact.source->token_spelling);
-	else if (fact.token == SimpleTokenType::OP_ASS)
-		result << '=';
-	return result.str();
-}
-std::string PA11SemanticModel::semantic_literal_token(const SemanticFact& fact) const
-{
-	if (fact.source == NULL)
-		return std::string();
-	if (fact.has_literal_value)
-	{
-		std::ostringstream result;
-		if (fact.literal_value_unsigned)
-			result << fact.literal_value;
-		else
-		{
-			if (fact.literal_value_negative)
-				result << '-';
-			result << fact.literal_value;
-		}
-		return result.str();
-	}
-	std::ostringstream result;
-	if (fact.source->kind == PA10NodeKind::KeywordLiteral)
-		result << simple_token_type_name(fact.source->token) << ':';
-	if (fact.source->kind == PA10NodeKind::Literal)
-	{
-		if (fact.source->text != 0)
-			result << ast_.spelling(fact.source->text);
-	}
-	else if (fact.source->token_spelling != 0)
-		result << ast_.spelling(fact.source->token_spelling);
-	return result.str();
-}
-void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
-	std::size_t depth) const
-{
-	if (!id.valid() || id.value >= semantic_facts_.size())
-		throw std::runtime_error("invalid PA12 semantic fact");
-	const SemanticFact& fact = semantic_facts_[id.value];
-	const std::string type = fact.type.valid() ? render_type(fact.type) :
-		std::string();
-	const std::string op = semantic_operator(fact);
-	for (std::size_t indent = 0; indent < depth; ++indent)
-		output << "  ";
-	switch (fact.kind)
-	{
-	case SemanticFactKind::Variable:
-	{
-		const Binding& value = binding(fact.binding);
-		if (value.kind == BindingKind::TypeAlias)
-			output << "type-alias ";
-		else if (value.kind == BindingKind::Function)
-			output << "function-declaration ";
-		else
-			output << "variable ";
-		if (value.kind == BindingKind::Function && fact.selected_scope.valid())
-			output << qualified_binding_name(fact.selected_scope, value.name);
-		else
-			output << name_text(value.name);
-		output << ' ' << render_binding_type(value) << '\n';
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	}
-	case SemanticFactKind::TypeAlias:
-	{
-		const Binding& value = binding(fact.binding);
-		output << "type-alias " << name_text(value.name) << ' ' <<
-			render_binding_type(value) << '\n';
-		return;
-	}
-	case SemanticFactKind::SimpleDeclaration:
-		output << "simple-declaration\n";
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	case SemanticFactKind::CompoundStatement:
-		output << "compound-statement\n";
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	case SemanticFactKind::ReturnStatement:
-		output << "return-statement\n";
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	case SemanticFactKind::ExpressionStatement:
-		output << "expression-statement\n";
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	case SemanticFactKind::CallExpression:
-		output << "call-expression " << semantic_category_name(fact.category) <<
-			' ' << type << '\n';
-		if (fact.has_callee)
-		{
-			const Binding& callee = binding(fact.selected_binding);
-			for (std::size_t indent = 0; indent < depth + 1; ++indent)
-				output << "  ";
-			output << "callee " << qualified_binding_name(fact.selected_scope,
-				callee.name) << ' ' << render_binding_type(callee) << '\n';
-		}
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-				depth + 1);
-		return;
-	case SemanticFactKind::IdExpression:
-		output << "id-expression " << semantic_category_name(fact.category) <<
-			' ' << type << ' ' << semantic_name(fact) << '\n';
-		return;
-	case SemanticFactKind::Literal:
-		output << "literal " << semantic_category_name(fact.category) << ' ' <<
-			type << ' ' << semantic_literal_token(fact) << '\n';
-		return;
-	case SemanticFactKind::UnaryExpression:
-		output << "unary-expression " << semantic_category_name(fact.category) <<
-			' ' << type << ' ' << op << '\n';
-		break;
-	case SemanticFactKind::PostfixExpression:
-		output << "postfix-expression " << semantic_category_name(fact.category) <<
-			' ' << type << ' ' << op << '\n';
-		break;
-	case SemanticFactKind::BinaryExpression:
-		output << "binary-expression " << semantic_category_name(fact.category) <<
-			' ' << type << ' ' << op << '\n';
-		break;
-	case SemanticFactKind::AssignmentExpression:
-		output << "assignment-expression " << semantic_category_name(fact.category) <<
-			' ' << type << ' ' << op << '\n';
-		break;
-	case SemanticFactKind::ConditionalExpression:
-		output << "conditional-expression " << semantic_category_name(fact.category) <<
-			' ' << type << '\n';
-		break;
-	case SemanticFactKind::CastExpression:
-		output << "cast-expression " << semantic_category_name(fact.category) <<
-			' ' << type;
-		if (fact.source != NULL && fact.source->has_token)
-			output << ' ' << op;
-		output << '\n';
-		break;
-	case SemanticFactKind::SubscriptExpression:
-		output << "subscript-expression " << semantic_category_name(fact.category) <<
-			' ' << type << '\n';
-		break;
-	case SemanticFactKind::BracedInitList:
-		output << "braced-init-list " << semantic_category_name(fact.category) <<
-			' ' << type << '\n';
-		break;
-	case SemanticFactKind::SizeofExpression:
-		output << "sizeof-expression " << semantic_category_name(fact.category) <<
-			' ' << type << '\n';
-		return;
-	case SemanticFactKind::IfStatement:
-		output << "if-statement\n";
-		break;
-	case SemanticFactKind::ThenBranch:
-		output << "then\n";
-		break;
-	case SemanticFactKind::ElseBranch:
-		output << "else\n";
-		break;
-	case SemanticFactKind::SwitchStatement:
-		output << "switch-statement\n";
-		break;
-	case SemanticFactKind::WhileStatement:
-		output << "while-statement\n";
-		break;
-	case SemanticFactKind::DoStatement:
-		output << "do-statement\n";
-		break;
-	case SemanticFactKind::ForStatement:
-		output << "for-statement\n";
-		break;
-	case SemanticFactKind::ForInitStatement:
-		output << "for-init-statement\n";
-		break;
-	case SemanticFactKind::Condition:
-		output << "condition\n";
-		break;
-	case SemanticFactKind::ConditionDeclaration:
-		output << "condition-declaration\n";
-		break;
-	case SemanticFactKind::Iteration:
-		output << "iteration\n";
-		break;
-	case SemanticFactKind::CaseStatement:
-		output << "case-statement\n";
-		break;
-	case SemanticFactKind::DefaultStatement:
-		output << "default-statement\n";
-		break;
-	case SemanticFactKind::BreakStatement:
-		output << "break-statement\n";
-		break;
-	case SemanticFactKind::ContinueStatement:
-		output << "continue-statement\n";
-		break;
-	}
-	for (std::size_t i = 0; i < fact.child_count; ++i)
-		dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
-			depth + 1);
-}
-void PA11SemanticModel::dump_pa12_function(std::ostream& output, const PA10AstNode& node,
-	std::size_t depth) const
-{
-	const FunctionFact* function = function_fact(node);
-	if (function == NULL || !function->body_fact.valid())
-		throw std::runtime_error("PA12 function semantic fact is missing");
-	const Binding& value = binding(function->binding);
-	for (std::size_t indent = 0; indent < depth; ++indent)
-		output << "  ";
-	output << "function-definition " << qualified_binding_name(function->owner,
-		value.name) << ' ' << render_binding_type(value) << '\n';
-	if (type_kind(value.type) != TypeKind::Function)
-		throw std::runtime_error("PA12 function binding has non-function type");
-	const TypeKey& function_type = types_[value.type.value];
-	const Scope& function_scope = scopes_[function->function_scope.value];
-	std::size_t parameter_index = 0;
-	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
-	{
-		const Binding& parameter = binding(function_scope.bindings[i]);
-		if (parameter.kind != BindingKind::Parameter)
-			continue;
-		for (std::size_t indent = 0; indent < depth + 1; ++indent)
-			output << "  ";
-		output << "parameter ";
-		if (parameter.name.valid())
-			output << name_text(parameter.name);
-		output << ' ' << render_type(parameter_index < function_type.parameters.size() ?
-			function_type.parameters[parameter_index] : parameter.type) << '\n';
-		++parameter_index;
-	}
-	dump_pa12_fact(output, function->body_fact, depth + 1);
-}
-void PA11SemanticModel::dump_pa12_top_node(std::ostream& output, const PA10AstNode& node,
-	ScopeId scope, std::size_t depth) const
-{
-	switch (node.kind)
-	{
-	case PA10NodeKind::NamespaceDefinition:
-	{
-		const NamespaceFact* namespace_fact = this->namespace_fact(node);
-		const ScopeId namespace_scope = namespace_fact == NULL ?
-			ScopeId() : namespace_fact->scope;
-		if (!namespace_scope.valid())
-			throw std::runtime_error("PA12 namespace dump fact is missing");
-		for (std::size_t indent = 0; indent < depth; ++indent)
-			output << "  ";
-		output << "namespace-definition " << ast_.producer_spelling(
-			node.producer_spelling) << '\n';
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			if (node.children[i].kind != PA10NodeKind::InlineMarker)
-				dump_pa12_top_node(output, node.children[i], namespace_scope,
-					depth + 1);
-		return;
-	}
-	case PA10NodeKind::LinkageSpecification:
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			dump_pa12_top_node(output, node.children[i], scope, depth);
-		return;
-	case PA10NodeKind::SimpleDeclaration:
-	{
-		const DeclarationFact* declaration = declaration_fact(node);
-		if (declaration == NULL)
-			return;
-		for (std::size_t i = 0; i < declaration->semantic_count; ++i)
-			dump_pa12_fact(output, declaration_semantic_ids_[
-				declaration->semantic_begin + i], depth);
-		return;
-	}
-	case PA10NodeKind::AliasDeclaration:
-	{
-		const DeclarationFact* declaration = declaration_fact(node);
-		if (declaration == NULL || declaration->semantic_count != 1 ||
-			declaration->semantic_begin == InvalidIdentityValue)
-			throw std::runtime_error("PA12 alias semantic fact is missing");
-		dump_pa12_fact(output, declaration_semantic_ids_[
-			declaration->semantic_begin], depth);
-		return;
-	}
-	case PA10NodeKind::FunctionDefinition:
-		dump_pa12_function(output, node, depth);
-		return;
-	default:
-		return;
 	}
 }
 } // namespace pa11_semantic_internal

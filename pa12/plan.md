@@ -1,189 +1,149 @@
-# PA12 typed constant/intrinsic call boundary
+# PA12 typed local record-object/member checkpoint
 
 ## Stage Design
 
-`PA11SemanticModel` remains the single semantic owner. PA11 core forms canonical
-`TypeId`, `BindingId`, `ScopeId`, declaration, and constant-value facts. PA12
-forms expression/call/conversion facts and renders the existing deterministic
-dump. The flow is PA10 AST -> PA11 typed identity -> PA12 typed facts -> cold
-rendering; names and types are never rendered and reparsed.
+`PA11SemanticModel` remains the sole semantic owner: PA10 AST is reduced to
+canonical `TypeId`, `NamedRecordId`, `ScopeId`, and `BindingId` facts, PA12
+adds typed expression/statement children, and the cold renderer formats the
+facts. This checkpoint handles ordinary local anonymous-union objects,
+block-scope anonymous-union storage/injected members, and elaborated local
+record copy-initialization. Storage, constructor-action, member selection,
+value category, cv-qualified member type, and children are recorded once.
 
-This checkpoint classifies the exact source spelling of the two supported
-intrinsics once into `BuiltinKind`. `__builtin_constant_p` validates its one
-operand locally, folds the supported integral constant-expression subtree, and
-returns a typed `int` literal (1 or 0); its validation-only operand facts are
-rolled back from the local arena tail and do not remain in the dump.
-`__builtin_abort()` accepts exactly zero arguments and uses one model-owned
-function `BindingId` for its typed void call and stable callee spelling.
-Ordinary unknown identifiers still use ordinary lookup.
-
-Constexpr declaration facts retain their typed spec flag. Only a complete
-constexpr object initializer gets the checked target-directed literal fact
-typing; the original conversion is still recorded against the source fact, so
-ordinary declarations and conversion rules are unchanged. The typed
-`integer_zero` result fact is passed into target conversion ranking, including
-pointer and `nullptr_t` contexts. Fold failures use a typed nonconstant status;
-semantic errors are not downgraded. Call work is local to the callee AST and
-argument count/subtrees. No whole-arena scan, retry loop, per-node owning
-string, new semantic path, test/ref/grammar/harness change, or new `.cpp` is
-permitted for this checkpoint.
+Rare relations are sparse typed sidecars keyed by `BindingId` and
+`NamedRecordId`; ordinary `Binding` and `NamedRecord` objects remain at their
+baseline size. Built-in dot/arrow access resolves from the operand's
+canonical record type and class scope. Synthetic facts derive from generated
+identity and typed IDs. Ordinary `const` record objects skip only the
+integral constant-evaluation shortcut; integral/enum propagation and
+constexpr behavior remain unchanged. Member functions, overloaded operators,
+constructor overload selection, and all residual PA12 families remain out of
+scope.
 
 ## Failure Map
 
-Turn-start baseline at commit `43105867`: PA12 `142/166` passing, exactly `24`
-failing, and all `166/166` tests covered. The complete turn-start map is:
+Turn-start baseline at HEAD `bf67e445`: PA12 `146/166` passing, `20` failures,
+and all `166/166` paths covered. The complete map and current status are:
 
-Active four-path checkpoint:
+Declaration/record/parser:
 
-- `pa12/tests/general/200-builtin-constant-p-propagated-expression.t`
-- `pa12/tests/general/200-constexpr-complete-object-cv.t`
-- `pa12/tests/general/300-builtin-abort-semantics.t`
-- `pa12/tests/general/300-builtin-constant-p-call.t`
+- `pa12/tests/general/200-local-anonymous-union-variable.t` — resolved.
+- `pa12/tests/general/300-block-anonymous-union-injected-members.t` — resolved.
+- `pa12/tests/general/300-elaborated-local-struct-copy-init.t` — resolved.
+- `pa12/tests/general/300-local-extern-function-declaration.t` — residual; excluded PA10 parser/declarator boundary.
 
-Excluded residual families (20 paths; not changed by this checkpoint):
+Member-pointer/cast/reference:
 
-- Declaration/anonymous-union formation:
-  - `pa12/tests/general/200-local-anonymous-union-variable.t`
-  - `pa12/tests/general/300-block-anonymous-union-injected-members.t`
-  - `pa12/tests/general/300-elaborated-local-struct-copy-init.t`
-  - `pa12/tests/general/300-local-extern-function-declaration.t`
-- Member-pointer, cast, and reference binding:
-  - `pa12/tests/general/300-decltype-functional-cast.t`
-  - `pa12/tests/general/300-member-function-pointer-return-pointer-const.t`
-  - `pa12/tests/general/300-member-function-pointer-type-alias-and-function.t`
-  - `pa12/tests/general/300-member-pointer-type-alias-and-function.t`
-  - `pa12/tests/general/300-multidimensional-array-const-reference-binding.t`
-  - `pa12/tests/general/300-reference-binding-pointee-const-pointer.t`
-  - `pa12/tests/general/300-scoped-enum-functional-cast-integral.t`
-  - `pa12/tests/general/300-zero-arg-functional-cast-alias.t`
-- Lookup, namespace, and overload resolution:
-  - `pa12/tests/general/300-namespace-function-body-later-anonymous-overload.t`
-  - `pa12/tests/general/300-qualified-direct-function-hides-using-directive.t`
-  - `pa12/tests/general/300-reopened-unnamed-namespace-call.t`
-  - `pa12/tests/general/300-static-cast-member-overload-prefers-nontemplate.t`
-  - `pa12/tests/general/300-static-cast-overloaded-function-template-argument.t`
-  - `pa12/tests/general/300-unnamed-namespace-definition.t`
-  - `pa12/tests/general/300-unnamed-namespace-qualified-call.t`
-  - `pa12/tests/general/300-unnamed-namespace-unqualified-call.t`
+- `pa12/tests/general/300-decltype-functional-cast.t` — residual.
+- `pa12/tests/general/300-member-function-pointer-return-pointer-const.t` — residual.
+- `pa12/tests/general/300-member-function-pointer-type-alias-and-function.t` — residual.
+- `pa12/tests/general/300-member-pointer-type-alias-and-function.t` — residual.
+- `pa12/tests/general/300-multidimensional-array-const-reference-binding.t` — residual.
+- `pa12/tests/general/300-reference-binding-pointee-const-pointer.t` — residual.
+- `pa12/tests/general/300-scoped-enum-functional-cast-integral.t` — residual.
+- `pa12/tests/general/300-static-cast-member-overload-prefers-nontemplate.t` — residual.
+- `pa12/tests/general/300-static-cast-overloaded-function-template-argument.t` — residual.
+- `pa12/tests/general/300-zero-arg-functional-cast-alias.t` — residual.
 
-The focused run removed the active four (`4/4` passing). The fresh final
-`make test-pa12` covered all `166/166` paths and produced `146/166` passing
-with exit `2`: the turn-start `24` failures became exactly the excluded `20`,
-with no current-only failures and no supplied-baseline residual left
-unresolved. Its failure paths are byte-for-byte identical to the supplied
-post-`f8b8c49b` log. These paths remain excluded because they belong to
-declaration/anonymous-union, member-pointer/cast/reference, or
-lookup/namespace/overload families rather than this intrinsic boundary.
+Namespace/lookup:
+
+- `pa12/tests/general/300-namespace-function-body-later-anonymous-overload.t` — residual.
+- `pa12/tests/general/300-qualified-direct-function-hides-using-directive.t` — residual.
+- `pa12/tests/general/300-reopened-unnamed-namespace-call.t` — residual.
+- `pa12/tests/general/300-unnamed-namespace-definition.t` — residual.
+- `pa12/tests/general/300-unnamed-namespace-qualified-call.t` — residual.
+- `pa12/tests/general/300-unnamed-namespace-unqualified-call.t` — residual.
+
+The expected fresh residual set after the active checkpoint is exactly these
+17 paths: the local-extern path, the ten member-pointer/cast/reference paths,
+and the six namespace/lookup paths above.
 
 ## Active Checkpoint
 
-Implementation scope is exactly:
+Implementation scope is four existing source owners plus this plan:
 
-- `dev/src/pa11_semantic_model.h`: typed builtin identity, declaration-owned
-  constexpr flag, model-owned builtin binding state, typed fold-failure type,
-  and the four-tail rollback guard declaration.
-- `dev/src/pa11_semantic_core.cpp`: initialize builtin identities and publish
-  the constexpr declaration fact; own builtin spelling classification, the
-  abort binding, shared type normalization, rollback implementation, and
-  bounded integral fold safety.
-- `dev/src/pa12_semantic.cpp`: local intrinsic call semantics, typed null-result
-  conversion propagation, validation-fact tail rollback, and narrow constexpr
-  literal retargeting; the call helper validates the AST first and catches
-  only the typed integral-folding boundary.
-- `pa12/plan.md` and `pa12/audit.md`: current checkpoint plan and audit record.
+- `dev/src/pa11_semantic_model.h`: removes rare metadata from every hot
+  `Binding`/`NamedRecord`; adds compact `BindingId`/`NamedRecordId` sidecars.
+- `dev/src/pa11_semantic_core.cpp`: owns sidecar insertion/lookup, canonical
+  `add_value` and `inject_anonymous_union` declaration/scope formation,
+  typed anonymous-union storage/member relations, visible elaborated-record
+  reuse, direct block class-specifier processing, and the narrow const-record
+  initializer guard.
+- `dev/src/pa11_semantic.cpp`: cold PA12-mode record/storage/constructor
+  display and binding rendering, accepted as the renderer owner.
+- `dev/src/pa12_semantic.cpp`: PA12-only builtin/rollback helpers, synthetic
+  constructor binding and `AnonymousUnionFact` access, dot/arrow member facts,
+  injected-member roots, constructor actions, anonymous-union statement facts,
+  cv-preserving member types, and PA12 analysis.
 
-Focused validation commands:
-
-```sh
-make -C pa12 -j2
-make -C pa12 check TEST='tests/general/200-builtin-constant-p-propagated-expression.t tests/general/300-builtin-abort-semantics.t tests/general/300-builtin-constant-p-call.t tests/general/200-constexpr-complete-object-cv.t'
-make -C pa12 check TEST='tests/spec/200-switch-statement.t tests/general/300-nonconstant-case-label-bad.t tests/general/200-sizeof-expression.t tests/spec/200-sizeof-typeid.t tests/general/300-enum-comparisons.t tests/general/200-bool-conditional-mixed-value-category.t tests/general/300-nullptr-equality.t tests/general/300-pointer-nullptr-conditional.t tests/spec/300-nullptr-pointer-conversion.t tests/general/300-pointer-to-void-drops-cv-bad.t tests/general/300-bad-pointer-integer-equality.t tests/spec/100-simple-call.t tests/general/100-builtin-prefix-user-function-call.t'
-```
+No tests, refs, fixtures, grammar, harness, or generated repository files were
+changed. The semantic hot path performs direct typed sidecar/index lookups;
+it does not scan arenas or recover relations from rendered names.
 
 ## Spec Alignment
 
-- README contract: supports the PA12 propagated integral constant query,
-  zero-argument abort recognition, bounded intrinsic arity, deterministic
-  call/literal output, and constexpr complete-object cv facts while retaining
-  ordinary call and conversion behavior.
-- `spec.md` sections 1-2: one forward production pipeline and typed fact
-  continuity; builtin kind, `BindingId`, `TypeId`, and source-owned conversion
-  facts remain typed through the dump boundary.
-- `spec.md` section 3: the semantic owner records the selected builtin callee,
-  value category, result type, and conversion facts; ordinary lookup remains
-  scope/candidate based.
-- `spec.md` section 4: intrinsic arity and operand traversal are bounded by
-  the local call AST; no whole-program retry, broad invalidation, or hot-path
-  owning text is introduced.
-- `spec.md` section 7: evidence below is structural and deterministic only;
-  no timing, memory, scaling, or generated-code performance claim is made.
-
-Exception-boundary audit: `semantic_expression` runs before the
-`eval_constexpr` catch, so unknown names, invalid operators/conversions,
-nested-call validation failures, and intrinsic arity errors escape as PA12
-errors. Only `NonConstantExpression` fold failures are converted to the
-required typed zero; malformed ASTs, invalid `sizeof` types, and other
-`runtime_error` model failures escape. `SemanticTailGuard` restores the fact,
-child, conversion, and semantic-name tails on an operand failure and discards
-them after the operand type is known. The supported evaluator folds the left
-side before `&&`/`||`, returns without evaluating the right side when the
-result is determined, and still sees both operands through prior semantic
-validation. Unsigned multiply/shift use unsigned intermediates, shift counts
-are bounded to 64-bit operands, and signed `INT64_MIN /|% -1` is nonconstant.
-The constexpr retarget call sites are both guarded by the declaration-owned
-`is_constexpr` flag, and the helper additionally requires a complete object
-target and a literal source; ordinary `const` declarations and recorded source
-conversions are untouched.
+- README contract: supports ordinary local anonymous-union declarations,
+  injected members, local simple declarations, copy-initialization, and
+  deterministic resolved expression output. Class-aware calls,
+  member-function calls, overloaded operators, and constructor selection are
+  not implemented.
+- `spec.md` sections 1-2: preserves the PA10 AST -> PA11 canonical typed model
+  -> PA12 fact -> cold renderer pipeline and canonical identity ownership.
+- `spec.md` sections 3-4: dot/arrow access uses the operand record/class scope,
+  rejects non-record/non-pointer, missing, and function members, and retains
+  the canonical object cv on the selected member type.
+- `spec.md` section 7: sparse sidecars and synthetic facts are bounded typed
+  storage; no name rendering/reparsing or broad invalidation is introduced.
 
 ## Performance Evidence
 
-Structural probes used immutable landed executable
-`/tmp/pa12-builtin-structure-cppgm-final-immutable` (mode `555`, SHA-256
-`d3f8456f118c61513ac8a41ba3d7cb9f2003b446560886101e13417e9bb80bc4`) and
-inputs `/tmp/pa12-builtin-structure-small.t` (SHA-256
-`4c40a09039fb6ecddb3ce5d6ad79d61669a42d86d6dad242981b45197220072a`) and
-`/tmp/pa12-builtin-structure-large.t` (SHA-256
-`2ba421be9f0a386ce1ab9199db11c551ed5127ac912b314398aed9390d4ec725`).
-Each input was compiled twice with the immutable executable:
+Out-of-tree size probe, compiled against the current header and against the
+HEAD `bf67e445` header, reports:
 
-| probe | builtin calls | literal facts | binary facts | output lines | exits | repeated output SHA-256 |
-|---|---:|---:|---:|---:|---|---|
-| small | 4 | 4 | 2 | 17 | 0/0 | `f074ccf4132fe32f18913243be1c8a6c8d00551b8c93717600df481ab995538b` |
-| large | 16 | 16 | 8 | 60 | 0/0 | `f36e38c55c5f65fe6b38e3cde16abe12f8d12d6e3a9785d204a31316b406db39` |
+| type | current | HEAD |
+|---|---:|---:|
+| `sizeof(Binding)` | 80 | 80 |
+| `sizeof(NamedRecord)` | 120 | 120 |
 
-The large probe repeats the same local call/subtree shape as the small probe.
-The counts and byte-identical pairs support bounded local work and
-determinism for the landed implementation only; the old executable does not
-prove repaired behavior. Current boundedness is supported by the reviewed
-local four-tail code shape and the fresh focused/broad results. This is not a
-timing, asymptotic, memory, or scaling measurement.
+The sparse sidecar values are 24 bytes each (`BindingSidecar` and
+`NamedRecordSidecar`) and are present only for participating rare identities.
+
+Immutable amended-state output probe: `/tmp/pa12-sidecar-amended-structure.b6ldpj/cppgm++-immutable`,
+mode `555`, size `1179784`, SHA-256
+`ce5192f9c7264f6c415769240114019333f206df88e5aa9e03fae6c3d3447622`.
+The source shapes and outputs are outside the repository. Both runs for each
+shape exited `0` and were byte-identical:
+
+| shape | output lines | member facts | constructor actions | run exits | repeated output SHA-256 |
+|---|---:|---:|---:|---:|---|
+| small | 26 | 2 | 1 | `0/0` | `043a755a11e74be2bec17bd2c3293ad1d918ebc6232990081d9984977331e0c7` |
+| large | 103 | 23 | 1 | `0/0` | `bfcb9836a791539adbcb526632853be75d6d900303940fdeef576370325b0add` |
+
+Arrow/cv probe on that immutable amended-state executable: valid `S*`/`const
+S*` member access exited `0` and rendered
+`member-expression lvalue int OP_ARROW:x` /
+`member-expression lvalue const int OP_ARROW:x`; non-pointer operand, missing
+member, and member-function access exited `1/1/1`, respectively. These are
+structural/deterministic probes, not timing or asymptotic claims.
 
 ## Checkpoint Ledger
 
-| state | evidence | status |
+| checkpoint | exact evidence | status |
 |---|---|---|
-| turn-start | Clean workspace at `43105867`; PA12 `142/166`, `24` failures, `166/166` covered; earlier PAs supplied passing. | recorded |
-| implementation | Landed `f8b8c49b` audited in the three source owners; final repair adds typed null-result propagation, typed fold-failure handling, four-tail `SemanticTailGuard` rollback, and bounded integral fold safety. No tests, refs, fixtures, grammar, harness, scripts, generated artifacts, or new `.cpp`. | complete/current |
-| focused active | Fresh final build passed; exact active set passed `4/4`. | passed |
-| neighboring controls | Fresh final exact checked-in control set passed `13/13`, including valid and checked-invalid case/sizeof/enum/conditional/nullptr/direct-call controls and the builtin-prefix boundary. | passed |
-| typed/evaluator probes | Fresh out-of-tree typed-zero and valid nonconstant-call probes exited `0`; short-circuit evaluator results were `1/1`; unsafe fold cases were `0`; valid fold cases were `1/1/1`; semantic-invalid short-circuit and malformed arity/name/abort/sizeof probes retained exit `1`. | passed |
-| structural evidence | Retained immutable landed evidence: small/large local-call probes had 4/16 source calls and 4/16 output literal facts; repeated output pairs were byte-identical. It is historical only; no current timing or asymptotic claim. | recorded |
-| final broad PA12 | Fresh `make test-pa12` covered all `166/166`, exited `2`, passed `146/166`, and had exactly the excluded 20 failures; normalized against the supplied log with 0 current-only and 0 supplied-only paths. | passed gate |
-| prior/file gates | Fresh exact prior-through-PA11 passed `685/685`; fresh exact file audit exited `0` with exactly the two known header warnings. | passed |
-| scope/commit | The final mutation is exactly the three source owners plus `pa12/plan.md` and `pa12/audit.md`; diff/path checks pass before the one authorized commit. No outside path is changed. | current |
-
-Historical context: earlier PA12 checkpoints established the shared typed
-expression, conversion, statement, lookup, and deterministic dump foundation;
-this row is the next isolated semantic-boundary increment rather than a reset
-of that work.
+| Turn start | HEAD `bf67e445`; PA12 `146/166`, 20 failures, all 166 covered; through-PA11 and file audit supplied as passing. | recorded |
+| Build | `make -C pa12 -j2` | passed |
+| Active paths | `pa12/tests/general/200-local-anonymous-union-variable.t`, `pa12/tests/general/300-block-anonymous-union-injected-members.t`, `pa12/tests/general/300-elaborated-local-struct-copy-init.t` | `3/3` |
+| PA12 controls | `pa12/tests/general/300-most-vexing-local-function-member-call-bad.t`, `pa12/tests/general/200-bad-noncallable-variable.t`, `pa12/tests/spec/100-simple-call.t`, `pa12/tests/spec/100-local-arith.t`, `pa12/tests/general/100-cast-to-void-expression.t`, `pa12/tests/general/200-constexpr-complete-object-cv.t`, `pa12/tests/general/300-pointer-plus-anonymous-enum.t`, `pa12/tests/spec/100-integral-conversions.t`, `pa12/tests/general/100-builtin-prefix-user-function-call.t` | `9/9` |
+| PA11 control | `pa11/tests/spec/200-namespace-anonymous-union-injected-members.t` | `1/1` |
+| Size/structure | Final and HEAD `Binding`/`NamedRecord` sizes equal; immutable small/large and arrow probes recorded above. | passed |
+| Broad PA12 | `make test-pa12`: all `166/166` paths covered, exit `2`, `149/166` passed, and exactly the 17 residual paths listed above; no active or current-only failure. | passed |
+| Through PA11 | `n=12; make test-report-through-pa$((n - 1))` | `685/685` passed |
+| File audit | `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` passed with exactly two known warnings: `dev/src/cpp_semantic_core.h` and `dev/src/pa11_semantic_model.h`. | passed |
+| Scope | `git diff --check` passed; changed-path audit found exactly `dev/src/pa11_semantic.cpp`, `dev/src/pa11_semantic_core.cpp`, `dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic.cpp`, and `pa12/plan.md`. | passed |
+| Commit | `pa12: implement typed local record-object semantics` | complete/current |
 
 ## Next Checkpoint
 
-This intrinsic checkpoint's broad, through-PA11, and file-audit gates are
-complete, but PA12 is not complete. The exact 20 residual paths remain
-explicitly excluded. The next bounded implementation family should be the
-four declaration/anonymous-union paths listed above (`200-local-anonymous-
-union-variable`, `300-block-anonymous-union-injected-members`,
-`300-elaborated-local-struct-copy-init`, and `300-local-extern-function-
-declaration`), and requires separate supervisor authorization; no residual
-family is implied by this commit.
+This checkpoint is committed and clean. The next bounded residual family
+requires separate authorization; do not expand into local-extern,
+member-pointer/cast/reference, or namespace/lookup families.

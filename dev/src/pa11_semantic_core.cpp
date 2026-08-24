@@ -6,20 +6,22 @@ using namespace pa11_semantic_storage;
 
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  scopes_(), bindings_(), global_(), deferred_scopes_(),
+	  named_record_sidecars_(), scopes_(), bindings_(), binding_sidecars_(),
+	  global_(), deferred_scopes_(),
 	  dump_binding_views_(), dump_scope_views_(),
 	  anonymous_union_count_(0), anonymous_enum_count_(0), creation_order_(0),
 	  lookup_marks_(),
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
 	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
-	function_fact_index_(), namespace_facts_(), namespace_fact_index_(),
+	function_fact_index_(), synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(),
 	conversion_facts_(), declaration_semantic_ids_(),
-	semantic_name_components_(), builtin_constant_p_name_(),
-	builtin_abort_name_(), builtin_abort_binding_()
+	semantic_name_components_(), anonymous_union_fact_index_(),
+	builtin_constant_p_name_(), builtin_abort_name_(),
+	builtin_abort_binding_(), pa12_render_mode_(false)
 {
 	global_ = create_scope(ScopeKind::Namespace, ScopeId(), NameId());
 	for (int i = static_cast<int>(FundamentalType::SignedChar);
@@ -242,78 +244,6 @@ TypeId PA11SemanticModel::strip_top_cv_type(TypeId type)
 		type = types_[type.value].child;
 	return type_kind(type) == TypeKind::Pointer && types_[type.value].cv != 0 ?
 		make_pointer(types_[type.value].child) : type;
-}
-BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
-{
-	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
-		node.global_name || node.name_prefix_count != 0)
-		return BuiltinKind::None;
-	const NamePath path = name_path(node);
-	if (path.components.size() != 1)
-		return BuiltinKind::None;
-	if (path.last() == builtin_constant_p_name_)
-		return BuiltinKind::ConstantP;
-	if (path.last() == builtin_abort_name_)
-		return BuiltinKind::Abort;
-	return BuiltinKind::None;
-}
-BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
-{
-	if (kind != BuiltinKind::Abort)
-		return BindingId();
-	if (builtin_abort_binding_.valid())
-		return builtin_abort_binding_;
-	const TypeId function_type = make_function(std::vector<TypeId>(), false,
-		fundamental(FundamentalType::Void));
-	const BindingId result(bindings_.size());
-	bindings_.push_back(Binding(BindingKind::Function, builtin_abort_name_,
-		function_type));
-	builtin_abort_binding_ = result;
-	return result;
-}
-PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
-	: model_(model), semantic_begin_(model.semantic_facts_.size()),
-	  children_begin_(model.semantic_children_.size()),
-	  conversion_begin_(model.conversion_facts_.size()),
-	  names_begin_(model.semantic_name_components_.size()), active_(true)
-{}
-PA11SemanticModel::SemanticTailGuard::~SemanticTailGuard()
-{
-	discard();
-}
-void PA11SemanticModel::SemanticTailGuard::discard()
-{
-	if (!active_)
-		return;
-	model_.semantic_facts_.resize(semantic_begin_);
-	model_.semantic_children_.resize(children_begin_);
-	model_.conversion_facts_.resize(conversion_begin_);
-	model_.semantic_name_components_.resize(names_begin_);
-	active_ = false;
-}
-bool PA11SemanticModel::builtin_cast_target(const PA10AstNode& node, TypeId* target) const
-{
-	if (node.kind != PA10NodeKind::IdExpression || !node.has_token)
-		return false;
-	FundamentalType fundamental_type;
-	switch (node.token)
-	{
-	case SimpleTokenType::KW_BOOL: fundamental_type = FundamentalType::Bool; break;
-	case SimpleTokenType::KW_CHAR: fundamental_type = FundamentalType::Char; break;
-	case SimpleTokenType::KW_CHAR16_T: fundamental_type = FundamentalType::Char16T; break;
-	case SimpleTokenType::KW_CHAR32_T: fundamental_type = FundamentalType::Char32T; break;
-	case SimpleTokenType::KW_DOUBLE: fundamental_type = FundamentalType::Double; break;
-	case SimpleTokenType::KW_FLOAT: fundamental_type = FundamentalType::Float; break;
-	case SimpleTokenType::KW_INT: fundamental_type = FundamentalType::Int; break;
-	case SimpleTokenType::KW_LONG: fundamental_type = FundamentalType::LongInt; break;
-	case SimpleTokenType::KW_SHORT: fundamental_type = FundamentalType::ShortInt; break;
-	case SimpleTokenType::KW_UNSIGNED: fundamental_type = FundamentalType::UnsignedInt; break;
-	case SimpleTokenType::KW_VOID: fundamental_type = FundamentalType::Void; break;
-	case SimpleTokenType::KW_WCHAR_T: fundamental_type = FundamentalType::WcharT; break;
-	default: return false;
-	}
-	*target = fundamental(fundamental_type);
-	return true;
 }
 bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node, NamePath* result)
 {
@@ -1018,6 +948,29 @@ BindingId PA11SemanticModel::store_binding(ScopeId scope, const Binding& binding
 	current.bindings.insert(current.bindings.begin() + position, result);
 	return result;
 }
+const BindingSidecar* PA11SemanticModel::binding_sidecar(BindingId id) const
+{
+	return id.valid() ? binding_sidecars_.find(id) : NULL;
+}
+void PA11SemanticModel::set_binding_sidecar(BindingId id,
+	const BindingSidecar& sidecar)
+{
+	if (!id.valid() || id.value >= bindings_.size())
+		throw std::runtime_error("invalid PA11 binding sidecar identity");
+	binding_sidecars_.set(id, sidecar);
+}
+const NamedRecordSidecar* PA11SemanticModel::named_record_sidecar(
+	NamedRecordId id) const
+{
+	return id.valid() ? named_record_sidecars_.find(id) : NULL;
+}
+void PA11SemanticModel::set_named_record_sidecar(NamedRecordId id,
+	const NamedRecordSidecar& sidecar)
+{
+	if (!id.valid() || id.value >= named_.size())
+		throw std::runtime_error("invalid PA11 named-record sidecar identity");
+	named_record_sidecars_.set(id, sidecar);
+}
 void PA11SemanticModel::add_dump_binding_view(ScopeId scope, BindingId binding_id)
 {
 	DumpBindingView view;
@@ -1225,20 +1178,40 @@ void PA11SemanticModel::finalize_anonymous_record(TypeId type, NameId name, Scop
 		store_binding(owner, type_binding, position);
 	}
 }
-void PA11SemanticModel::inject_anonymous_union(TypeId type, ScopeId owner)
+void PA11SemanticModel::inject_anonymous_union(TypeId type, ScopeId owner, bool create_storage, const PA10AstNode* origin)
 {
 	const NamedRecordId record_id = named_record_for_type(type);
-	if (!record_id.valid() || record_id.value >= named_.size() ||
-		!named_[record_id.value].scope.valid())
+	if (!record_id.valid() || record_id.value >= named_.size() || !named_[record_id.value].scope.valid())
 		throw std::runtime_error("anonymous union has no scope");
+	BindingId storage;
+	if (create_storage)
+	{
+		const NamedRecordSidecar* existing = named_record_sidecar(record_id);
+		if (existing != NULL && existing->backing_storage.valid())
+			storage = existing->backing_storage;
+		else
+		{
+			Binding value(BindingKind::Variable, NameId(), type);
+			storage = store_binding(owner, value);
+			NamedRecordSidecar record_sidecar;
+			if (existing != NULL) record_sidecar = *existing;
+			record_sidecar.backing_storage = storage;
+			set_named_record_sidecar(record_id, record_sidecar);
+			BindingSidecar binding_sidecar;
+			binding_sidecar.generated_name_record = record_id;
+			set_binding_sidecar(storage, binding_sidecar);
+		}
+	}
+	if (origin != NULL && create_storage)
+		anonymous_union_fact_index_.set(origin, AnonymousUnionFact(record_id, owner, storage));
 	const Scope& source = scopes_[named_[record_id.value].scope.value];
 	for (std::size_t i = 0; i < source.bindings.size(); ++i)
 	{
 		const Binding& source_binding = binding(source.bindings[i]);
-		if (source_binding.kind == BindingKind::Variable ||
-			source_binding.kind == BindingKind::Function)
+		if (source_binding.kind == BindingKind::Variable || source_binding.kind == BindingKind::Function)
 			add_value(owner, source_binding.name, source_binding.type,
-				source_binding.kind == BindingKind::Function);
+				source_binding.kind == BindingKind::Function, false, false,
+				storage);
 	}
 }
 bool PA11SemanticModel::enum_is_scoped(const PA10AstNode& node) const
@@ -1844,8 +1817,7 @@ TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 	}
 	return changed ? intern_type(normalized) : type;
 }
-BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
-	bool function, bool definition, bool lexical_view)
+BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type, bool function, bool definition, bool lexical_view, BindingId backing_storage)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -1864,29 +1836,25 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 			const Binding& existing = binding(existing_id);
 			if (!function || existing.kind != BindingKind::Function)
 				throw std::runtime_error("incompatible value redeclaration");
-			if (type_kind(existing.type) != TypeKind::Function ||
-				type_kind(type) != TypeKind::Function)
+			if (type_kind(existing.type) != TypeKind::Function || type_kind(type) != TypeKind::Function)
 				throw std::runtime_error("invalid function redeclaration");
 			const TypeKey& existing_function = types_[existing.type.value];
 			const TypeKey& candidate_function = types_[type.value];
-			if (existing_function.variadic != candidate_function.variadic ||
-				existing_function.parameters != candidate_function.parameters)
+			if (existing_function.variadic != candidate_function.variadic || existing_function.parameters != candidate_function.parameters)
 				continue;
 			if (existing_function.result != candidate_function.result)
 				throw std::runtime_error("conflicting function return type");
 			if (definition && existing.has_definition)
 				throw std::runtime_error("duplicate function definition");
-			if (definition)
-				binding(existing_id).has_definition = true;
-			if (lexical_view)
-				add_dump_binding_view(scope, existing_id);
+			if (definition) binding(existing_id).has_definition = true;
+			if (lexical_view) add_dump_binding_view(scope, existing_id);
 			return existing_id;
 		}
 	}
-	Binding value(function ? BindingKind::Function : BindingKind::Variable,
-		name, type);
+	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
 	value.has_definition = function && definition;
 	const BindingId binding_id = store_binding(scope, value);
+	if (backing_storage.valid()) { BindingSidecar sidecar; sidecar.backing_storage = backing_storage; set_binding_sidecar(binding_id, sidecar); }
 	append_value_index(scope, name, binding_id);
 	return binding_id;
 }
@@ -1952,11 +1920,25 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			if (name.empty())
 				unsupported("anonymous class forward declaration");
 			const ClassTag tag = class_tag(child);
-			const ScopeId owner = declaration_scope(name, scope);
-			if (!owner.valid())
-				throw std::runtime_error("unresolved class declaration scope");
-			const TypeId type = ensure_named_class(owner, name.last(), tag, false);
-			add_type_binding(owner, name.last(), type, tag, true);
+			const TypeId visible = lookup_type_path(name, scope);
+			TypeId type;
+			if (visible.valid())
+			{
+				const NamedRecordId record = named_record_for_type(visible);
+				if (!record.valid() || record.value >= named_.size() ||
+					named_[record.value].kind != NamedKind::Class ||
+					named_[record.value].class_tag != tag)
+					throw std::runtime_error("elaborated class tag mismatch");
+				type = visible;
+			}
+			else
+			{
+				const ScopeId owner = declaration_scope(name, scope);
+				if (!owner.valid())
+					throw std::runtime_error("unresolved class declaration scope");
+				type = ensure_named_class(owner, name.last(), tag, false);
+				add_type_binding(owner, name.last(), type, tag, true);
+			}
 			result.base = type;
 			result.has_base = true;
 			continue;
@@ -2476,7 +2458,20 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (!target.valid())
 			throw std::runtime_error("unresolved PA11 declaration scope");
 		if (spec.anonymous_record.valid())
+		{
 			finalize_anonymous_record(spec.base, name.path.last(), target);
+			if (!spec.is_typedef &&
+				named_[spec.anonymous_record.value].class_tag == ClassTag::Union)
+			{
+				NamedRecordSidecar sidecar;
+				const NamedRecordSidecar* existing =
+					named_record_sidecar(spec.anonymous_record);
+				if (existing != NULL)
+					sidecar = *existing;
+				sidecar.local_object_name = true;
+				set_named_record_sidecar(spec.anonymous_record, sidecar);
+			}
+		}
 		const bool direct_initializer = direct_initializer_operand(init, target, NULL);
 		TypeId type = direct_initializer ? spec.base :
 			apply_declarator(declarator, spec.base, target);
@@ -2501,8 +2496,13 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			const bool function = type_kind(type) == TypeKind::Function;
 			binding_id = add_value(target, name.path.last(), type,
 				function, false, true);
-			if (spec.is_constexpr ||
-				((spec.cv & 1u) != 0 && type_kind(type) == TypeKind::Cv))
+			const NamedRecordId constant_record = named_record_for_type(type);
+			const bool ordinary_const_record = !spec.is_constexpr &&
+				((spec.cv & 1u) != 0) && constant_record.valid() &&
+				constant_record.value < named_.size() &&
+				named_[constant_record.value].kind == NamedKind::Class;
+			if (!ordinary_const_record && (spec.is_constexpr ||
+				((spec.cv & 1u) != 0 && type_kind(type) == TypeKind::Cv)))
 			{
 				if (init.children.size() > 1)
 				{
@@ -2589,6 +2589,11 @@ ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, S
 		case PA10NodeKind::UsingDeclaration:
 			// Block declarations are formed once, in source order, before
 			// PA12 traverses their statement facts.
+			process_declaration(child, block);
+			break;
+		case PA10NodeKind::ClassSpecifier:
+			// A standalone block anonymous union is a declaration whose
+			// backing storage is synthesized by the typed PA11 owner.
 			process_declaration(child, block);
 			break;
 		case PA10NodeKind::EnumSpecifier:
@@ -2953,7 +2958,8 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 			const TypeId type = create_anonymous_class(scope, tag, node);
 			process_class_body(node, type, scope);
 			if (tag == ClassTag::Union)
-				inject_anonymous_union(type, scope);
+				inject_anonymous_union(type, scope,
+					scopes_[scope.value].kind == ScopeKind::Block, &node);
 			return;
 		}
 		const ScopeId target = declaration_scope(name, scope);
