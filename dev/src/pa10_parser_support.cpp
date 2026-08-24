@@ -376,16 +376,6 @@ bool skip_balanced_delimiters(const std::vector<PA10Token>& tokens,
 	}
 }
 
-enum NewAbstractGroupKind
-{
-	NewAbstractNone = 0,
-	NewAbstractShape = 1,
-	NewParameterClause = 2,
-	// A nested parameter-only group is an abstract form only in the
-	// parenthesized type-id spelling; keep it distinct from an initializer.
-	NewNestedParameter = 3
-};
-
 enum NewParameterClauseKind
 {
 	NewParameterNone = 0,
@@ -422,12 +412,13 @@ bool fact_cv_at(const std::vector<PA10Token>& tokens,
 		is_cv_impl(tokens[absolute].fixed);
 }
 
-unsigned char fact_group_kind_at(const std::vector<unsigned char>& groups,
+PA10ParenthesizedGroupKind fact_parenthesized_group_kind_at(
+	const std::vector<PA10ParenthesizedGroupKind>& groups,
 	std::size_t absolute, std::size_t& work)
 {
 	fact_step(work);
 	return absolute < groups.size() ? groups[absolute] :
-		static_cast<unsigned char>(NewAbstractNone);
+		PA10ParenthesizedGroupKind::None;
 }
 
 bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
@@ -455,7 +446,7 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 	{
 		const SimpleTokenType type = tokens[open + 1].fixed;
 		fact_step(work);
-		return (is_type_keyword_impl(type) || is_cv_impl(type) ||
+		const bool type_name = is_type_keyword_impl(type) || is_cv_impl(type) ||
 			type == SimpleTokenType::KW_TYPEDEF ||
 			type == SimpleTokenType::KW_EXTERN ||
 			type == SimpleTokenType::KW_STATIC ||
@@ -463,9 +454,37 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 			type == SimpleTokenType::KW_VIRTUAL ||
 			type == SimpleTokenType::KW_CONSTEXPR ||
 			type == SimpleTokenType::KW_THREAD_LOCAL ||
+			type == SimpleTokenType::KW_MUTABLE ||
+			type == SimpleTokenType::KW_REGISTER ||
+			type == SimpleTokenType::KW_FRIEND ||
 			type == SimpleTokenType::KW_TYPENAME ||
-			type == SimpleTokenType::KW_DECLTYPE) ?
-			NewParameterDefinite : NewParameterNone;
+			type == SimpleTokenType::KW_DECLTYPE;
+		const bool simple_type_name = is_type_keyword_impl(type) ||
+			is_cv_impl(type);
+		if (simple_type_name && fact_fixed_at(tokens, open, 2,
+			SimpleTokenType::OP_LPAREN, work))
+		{
+			const std::size_t nested_open = open + 2;
+			const std::size_t nested_close =
+				nested_open < delimiter_close_index.size() ?
+				delimiter_close_index[nested_open] : tokens.size();
+			if (nested_close < delimiter_close_index[open] &&
+				nested_close > nested_open + 1)
+			{
+				const PA10Token& first = tokens[nested_open + 1];
+				const bool declarator_start =
+					first.kind == PA10TokenKind::Identifier ||
+					(first.kind == PA10TokenKind::Fixed &&
+						(first.fixed == SimpleTokenType::OP_STAR ||
+						 first.fixed == SimpleTokenType::OP_AMP ||
+						 first.fixed == SimpleTokenType::OP_LAND ||
+						 first.fixed == SimpleTokenType::OP_LPAREN ||
+						 first.fixed == SimpleTokenType::OP_COLON2));
+				if (!declarator_start)
+					return NewParameterNone;
+			}
+		}
+		return type_name ? NewParameterDefinite : NewParameterNone;
 	}
 	if (fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_COLON2, work))
 	{
@@ -480,6 +499,49 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 	}
 	if (!fact_identifier_at(tokens, open, 1, work))
 		return NewParameterNone;
+	// A mock type-name parameter list such as (_It, _It, _It) is a
+	// parameter-clause in the syntax-only PA10 boundary.  The delimiter index
+	// bounds this scan to the current group; nested delimiters are not accepted
+	// by this bare-name shape and are therefore left to the existing indexed
+	// cases below.
+	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COMMA, work))
+	{
+		const std::size_t end = delimiter_close_index[open];
+		std::size_t cursor = open + 1;
+		bool valid = true;
+		while (cursor < end)
+		{
+			if (!fact_identifier_at(tokens, cursor, 0, work))
+			{
+				valid = false;
+				break;
+			}
+			++cursor;
+			if (cursor == end)
+				break;
+			if (!fact_fixed_at(tokens, cursor, 0,
+				SimpleTokenType::OP_COMMA, work))
+			{
+				valid = false;
+				break;
+			}
+			++cursor;
+			if (cursor == end)
+			{
+				valid = false;
+				break;
+			}
+			if (fact_fixed_at(tokens, cursor, 0,
+				SimpleTokenType::OP_DOTS, work))
+			{
+				++cursor;
+				valid = cursor == end;
+				break;
+			}
+		}
+		if (valid && cursor == end)
+			return NewParameterAmbiguous;
+	}
 	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work))
 	{
 		std::size_t after = 0;
@@ -581,31 +643,34 @@ bool member_pointer_end_at(const std::vector<PA10Token>& tokens,
 	return false;
 }
 
-unsigned char new_abstract_group_at(const std::vector<PA10Token>& tokens,
+PA10ParenthesizedGroupKind parenthesized_group_kind_at(
+	const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
 	const std::vector<unsigned char>& rshift_piece1_nested_close,
 	const std::vector<std::size_t>& delimiter_close_index,
-	const std::vector<unsigned char>& groups, std::size_t open,
+	const std::vector<PA10ParenthesizedGroupKind>& groups, std::size_t open,
 	std::size_t& work)
 {
 	fact_step(work);
 	if (open >= delimiter_close_index.size() ||
 		delimiter_close_index[open] >= tokens.size())
-		return NewAbstractNone;
+		return PA10ParenthesizedGroupKind::None;
 	const std::size_t end = delimiter_close_index[open];
-	if (parameter_clause_kind_at(tokens, template_close_index,
-		rshift_piece1_nested_close, delimiter_close_index, open, work) !=
-		NewParameterNone)
-		return NewParameterClause;
 	std::size_t cursor = open + 1;
 	bool pointer = false;
+	bool saw_star = false;
 	while (cursor < end)
 	{
 		fact_step(work);
-		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_STAR, work) ||
-			fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_AMP, work) ||
-			fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LAND, work))
+		const bool star = fact_fixed_at(tokens, cursor, 0,
+			SimpleTokenType::OP_STAR, work);
+		const bool reference = !star &&
+			(fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_AMP, work) ||
+			 fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LAND, work));
+		if (star || reference)
 		{
+			if (star)
+				saw_star = true;
 			pointer = true;
 			++cursor;
 			while (cursor < end && fact_cv_at(tokens, cursor, work))
@@ -624,61 +689,76 @@ unsigned char new_abstract_group_at(const std::vector<PA10Token>& tokens,
 		}
 		break;
 	}
+	if (pointer && cursor == end)
+		return PA10ParenthesizedGroupKind::AbstractDeclarator;
+	if (pointer && saw_star && fact_identifier_at(tokens, cursor, 0, work))
+	{
+		++cursor;
+		if (cursor == end)
+			return PA10ParenthesizedGroupKind::NamedDeclarator;
+	}
+	if (parameter_clause_kind_at(tokens, template_close_index,
+		rshift_piece1_nested_close, delimiter_close_index, open, work) !=
+		NewParameterNone)
+		return PA10ParenthesizedGroupKind::ParameterClause;
 	if (pointer)
 	{
 		if (cursor == end || fact_fixed_at(tokens, cursor, 0,
 			SimpleTokenType::OP_LSQUARE, work))
-			return NewAbstractShape;
+			return PA10ParenthesizedGroupKind::AbstractDeclarator;
 		if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN, work))
 		{
 			const NewParameterClauseKind parameter = parameter_clause_kind_at(tokens, template_close_index,
 				rshift_piece1_nested_close, delimiter_close_index, cursor, work);
-			const unsigned char nested = fact_group_kind_at(groups, cursor, work);
+			const PA10ParenthesizedGroupKind nested =
+				fact_parenthesized_group_kind_at(groups, cursor, work);
 			if (parameter == NewParameterDefinite)
-				return NewAbstractShape;
+				return PA10ParenthesizedGroupKind::AbstractDeclarator;
 			if (parameter == NewParameterAmbiguous ||
-				nested == NewParameterClause ||
-				nested == NewNestedParameter)
-				return NewNestedParameter;
-			if (nested == NewAbstractShape)
-				return NewAbstractShape;
+				nested == PA10ParenthesizedGroupKind::ParameterClause ||
+				nested == PA10ParenthesizedGroupKind::NestedParameter)
+				return PA10ParenthesizedGroupKind::NestedParameter;
+			if (nested == PA10ParenthesizedGroupKind::AbstractDeclarator)
+				return PA10ParenthesizedGroupKind::AbstractDeclarator;
 		}
-		return NewAbstractNone;
+		return PA10ParenthesizedGroupKind::None;
 	}
 	if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LSQUARE, work))
-		return NewAbstractShape;
+		return PA10ParenthesizedGroupKind::AbstractDeclarator;
 	if (fact_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN, work))
 	{
-		const unsigned char nested = fact_group_kind_at(groups, cursor, work);
-		if (nested == NewAbstractShape)
-			return NewAbstractShape;
-		if (nested == NewParameterClause || nested == NewNestedParameter)
-			return NewNestedParameter;
+		const PA10ParenthesizedGroupKind nested =
+			fact_parenthesized_group_kind_at(groups, cursor, work);
+		if (nested == PA10ParenthesizedGroupKind::AbstractDeclarator)
+			return PA10ParenthesizedGroupKind::AbstractDeclarator;
+		if (nested == PA10ParenthesizedGroupKind::ParameterClause ||
+			nested == PA10ParenthesizedGroupKind::NestedParameter)
+			return PA10ParenthesizedGroupKind::NestedParameter;
 	}
-	return NewAbstractNone;
+	return PA10ParenthesizedGroupKind::None;
 }
 
-std::size_t build_new_abstract_declarator_groups(
+std::size_t build_parenthesized_group_kinds(
 	const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
 	const std::vector<unsigned char>& rshift_piece1_nested_close,
 	const std::vector<std::size_t>& delimiter_close_index,
-	std::vector<unsigned char>& groups)
+	std::vector<PA10ParenthesizedGroupKind>& groups)
 {
-	// Every delimiter group is classified once in reverse token order, so a
+	// Every parenthesized group is classified once in reverse token order, so a
 	// nested group's result is available before its enclosing group is read.
 	// A group owns only its leading pointer/member-pointer spine; a nested
 	// delimiter stops that scan.  Thus the variable scans are disjoint apart
 	// from the constant duplicate check shared with parameter classification.
 	// The returned counter records each indexed predicate and scan step.
 	std::size_t work = tokens.size();
-	groups.assign(tokens.size(), 0);
+	groups.assign(tokens.size(), PA10ParenthesizedGroupKind::None);
 	for (std::size_t reverse = tokens.size(); reverse != 0; --reverse)
 	{
 		fact_step(work);
 		const std::size_t open = reverse - 1;
 		if (fact_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN, work))
-			groups[open] = new_abstract_group_at(tokens, template_close_index,
+			groups[open] = parenthesized_group_kind_at(tokens, template_close_index,
 				rshift_piece1_nested_close, delimiter_close_index, groups, open,
 				work);
 	}
@@ -722,7 +802,7 @@ std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<unsigned char>& template_top_level_or,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index,
-	std::vector<unsigned char>& new_abstract_declarator_group)
+	std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind)
 {
 	template_close_index.assign(tokens.size(), tokens.size());
 	template_top_level_or.assign(tokens.size(), 0);
@@ -804,9 +884,9 @@ std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 			break;
 		}
 	}
-	return tokens.size() + build_new_abstract_declarator_groups(tokens, template_close_index,
+	return tokens.size() + build_parenthesized_group_kinds(tokens, template_close_index,
 		rshift_piece1_nested_close, delimiter_close_index,
-		new_abstract_declarator_group);
+		parenthesized_group_kind);
 }
 
 bool find_template_close(const std::vector<PA10Token>& tokens,

@@ -34,7 +34,8 @@ public:
 		  template_close_index_(tokens.size(), tokens.size()),
 		  template_top_level_or_(tokens.size(), 0),
 		  rshift_piece1_nested_close_(tokens.size(), 0),
-		  delimiter_close_index_(tokens.size(), tokens.size()), new_abstract_declarator_group_(tokens.size(), 0),
+		  delimiter_close_index_(tokens.size(), tokens.size()),
+		  parenthesized_group_kind_(tokens.size(), PA10ParserSupport::PA10ParenthesizedGroupKind::None),
 		  ast_(), presentation_ids_()
 	{
 		ast_.snapshot_producer_spellings(producer_spellings);
@@ -42,7 +43,7 @@ public:
 			PA10ParserSupport::build_indexes(
 				tokens_, template_close_index_, template_top_level_or_,
 				rshift_piece1_nested_close_, delimiter_close_index_,
-				new_abstract_declarator_group_);
+				parenthesized_group_kind_);
 		for (std::size_t i = 0; i < indexed_work; ++i)
 			charge();
 	}
@@ -69,7 +70,7 @@ private:
 	std::vector<unsigned char> template_top_level_or_;
 	std::vector<unsigned char> rshift_piece1_nested_close_;
 	std::vector<std::size_t> delimiter_close_index_;
-	std::vector<unsigned char> new_abstract_declarator_group_;
+	std::vector<PA10ParserSupport::PA10ParenthesizedGroupKind> parenthesized_group_kind_;
 	PA10Ast ast_;
 	std::unordered_map<std::string, PA10StringId> presentation_ids_;
 	static const std::size_t recursion_limit_ = PA10_MAX_AST_NESTING;
@@ -512,8 +513,8 @@ private:
 		bool new_expression_context = false, bool parenthesized_new_type_id = false);
 	PA10AstNode parse_abstract_declarator(bool stop_at_empty_parameter_clause = false,
 		bool first_member_pointer_checked = false, bool new_expression_context = false);
-	PA10AstNode parse_declarator(bool allow_abstract = false,
-		bool force_parameter_suffix = false);
+	PA10AstNode parse_declarator(bool allow_abstract = false, bool force_parameter_suffix = false,
+		bool prefer_parameter_clause_at_root = false);
 	PA10AstNode parse_ptr_operator();
 	bool member_pointer_operator_start();
 	PA10Name parse_member_pointer_qualifier();
@@ -568,28 +569,38 @@ private:
 	{
 		return PA10DeclaratorShape::is_function(declarator);
 	}
+	bool parenthesized_group_is(std::size_t absolute, PA10ParserSupport::PA10ParenthesizedGroupKind kind) const
+	{
+		return absolute < parenthesized_group_kind_.size() && parenthesized_group_kind_[absolute] == kind;
+	}
+	bool declaration_follow_after(std::size_t close) const
+	{
+		if (close >= tokens_.size() || close + 1 >= tokens_.size() || tokens_[close + 1].kind != PA10TokenKind::Fixed)
+			return false;
+		const SimpleTokenType follower = tokens_[close + 1].fixed;
+		return follower == SimpleTokenType::OP_SEMICOLON ||
+			follower == SimpleTokenType::OP_COMMA || follower == SimpleTokenType::OP_ASS ||
+			follower == SimpleTokenType::OP_LBRACE || follower == SimpleTokenType::OP_LPAREN ||
+			follower == SimpleTokenType::OP_LSQUARE;
+	}
+	bool parenthesized_declaration_start_at(std::size_t open) const
+	{
+		if (!token_fixed_at(open, 0, SimpleTokenType::OP_LPAREN) ||
+			open >= delimiter_close_index_.size())
+			return false;
+		const std::size_t close = delimiter_close_index_[open];
+		if (close >= tokens_.size())
+			return false;
+		const bool single_identifier = close == open + 2 &&
+			token_identifier_at(open, 1);
+		const bool pointer_shape = parenthesized_group_is(open, PA10ParserSupport::PA10ParenthesizedGroupKind::AbstractDeclarator) ||
+			parenthesized_group_is(open, PA10ParserSupport::PA10ParenthesizedGroupKind::NamedDeclarator);
+		return (single_identifier || pointer_shape) &&
+			declaration_follow_after(close);
+	}
 	bool looks_like_parameter_clause() const
 	{
-		if (!fixed(SimpleTokenType::OP_LPAREN))
-			return false;
-		if (fixed(SimpleTokenType::OP_RPAREN, 1) ||
-			fixed(SimpleTokenType::OP_DOTS, 1))
-			return true;
-		if (is_decl_specifier(look(1).fixed) &&
-			look(1).kind == PA10TokenKind::Fixed)
-			return true;
-		if ((fixed(SimpleTokenType::KW_DECLTYPE, 1) ||
-			 fixed(SimpleTokenType::KW_TYPENAME, 1)) &&
-			look(1).kind == PA10TokenKind::Fixed)
-			return true;
-		if (identifier(1))
-			return fixed(SimpleTokenType::OP_RPAREN, 2) ||
-				fixed(SimpleTokenType::OP_DOTS, 2) ||
-				identifier(2) || fixed(SimpleTokenType::OP_STAR, 2) ||
-				fixed(SimpleTokenType::OP_AMP, 2) ||
-				fixed(SimpleTokenType::OP_LAND, 2) ||
-				fixed(SimpleTokenType::OP_COLON2, 2);
-		return false;
+		return fixed(SimpleTokenType::OP_LPAREN) && parenthesized_group_is(position_, PA10ParserSupport::PA10ParenthesizedGroupKind::ParameterClause);
 	}
 	bool virt_specifier_start() const
 	{
@@ -621,7 +632,33 @@ private:
 				charge();
 				return true;
 			}
-			if (token_fixed_at(position_, 1, SimpleTokenType::OP_STAR) && token_identifier_at(position_, 2)) { charge(); return true; }
+			std::size_t pointer = position_ + 1;
+			bool saw_pointer = false;
+			while (token_fixed_at(pointer, 0, SimpleTokenType::OP_STAR) ||
+				token_fixed_at(pointer, 0, SimpleTokenType::OP_AMP) ||
+				token_fixed_at(pointer, 0, SimpleTokenType::OP_LAND))
+			{
+				charge();
+				saw_pointer = true;
+				++pointer;
+				while (token_fixed_at(pointer, 0, SimpleTokenType::KW_CONST) ||
+					token_fixed_at(pointer, 0, SimpleTokenType::KW_VOLATILE))
+				{
+					charge();
+					++pointer;
+				}
+			}
+			if (saw_pointer && token_identifier_at(pointer))
+			{
+				charge();
+				if (declaration_follow_after(pointer))
+					return true;
+			}
+			if (parenthesized_declaration_start_at(position_ + 1))
+			{
+				charge();
+				return true;
+			}
 			if (token_fixed_at(position_, 1, SimpleTokenType::OP_COLON2))
 			{
 				std::size_t type_end = position_;
@@ -651,6 +688,11 @@ private:
 				if (token_fixed_at(after_type, 0,
 					SimpleTokenType::OP_LPAREN))
 				{
+					if (parenthesized_declaration_start_at(after_type))
+					{
+						charge();
+						return true;
+					}
 					std::size_t member = 0;
 					if (!advance_absolute(after_type, 1, &member))
 						return false;
@@ -1564,9 +1606,10 @@ PA10AstNode PA10Parser::parse_abstract_declarator(bool stop_at_empty_parameter_c
 		!(stop_at_empty_parameter_clause &&
 			fixed(SimpleTokenType::OP_RPAREN, 1)))
 	{
-		const bool indexed_shape = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 1;
-		const bool indexed_parameter = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 2;
-		if ((looks_like_parameter_clause() || indexed_parameter) && !indexed_shape)
+		const bool group_is_abstract_declarator = new_expression_context && parenthesized_group_is(position_, PA10ParserSupport::PA10ParenthesizedGroupKind::AbstractDeclarator);
+		const bool group_is_parameter_clause = new_expression_context && parenthesized_group_is(position_, PA10ParserSupport::PA10ParenthesizedGroupKind::ParameterClause);
+		if ((looks_like_parameter_clause() || group_is_parameter_clause) &&
+			!group_is_abstract_declarator)
 		{
 			result.children.push_back(parse_parameter_clause());
 			parse_function_suffixes(result, new_expression_context);
@@ -1585,9 +1628,10 @@ PA10AstNode PA10Parser::parse_abstract_declarator(bool stop_at_empty_parameter_c
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN))
 		{
-			const bool indexed_shape = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 1;
-			const bool indexed_parameter = new_expression_context && position_ < new_abstract_declarator_group_.size() && new_abstract_declarator_group_[position_] == 2;
-			if ((!looks_like_parameter_clause() && !indexed_parameter) || indexed_shape ||
+			const bool group_is_abstract_declarator = new_expression_context && parenthesized_group_is(position_, PA10ParserSupport::PA10ParenthesizedGroupKind::AbstractDeclarator);
+			const bool group_is_parameter_clause = new_expression_context && parenthesized_group_is(position_, PA10ParserSupport::PA10ParenthesizedGroupKind::ParameterClause);
+			if ((!looks_like_parameter_clause() && !group_is_parameter_clause) ||
+				group_is_abstract_declarator ||
 				(stop_at_empty_parameter_clause && fixed(SimpleTokenType::OP_RPAREN, 1)))
 				break;
 			result.children.push_back(parse_parameter_clause());
@@ -1605,7 +1649,7 @@ PA10AstNode PA10Parser::parse_abstract_declarator(bool stop_at_empty_parameter_c
 	return result;
 }
 PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
-	bool force_parameter_suffix)
+	bool force_parameter_suffix, bool prefer_parameter_clause_at_root)
 {
 	enter();
 	PA10AstNode result = node(PA10NodeKind::Declarator);
@@ -1623,11 +1667,16 @@ PA10AstNode PA10Parser::parse_declarator(bool allow_abstract,
 		result.children.push_back(parse_id_expression_node(PA10NodeKind::Identifier));
 	else if (fixed(SimpleTokenType::OP_LPAREN))
 	{
-		consume_fixed(SimpleTokenType::OP_LPAREN);
-		PA10AstNode nested = node(PA10NodeKind::NestedDeclarator);
-		nested.children.push_back(parse_declarator(true));
-		consume_fixed(SimpleTokenType::OP_RPAREN);
-		result.children.push_back(std::move(nested));
+		if (prefer_parameter_clause_at_root && looks_like_parameter_clause())
+			result.children.push_back(parse_parameter_clause());
+		else
+		{
+			consume_fixed(SimpleTokenType::OP_LPAREN);
+			PA10AstNode nested = node(PA10NodeKind::NestedDeclarator);
+			nested.children.push_back(parse_declarator(true));
+			consume_fixed(SimpleTokenType::OP_RPAREN);
+			result.children.push_back(std::move(nested));
+		}
 	}
 	else if (!allow_abstract)
 		fail("expected declarator-id");
@@ -1708,7 +1757,7 @@ PA10AstNode PA10Parser::parse_parameter_declaration()
 	else if (!fixed(SimpleTokenType::OP_COMMA) &&
 		!fixed(SimpleTokenType::OP_RPAREN) &&
 		!fixed(SimpleTokenType::OP_DOTS))
-		result.children.push_back(parse_declarator(true));
+		result.children.push_back(parse_declarator(true, false, true));
 	if (fixed(SimpleTokenType::OP_ASS))
 	{
 		PA10AstNode argument = node(PA10NodeKind::DefaultArgument);
@@ -2036,7 +2085,12 @@ bool PA10Parser::new_parenthesized_abstract_declarator_start(bool parenthesized_
 	if (!token_fixed_at(open, 0, SimpleTokenType::OP_LPAREN) || open >= delimiter_close_index_.size()) return false;
 	const std::size_t close = delimiter_close_index_[open];
 	if (close >= tokens_.size()) return false;
-	return open < new_abstract_declarator_group_.size() && (new_abstract_declarator_group_[open] == 1 || (parenthesized_new_type_id && new_abstract_declarator_group_[open] != 0));
+	return parenthesized_group_is(open,
+		PA10ParserSupport::PA10ParenthesizedGroupKind::AbstractDeclarator) ||
+		(parenthesized_new_type_id &&
+			open < parenthesized_group_kind_.size() &&
+			parenthesized_group_kind_[open] !=
+				PA10ParserSupport::PA10ParenthesizedGroupKind::None);
 }
 bool PA10Parser::new_first_parenthesized_group_is_placement()
 {

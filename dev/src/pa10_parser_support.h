@@ -24,17 +24,31 @@ bool template_follow_is_valid(
 	const std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::size_t absolute_close, std::size_t* charged_work);
 
-// build_indexes sizes and clears every output index to tokens.size(); an
-// uninitialized or reused side index is not a valid caller-owned state.  The
-// return value is the exact counted index-work total (the ordinary index pass
-// plus the new-expression fact pass); the parser charges it against its
-// global work limit.
+// One indexed fact for each parenthesized delimiter group.  The same fact is
+// consumed by declaration/declarator routing and by new-expression type-id
+// parsing; it is not an ownership claim for either parser context.
+enum class PA10ParenthesizedGroupKind : unsigned char
+{
+	None,
+	AbstractDeclarator,
+	ParameterClause,
+	// A nested parameter-shaped group retained for parenthesized type-ids.
+	NestedParameter,
+	// A pointer-led group with a named declarator-id.
+	NamedDeclarator
+};
+
+// build_indexes sizes and clears every output index to its sentinel/default;
+// an uninitialized or reused side index is not a valid caller-owned state.
+// The return value is the exact counted index-work total (the ordinary index
+// pass plus the parenthesized-group fact pass); the parser charges it against
+// its global work limit.
 std::size_t build_indexes(const std::vector<PA10Token>& tokens,
 	std::vector<std::size_t>& template_close_index,
 	std::vector<unsigned char>& template_top_level_or,
 	std::vector<unsigned char>& rshift_piece1_nested_close,
 	std::vector<std::size_t>& delimiter_close_index,
-	std::vector<unsigned char>& new_abstract_declarator_group);
+	std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind);
 
 bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& template_close_index,
