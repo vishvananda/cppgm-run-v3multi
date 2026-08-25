@@ -114,6 +114,9 @@ void PA11SemanticModel::process_condition_declaration(
 	const BindingId binding_id = add_value(target, name.path.last(), type, false,
 		false, true, BindingId(), SourcePoint(node.source_begin));
 	DeclarationFact declaration(&node, target);
+	declaration.is_extern = spec.is_extern;
+	declaration.is_static = spec.is_static;
+	declaration.is_thread_local = spec.is_thread_local;
 	declaration.automatic_storage = target.value < scopes_.size() &&
 		scopes_[target.value].kind == ScopeKind::Block &&
 		!spec.is_static && !spec.is_extern && !spec.is_thread_local;
@@ -1297,39 +1300,6 @@ SemanticFactId PA11SemanticModel::make_expression_fact(SemanticFactKind kind, Ty
 	set_semantic_children(result, children);
 	return result;
 }
-SemanticFactId PA11SemanticModel::semantic_literal(const PA10AstNode& node)
-{
-	TypeId type;
-	SemanticValueCategory category = SemanticValueCategory::Prvalue;
-	std::size_t element_count = 0;
-	if (node.kind == PA10NodeKind::Literal)
-	{
-		type = fundamental(node.literal.type);
-		element_count = node.literal.element_count;
-		if (element_count != 0)
-		{
-			type = make_array(make_cv(type, 1u), false,
-				ArrayBound(element_count));
-			category = SemanticValueCategory::Lvalue;
-		}
-	}
-	else if (node.kind == PA10NodeKind::KeywordLiteral)
-	{
-		if (node.token == SimpleTokenType::KW_TRUE ||
-			node.token == SimpleTokenType::KW_FALSE)
-			type = fundamental(FundamentalType::Bool);
-		else if (node.token == SimpleTokenType::KW_NULLPTR)
-			type = fundamental(FundamentalType::NullptrT);
-		else
-			throw std::runtime_error("PA12 unsupported keyword literal");
-	}
-	else
-		throw std::runtime_error("PA12 expected literal");
-	SemanticFact fact(SemanticFactKind::Literal, type, category, &node);
-	fact.token = node.token;
-	fact.literal_element_count = element_count;
-	return make_semantic_fact(fact);
-}
 ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 {
 	if (has_template_id(node))
@@ -1370,91 +1340,6 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 	set_semantic_name(result, path);
 	return ExprInfo(result, type, category, false);
 }
-ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.children.size() != 1 || !node.has_token)
-		throw std::runtime_error("PA12 invalid unary expression");
-	const ExprInfo operand = semantic_expression(node.children.front(), scope);
-	TypeId type = expression_object_type(operand.type);
-	SemanticValueCategory category = SemanticValueCategory::Prvalue;
-	switch (node.token)
-	{
-	case SimpleTokenType::OP_AMP:
-		if (operand.category != SemanticValueCategory::Lvalue)
-			throw std::runtime_error("PA12 address-of requires lvalue");
-		if (node.children.front().kind == PA10NodeKind::IdExpression)
-		{
-			const std::vector<ValueRef> values = lookup_value_path(
-				name_path(node.children.front()), scope);
-			if (values.size() == 1 && operand.fact.valid() &&
-				values.front().binding ==
-				semantic_facts_[operand.fact.value].binding &&
-				!is_static_member(values.front().binding) &&
-				values.front().scope.valid() &&
-				values.front().scope.value < scopes_.size() &&
-				scopes_[values.front().scope.value].kind == ScopeKind::Class)
-			{
-				const NamedRecordId owner =
-					scopes_[values.front().scope.value].record;
-				type = make_member_pointer(owner,
-					binding(values.front().binding).type);
-				break;
-			}
-		}
-		type = make_pointer(operand.type);
-		break;
-	case SimpleTokenType::OP_STAR:
-	{
-		TypeId pointer = strip_cv_type(expression_object_type(operand.type));
-		if (type_kind(pointer) == TypeKind::Array)
-		{
-			pointer = make_pointer(types_[pointer.value].child);
-			record_builtin_conversion(operand, pointer);
-		}
-		if (type_kind(pointer) != TypeKind::Pointer)
-			throw std::runtime_error("PA12 dereference requires pointer");
-		if (type_kind(strip_cv_type(expression_object_type(operand.type))) ==
-			TypeKind::Pointer)
-			record_builtin_conversion(operand, pointer);
-		type = types_[pointer.value].child;
-		category = SemanticValueCategory::Lvalue;
-		break;
-	}
-	case SimpleTokenType::OP_INC:
-	case SimpleTokenType::OP_DEC:
-		if (operand.category != SemanticValueCategory::Lvalue ||
-			!modifiable_lvalue(operand.type) ||
-			(!integral_id(operand.type) && !floating_id(operand.type) && !pointer_id(operand.type)))
-			throw std::runtime_error("PA12 increment requires modifiable lvalue");
-		type = strip_top_cv_type(operand.type);
-		record_builtin_conversion(operand, integral_id(operand.type) ?
-			promote_integral_type(operand.type) : type);
-		category = SemanticValueCategory::Lvalue;
-		break;
-	case SimpleTokenType::OP_PLUS:
-	case SimpleTokenType::OP_MINUS:
-	case SimpleTokenType::OP_COMPL:
-		if (!integral_id(operand.type) &&
-			(node.token == SimpleTokenType::OP_COMPL || !floating_id(operand.type)))
-			throw std::runtime_error("PA12 unary arithmetic requires integral");
-		type = node.token == SimpleTokenType::OP_COMPL ?
-			common_integral_type(operand.type, operand.type) :
-			common_arithmetic_type(operand.type, operand.type);
-		record_builtin_conversion(operand, type);
-		break;
-	case SimpleTokenType::OP_LNOT:
-		if (!scalar_id(operand.type))
-			throw std::runtime_error("PA12 logical negation requires scalar");
-		record_builtin_conversion(operand, fundamental(FundamentalType::Bool));
-		type = fundamental(FundamentalType::Bool);
-		break;
-	default:
-		throw std::runtime_error("PA12 unsupported unary operator");
-	}
-	return ExprInfo(make_expression_fact(SemanticFactKind::UnaryExpression,
-		type, category, node, std::vector<SemanticFactId>(1, operand.fact)),
-		type, category, false);
-}
 ExprInfo PA11SemanticModel::semantic_postfix_expression(const PA10AstNode& node, ScopeId scope)
 {
 	if (node.children.size() != 1 || !node.has_token ||
@@ -1491,6 +1376,13 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	const bool right_pointer = pointer_id(right.type) || right_array;
 	const bool left_arithmetic = integral_id(left.type) || floating_id(left.type);
 	const bool right_arithmetic = integral_id(right.type) || floating_id(right.type);
+	const bool left_size_type = semantic_facts_[left.fact.value].kind ==
+		SemanticFactKind::SizeofExpression ||
+		semantic_facts_[left.fact.value].size_type_derived;
+	const bool right_size_type = semantic_facts_[right.fact.value].kind ==
+		SemanticFactKind::SizeofExpression ||
+		semantic_facts_[right.fact.value].size_type_derived;
+	const bool size_type_derived = left_size_type || right_size_type;
 	const TypeId left_pointer_type = left_array ? make_pointer(
 		types_[left_object.value].child) : strip_top_cv_type(left.type);
 	const TypeId right_pointer_type = right_array ? make_pointer(
@@ -1630,8 +1522,10 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	std::vector<SemanticFactId> children;
 	children.push_back(left.fact);
 	children.push_back(right.fact);
-	return ExprInfo(make_expression_fact(SemanticFactKind::BinaryExpression,
-		type, category, node, children), type, category, false);
+	const SemanticFactId result = make_expression_fact(
+		SemanticFactKind::BinaryExpression, type, category, node, children);
+	semantic_facts_[result.value].size_type_derived = size_type_derived;
+	return ExprInfo(result, type, category, false);
 }
 ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& node,
 	ScopeId scope)
@@ -2154,12 +2048,17 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 	case PA10NodeKind::SizeofExpression:
 	case PA10NodeKind::TypeTraitExpression:
 	{
-		(void)sizeof_operand_type(node, scope);
+		const TypeId operand_type = sizeof_operand_type(node, scope);
 		const TypeId result = fundamental(FundamentalType::UnsignedLongInt);
 		const SemanticFactId fact = make_expression_fact(
 			SemanticFactKind::SizeofExpression, result,
 			SemanticValueCategory::Prvalue, node,
 			std::vector<SemanticFactId>());
+		SemanticFact& record = semantic_facts_[fact.value];
+		record.size_type_derived = true;
+		record.has_literal_value = true;
+		record.literal_value = type_size(operand_type);
+		record.literal_value_unsigned = true;
 		return ExprInfo(fact, result, SemanticValueCategory::Prvalue, false);
 	}
 	case PA10NodeKind::BracedInitList:
@@ -2208,8 +2107,15 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			initializer.kind != PA10NodeKind::ParenInitializer) ||
 			initializer.children.size() != 1)
 			throw std::runtime_error("PA12 invalid condition initializer");
+		const PA10AstNode* clause = &initializer.children.front();
+		if (clause->kind == PA10NodeKind::ParenInitializer)
+		{
+			if (clause->children.size() != 1)
+				throw std::runtime_error("PA12 invalid parenthesized initializer");
+			clause = &clause->children.front();
+		}
 		const ExprInfo expression = semantic_expression_for_target(
-			initializer.children.front(), declaration->scope, value.type);
+			*clause, declaration->scope, value.type);
 		apply_context_conversion(expression, value.type,
 			semantic_facts_[expression.fact.value].source);
 		if (declaration->is_constexpr)
@@ -2271,10 +2177,16 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				throw std::runtime_error("PA12 unsupported initializer");
 			if (initializer.children.size() != 1)
 				throw std::runtime_error("PA12 initializer arity mismatch");
-			const PA10AstNode& clause = initializer.children.front();
+			const PA10AstNode* clause = &initializer.children.front();
+			if (clause->kind == PA10NodeKind::ParenInitializer)
+			{
+				if (clause->children.size() != 1)
+					throw std::runtime_error("PA12 invalid parenthesized initializer");
+				clause = &clause->children.front();
+			}
 			const ExprInfo expression = semantic_expression_for_target(
-				clause, declaration->scope, value.type);
-			if (clause.kind != PA10NodeKind::BracedInitList)
+				*clause, declaration->scope, value.type);
+			if (clause->kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
 			if (declaration->is_constexpr)
@@ -2288,6 +2200,10 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				std::vector<SemanticFactId>(1,
 					semantic_constructor_action(binding_id, init)));
 		}
+		// Namespace initializers are the one PA15 constant boundary.  Persist
+		// the typed PA12 fold result (including nested braced elements) once,
+		// while the semantic owner still has its validated scope and AST facts.
+		record_constant_initializer(variable, declaration->scope);
 		declaration_semantic_ids_.push_back(variable);
 	}
 	declaration->semantic_count = list.children.size();

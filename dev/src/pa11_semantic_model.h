@@ -782,6 +782,16 @@ struct SemanticFact
 	bool has_literal_value;
 	bool literal_value_unsigned;
 	bool literal_value_negative;
+	// PA12-owned result for a constant initializer expression.  PA15 consumes
+	// this typed fact rather than recomputing semantic state while lowering.
+	bool has_constant_value;
+	__int128 constant_value;
+	bool constant_value_unsigned;
+	bool constant_value_evaluated;
+	// The expression's arithmetic result is normalized to the PA15 size_t
+	// LowIR representation.  The sizeof fact itself remains unsigned long;
+	// this marker is a typed semantic relation for containing expressions.
+	bool size_type_derived;
 	bool has_callee;
 
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
@@ -794,9 +804,12 @@ struct SemanticFact
 		  name_begin(0), name_count(0), name_global(false),
 		  child_begin(InvalidIdentityValue), child_count(0),
 		  conversion_begin(InvalidIdentityValue), conversion_count(0),
-		  literal_element_count(0), literal_value(0), has_literal_value(false),
-		  literal_value_unsigned(false), literal_value_negative(false),
-		  has_callee(false)
+			literal_element_count(0), literal_value(0), has_literal_value(false),
+			literal_value_unsigned(false), literal_value_negative(false),
+			has_constant_value(false), constant_value(0),
+			constant_value_unsigned(false), constant_value_evaluated(false),
+			size_type_derived(false),
+			has_callee(false)
 	{}
 };
 
@@ -810,11 +823,15 @@ struct DeclarationFact
 	std::size_t semantic_count;
 	bool is_constexpr;
 	bool automatic_storage;
+	bool is_extern;
+	bool is_static;
+	bool is_thread_local;
 
 	DeclarationFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope), binding_begin(InvalidIdentityValue),
 		  binding_count(0), semantic_begin(InvalidIdentityValue),
-		  semantic_count(0), is_constexpr(false), automatic_storage(false)
+		  semantic_count(0), is_constexpr(false), automatic_storage(false),
+		  is_extern(false), is_static(false), is_thread_local(false)
 	{}
 };
 
@@ -1282,6 +1299,8 @@ private:
 	TypeId sizeof_operand_type(const PA10AstNode& node, ScopeId scope)
 	;
 	ConstValue eval_constexpr(const PA10AstNode& node, ScopeId scope)
+	;
+	void record_constant_initializer(SemanticFactId fact, ScopeId scope)
 	;
 	TypeId decltype_type(const PA10AstNode& node, ScopeId scope)
 	;

@@ -1722,8 +1722,7 @@ TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope
 	{
 		const NamePath name = name_path(node);
 		const std::vector<ValueRef> values = lookup_value_path(name, scope);
-		if (!values.empty())
-			return binding(values.front().binding).type;
+		if (!values.empty()) return binding(values.front().binding).type;
 		const TypeId type = lookup_type_path(name, scope);
 		if (type.valid())
 			return type;
@@ -1759,6 +1758,10 @@ TypeId PA11SemanticModel::sizeof_operand_type(const PA10AstNode& node, ScopeId s
 		return type_from_type_id(operand, scope);
 	if (operand.kind == PA10NodeKind::IdExpression)
 	{
+		const std::vector<ValueRef> values = lookup_value_path(
+			name_path(operand), scope);
+		if (!values.empty())
+			return binding(values.front().binding).type;
 		const TypeId type = lookup_type_path(name_path(operand), scope);
 		if (type.valid())
 			return type;
@@ -2072,11 +2075,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	}
 	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
 	value.has_definition = function && definition;
-	if (function)
-	{
-		value.language_linkage = language_linkage;
-		value.internal_linkage = internal_linkage;
-	}
+	value.language_linkage = language_linkage;
+	value.internal_linkage = internal_linkage;
 	const BindingId binding_id = store_binding(scope, value);
 	if (backing_storage.valid() || unadjusted_type != type)
 	{
@@ -2476,6 +2476,9 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		throw std::runtime_error("invalid PA11 declarator list");
 	DeclarationFact declaration(&node, scope);
 	declaration.is_constexpr = spec.is_constexpr;
+	declaration.is_extern = spec.is_extern;
+	declaration.is_static = spec.is_static;
+	declaration.is_thread_local = spec.is_thread_local;
 	declaration.automatic_storage = scope.valid() &&
 		scope.value < scopes_.size() &&
 		scopes_[scope.value].kind == ScopeKind::Block &&
@@ -2533,7 +2536,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		else
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
-			const bool internal_linkage = function && spec.is_static &&
+			const bool internal_linkage = spec.is_static &&
 				target.value < scopes_.size() &&
 				scopes_[target.value].kind == ScopeKind::Namespace;
 			binding_id = add_value(target, name.path.last(), type,

@@ -313,6 +313,19 @@ void emit_instruction(std::ostream &out, const Program &program,
     out << "load " << type_text(instruction.type) << " "
         << operand_text(program, instruction.first);
     break;
+  case Instruction::IK_INDEX:
+    out << "index " << type_text(instruction.type);
+    switch (instruction.index_projection) {
+    case IPK_NONE: break;
+    case IPK_ARRAY_ELEMENT: out << " [projection=array_element]"; break;
+    case IPK_FIELD: out << " [projection=field]"; break;
+    case IPK_BASE_SUBOBJECT: out << " [projection=base_subobject]"; break;
+    case IPK_REFERENCE_FIELD: out << " [projection=reference_field]"; break;
+    default: throw std::runtime_error("LowIR serializer: invalid index projection");
+    }
+    out << " " << operand_text(program, instruction.first) << ", "
+        << operand_text(program, instruction.second);
+    break;
   case Instruction::IK_STORE:
     out << "store " << type_text(instruction.type) << " "
         << operand_text(program, instruction.first) << ", "

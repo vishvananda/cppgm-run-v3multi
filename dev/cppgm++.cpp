@@ -599,10 +599,6 @@ int run_emit_lowir_mode(const vector<string> & args)
       has_entry = true;
     }
   }
-  if(!has_entry) {
-    throw logic_error("missing main definition");
-  }
-
   const string output_text = lowir_model::serialize_lowir_program(program);
   ofstream output(invocation.outfile.c_str());
   if(!output) {
