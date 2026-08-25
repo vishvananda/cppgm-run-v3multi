@@ -44,6 +44,44 @@ struct FunctionPlan
 		: fact_index(fact_index), program_index(program_index) {}
 };
 
+struct ControlTarget
+{
+	bool loop;
+	BlockId break_target;
+	BlockId continue_target;
+
+	ControlTarget(bool loop = false, BlockId break_target = BlockId(),
+		BlockId continue_target = BlockId())
+		: loop(loop), break_target(break_target), continue_target(continue_target) {}
+};
+
+struct SwitchArm
+{
+	SemanticFactId fact;
+	BlockId target;
+	bool is_default;
+	Operand value;
+
+	SwitchArm(SemanticFactId fact = SemanticFactId(),
+		BlockId target = BlockId(), bool is_default = false,
+		const Operand& value = Operand())
+		: fact(fact), target(target), is_default(is_default), value(value) {}
+};
+
+struct SwitchContext
+{
+	BlockId end_target;
+	BlockId default_target;
+	std::vector<SwitchArm> arms;
+	std::map<std::size_t, BlockId> labels;
+	std::set<std::size_t> lowered_labels;
+	std::set<std::size_t> label_subtrees;
+
+	SwitchContext(BlockId end_target = BlockId())
+		: end_target(end_target), default_target(end_target), arms(), labels(),
+		  lowered_labels(), label_subtrees() {}
+};
+
 class Pa15Lowerer
 {
 public:
@@ -52,10 +90,12 @@ public:
 			  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
 		  function_program_indexes_(), slot_by_binding_(), slot_spellings_(),
-		  function_plans_(), next_symbol_(0), next_value_(program.values.size()),
+		  function_plans_(), function_scope_variables_(), next_symbol_(0),
+		  next_value_(program.values.size()),
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
-		  block_ordinal_(0) {}
+		  block_ordinal_(0), block_indexes_(), control_stack_(),
+		  switch_stack_(), block_order_(), ordered_block_ids_() {}
 
 	void run()
 	{
@@ -82,6 +122,9 @@ private:
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
+	// Indexed once from the PA12 scope arena. Entries are in scope and
+	// binding creation order, matching the old fallback's deterministic order.
+	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
 	std::size_t next_value_;
 	std::size_t next_slot_;
@@ -90,6 +133,11 @@ private:
 	std::size_t current_block_;
 	std::size_t temp_ordinal_;
 	std::size_t block_ordinal_;
+	std::map<std::size_t, std::size_t> block_indexes_;
+	std::vector<ControlTarget> control_stack_;
+	std::vector<SwitchContext> switch_stack_;
+	std::vector<BlockId> block_order_;
+	std::set<std::size_t> ordered_block_ids_;
 
 	void initialize_spelling_ids()
 	{
@@ -332,8 +380,53 @@ private:
 		}
 	}
 
+	void index_function_scope_variables()
+	{
+		function_scope_variables_.assign(model_.scopes_.size(),
+			std::vector<BindingId>());
+		std::vector<bool> collected_function_scope(model_.scopes_.size(), false);
+		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
+		{
+			const FunctionFact& fact = model_.function_facts_[i];
+			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size() ||
+				model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
+				continue;
+			if (!fact.function_scope.valid() ||
+				fact.function_scope.value >= model_.scopes_.size())
+				throw std::runtime_error("PA15 function scope is missing");
+			collected_function_scope[fact.function_scope.value] = true;
+		}
+
+		// Scope creation is parent-before-child. Propagate the collected
+		// function-scope owner once, then append each variable binding once.
+		// This partitions the arena in O(S + B + F), where S is the number of
+		// scopes, B the number of bindings, and F the function count.
+		std::vector<std::size_t> owner(model_.scopes_.size(),
+			InvalidIdentityValue);
+		for (std::size_t scope = 0; scope < model_.scopes_.size(); ++scope)
+		{
+			const Scope& current = model_.scopes_[scope];
+			if (collected_function_scope[scope])
+				owner[scope] = scope;
+			else if (current.parent.valid())
+			{
+				if (current.parent.value >= scope)
+					throw std::runtime_error("PA15 scope parent order is invalid");
+				owner[scope] = owner[current.parent.value];
+			}
+			if (owner[scope] == InvalidIdentityValue) continue;
+			for (std::size_t i = 0; i < current.bindings.size(); ++i)
+			{
+				const BindingId id = current.bindings[i];
+				if (model_.binding(id).kind == BindingKind::Variable)
+					function_scope_variables_[owner[scope]].push_back(id);
+			}
+		}
+	}
+
 	void collect_functions()
 	{
+		index_function_scope_variables();
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
@@ -408,7 +501,24 @@ private:
 					parameter_binding.name.valid())
 					++active_names[parameter_binding.name.value];
 			}
-			collect_local_slots(stored, fact.body_scope, &active_names);
+			// The function scope owns control-statement scopes as well as the
+			// compound body.  Starting at the body would miss condition
+			// declarations and for-init bindings, whose scopes are parents of
+			// their substatements.
+			collect_local_slots(stored, fact.function_scope, &active_names);
+			// PA12 internal control scopes intentionally have no presentation
+			// tree edge. Add the already-indexed missing variables in the same
+			// creation order as the former fallback, without rescanning the arena.
+			const std::vector<BindingId>& owned_variables =
+				function_scope_variables_[fact.function_scope.value];
+			for (std::size_t i = 0; i < owned_variables.size(); ++i)
+			{
+				const BindingId id = owned_variables[i];
+				const Binding& value = model_.binding(id);
+				if (slot_by_binding_.find(id.value) != slot_by_binding_.end()) continue;
+				add_slot(stored, id, value.type, slot_name(value.name,
+					id.value, false), low_type(value.type));
+			}
 			stored.slot_count = next_slot_ - stored.slot_begin.index;
 			stored.value_begin = ValueId();
 			stored.value_count = 0;
@@ -619,6 +729,34 @@ private:
 		}
 	}
 
+	bool terminated(BlockId id) const
+	{
+		return terminated(function().blocks[block_index(id)]);
+	}
+
+	void reorder_condition_blocks(std::size_t begin, std::size_t destination_count,
+		BlockId saved_current)
+	{
+		Function& target = function();
+		if (begin > target.blocks.size() ||
+			destination_count > target.blocks.size() - begin)
+			throw std::runtime_error("PA15 invalid condition block range");
+		std::vector<Block> suffix(target.blocks.begin() + begin,
+			target.blocks.end());
+		std::vector<Block> reordered;
+		// Logical-condition blocks are allocated while recursively lowering the
+		// left operand.  Reverse their creation order to present the
+		// source-to-target path order used by normalized LowIR.
+		for (std::size_t i = suffix.size(); i > destination_count; --i)
+			reordered.push_back(suffix[i - 1]);
+		for (std::size_t i = 0; i < destination_count; ++i)
+			reordered.push_back(suffix[i]);
+		target.blocks.erase(target.blocks.begin() + begin, target.blocks.end());
+		target.blocks.insert(target.blocks.end(), reordered.begin(), reordered.end());
+		rebuild_block_indexes();
+		set_current(saved_current);
+	}
+
 	SpellingId temporary_name()
 	{
 		std::ostringstream name;
@@ -643,7 +781,94 @@ private:
 		else label << "^" << base << "_" << ++block_ordinal_;
 		created.label_id = intern_spelling(label.str());
 		function().blocks.push_back(created);
-		return function().blocks.size() - 1;
+		const std::size_t index = function().blocks.size() - 1;
+		block_indexes_[created.block_id.index] = index;
+		return index;
+	}
+
+	void rebuild_block_indexes()
+	{
+		block_indexes_.clear();
+		for (std::size_t i = 0; i < function().blocks.size(); ++i)
+			block_indexes_[function().blocks[i].block_id.index] = i;
+	}
+
+	BlockId block_id(std::size_t index) const
+	{
+		if (index >= function().blocks.size())
+			throw std::runtime_error("PA15 block index is out of range");
+		return function().blocks[index].block_id;
+	}
+
+	std::size_t block_index(BlockId id) const
+	{
+		const std::map<std::size_t, std::size_t>::const_iterator found =
+			block_indexes_.find(id.index);
+		if (!id.valid() || found == block_indexes_.end())
+			throw std::runtime_error("PA15 block identity is not owned by function");
+		return found->second;
+	}
+
+	void set_current(BlockId id)
+	{
+		if (!id.valid())
+		{
+			current_block_ = InvalidIdentityValue;
+			return;
+		}
+		current_block_ = block_index(id);
+		if (ordered_block_ids_.insert(id.index).second)
+			block_order_.push_back(id);
+	}
+
+	BlockId current_block_id() const
+	{
+		return current_block_ == InvalidIdentityValue ? BlockId() :
+			block_id(current_block_);
+	}
+
+	void reorder_function_blocks()
+	{
+		Function& target = function();
+		const BlockId saved_current = current_block_id();
+		std::set<std::size_t> allocated_block_ids;
+		for (std::size_t i = 0; i < target.blocks.size(); ++i)
+			if (!target.blocks[i].block_id.valid() ||
+				!allocated_block_ids.insert(target.blocks[i].block_id.index).second)
+				throw std::runtime_error("PA15 duplicate allocated block identity");
+		if (ordered_block_ids_.size() != block_order_.size())
+			throw std::runtime_error("PA15 block order has duplicate identity");
+		std::set<std::size_t> ordered;
+		for (std::size_t i = 0; i < block_order_.size(); ++i)
+		{
+			if (allocated_block_ids.find(block_order_[i].index) ==
+				allocated_block_ids.end() ||
+				!ordered.insert(block_order_[i].index).second)
+				throw std::runtime_error("PA15 block order identity is invalid");
+		}
+		// A preallocated join or an otherwise unreachable structured target is
+		// still part of the typed CFG. Retain such blocks in allocation order
+		// after the reached CFG order instead of silently dropping them.
+		for (std::size_t i = 0; i < target.blocks.size(); ++i)
+		{
+			const std::size_t id = target.blocks[i].block_id.index;
+			if (ordered.insert(id).second)
+			{
+				block_order_.push_back(target.blocks[i].block_id);
+				ordered_block_ids_.insert(id);
+			}
+		}
+		if (ordered.size() != allocated_block_ids.size())
+			throw std::runtime_error("PA15 allocated block is missing from order");
+		std::vector<Block> reordered;
+		for (std::size_t i = 0; i < block_order_.size(); ++i)
+		{
+			const std::size_t index = block_index(block_order_[i]);
+			reordered.push_back(target.blocks[index]);
+		}
+		target.blocks.swap(reordered);
+		rebuild_block_indexes();
+		set_current(saved_current);
 	}
 
 	Operand temporary_operand(ValueId id, SpellingId name) const
@@ -678,10 +903,15 @@ private:
 
 	Operand block_operand(std::size_t index) const
 	{
+		return block_operand(block_id(index));
+	}
+
+	Operand block_operand(BlockId id) const
+	{
 		Operand operand;
 		operand.kind = Operand::OP_LABEL;
-		operand.block_id = function().blocks[index].block_id;
-		operand.presentation_id = function().blocks[index].label_id;
+		operand.block_id = id;
+		operand.presentation_id = function().blocks[block_index(id)].label_id;
 		return operand;
 	}
 
@@ -781,12 +1011,23 @@ private:
 		return LoweredValue(integer_operand(value, type), type, false);
 	}
 
-	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result)
+	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result,
+		bool omit_boolean_context = false)
 	{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		if (fact.conversion_count != 0 && fact.conversion_begin == InvalidIdentityValue)
 			throw std::runtime_error("PA15 invalid semantic conversion range");
-		for (std::size_t i = 0; i < fact.conversion_count; ++i)
+		std::size_t conversion_count = fact.conversion_count;
+		if (omit_boolean_context && conversion_count != 0)
+		{
+			FundamentalType target_fundamental;
+			const ConversionFact& last = model_.conversion_facts_[
+				fact.conversion_begin + conversion_count - 1];
+			if (model_.fundamental_of(last.target, &target_fundamental) &&
+				target_fundamental == FundamentalType::Bool)
+				--conversion_count;
+		}
+		for (std::size_t i = 0; i < conversion_count; ++i)
 		{
 			const ConversionFact& conversion = model_.conversion_facts_[
 				fact.conversion_begin + i];
@@ -886,10 +1127,35 @@ private:
 
 	LoweredValue lower_expression(SemanticFactId id)
 	{
+		return lower_expression_impl(id, false);
+	}
+
+	LoweredValue lower_condition_expression(SemanticFactId id)
+	{
+		return lower_expression_impl(id, true);
+	}
+
+	LoweredValue lower_expression_impl(SemanticFactId id,
+		bool omit_boolean_context)
+	{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		LoweredValue result;
 		switch (fact.kind)
 		{
+		case SemanticFactKind::Variable:
+		{
+			const std::vector<SemanticFactId> initializer = children(id);
+			if (initializer.size() > 1)
+				throw std::runtime_error("PA15 invalid condition initializer");
+			const LoweredValue storage = storage_for(fact.binding);
+			if (initializer.size() == 1)
+			{
+				const LoweredValue value = lower_expression(initializer.front());
+				emit_store(storage.type, value.value, storage.value);
+			}
+			result = storage;
+			break;
+		}
 		case SemanticFactKind::Literal:
 			result = literal(fact);
 			break;
@@ -1019,7 +1285,7 @@ private:
 		default:
 			throw std::runtime_error("PA15 unsupported scalar expression fact");
 		}
-		return apply_conversions(id, result);
+		return apply_conversions(id, result, omit_boolean_context);
 	}
 
 	bool is_comparison(SimpleTokenType token) const
@@ -1069,9 +1335,437 @@ private:
 		}
 	}
 
+	void emit_jump(BlockId target)
+	{
+		Instruction jump;
+		jump.kind = Instruction::IK_JUMP;
+		jump.first = block_operand(target);
+		block().instructions.push_back(jump);
+	}
+
+	void emit_branch(const Operand& condition, BlockId true_target,
+		BlockId false_target)
+	{
+		Instruction branch;
+		branch.kind = Instruction::IK_BRANCH;
+		branch.first = condition;
+		branch.second = block_operand(true_target);
+		branch.third = block_operand(false_target);
+		block().instructions.push_back(branch);
+	}
+
+	bool condition_is_empty(SemanticFactId id) const
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		return fact.kind == SemanticFactKind::Condition && fact.child_count == 0;
+	}
+
+	bool has_direct_short_circuit(SemanticFactId id) const
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind == SemanticFactKind::Condition)
+		{
+			if (fact.child_count != 1) return false;
+			return has_direct_short_circuit(
+				model_.semantic_children_[fact.child_begin]);
+		}
+		if (fact.kind == SemanticFactKind::ConditionDeclaration)
+			return false;
+		return fact.kind == SemanticFactKind::BinaryExpression &&
+			(fact.token == SimpleTokenType::OP_LAND ||
+			 fact.token == SimpleTokenType::OP_LOR);
+	}
+
+	void lower_condition_branch(SemanticFactId id, BlockId true_target,
+		BlockId false_target)
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind == SemanticFactKind::Condition)
+		{
+			if (fact.child_count != 1)
+				throw std::runtime_error("PA15 empty branching condition");
+			lower_condition_branch(
+				model_.semantic_children_[fact.child_begin], true_target,
+				false_target);
+			return;
+		}
+		if (fact.kind == SemanticFactKind::ConditionDeclaration)
+		{
+			const std::vector<SemanticFactId> values = children(id);
+			if (values.size() != 1)
+				throw std::runtime_error("PA15 invalid branching condition declaration");
+			const LoweredValue condition = lower_condition_expression(values.front());
+			emit_branch(condition.value, true_target, false_target);
+			return;
+		}
+		if (fact.kind == SemanticFactKind::BinaryExpression &&
+			(fact.token == SimpleTokenType::OP_LAND ||
+			 fact.token == SimpleTokenType::OP_LOR))
+		{
+			const std::vector<SemanticFactId> operands = children(id);
+			if (operands.size() != 2)
+				throw std::runtime_error("PA15 invalid logical condition fact");
+			const std::size_t rhs_index = new_block(fact.token ==
+				SimpleTokenType::OP_LAND ? "land_rhs" : "lor_rhs");
+			const BlockId rhs_target = block_id(rhs_index);
+			if (fact.token == SimpleTokenType::OP_LAND)
+			{
+				lower_condition_branch(operands[0], rhs_target, false_target);
+				set_current(rhs_target);
+				lower_condition_branch(operands[1], true_target, false_target);
+			}
+			else
+			{
+				lower_condition_branch(operands[0], true_target, rhs_target);
+				set_current(rhs_target);
+				lower_condition_branch(operands[1], true_target, false_target);
+			}
+			return;
+		}
+		const LoweredValue condition = lower_condition_expression(id);
+		emit_branch(condition.value, true_target, false_target);
+	}
+
+	BlockId control_target(bool continue_target) const
+	{
+		for (std::size_t i = control_stack_.size(); i != 0; --i)
+		{
+			const ControlTarget& target = control_stack_[i - 1];
+			if (continue_target && !target.loop) continue;
+			const BlockId result = continue_target ? target.continue_target :
+				target.break_target;
+			if (result.valid()) return result;
+		}
+		throw std::runtime_error(continue_target ?
+			"PA15 continue target is missing" : "PA15 break target is missing");
+	}
+
+	BlockId switch_label_target(SemanticFactId id)
+	{
+		if (switch_stack_.empty())
+			throw std::runtime_error("PA15 switch label has no owner");
+		SwitchContext& context = switch_stack_.back();
+		const std::map<std::size_t, BlockId>::const_iterator found =
+			context.labels.find(id.value);
+		if (found == context.labels.end())
+			throw std::runtime_error("PA15 switch label owner mismatch");
+		if (!context.lowered_labels.insert(id.value).second)
+			throw std::runtime_error("PA15 switch label was lowered twice");
+		return found->second;
+	}
+
+	bool collect_switch_labels(SemanticFactId id, SwitchContext* context)
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		// A nested switch owns all labels below it.  Skipping it here makes
+		// each owned-switch traversal linear in its own fact subtree rather
+		// than repeatedly collecting nested labels for every enclosing switch.
+		if (fact.kind == SemanticFactKind::SwitchStatement) return false;
+		bool found_label = false;
+		if (fact.kind == SemanticFactKind::CaseStatement)
+		{
+			const std::vector<SemanticFactId> label_children = children(id);
+			if (label_children.size() != 2)
+				throw std::runtime_error("PA15 invalid case fact");
+			const LoweredValue value = literal(
+				model_.semantic_facts_[label_children.front().value]);
+			const BlockId target = block_id(new_block("switch_case"));
+			if (!context->labels.insert(std::make_pair(id.value, target)).second)
+				throw std::runtime_error("PA15 duplicate switch label fact");
+			context->arms.push_back(SwitchArm(id, target, false, value.value));
+			found_label = true;
+			if (collect_switch_labels(label_children.back(), context))
+				found_label = true;
+		}
+		else if (fact.kind == SemanticFactKind::DefaultStatement)
+		{
+			const std::vector<SemanticFactId> label_children = children(id);
+			if (label_children.size() != 1)
+				throw std::runtime_error("PA15 invalid default fact");
+			const BlockId target = block_id(new_block("switch_default"));
+			if (!context->labels.insert(std::make_pair(id.value, target)).second)
+				throw std::runtime_error("PA15 duplicate switch label fact");
+			context->default_target = target;
+			context->arms.push_back(SwitchArm(id, target, true, Operand()));
+			found_label = true;
+			if (collect_switch_labels(label_children.front(), context))
+				found_label = true;
+		}
+		else
+		{
+			const std::vector<SemanticFactId> facts = children(id);
+			for (std::size_t i = 0; i < facts.size(); ++i)
+				if (collect_switch_labels(facts[i], context))
+					found_label = true;
+		}
+		if (found_label) context->label_subtrees.insert(id.value);
+		return found_label;
+	}
+
+	bool switch_subtree_has_label(SemanticFactId id) const
+	{
+		if (switch_stack_.empty())
+			throw std::runtime_error("PA15 switch label context is missing");
+		return switch_stack_.back().label_subtrees.find(id.value) !=
+			switch_stack_.back().label_subtrees.end();
+	}
+
+	bool lower_switch_body(SemanticFactId id)
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		// Nested switches own their labels.  They are lowered only when reached
+		// as statements, never as part of the enclosing label search.
+		if (fact.kind == SemanticFactKind::SwitchStatement)
+		{
+			if (current_block_ != InvalidIdentityValue) lower_statement(id);
+			return false;
+		}
+		if (fact.kind == SemanticFactKind::IfStatement &&
+			current_block_ == InvalidIdentityValue)
+		{
+			const std::vector<SemanticFactId> branches = children(id);
+			std::vector<BlockId> fallthroughs;
+			bool entered_label = false;
+			for (std::size_t i = 0; i < branches.size(); ++i)
+			{
+				const SemanticFactKind kind =
+					model_.semantic_facts_[branches[i].value].kind;
+				if (kind != SemanticFactKind::ThenBranch &&
+					kind != SemanticFactKind::ElseBranch)
+					continue;
+				if (!switch_subtree_has_label(branches[i])) continue;
+				// Each branch is a mutually exclusive lexical container.  Once
+				// one branch has supplied a recovered case path, search another
+				// label-bearing sibling from an invalid current block instead of
+				// treating its ordinary statements as fallthrough.
+				if (entered_label) current_block_ = InvalidIdentityValue;
+				if (!lower_switch_body(branches[i])) continue;
+				entered_label = true;
+				if (current_block_ != InvalidIdentityValue)
+					fallthroughs.push_back(current_block_id());
+			}
+			if (fallthroughs.empty())
+			{
+				current_block_ = InvalidIdentityValue;
+			}
+			else if (fallthroughs.size() == 1)
+			{
+				set_current(fallthroughs.front());
+			}
+			else
+			{
+				const BlockId join = block_id(new_block("switch_if_end"));
+				for (std::size_t i = 0; i < fallthroughs.size(); ++i)
+				{
+					set_current(fallthroughs[i]);
+					if (!terminated(block())) emit_jump(join);
+				}
+				set_current(join);
+			}
+			return entered_label;
+		}
+		if (current_block_ == InvalidIdentityValue &&
+			!switch_subtree_has_label(id)) return false;
+		if (fact.kind == SemanticFactKind::CompoundStatement)
+		{
+			const std::vector<SemanticFactId> facts = children(id);
+			bool entered_label = false;
+			for (std::size_t i = 0; i < facts.size(); ++i)
+				if (lower_switch_body(facts[i])) entered_label = true;
+			return entered_label;
+		}
+		if (fact.kind == SemanticFactKind::CaseStatement ||
+			fact.kind == SemanticFactKind::DefaultStatement)
+		{
+			lower_statement(id);
+			return true;
+		}
+		if (current_block_ != InvalidIdentityValue)
+		{
+			lower_statement(id);
+			return false;
+		}
+
+		// The lexical predecessor may have terminated, but a case/default below
+		// an unreachable statement is still a dispatch entry.  Search the typed
+		// statement graph once, skipping no subtree, until every owned label is
+		// entered.  Expression facts are harmlessly traversed and nested switches
+		// are cut off by the guard above.
+		const std::vector<SemanticFactId> facts = children(id);
+		bool entered_label = false;
+		for (std::size_t i = 0; i < facts.size(); ++i)
+			if (lower_switch_body(facts[i])) entered_label = true;
+		return entered_label;
+	}
+
+	void finish_switch_labels()
+	{
+		if (switch_stack_.empty())
+			throw std::runtime_error("PA15 switch label context is missing");
+		const SwitchContext& context = switch_stack_.back();
+		if (context.lowered_labels.size() != context.labels.size())
+			throw std::runtime_error("PA15 switch label was not lowered");
+		for (std::map<std::size_t, BlockId>::const_iterator label =
+			context.labels.begin(); label != context.labels.end(); ++label)
+			if (context.lowered_labels.find(label->first) ==
+				context.lowered_labels.end())
+				throw std::runtime_error("PA15 switch label was not visited");
+		for (std::size_t i = 0; i < context.arms.size(); ++i)
+		{
+			const BlockId target = context.arms[i].target;
+			if (!terminated(target))
+			{
+				set_current(target);
+				emit_jump(context.end_target);
+			}
+		}
+	}
+
+	void lower_switch(const std::vector<SemanticFactId>& facts)
+	{
+		if (facts.size() < 1 || facts.size() > 2)
+			throw std::runtime_error("PA15 invalid switch fact");
+		const LoweredValue selector = lower_condition(facts.front());
+		const BlockId dispatch = block_id(new_block("switch_dispatch"));
+		const BlockId end = block_id(new_block("switch_end"));
+		SwitchContext context(end);
+		if (facts.size() == 2)
+			collect_switch_labels(facts[1], &context);
+		emit_jump(dispatch);
+		set_current(dispatch);
+		Instruction instruction;
+		instruction.kind = Instruction::IK_SWITCH;
+		instruction.first = selector.value;
+		instruction.second = block_operand(context.default_target);
+		for (std::size_t i = 0; i < context.arms.size(); ++i)
+		{
+			if (context.arms[i].is_default) continue;
+			instruction.args.push_back(context.arms[i].value);
+			instruction.args.push_back(block_operand(context.arms[i].target));
+		}
+		block().instructions.push_back(instruction);
+
+		switch_stack_.push_back(context);
+		control_stack_.push_back(ControlTarget(false, end));
+		if (facts.size() == 2)
+		{
+			if (context.arms.empty()) set_current(end);
+			else set_current(context.arms.front().target);
+			lower_switch_body(facts[1]);
+			finish_switch_labels();
+		}
+		if (current_block_ != InvalidIdentityValue &&
+			current_block_id() != end && !terminated(block()))
+			emit_jump(end);
+		control_stack_.pop_back();
+		switch_stack_.pop_back();
+		set_current(end);
+	}
+
+	void lower_while(const std::vector<SemanticFactId>& facts)
+	{
+		if (facts.size() != 2)
+			throw std::runtime_error("PA15 invalid while fact");
+		const BlockId condition = block_id(new_block("while_cond"));
+		const BlockId body = block_id(new_block("while_body"));
+		const BlockId end = block_id(new_block("while_end"));
+		emit_jump(condition);
+		set_current(condition);
+		if (has_direct_short_circuit(facts[0]))
+			lower_condition_branch(facts[0], body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(facts[0]);
+			emit_branch(value.value, body, end);
+		}
+		control_stack_.push_back(ControlTarget(true, end, condition));
+		set_current(body);
+		lower_statement(facts[1]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		control_stack_.pop_back();
+		set_current(end);
+	}
+
+	void lower_do(const std::vector<SemanticFactId>& facts)
+	{
+		if (facts.size() != 2)
+			throw std::runtime_error("PA15 invalid do fact");
+		const BlockId body = block_id(new_block("do_body"));
+		const BlockId condition = block_id(new_block("do_cond"));
+		const BlockId end = block_id(new_block("do_end"));
+		emit_jump(body);
+		control_stack_.push_back(ControlTarget(true, end, condition));
+		set_current(body);
+		lower_statement(facts[0]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		set_current(condition);
+		if (has_direct_short_circuit(facts[1]))
+			lower_condition_branch(facts[1], body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(facts[1]);
+			emit_branch(value.value, body, end);
+		}
+		control_stack_.pop_back();
+		set_current(end);
+	}
+
+	void lower_for(const std::vector<SemanticFactId>& facts)
+	{
+		if (facts.size() < 2)
+			throw std::runtime_error("PA15 invalid for fact");
+		lower_statement(facts[0]);
+		SemanticFactId condition_fact;
+		SemanticFactId iteration_fact;
+		for (std::size_t i = 1; i + 1 < facts.size(); ++i)
+		{
+			const SemanticFactKind kind = model_.semantic_facts_[facts[i].value].kind;
+			if (kind == SemanticFactKind::Condition) condition_fact = facts[i];
+			else if (kind == SemanticFactKind::Iteration) iteration_fact = facts[i];
+		}
+		const BlockId condition = block_id(new_block("for_cond"));
+		const BlockId body = block_id(new_block("for_body"));
+		const BlockId iteration = block_id(new_block("for_iter"));
+		const BlockId end = block_id(new_block("for_end"));
+		emit_jump(condition);
+		set_current(condition);
+		if (!condition_fact.valid() || condition_is_empty(condition_fact))
+			emit_jump(body);
+		else if (has_direct_short_circuit(condition_fact))
+			lower_condition_branch(condition_fact, body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(condition_fact);
+			emit_branch(value.value, body, end);
+		}
+		control_stack_.push_back(ControlTarget(true, end, iteration));
+		set_current(body);
+		lower_statement(facts.back());
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(iteration);
+		set_current(iteration);
+		if (iteration_fact.valid())
+		{
+			const std::vector<SemanticFactId> expression = children(iteration_fact);
+			if (expression.size() != 1)
+				throw std::runtime_error("PA15 invalid for iteration fact");
+			(void)lower_expression(expression.front());
+		}
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		control_stack_.pop_back();
+		set_current(end);
+	}
+
 	void lower_statement(SemanticFactId id)
 	{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (current_block_ == InvalidIdentityValue &&
+			fact.kind != SemanticFactKind::CaseStatement &&
+			fact.kind != SemanticFactKind::DefaultStatement)
+			return;
 		const std::vector<SemanticFactId> facts = children(id);
 		switch (fact.kind)
 		{
@@ -1113,6 +1807,65 @@ private:
 		case SemanticFactKind::IfStatement:
 			lower_if(facts);
 			break;
+		case SemanticFactKind::SwitchStatement:
+			lower_switch(facts);
+			break;
+		case SemanticFactKind::WhileStatement:
+			lower_while(facts);
+			break;
+		case SemanticFactKind::DoStatement:
+			lower_do(facts);
+			break;
+		case SemanticFactKind::ForStatement:
+			lower_for(facts);
+			break;
+		case SemanticFactKind::ForInitStatement:
+			for (std::size_t i = 0; i < facts.size(); ++i)
+			{
+				if (model_.semantic_facts_[facts[i].value].kind ==
+					SemanticFactKind::SimpleDeclaration)
+					lower_statement(facts[i]);
+				else
+					(void)lower_expression(facts[i]);
+			}
+			break;
+		case SemanticFactKind::Iteration:
+			if (facts.size() != 1)
+				throw std::runtime_error("PA15 invalid iteration fact");
+			(void)lower_expression(facts.front());
+			break;
+		case SemanticFactKind::BreakStatement:
+			emit_jump(control_target(false));
+			current_block_ = InvalidIdentityValue;
+			break;
+		case SemanticFactKind::ContinueStatement:
+			emit_jump(control_target(true));
+			current_block_ = InvalidIdentityValue;
+			break;
+		case SemanticFactKind::CaseStatement:
+		{
+			const BlockId target = switch_label_target(id);
+			if (current_block_ != InvalidIdentityValue &&
+				current_block_id() != target && !terminated(block()))
+				emit_jump(target);
+			set_current(target);
+			if (facts.size() != 2)
+				throw std::runtime_error("PA15 invalid case statement");
+			lower_statement(facts.back());
+			break;
+		}
+		case SemanticFactKind::DefaultStatement:
+		{
+			const BlockId target = switch_label_target(id);
+			if (current_block_ != InvalidIdentityValue &&
+				current_block_id() != target && !terminated(block()))
+				emit_jump(target);
+			set_current(target);
+			if (facts.size() != 1)
+				throw std::runtime_error("PA15 invalid default statement");
+			lower_statement(facts.front());
+			break;
+		}
 		case SemanticFactKind::ThenBranch:
 		case SemanticFactKind::ElseBranch:
 			if (facts.size() == 1) lower_statement(facts.front());
@@ -1129,55 +1882,87 @@ private:
 		if (fact.kind == SemanticFactKind::Condition && facts.size() == 1)
 			return lower_condition(facts.front());
 		if (fact.kind == SemanticFactKind::ConditionDeclaration && facts.size() == 1)
-			return lower_expression(facts.front());
-		return lower_expression(id);
+			return lower_condition_expression(facts.front());
+		return lower_condition_expression(id);
 	}
 
 	void lower_if(const std::vector<SemanticFactId>& facts)
 	{
 		if (facts.size() < 2 || facts.size() > 3)
 			throw std::runtime_error("PA15 invalid if fact");
-		const LoweredValue condition = lower_condition(facts[0]);
-		const std::size_t then_block = new_block("if_then");
-		const std::size_t else_block = new_block("if_else");
-		Instruction branch;
-		branch.kind = Instruction::IK_BRANCH;
-		branch.first = condition.value;
-		branch.second = block_operand(then_block);
-		branch.third = block_operand(else_block);
-		block().instructions.push_back(branch);
+		const bool direct = has_direct_short_circuit(facts[0]);
+		if (direct)
+		{
+			// Allocate branch destinations first so their typed names retain the
+			// same ordinal relationship as ordinary if lowering.  The RHS blocks
+			// are then placed before those destinations in presentation order.
+			const std::size_t begin = function().blocks.size();
+			const BlockId then_block = block_id(new_block("if_then"));
+			const BlockId else_block = block_id(new_block("if_else"));
+			const bool implicit_else = facts.size() == 2;
+			BlockId join_block;
+			if (implicit_else)
+				join_block = block_id(new_block("if_end"));
+			lower_condition_branch(facts[0], then_block, else_block);
+			const BlockId saved_current = current_block_id();
+			reorder_condition_blocks(begin, implicit_else ? 3 : 2,
+				saved_current);
 
-		current_block_ = then_block;
+			set_current(then_block);
+			lower_statement(facts[1]);
+			const bool then_terminated = terminated(then_block);
+			set_current(else_block);
+			if (!implicit_else) lower_statement(facts[2]);
+			const bool else_terminated = terminated(else_block);
+			if (then_terminated && else_terminated)
+			{
+				current_block_ = InvalidIdentityValue;
+				return;
+			}
+			if (!join_block.valid())
+				join_block = block_id(new_block("if_end"));
+			if (!then_terminated)
+			{
+				set_current(then_block);
+				emit_jump(join_block);
+			}
+			if (!else_terminated)
+			{
+				set_current(else_block);
+				emit_jump(join_block);
+			}
+			set_current(join_block);
+			return;
+		}
+
+		const LoweredValue condition = lower_condition(facts[0]);
+		const BlockId then_block = block_id(new_block("if_then"));
+		const BlockId else_block = block_id(new_block("if_else"));
+		emit_branch(condition.value, then_block, else_block);
+
+		set_current(then_block);
 		lower_statement(facts[1]);
-		const bool then_terminated = current_block_ == InvalidIdentityValue ||
-			terminated(function().blocks[then_block]);
-		current_block_ = else_block;
+		const bool then_terminated = terminated(then_block);
+		set_current(else_block);
 		if (facts.size() == 3) lower_statement(facts[2]);
-		const bool else_terminated = current_block_ == InvalidIdentityValue ||
-			terminated(function().blocks[else_block]);
+		const bool else_terminated = terminated(else_block);
 		if (then_terminated && else_terminated)
 		{
 			current_block_ = InvalidIdentityValue;
 			return;
 		}
-		const std::size_t join_block = new_block("if_join");
+		const BlockId join_block = block_id(new_block("if_end"));
 		if (!then_terminated)
 		{
-			current_block_ = then_block;
-			Instruction jump;
-			jump.kind = Instruction::IK_JUMP;
-			jump.first = block_operand(join_block);
-			block().instructions.push_back(jump);
+			set_current(then_block);
+			emit_jump(join_block);
 		}
 		if (!else_terminated)
 		{
-			current_block_ = else_block;
-			Instruction jump;
-			jump.kind = Instruction::IK_JUMP;
-			jump.first = block_operand(join_block);
-			block().instructions.push_back(jump);
+			set_current(else_block);
+			emit_jump(join_block);
 		}
-		current_block_ = join_block;
+		set_current(join_block);
 	}
 
 	void lower_function(const FunctionPlan& plan)
@@ -1186,6 +1971,11 @@ private:
 		current_block_ = InvalidIdentityValue;
 		temp_ordinal_ = 0;
 		block_ordinal_ = 0;
+		block_indexes_.clear();
+		control_stack_.clear();
+		switch_stack_.clear();
+		block_order_.clear();
+		ordered_block_ids_.clear();
 		Function& target = function();
 		used_value_names_.clear();
 		for (std::size_t i = 0; i < target.params.size(); ++i)
@@ -1194,7 +1984,7 @@ private:
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 			target.params[i].value_id = allocate_value();
 		const std::size_t value_begin = target.value_begin.index;
-		current_block_ = new_block("entry");
+		set_current(block_id(new_block("entry")));
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 		{
 			const lowir_model::Parameter& parameter = target.params[i];
@@ -1223,6 +2013,7 @@ private:
 			block().instructions.push_back(instruction);
 		}
 		target.value_count = next_value_ - value_begin;
+		reorder_function_blocks();
 	}
 };
 

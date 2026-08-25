@@ -370,6 +370,15 @@ void emit_instruction(std::ostream &out, const Program &program,
         << operand_text(program, instruction.second) << ", "
         << operand_text(program, instruction.third);
     break;
+  case Instruction::IK_SWITCH:
+    if (instruction.args.size() % 2 != 0)
+      throw std::runtime_error("LowIR serializer: switch case list is not paired");
+    out << "switch " << operand_text(program, instruction.first) << ", "
+        << operand_text(program, instruction.second);
+    for (std::size_t i = 0; i < instruction.args.size(); i += 2)
+      out << ", " << operand_text(program, instruction.args[i]) << ":"
+          << operand_text(program, instruction.args[i + 1]);
+    break;
   case Instruction::IK_RETURN:
     out << "return " << type_text(instruction.type);
     if (!instruction.type.is_void())
