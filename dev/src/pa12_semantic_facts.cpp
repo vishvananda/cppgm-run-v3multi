@@ -83,7 +83,87 @@ ConstantAddressFactId PA11SemanticModel::make_constant_address_fact(
 	return result;
 }
 
+bool PA11SemanticModel::constant_address_fact_well_formed(
+	const ConstantAddressFact& fact) const
+{
+	if (!fact.evaluated || !fact.valid)
+		return false;
+	const bool no_literal_payload = fact.literal_element_count == 0 &&
+		fact.literal_byte_begin == InvalidIdentityValue &&
+		fact.literal_byte_count == 0;
+	switch (fact.kind)
+	{
+	case ConstantAddressKind::SymbolAddend:
+		if (!fact.target.valid() || fact.target.value >= bindings_.size() ||
+			!no_literal_payload || fact.element_type.valid() ||
+			fact.index_type.valid() || fact.index_fact.valid())
+			return false;
+		return binding(fact.target).kind == BindingKind::Function ||
+			binding(fact.target).kind == BindingKind::Variable;
+	case ConstantAddressKind::ArrayElement:
+		if (!fact.target.valid() || fact.target.value >= bindings_.size() ||
+			!no_literal_payload || !fact.element_type.valid() ||
+			fact.element_type.value >= types_.size() ||
+			!fact.index_type.valid() || fact.index_type.value >= types_.size() ||
+			!fact.index_fact.valid() ||
+			fact.index_fact.value >= semantic_facts_.size())
+			return false;
+		return binding(fact.target).kind == BindingKind::Variable;
+	case ConstantAddressKind::Literal:
+		if (fact.target.valid() || fact.byte_addend != 0 ||
+			fact.index_type.valid() || fact.index_fact.valid() ||
+			!fact.element_type.valid() || fact.element_type.value >= types_.size() ||
+			fact.literal_element_count == 0 ||
+			fact.literal_byte_begin == InvalidIdentityValue ||
+			fact.literal_byte_begin > constant_address_literal_bytes_.size() ||
+			fact.literal_byte_count == 0 ||
+			fact.literal_byte_count > constant_address_literal_bytes_.size() -
+			fact.literal_byte_begin)
+			return false;
+		{
+			const std::size_t element_size = type_size(fact.element_type);
+			return element_size != 0 &&
+				fact.literal_element_count <=
+				std::numeric_limits<std::size_t>::max() / element_size &&
+				fact.literal_byte_count == fact.literal_element_count * element_size;
+		}
+	case ConstantAddressKind::None:
+		break;
+	}
+	return false;
+}
+
 bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
+	ScopeId scope, ConstantAddressContext context, ConstantAddressFact* result)
+{
+	if (result == NULL)
+		return false;
+	*result = ConstantAddressFact();
+	result->evaluated = true;
+	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size())
+		return false;
+	const std::size_t byte_begin = constant_address_literal_bytes_.size();
+	ConstantAddressFact candidate;
+	candidate.evaluated = true;
+	try
+	{
+		if (!resolve_constant_address_impl(fact_id, scope, context, &candidate) ||
+			!constant_address_fact_well_formed(candidate))
+		{
+			constant_address_literal_bytes_.resize(byte_begin);
+			return false;
+		}
+	}
+	catch (...)
+	{
+		constant_address_literal_bytes_.resize(byte_begin);
+		throw;
+	}
+	*result = candidate;
+	return true;
+}
+
+bool PA11SemanticModel::resolve_constant_address_impl(SemanticFactId fact_id,
 	ScopeId scope, ConstantAddressContext context, ConstantAddressFact* result)
 {
 	if (result == NULL || !fact_id.valid() ||
@@ -91,6 +171,63 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 		return false;
 	result->evaluated = true;
 	const SemanticFact& fact = semantic_facts_[fact_id.value];
+	if (fact.conversion_begin != InvalidIdentityValue &&
+		(fact.conversion_begin > conversion_facts_.size() ||
+		fact.conversion_count > conversion_facts_.size() -
+		fact.conversion_begin))
+		return false;
+	if (fact.kind == SemanticFactKind::Literal &&
+		fact.literal_element_count != 0 && fact.source != NULL &&
+		fact.source->kind == PA10NodeKind::Literal)
+	{
+		// A decoded array literal becomes a constant address only through its
+		// terminal ArrayToPointer conversion.  Preserve the already-decoded
+		// payload in the PA12-owned address fact; PA15 will only allocate the
+		// corresponding LowIR symbol and remap this typed identity.
+		if (fact.conversion_begin == InvalidIdentityValue)
+		{
+			// A transparent cast wrapper owns the ArrayToPointer conversion;
+			// its child literal has no conversion range of its own.
+			if (fact.conversion_count != 0 ||
+				context != ConstantAddressContext::ArrayDecay)
+				return false;
+		}
+		else if (fact.conversion_count == 0)
+		{
+			if (context != ConstantAddressContext::ArrayDecay)
+				return false;
+		}
+		else
+		{
+			const ConversionFact& terminal = conversion_facts_[
+				fact.conversion_begin + fact.conversion_count - 1];
+			if (terminal.kind != ConversionKind::ArrayToPointer ||
+				!pointer_id(terminal.target))
+				return false;
+		}
+		const TypeId array_type = strip_cv_type(
+			expression_object_type(fact.type));
+		if (!array_type.valid() || type_kind(array_type) != TypeKind::Array)
+			return false;
+		const TypeId element_type = types_[array_type.value].child;
+		const std::size_t element_size = type_size(element_type);
+		const LiteralData& literal = fact.source->literal;
+		if (element_size == 0 || literal.element_count !=
+			fact.literal_element_count || fact.literal_element_count >
+			std::numeric_limits<std::size_t>::max() / element_size ||
+			literal.bytes.size() != fact.literal_element_count * element_size)
+			return false;
+		result->kind = ConstantAddressKind::Literal;
+		result->valid = true;
+		result->element_type = element_type;
+		result->literal_element_count = fact.literal_element_count;
+		result->literal_byte_begin = constant_address_literal_bytes_.size();
+		result->literal_byte_count = literal.bytes.size();
+		constant_address_literal_bytes_.insert(
+			constant_address_literal_bytes_.end(), literal.bytes.begin(),
+			literal.bytes.end());
+		return true;
+	}
 	if (fact.kind == SemanticFactKind::IdExpression)
 	{
 		if (!fact.binding.valid() || fact.binding.value >= bindings_.size())
@@ -141,7 +278,7 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 	if (fact.kind == SemanticFactKind::UnaryExpression && children.size() == 1 &&
 		(fact.token == SimpleTokenType::OP_AMP ||
 		 fact.token == SimpleTokenType::OP_PLUS))
-		return resolve_constant_address(children.front(), scope,
+		return resolve_constant_address_impl(children.front(), scope,
 			fact.token == SimpleTokenType::OP_AMP ?
 			ConstantAddressContext::ObjectAddress : context, result);
 	if (fact.kind == SemanticFactKind::CastExpression && children.size() == 1)
@@ -155,7 +292,7 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 					child_context = ConstantAddressContext::ArrayDecay;
 					break;
 				}
-		return resolve_constant_address(children.front(), scope,
+		return resolve_constant_address_impl(children.front(), scope,
 			child_context, result);
 	}
 
@@ -199,8 +336,10 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 			return false;
 
 		ConstantAddressFact base;
-		if (!resolve_constant_address(pointer_fact, scope,
-			ConstantAddressContext::Value, &base)) return false;
+		if (!resolve_constant_address_impl(pointer_fact, scope,
+			ConstantAddressContext::Value, &base) ||
+			base.kind != ConstantAddressKind::SymbolAddend)
+			return false;
 		__int128 index = 0;
 		bool index_unsigned = false;
 		if (!constant_integer_value(integer_fact, &index, &index_unsigned))
@@ -246,7 +385,7 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 			!sequence.valid() || type_kind(sequence) != TypeKind::Array)
 			return false;
 		ConstantAddressFact base;
-		if (!resolve_constant_address(children.front(), scope,
+		if (!resolve_constant_address_impl(children.front(), scope,
 			ConstantAddressContext::Value, &base) ||
 			base.kind != ConstantAddressKind::SymbolAddend)
 			return false;

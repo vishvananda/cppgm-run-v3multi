@@ -464,6 +464,8 @@ BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
 PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
 	: model_(model), semantic_begin_(model.semantic_facts_.size()),
 	  children_begin_(model.semantic_children_.size()),
+	  constant_address_begin_(model.constant_address_facts_.size()),
+	  constant_address_bytes_begin_(model.constant_address_literal_bytes_.size()),
 	  conversion_begin_(model.conversion_facts_.size()),
 	  names_begin_(model.semantic_name_components_.size()), active_(true)
 {}
@@ -477,6 +479,8 @@ void PA11SemanticModel::SemanticTailGuard::discard()
 		return;
 	model_.semantic_facts_.resize(semantic_begin_);
 	model_.semantic_children_.resize(children_begin_);
+	model_.constant_address_facts_.resize(constant_address_begin_);
+	model_.constant_address_literal_bytes_.resize(constant_address_bytes_begin_);
 	model_.conversion_facts_.resize(conversion_begin_);
 	model_.semantic_name_components_.resize(names_begin_);
 	active_ = false;

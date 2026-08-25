@@ -4,6 +4,7 @@
 #include "pa11_semantic_model.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -138,7 +139,7 @@ private:
 	std::map<std::size_t, SymbolId> global_symbols_;
 	std::map<std::size_t, SpellingId> global_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
-	std::map<std::size_t, SymbolId> string_literal_symbols_;
+	std::map<std::size_t, SymbolId> literal_address_symbols_;
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
@@ -147,7 +148,7 @@ private:
 	std::vector<PendingGlobalInitializer> pending_global_initializers_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
-	std::size_t string_literal_ordinal_;
+	std::size_t literal_backing_ordinal_;
 	std::size_t next_value_;
 	std::size_t next_slot_;
 	std::size_t next_block_;
@@ -181,11 +182,9 @@ private:
 	LowType low_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
-	bool typed_pointer_zero(SemanticFactId id) const;
-	bool map_string_literal_address(SemanticFactId id, SymbolId* target,
-		long long* addend);
+	bool typed_pointer_zero(SemanticFactId id, TypeId destination) const;
 	bool map_constant_address(SemanticFactId id, SymbolId* target,
-		long long* addend, const ConstantAddressFact** relocation) const;
+		long long* addend, const ConstantAddressFact** relocation);
 	std::string internal_value_name(ScopeId owner, NameId name) const;
 	SpellingId symbol_name_for(SymbolId target) const;
 	void append_array_data(GlobalDefinition* global, TypeId array_type,
@@ -241,6 +240,7 @@ private:
 	Operand integer_operand(long long value, const LowType& type) const;
 	ValueId destination(const LowType& type, Instruction* instruction);
 	ValueId emit_load(const LoweredValue& storage, const LowType& type);
+	void materialize_lvalue_value(LoweredValue* result, const LowType& type);
 	void emit_store(const LowType& type, const Operand& value, const Operand& storage);
 	LoweredValue address_of_storage(const LoweredValue& storage);
 	LoweredValue emit_index(const LoweredValue& base, const LoweredValue& offset,

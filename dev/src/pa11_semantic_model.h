@@ -775,7 +775,8 @@ enum class ConstantAddressKind
 {
 	None,
 	SymbolAddend,
-	ArrayElement
+	ArrayElement,
+	Literal
 };
 
 enum class ConstantAddressContext
@@ -801,11 +802,15 @@ struct ConstantAddressFact
 	SemanticFactId index_fact;
 	__int128 index_value;
 	bool index_unsigned;
+	std::size_t literal_element_count;
+	std::size_t literal_byte_begin;
+	std::size_t literal_byte_count;
 
 	ConstantAddressFact()
 		: evaluated(false), valid(false), kind(ConstantAddressKind::None),
 		  target(), byte_addend(0), element_type(), index_type(), index_fact(),
-		  index_value(0), index_unsigned(false)
+		  index_value(0), index_unsigned(false), literal_element_count(0),
+		  literal_byte_begin(InvalidIdentityValue), literal_byte_count(0)
 	{}
 };
 
@@ -1102,6 +1107,7 @@ private:
 	std::vector<SemanticFact> semantic_facts_;
 	std::vector<SemanticFactId> semantic_children_;
 	std::vector<ConstantAddressFact> constant_address_facts_;
+	std::vector<std::uint8_t> constant_address_literal_bytes_;
 	std::vector<ConversionFact> conversion_facts_;
 	std::vector<SemanticFactId> declaration_semantic_ids_;
 	std::vector<NameId> semantic_name_components_;
@@ -1361,6 +1367,12 @@ private:
 	;
 	void record_constant_address(SemanticFactId fact, ScopeId scope)
 	;
+	bool resolve_constant_address_impl(SemanticFactId fact, ScopeId scope,
+		ConstantAddressContext context, ConstantAddressFact* result)
+	;
+	bool constant_address_fact_well_formed(
+		const ConstantAddressFact& fact) const
+	;
 	bool constant_integer_value(SemanticFactId fact, __int128* value,
 		bool* is_unsigned) const
 	;
@@ -1585,6 +1597,8 @@ private:
 		PA11SemanticModel& model_;
 		std::size_t semantic_begin_;
 		std::size_t children_begin_;
+		std::size_t constant_address_begin_;
+		std::size_t constant_address_bytes_begin_;
 		std::size_t conversion_begin_;
 		std::size_t names_begin_;
 		bool active_;

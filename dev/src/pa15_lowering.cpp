@@ -8,11 +8,11 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
 		  function_name_ids_(), global_symbols_(), global_name_ids_(),
-		  symbol_name_ids_(), string_literal_symbols_(), variable_facts_(),
+		  symbol_name_ids_(), literal_address_symbols_(), variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
 		  function_scope_variables_(), next_symbol_(0),
-		  string_literal_ordinal_(0), next_value_(program.values.size()),
+		  literal_backing_ordinal_(0), next_value_(program.values.size()),
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), generated_slot_ordinal_(0), block_indexes_(), control_stack_(),
@@ -458,96 +458,68 @@ bool Pa15Lowerer::constant_integer(SemanticFactId id, const LowType& type, Opera
 		return true;
 	}
 
-bool Pa15Lowerer::typed_pointer_zero(SemanticFactId id) const{
+bool Pa15Lowerer::typed_pointer_zero(SemanticFactId id,
+	TypeId destination) const{
 		if (!id.valid() || id.value >= model_.semantic_facts_.size())
+			return false;
+		if (!destination.valid() || !model_.pointer_id(destination))
 			return false;
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		if (fact.conversion_begin == InvalidIdentityValue ||
-			fact.conversion_begin + fact.conversion_count >
-			model_.conversion_facts_.size())
+			fact.conversion_count == 0 || fact.conversion_begin >
+			model_.conversion_facts_.size() || fact.conversion_count >
+			model_.conversion_facts_.size() - fact.conversion_begin)
 			return false;
+		std::size_t null_conversion = InvalidIdentityValue;
 		for (std::size_t i = 0; i < fact.conversion_count; ++i)
 		{
 			const ConversionFact& conversion = model_.conversion_facts_[
 				fact.conversion_begin + i];
 			if (conversion.kind == ConversionKind::NullptrToPointer ||
 				conversion.kind == ConversionKind::NullIntegerToPointer)
-				return true;
+			{
+				if (null_conversion != InvalidIdentityValue)
+					return false;
+				null_conversion = i;
+			}
 		}
-		return false;
-	}
-
-bool Pa15Lowerer::map_string_literal_address(SemanticFactId id,
-		SymbolId* target, long long* addend){
-		if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
-			target == NULL || addend == NULL)
+		if (null_conversion == InvalidIdentityValue)
 			return false;
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (fact.kind != SemanticFactKind::Literal ||
-			fact.literal_element_count == 0 || fact.source == NULL ||
-			fact.source->kind != PA10NodeKind::Literal)
+		if (null_conversion != 0)
 			return false;
-		if (fact.conversion_begin == InvalidIdentityValue ||
-			fact.conversion_begin + fact.conversion_count >
-			model_.conversion_facts_.size())
-			return false;
-		bool array_to_pointer = false;
-		for (std::size_t i = 0; i < fact.conversion_count; ++i)
-			if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
-				ConversionKind::ArrayToPointer)
-				array_to_pointer = true;
-		if (!array_to_pointer)
-			return false;
-		std::map<std::size_t, SymbolId>::const_iterator found =
-			string_literal_symbols_.find(id.value);
-		if (found != string_literal_symbols_.end())
+		for (std::size_t i = null_conversion; i < fact.conversion_count; ++i)
 		{
-			*target = found->second;
-			*addend = 0;
-			return true;
+			const ConversionFact& conversion = model_.conversion_facts_[
+				fact.conversion_begin + i];
+			if (!conversion.source.valid() || !conversion.target.valid() ||
+				(i != null_conversion && conversion.source !=
+				model_.conversion_facts_[fact.conversion_begin + i - 1].target))
+				return false;
+			if (i == null_conversion)
+			{
+				if (conversion.kind != ConversionKind::NullptrToPointer &&
+					conversion.kind != ConversionKind::NullIntegerToPointer)
+					return false;
+			}
+			else if (conversion.kind != ConversionKind::Identity &&
+				conversion.kind != ConversionKind::LvalueToRvalue &&
+				conversion.kind != ConversionKind::PointerQualification &&
+				conversion.kind != ConversionKind::PointerToVoid)
+				return false;
+			if (!model_.pointer_id(conversion.target))
+				return false;
 		}
-		const TypeId array_type = model_.strip_cv_type(fact.type);
-		if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
-			return false;
-		const TypeId element = model_.types_[array_type.value].child;
-		const LowType element_type = low_type(element);
-		const std::size_t element_size = element_type.storage_size();
-		const LiteralData& literal = fact.source->literal;
-		if (element_size == 0 || literal.element_count !=
-			fact.literal_element_count || literal.bytes.size() !=
-			fact.literal_element_count * element_size)
-			return false;
-
-		GlobalDefinition string_global;
-		string_global.symbol_id = SymbolId(next_symbol_++);
-		std::ostringstream name;
-		name << "__strlit__" << ++string_literal_ordinal_;
-		string_global.name_id = symbol_spelling(name.str());
-		string_global.structured = true;
-		string_global.metadata.binding = lowir_model::SBM_INTERNAL;
-		for (std::size_t i = 0; i < fact.literal_element_count; ++i)
-		{
-			std::uint64_t value = 0;
-			for (std::size_t byte = 0; byte < element_size; ++byte)
-				value |= static_cast<std::uint64_t>(literal.bytes[
-					i * element_size + byte]) << (byte * 8);
-			GlobalDefinition::DataItem item;
-			item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
-			item.type = element_type;
-			item.literal_operand = integer_operand(
-				static_cast<long long>(value), element_type);
-			string_global.data_items.push_back(item);
-		}
-		string_literal_symbols_[id.value] = string_global.symbol_id;
-		symbol_name_ids_[string_global.symbol_id.index] = string_global.name_id;
-		program_.globals.push_back(string_global);
-		*target = string_global.symbol_id;
-		*addend = 0;
-		return true;
+		const ConversionFact& terminal = model_.conversion_facts_[
+			fact.conversion_begin + fact.conversion_count - 1];
+		// The terminal typed target is the initializer destination.  strip_cv_type
+		// removes only an outer cv wrapper; pointer-object cv remains part of the
+		// pointer TypeId, while pointee cv remains part of its child TypeId.
+		return model_.strip_cv_type(terminal.target) ==
+			model_.strip_cv_type(destination);
 	}
 
 bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
-		long long* addend, const ConstantAddressFact** relocation) const{
+		long long* addend, const ConstantAddressFact** relocation){
 		if (relocation != NULL) *relocation = NULL;
 		if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
 			target == NULL || addend == NULL)
@@ -559,7 +531,67 @@ bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
 		const ConstantAddressFact& value =
 			model_.constant_address_facts_[fact.constant_address.value];
 		if (!value.evaluated || !value.valid ||
-			value.kind == ConstantAddressKind::None || !value.target.valid())
+			value.kind == ConstantAddressKind::None)
+			return false;
+		if (value.kind == ConstantAddressKind::Literal)
+		{
+			std::map<std::size_t, SymbolId>::const_iterator found =
+				literal_address_symbols_.find(fact.constant_address.value);
+			if (found != literal_address_symbols_.end())
+			{
+				*target = found->second;
+				*addend = value.byte_addend;
+				if (relocation != NULL) *relocation = &value;
+				return true;
+			}
+			if (!value.element_type.valid() || value.literal_element_count == 0 ||
+				value.literal_byte_begin == InvalidIdentityValue ||
+				value.literal_byte_begin >
+				model_.constant_address_literal_bytes_.size() ||
+				value.literal_byte_count >
+				model_.constant_address_literal_bytes_.size() -
+				value.literal_byte_begin)
+				return false;
+			const LowType element_type = low_type(value.element_type);
+			const std::size_t element_size = element_type.storage_size();
+			if (element_size == 0 || value.literal_element_count >
+				std::numeric_limits<std::size_t>::max() / element_size ||
+			value.literal_byte_count != value.literal_element_count *
+				element_size)
+				return false;
+			GlobalDefinition literal_global;
+			literal_global.symbol_id = SymbolId(next_symbol_++);
+			std::ostringstream name;
+			name << "__strlit__" << ++literal_backing_ordinal_;
+			literal_global.name_id = symbol_spelling(name.str());
+			literal_global.structured = true;
+			literal_global.metadata.binding = lowir_model::SBM_INTERNAL;
+			for (std::size_t i = 0; i < value.literal_element_count; ++i)
+			{
+				std::uint64_t bits = 0;
+				for (std::size_t byte = 0; byte < element_size; ++byte)
+					bits |= static_cast<std::uint64_t>(
+						model_.constant_address_literal_bytes_[
+							value.literal_byte_begin + i * element_size + byte]) <<
+						(byte * 8);
+				GlobalDefinition::DataItem item;
+				item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
+				item.type = element_type;
+				item.literal_operand = integer_operand(
+					static_cast<long long>(bits), element_type);
+				literal_global.data_items.push_back(item);
+			}
+			literal_address_symbols_[fact.constant_address.value] =
+				literal_global.symbol_id;
+			symbol_name_ids_[literal_global.symbol_id.index] =
+				literal_global.name_id;
+			program_.globals.push_back(literal_global);
+			*target = literal_global.symbol_id;
+			*addend = value.byte_addend;
+			if (relocation != NULL) *relocation = &value;
+			return true;
+		}
+		if (!value.target.valid())
 			return false;
 		std::map<std::size_t, SymbolId>::const_iterator global =
 			global_symbols_.find(value.target.value);
@@ -617,7 +649,8 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 				continue;
 			}
 			const SemanticFactId initializer = initializers[i];
-			if (element_type.is_pointer() && typed_pointer_zero(initializer))
+			if (element_type.is_pointer() && typed_pointer_zero(initializer,
+				element))
 			{
 				pending_zero_bytes += element_type.storage_size();
 				continue;
@@ -636,20 +669,6 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 				item.symbol_name_id = symbol_name_for(target);
 				if (!item.symbol_name_id.valid())
 					throw std::runtime_error("PA15 global address target has no name");
-				global->data_items.push_back(item);
-				continue;
-			}
-			if (element_type.is_pointer() && map_string_literal_address(
-				initializer, &target, &addend))
-			{
-				GlobalDefinition::DataItem item;
-				item.kind = GlobalDefinition::DataItem::ITEM_ADDR;
-				item.type = element_type;
-				item.symbol_id = target;
-				item.addr_addend = addend;
-				item.symbol_name_id = symbol_name_for(target);
-				if (!item.symbol_name_id.valid())
-					throw std::runtime_error("PA15 string literal target has no name");
 				global->data_items.push_back(item);
 				continue;
 			}
@@ -761,7 +780,7 @@ void Pa15Lowerer::collect_globals(){
 					if (initializers.empty())
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
 					else if (entry.type.is_pointer() && typed_pointer_zero(
-						initializers.front()))
+						initializers.front(), binding.type))
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
 					else
 					{
@@ -1540,13 +1559,22 @@ ValueId Pa15Lowerer::destination(const LowType& type, Instruction* instruction){
 	}
 
 ValueId Pa15Lowerer::emit_load(const LoweredValue& storage, const LowType& type){
-		Instruction instruction;
-		instruction.kind = Instruction::IK_LOAD;
-		instruction.first = storage.value;
-		const ValueId id = destination(type, &instruction);
-		block().instructions.push_back(instruction);
-		return id;
-	}
+	Instruction instruction;
+	instruction.kind = Instruction::IK_LOAD;
+	instruction.first = storage.value;
+	const ValueId id = destination(type, &instruction);
+	block().instructions.push_back(instruction);
+	return id;
+}
+
+void Pa15Lowerer::materialize_lvalue_value(LoweredValue* result, const LowType& type){
+	if (result == NULL || !result->lvalue) return;
+	const ValueId value = emit_load(*result, type);
+	const Instruction& emitted = block().instructions.back();
+	result->value = temporary_operand(value, emitted.destination_name_id);
+	result->physical_type = type;
+	result->lvalue = false;
+}
 
 void Pa15Lowerer::emit_store(const LowType& type, const Operand& value, const Operand& storage){
 		Instruction instruction;
@@ -1801,13 +1829,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			}
 			if (conversion.kind == ConversionKind::LvalueToRvalue)
 			{
-				if (result.lvalue)
-				{
-					const ValueId value = emit_load(result, target);
-					const Instruction& emitted = block().instructions.back();
-					result.value = temporary_operand(value, emitted.destination_name_id);
-					result.physical_type = target;
-				}
+				materialize_lvalue_value(&result, target);
 				result.type = target;
 				result.physical_type = target;
 				result.lvalue = false;
@@ -1851,28 +1873,24 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 				conversion.kind == ConversionKind::PointerToVoid ||
 				conversion.kind == ConversionKind::NullptrToPointer ||
 				conversion.kind == ConversionKind::NullIntegerToPointer ||
-				conversion.kind == ConversionKind::NullptrToBool ||
 				conversion.kind == ConversionKind::NullIntegerToNullptr)
 			{
-					if (result.value.kind == Operand::OP_INTEGER &&
-						result.value.int_value == 0)
-						result.value.literal_type = target;
-					result.type = target;
-					result.physical_type = target;
-					result.lvalue = false;
+				if (result.lvalue && (conversion.kind ==
+					ConversionKind::PointerQualification || conversion.kind ==
+					ConversionKind::PointerToVoid))
+					materialize_lvalue_value(&result, result.type);
+				if (result.value.kind == Operand::OP_INTEGER &&
+					result.value.int_value == 0)
+					result.value.literal_type = target;
+				result.type = target;
+				result.physical_type = target;
+				result.lvalue = false;
 				continue;
 			}
-			if (conversion.kind == ConversionKind::PointerToBool)
+			if (conversion.kind == ConversionKind::PointerToBool ||
+				conversion.kind == ConversionKind::NullptrToBool)
 			{
-				if (result.lvalue)
-				{
-					const ValueId loaded = emit_load(result, result.type);
-					const Instruction& emitted = block().instructions.back();
-						result.value = temporary_operand(loaded,
-							emitted.destination_name_id);
-						result.physical_type = result.type;
-						result.lvalue = false;
-				}
+				materialize_lvalue_value(&result, result.type);
 				LowType pointer = result.type;
 				if (!pointer.is_pointer())
 					throw std::runtime_error("PA15 pointer-to-bool source is not a pointer");
@@ -1897,14 +1915,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			if (conversion.kind == ConversionKind::Floating ||
 				result.type.is_float() || target.is_float())
 				throw std::runtime_error("PA15 floating conversion is outside checkpoint");
-			if (result.lvalue)
-			{
-				const ValueId value = emit_load(result, result.type);
-				const Instruction& emitted = block().instructions.back();
-					result.value = temporary_operand(value, emitted.destination_name_id);
-					result.physical_type = result.type;
-					result.lvalue = false;
-			}
+			materialize_lvalue_value(&result, result.type);
 			FundamentalType target_fundamental;
 			if (model_.fundamental_of(conversion.target, &target_fundamental) &&
 				target_fundamental == FundamentalType::Bool &&

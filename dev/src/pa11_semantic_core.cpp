@@ -345,8 +345,8 @@ bool PA11SemanticModel::pointer_convertible(TypeId source, TypeId target) const
 		return false;
 	const TypeKey& source_key = types_[source.value];
 	const TypeKey& target_key = types_[target.value];
-	if ((source_key.cv & ~target_key.cv) != 0)
-		return false;
+	// Value conversion discards pointer-object cv; pointee cv remains typed.
+	// Reference binding uses qualification_convertible and preserves object cv.
 	TypeId source_pointee = source_key.child;
 	TypeId target_pointee = target_key.child;
 	FundamentalType target_fundamental;

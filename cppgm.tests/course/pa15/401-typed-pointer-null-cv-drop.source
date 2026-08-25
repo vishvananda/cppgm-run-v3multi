@@ -1,0 +1,7 @@
+int value = 7;
+
+int main() {
+  const int *source = &value;
+  int * const bad = source;
+  return bad == &value ? 0 : 1;
+}

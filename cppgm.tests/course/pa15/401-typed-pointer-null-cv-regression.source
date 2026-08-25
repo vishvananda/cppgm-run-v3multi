@@ -1,0 +1,16 @@
+int value = 7;
+
+int main() {
+  int *source = &value;
+  int * const top = source;
+  const int *qualified = top;
+  const int * const top_qualified = qualified;
+  int *from_keyword = nullptr;
+  int *from_integer = 0;
+  int *from_cast = static_cast<int *>(0);
+  bool keyword_condition(nullptr);
+  return top == &value && qualified == &value &&
+    top_qualified == &value && from_keyword == nullptr &&
+    from_integer == nullptr && from_cast == nullptr &&
+    !keyword_condition ? 0 : 1;
+}
