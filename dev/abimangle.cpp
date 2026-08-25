@@ -63,6 +63,27 @@ abi_mangle::AbiBuiltinKind builtin_kind(const string & name)
   return abi_mangle::ABI_BUILTIN_INVALID;
 }
 
+abi_mangle::AbiStandardSubstitutionKind standard_substitution_kind(const string & spelling)
+{
+  if(spelling.empty() || spelling == "-") {
+    return abi_mangle::ABI_STANDARD_SUBSTITUTION_NONE;
+  }
+  if(spelling == "Sa") return abi_mangle::ABI_STANDARD_SUBSTITUTION_ALLOCATOR;
+  if(spelling == "Sb") return abi_mangle::ABI_STANDARD_SUBSTITUTION_BASIC_STRING;
+  if(spelling == "Ss") return abi_mangle::ABI_STANDARD_SUBSTITUTION_STRING;
+  if(spelling == "Si") return abi_mangle::ABI_STANDARD_SUBSTITUTION_ISTREAM;
+  if(spelling == "So") return abi_mangle::ABI_STANDARD_SUBSTITUTION_OSTREAM;
+  if(spelling == "Sd") return abi_mangle::ABI_STANDARD_SUBSTITUTION_IOSTREAM;
+  throw logic_error("unknown ABI standard substitution '" + spelling + "'");
+}
+
+bool parse_boolean_word(const string & spelling, const string & field)
+{
+  if(spelling == "yes" || spelling == "true") return true;
+  if(spelling == "no" || spelling == "false") return false;
+  throw logic_error("invalid boolean ABI field " + field);
+}
+
 abi_mangle::AbiQualifiedName parse_qualified_name(const string & spelling)
 {
   abi_mangle::AbiQualifiedName result;
@@ -539,7 +560,7 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at,
     while(at < words.size()) result.abi_tags.push_back(words[at++]);
     return result;
   }
-  if(spelling == "named") {
+  if(spelling == "named" || spelling == "name") {
     if(at >= words.size()) throw logic_error("missing named ABI type name");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_NAMED;
@@ -560,8 +581,20 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at,
     if(at >= words.size()) throw logic_error("missing template ABI name");
     if(spelling == "std-template") {
       result.standard_substitution = words[at++];
+      result.standard_substitution_kind = standard_substitution_kind(
+        result.standard_substitution);
+      if(result.standard_substitution_kind ==
+         abi_mangle::ABI_STANDARD_SUBSTITUTION_NONE) {
+        throw logic_error("std-template requires a standard substitution");
+      }
       if(at >= words.size()) throw logic_error("missing standard template flag");
-      result.standard_substitution_includes_arguments = words[at++] == "yes";
+      if(words[at] != "yes" && words[at] != "no" &&
+         words[at] != "true" && words[at] != "false") {
+        throw logic_error("invalid standard template argument flag");
+      }
+      result.standard_substitution_includes_arguments =
+        words[at] == "yes" || words[at] == "true";
+      ++at;
       if(at >= words.size()) throw logic_error("missing standard template name");
       result.name = parse_qualified_name(words[at++]);
     } else {
@@ -677,11 +710,27 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
   }
   if(words[0] == "name-template") {
     if(words.size() < 2) throw logic_error("missing template name record");
+    parse_source_component(words[1]);
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_NAME_TEMPLATE;
     result.name = words[1];
     if(words.size() >= 3) result.substitution = words[2];
     if(words.size() >= 4) result.complete_substitution = words[3];
-    for(size_t i = 4; i < words.size(); ++i) {
+    size_t argument_at = 4;
+    // The normalized form carries the standard-substitution identity and
+    // whether that identity already includes its template arguments before
+    // the typed argument references.  Keep the references typed; the
+    // spelling fields are only adapter metadata for the ABI abbreviation.
+    if(words.size() >= 6 &&
+       (words[4] == "-" || words[5] == "yes" || words[5] == "no")) {
+      result.standard_substitution = words[4] == "-" ? string() : words[4];
+      result.standard_substitution_kind = standard_substitution_kind(words[4]);
+      if(words[5] != "yes" && words[5] != "no") {
+        throw logic_error("invalid standard substitution argument flag");
+      }
+      result.standard_substitution_includes_arguments = words[5] == "yes";
+      argument_at = 6;
+    }
+    for(size_t i = argument_at; i < words.size(); ++i) {
       result.argument_refs.push_back(interner.reference(words[i]));
     }
     return result;
@@ -696,6 +745,24 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     if(words.size() != 2) throw logic_error("invalid function-template-prefix record");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_FUNCTION_TEMPLATE_PREFIX;
     result.substitution = words[1];
+    result.has_function_template_prefix = true;
+    if(words[1].compare(0, 14, "operator-name:") == 0) {
+      const string terminal = words[1].substr(14);
+      if(terminal.empty()) throw logic_error("empty function-template operator prefix");
+      if(terminal == "cv") {
+        result.function_template_prefix_conversion = true;
+      } else if(terminal == "cl") {
+        result.function_template_prefix_operator =
+          abi_mangle::ABI_OPERATOR_TERMINAL_CALL;
+      } else if(terminal == "ix") {
+        result.function_template_prefix_operator =
+          abi_mangle::ABI_OPERATOR_TERMINAL_INDEX;
+      } else {
+        throw logic_error("unknown function-template operator prefix '" + terminal + "'");
+      }
+    } else {
+      result.function_template_prefix_name = parse_qualified_name(words[1]);
+    }
     return result;
   }
   if(words[0] == "local-context") {
@@ -819,6 +886,14 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
       result.definition.template_argument.has_value_type = true;
       if(at >= words.size()) throw logic_error("missing ABI template value");
       result.definition.template_argument.value = parse_value(words[at++]);
+    } else if(kind == "dependent-value") {
+      result.definition.template_argument.kind =
+        abi_mangle::ABI_TEMPLATE_ARGUMENT_DEPENDENT_VALUE;
+      result.definition.template_argument.type = parse_type_words(words, at, interner);
+      result.definition.template_argument.value_type = parse_type_words(words, at, interner);
+      result.definition.template_argument.has_value_type = true;
+      if(at >= words.size()) throw logic_error("missing dependent ABI template value");
+      result.definition.template_argument.value = parse_value(words[at++]);
     } else if(kind == "expression") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_EXPRESSION;
       if(at >= words.size()) throw logic_error("missing ABI expression argument reference");
@@ -832,10 +907,47 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
       if(at >= words.size()) throw logic_error("missing entity reference");
       result.definition.template_argument.entity_ref = interner.reference(words[at++]);
       result.definition.template_argument.address_of = true;
+    } else if(kind == "member-external-address") {
+      result.definition.template_argument.kind =
+        abi_mangle::ABI_TEMPLATE_ARGUMENT_MEMBER_EXTERNAL_ENTITY;
+      if(at >= words.size()) throw logic_error("missing member external symbol");
+      result.definition.template_argument.symbol = words[at++];
+      result.definition.template_argument.owner_type = parse_type_words(words, at, interner);
+      if(at >= words.size()) throw logic_error("missing member external name");
+      result.definition.template_argument.name = parse_source_component(words[at++]);
+      if(at + 5 >= words.size()) throw logic_error("incomplete member external function facts");
+      result.definition.template_argument.member_is_function =
+        parse_boolean_word(words[at++], "member function");
+      result.definition.template_argument.member_function_const =
+        parse_boolean_word(words[at++], "member const");
+      result.definition.template_argument.member_function_volatile =
+        parse_boolean_word(words[at++], "member volatile");
+      result.definition.template_argument.member_function_lvalue_ref =
+        parse_boolean_word(words[at++], "member lvalue-ref");
+      result.definition.template_argument.member_function_rvalue_ref =
+        parse_boolean_word(words[at++], "member rvalue-ref");
+      result.definition.template_argument.member_function_variadic =
+        parse_boolean_word(words[at++], "member variadic");
+      result.definition.template_argument.address_of = true;
+      while(at < words.size()) {
+        result.definition.template_argument.parameter_types.push_back(
+          parse_type_words(words, at, interner));
+      }
     } else if(kind == "template-entity") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_TEMPLATE_ENTITY;
       if(at >= words.size()) throw logic_error("missing template entity name");
       result.definition.template_argument.name = parse_qualified_name(words[at++]);
+    } else if(kind == "member-template-entity") {
+      result.definition.template_argument.kind =
+        abi_mangle::ABI_TEMPLATE_ARGUMENT_MEMBER_TEMPLATE_ENTITY;
+      result.definition.template_argument.owner_type = parse_type_words(words, at, interner);
+      if(at >= words.size()) throw logic_error("missing member template name");
+      result.definition.template_argument.name = parse_source_component(words[at++]);
+      if(at >= words.size()) throw logic_error("missing member template substitution");
+      result.definition.template_argument.substitution = words[at++];
+      if(result.definition.template_argument.substitution == "-") {
+        throw logic_error("member template substitution metadata is empty");
+      }
     } else {
       throw logic_error("unknown ABI template argument kind '" + kind + "'");
     }
@@ -855,6 +967,10 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
     } else if(kind == "function-param") {
       result.definition.expression.kind = abi_mangle::ABI_EXPRESSION_FUNCTION_PARAMETER;
       result.definition.expression.index = parse_index(words[3]);
+    } else if(kind == "entity-reference") {
+      if(words.size() != 4) throw logic_error("invalid entity-reference expression");
+      result.definition.expression.kind = abi_mangle::ABI_EXPRESSION_ENTITY;
+      result.definition.expression.entity_ref = interner.reference(words[3]);
     } else {
       result.definition.expression.kind = abi_mangle::ABI_EXPRESSION_ENTITY;
       result.definition.expression.text = words[3];

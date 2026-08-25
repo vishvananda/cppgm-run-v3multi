@@ -109,6 +109,20 @@ enum AbiLinkageKind
   ABI_LINKAGE_C
 };
 
+// The Itanium ABI's standard substitutions are a fixed vocabulary.  Keep the
+// vocabulary typed so substitution identity does not depend on a rendered
+// ``Sx`` fragment.
+enum AbiStandardSubstitutionKind
+{
+  ABI_STANDARD_SUBSTITUTION_NONE,
+  ABI_STANDARD_SUBSTITUTION_ALLOCATOR,
+  ABI_STANDARD_SUBSTITUTION_BASIC_STRING,
+  ABI_STANDARD_SUBSTITUTION_STRING,
+  ABI_STANDARD_SUBSTITUTION_ISTREAM,
+  ABI_STANDARD_SUBSTITUTION_OSTREAM,
+  ABI_STANDARD_SUBSTITUTION_IOSTREAM
+};
+
 enum AbiArrayBoundKind
 {
   ABI_ARRAY_BOUND_VALUE,
@@ -310,6 +324,8 @@ struct AbiType
   AbiDefinitionId definition_ref;
   std::string substitution;
   std::string standard_substitution;
+  AbiStandardSubstitutionKind standard_substitution_kind =
+    ABI_STANDARD_SUBSTITUTION_NONE;
   AbiDefinitionId expression_ref;
   AbiDefinitionId context_ref;
   std::string discriminator;
@@ -444,7 +460,17 @@ struct AbiFunctionRecord
   std::string substitution;
   std::string complete_substitution;
   std::string standard_substitution;
+  AbiStandardSubstitutionKind standard_substitution_kind =
+    ABI_STANDARD_SUBSTITUTION_NONE;
   bool standard_substitution_includes_arguments = false;
+  // The function-template-prefix spelling is adapter metadata.  These typed
+  // fields preserve its declared terminal shape without making the encoder
+  // compare rendered ABI text.
+  bool has_function_template_prefix = false;
+  AbiQualifiedName function_template_prefix_name;
+  AbiOperatorTerminalKind function_template_prefix_operator =
+    ABI_OPERATOR_TERMINAL_NONE;
+  bool function_template_prefix_conversion = false;
   AbiDefinitionId context_ref;
   AbiQualifiedName source_name;
   std::string discriminator;
