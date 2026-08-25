@@ -760,6 +760,55 @@ struct ExprInfo
 	{}
 };
 
+struct ConstantAddressFactId
+{
+	std::size_t value;
+
+	explicit ConstantAddressFactId(std::size_t value = InvalidIdentityValue)
+		: value(value)
+	{}
+
+	bool valid() const { return value != InvalidIdentityValue; }
+};
+
+enum class ConstantAddressKind
+{
+	None,
+	SymbolAddend,
+	ArrayElement
+};
+
+enum class ConstantAddressContext
+{
+	Value,
+	ObjectAddress,
+	ArrayDecay
+};
+
+// PA12 owns the one-time typed relocation decision for a namespace-scope
+// initializer.  The target remains a semantic BindingId until PA15 allocates
+// the LowIR symbol identity.  ArrayElement retains the typed projection that
+// PA15 must materialize when a direct relocation is not the checked-in form.
+struct ConstantAddressFact
+{
+	bool evaluated;
+	bool valid;
+	ConstantAddressKind kind;
+	BindingId target;
+	long long byte_addend;
+	TypeId element_type;
+	TypeId index_type;
+	SemanticFactId index_fact;
+	__int128 index_value;
+	bool index_unsigned;
+
+	ConstantAddressFact()
+		: evaluated(false), valid(false), kind(ConstantAddressKind::None),
+		  target(), byte_addend(0), element_type(), index_type(), index_fact(),
+		  index_value(0), index_unsigned(false)
+	{}
+};
+
 struct SemanticFact
 {
 	SemanticFactKind kind;
@@ -788,6 +837,7 @@ struct SemanticFact
 	__int128 constant_value;
 	bool constant_value_unsigned;
 	bool constant_value_evaluated;
+	ConstantAddressFactId constant_address;
 	// The expression's arithmetic result is normalized to the PA15 size_t
 	// LowIR representation.  The sizeof fact itself remains unsigned long;
 	// this marker is a typed semantic relation for containing expressions.
@@ -808,6 +858,7 @@ struct SemanticFact
 			literal_value_unsigned(false), literal_value_negative(false),
 			has_constant_value(false), constant_value(0),
 			constant_value_unsigned(false), constant_value_evaluated(false),
+			constant_address(),
 			size_type_derived(false),
 			has_callee(false)
 	{}
@@ -1050,6 +1101,7 @@ private:
 		substatement_scope_index_;
 	std::vector<SemanticFact> semantic_facts_;
 	std::vector<SemanticFactId> semantic_children_;
+	std::vector<ConstantAddressFact> constant_address_facts_;
 	std::vector<ConversionFact> conversion_facts_;
 	std::vector<SemanticFactId> declaration_semantic_ids_;
 	std::vector<NameId> semantic_name_components_;
@@ -1300,7 +1352,20 @@ private:
 	;
 	ConstValue eval_constexpr(const PA10AstNode& node, ScopeId scope)
 	;
+	void record_constant_expression_value(SemanticFactId fact, ScopeId scope)
+	;
 	void record_constant_initializer(SemanticFactId fact, ScopeId scope)
+	;
+	ConstantAddressFactId make_constant_address_fact(
+		const ConstantAddressFact& fact)
+	;
+	void record_constant_address(SemanticFactId fact, ScopeId scope)
+	;
+	bool constant_integer_value(SemanticFactId fact, __int128* value,
+		bool* is_unsigned) const
+	;
+	bool resolve_constant_address(SemanticFactId fact, ScopeId scope,
+		ConstantAddressContext context, ConstantAddressFact* result)
 	;
 	TypeId decltype_type(const PA10AstNode& node, ScopeId scope)
 	;

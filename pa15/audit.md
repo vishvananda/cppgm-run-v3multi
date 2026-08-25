@@ -2,128 +2,148 @@
 
 ## Current Checkpoint Review
 
-This review is bounded to the landed structured-control increment
-`4bca2ad8f6a4b14d3f6922f1c3a20e42f852eac3` and its affected ownership path.
-The repair in this milestone is limited to typed PA12 switch-entry validation
-and typed PA15 CFG recovery; no unrelated PA15 feature group was re-audited.
+This bounded review covers the amended typed address/value checkpoint, whose
+parent is `c96b9527d4d589b1d57fd36fa38482d7449efca3`. It audits the complete affected
+ownership path: PA11 declarations, types, bindings, linkage, storage, and
+scope; PA12 typed conversions, categories, constant values, and relocations;
+PA15 indexes, global declarations and definitions, local/global addresses,
+references as referent addresses, arrays, decay, subscripts, projections,
+pointer scaling, address/value conversion, assignment, comma, conditional,
+single-evaluation mutation, typed LowIR, and source-set wiring. The residual
+41-feature failure surface is not re-audited here.
 
-The ownership path is continuous:
+The traced path is continuous and typed:
 
-- PA12 owns `FunctionFact`, `Scope`, `Binding`, `SemanticFact`, conversion
-  facts, condition declarations, loop/switch statement shapes, and typed case
-  literals. The new PA12 check keeps switch-transfer legality with that
-  semantic owner: an owned case/default target cannot enter an active lexical
-  scope after an initialized automatic declaration. `DeclarationFact` carries
-  the storage-duration fact sourced from `SpecFact`; the validator counts only
-  initialized automatic declarations. Its lexical frames carry `ScopeId` and
-  the initialized count, with one active total, so nested switches are
-  independent owners without a node-based scope map.
-- `Pa15Lowerer` indexes the complete PA12 scope arena once per translation
-  unit, assigns typed slots, and lowers facts directly into typed `Program`
-  functions. Loop targets, switch break targets, and continue targets remain
-  separate typed stack entries; `continue` skips switches and selects the
-  nearest loop. A dense `SemanticFactId`-indexed loop-target table is sized
-  once for the translation unit and retained across all function lowerings.
-- Switch labels are collected once for their owning switch and stop at nested
-  switch facts. Recovery starts at dispatch targets, skips ordinary
-  pre-label statements, preserves fallthrough to already-lowered labels, and
-  recovers labels nested in `if`, `while`, `do`, and `for` without duplicating
-  their ordinary loop lowering. Each loop fact records its typed break and
-  continue blocks once; recovery reuses those targets when a label follows a
-  terminating path. Exhaustive non-void switches retain a required typed
-  continuation block without manufacturing a return value.
-- Conditions remain typed. Direct root `&&` and `||` conditions lower to
-  operand CFG branches; they do not materialize a `land__`/`lor__` result slot.
-  Block IDs, operands, instructions, and final block order remain typed and
-  deterministic. The PA13 serializer is the only text boundary and emits the
-  typed `switch` terminator contract.
+- PA11 owns canonical `BindingId`, `TypeId`, `ScopeId`, declaration,
+  storage-duration, linkage, function, and scope facts. Value lookup remains
+  preferred over type lookup for `sizeof` shadowing, and namespace static
+  linkage/storage remains on the binding owner.
+- PA12 owns `SemanticFactId` expression identity, selected bindings and calls,
+  value categories, contiguous conversion ranges, typed `sizeof` values, and
+  the namespace initializer boundary. `record_constant_expression_value`
+  evaluates each typed integral root once. `ConstantAddressFact` is a sparse
+  typed arena record keyed from the owning semantic fact and contains explicit
+  `evaluated`/`valid` state, the target `BindingId`, byte addend, relocation
+  kind, element/index `TypeId`s, index `SemanticFactId`, and typed index value.
+  `resolve_constant_address` carries typed `Value`, `ObjectAddress`, and
+  `ArrayDecay` contexts: a variable IdExpression is relocatable only for its
+  recorded array decay or an explicit address-of operand; function identity
+  remains a function relocation.
+- PA15 now only consumes that result. It maps the target `BindingId` to the
+  already-indexed LowIR `SymbolId`, emits direct symbol-plus-addend forms, or
+  consumes the recorded `ArrayElement` projection to build the checked-in
+  runtime initializer. The former recursive `constant_address` and second
+  `find_address_subscript` traversal are removed. PA15 does not inspect
+  expression syntax or retry constant evaluation.
+- PA15 builds binding/declaration, function-scope, global-symbol, and
+  local-slot indexes once. `LoweredValue` preserves semantic and physical
+  types through address/value conversion, references, array decay/subscript,
+  pointer scaling, assignment/comma/conditional categories, and
+  compound/prefix/postfix LHS evaluation.
+- The shared typed LowIR `Program` remains the backend owner. `IK_INDEX`
+  carries typed element and projection facts; `lowir_model.cpp` serializes
+  the model at the output boundary. `frontend_source_sets.mk` wires the split
+  PA12 and PA15 sources. ABI and generated names are presentation sidecars,
+  not semantic lookup keys.
 
-The bounded defects repaired in this path are switch recovery before the first
-label, exhaustive-switch continuation handling, duplicate ordinary lowering
-while recovering nested loops, and storage-duration-blind transfer rejection.
-The PA12 transfer check rejects initialized automatic declarations while
-accepting the focused initialized local-`static` case. This is the procedural
-PA15 boundary: it does not claim complete C++ class/object lifetime or every
-storage-duration rule outside the represented `SpecFact` subset. No fixture,
-reference output, harness, or unrelated semantic feature was changed.
+The audit found two related correctness defects in the landed increment: PA15
+was reconstructing address semantics recursively and then traversing again to
+rediscover a subscript projection, and the new PA12 resolver initially treated
+every variable IdExpression as its storage address. The bounded repair moves
+the decision to the PA12 owner, records it once, carries the typed address
+context through the expression facts, preserves both direct relocations and
+the array-element runtime form, and leaves PA15 with only typed identity
+mapping. No unrelated PA15 feature was changed. The resulting address walk
+and typed indexing are linear in the affected facts, with the existing
+deterministic ordered indexes retaining their `O(n log n)` bound.
 
-CFG reachability has one owner: the typed block terminator already stored in
-each `Block`. When an edge is emitted from a reachable source, its target is
-marked immediately. When a block first becomes reachable, its canonical
-terminator is inspected once to propagate its existing jump, branch, or
-switch targets. There is no second per-block adjacency allocation. Each block
-bit transitions at most once and each terminator edge is considered a bounded
-number of times. Loop recovery reuses the dense targets saved for an
-already-lowered loop.
+## Focused and Final Evidence
 
-For `A` consumed PA12 facts, `S` scopes, `B` bindings, `N` functions, and `E`
-typed IR edges, the PA12 transfer walk is `O(A)` with lexical-depth state; the
-stage-wide scope/slot owner index is `O(S+B+N)` structural propagation plus
-the existing deterministic `O((S+B+N) log B)` ordered indexes; the retained
-loop-target table is initialized once in `O(A)` space/time; and reachability is
-`O(B+E)`. Structured label/recovery traversal is linear in its owned facts,
-so the total affected path is `O(n log n)` under the specification bound, with
-no whole-CFG scan per switch or recovered loop.
+Fresh focused validation:
 
-PA13 has no typed `unreachable` terminator. A self-jump is therefore emitted
-only at final function exit when monotonic reachability proves the retained
-continuation unreachable. The continuation may be empty or may contain a
-lowered unreachable lexical tail; reachable non-void fallthrough remains an
-error. This is a deliberate LowIR representation, validated below with
-LowIR and CY86 output.
+- `make -C dev cppgm++` exited `0`.
+- The implicated 20-test PA15 matrix passed `20/20`, including direct object
+  addresses, one-past array pointers, array-element projections, pointer
+  scaling, references, categories, and single-evaluation mutation.
+- Temporary typed probes in
+  `/tmp/pa15-typed-relocation-correction.6EMMbb/probes` showed `&object`
+  emits `addr @value`, array decay and one-past emit `addr @data` and
+  `addr @data + 16`, `&array[1]` retains one
+  `index i32 [projection=array_element]` in `function @__cppgm_init`, and
+  direct and explicit function pointers both emit `addr @function`.
+- The bare-pointer probe `int *copy = pointer` exited nonzero with
+  `PA15 nonconstant global initializer` and emitted no `addr @pointer`.
+- `200-global-array-element-address-initializer` emitted one
+  `index i32 [projection=array_element]` and one `function @__cppgm_init`.
+- `200-global-array-one-past-end-pointer` emitted `addr @data + 800`.
+- `200-global-object-address-initializer` emitted `addr @value`.
+- The compound-assignment probe contained exactly one `call ptr @lhs()` and
+  one `addr @value`.
 
-## Focused Evidence
+Final gates:
 
-- Turn-start evidence in `last-test.log`: **21/109 passing, 88 failing, all
-  109 covered**. The final root through-PA14 gate passed **1058/1058**. The
-  final full PA15 report is **21/109 passing, 88 failing, all 109 covered**,
-  and its complete failing set is identical to the turn-start set.
-- `make -C dev cppgm++`: passed.
-- The implicated checked-in control set, including the expected-failure
-  switch-initialization fixture, passed **9/9**:
-  `100-bad-switch`,
-  `100-switch-label-bypasses-initialization-bad`,
-  `100-continue-inside-switch-targets-loop`,
-  `100-do-while-lowering`, `100-for-loop`,
-  `100-nested-switch-cases-stay-inner`,
-  `100-switch-condition-declaration`, `100-while-break`, and
-  `200-direct-short-circuit-condition-branch`.
-- Fresh stdin probes passed LowIR compilation and `lowir2cy86` validation for
-  nested `while`, `do`, `for` without an initializer, and `if` labels, plus
-  no-label, braced-case, and exhaustive-switch probes. Separate `for`-init
-  and while-condition bypass probes were rejected by PA12 with the typed
-  initialization diagnostic.
-- The focused storage-duration probes passed: initialized local `static`
-  compiled (LowIR and CY86 both status 0), while initialized automatic storage
-  was rejected with `PA12 case or default label bypasses variable
-  initialization`.
-- Four focused label-after-termination probes (top-level, `while`, `do`, and
-  `for`) each compiled and passed `lowir2cy86` (0); the nested recovery sample
-  at `/tmp/pa15-structured-correction.wf5una/measurements-final.tsv` has five
-  interleaved samples per depth, all status 0, and the corresponding depth-256
-  LowIR passed CY86 validation. Its structural counts grow linearly from 102
-  blocks/175 instructions at depth 32 to 774/1295 at depth 256. The exact
-  unreachable nonempty-tail probe compiled, retained its tail instructions,
-  and passed CY86; the reachable non-void fallthrough probe was rejected.
-- The many-function/one-loop-per-function family in the same final measurement
-  log reached 257 functions, 1,025 blocks, and 2,561 instructions at size 256
-  with status 0. This exercises the translation-unit loop-target table rather
-  than a per-function semantic-arena reset.
-- The immutable corrected executable was
-  `/tmp/pa15-structured-correction.wf5una/cppgm++-corrected` with SHA-256
-  `6e5843f5e44966fd1b4f62b98e3d5ed829b306afb78024b6c1f4e8e180054688`; its
-  interleaved raw measurements are at
-  `/tmp/pa15-structured-correction.wf5una/measurements-final.tsv`.
-- The prior target-commit performance table remains historical evidence only;
-  its old temporary artifacts are not present or inspectable at this
-  checkpoint. The fresh immutable-executable table, SHA-256, and actual paths
-  are recorded in `pa15/plan.md`.
-- The final PA15 file audit passed with four existing header-division warnings:
-  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, and
-  `pa11_semantic_model.h`. The final `git diff --check` also passed.
+- The exact `n=15` through-PA14 gate passed `1058/1058`.
+- `make test-pa15` exited `2` with `68/109` passing, all `109` covered, and
+  exactly the same 41 named failures recorded in `pa15/plan.md`. The fresh
+  complete log is
+  `/tmp/pa15-typed-relocation-correction.6EMMbb/full-pa15-context-final.log`.
+- The exact through-PA14 output is retained at
+  `/tmp/pa15-typed-relocation-correction.6EMMbb/through-pa14-context-final.log`.
+- `perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src` exited `0`
+  with five nonfatal header-division warnings for
+  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+  `pa11_semantic_model.h`, and `pa15_lowering.h`; the complete output is in
+  `/tmp/pa15-typed-relocation-correction.6EMMbb/file-audit-context-final.log`.
+- `git diff --check` passed.
+
+Fresh performance evidence uses the immutable corrected executable
+`/tmp/pa15-typed-relocation-correction.6EMMbb/context-perf/cppgm++-corrected`,
+mode `0555`, size `1,924,688` bytes, SHA-256
+`69b7221e16dffec0e266c91b651cfcab6851fcd8678906941d5845882f4cfe77`.
+The raw interleaved samples are in
+`/tmp/pa15-typed-relocation-correction.6EMMbb/context-perf/timings.tsv`;
+structural counts are in `structure.tsv`, and medians are in `medians.tsv` in
+the same directory. There are seven samples per family and size, each sample
+performs 20 repeated compilations.
+Odd rounds use `32, 64, 128, 256`; even rounds use
+`256, 128, 64, 32`; each size runs long-expression then many-global.
+
+The exact structural records are:
+
+| family | n | input bytes/lines | LowIR lines | semantic lines | LowIR globals | binary facts |
+|---|---:|---:|---:|---:|---:|---:|
+| long-expression | 32 | 131/3 | 9 | 75 | 2 | 32 |
+| long-expression | 64 | 195/3 | 9 | 139 | 2 | 64 |
+| long-expression | 128 | 324/3 | 9 | 267 | 2 | 128 |
+| long-expression | 256 | 580/3 | 9 | 523 | 2 | 256 |
+| many-global | 32 | 1403/65 | 69 | 168 | 64 | 0 |
+| many-global | 64 | 2811/129 | 133 | 328 | 128 | 0 |
+| many-global | 128 | 5711/257 | 261 | 648 | 256 | 0 |
+| many-global | 256 | 11727/513 | 517 | 1288 | 512 | 0 |
+
+Per-compilation medians are wall/user/system seconds and peak RSS KiB:
+
+| family | n | wall | user | system | RSS KiB |
+|---|---:|---:|---:|---:|---:|
+| long-expression | 32 | 0.003500 | 0.001500 | 0.002000 | 5152 |
+| long-expression | 64 | 0.003500 | 0.001500 | 0.002000 | 5128 |
+| long-expression | 128 | 0.004000 | 0.001500 | 0.002000 | 5388 |
+| long-expression | 256 | 0.004500 | 0.002000 | 0.002500 | 5676 |
+| many-global | 32 | 0.004500 | 0.002000 | 0.002500 | 5672 |
+| many-global | 64 | 0.006000 | 0.003500 | 0.002500 | 6164 |
+| many-global | 128 | 0.010000 | 0.005500 | 0.004000 | 6892 |
+| many-global | 256 | 0.016500 | 0.010500 | 0.006000 | 8604 |
+
+The long-expression family has `n` typed binary facts and a constant-size
+serialized relocation; the many-global family has `2n` global definitions and
+`2n` source global objects/pointers. These structural counts corroborate the
+bounded ownership work and deterministic output shape. Historical evidence
+preserved from the prior checkpoint is the `21/109` to `68/109` progress; the
+current focused, full-stage, through-PA14, and file-audit results above are
+fresh.
 
 ## Audit Ledger
 
 | Checkpoint | Evidence and disposition |
 |---|---|
-| PA15 full-stage / checkpointAudit — structured control and typed switch ownership | Audited PA12-to-LowIR ownership for loops, break/continue, condition declarations, switch labels/fallthrough, nested labels, direct short circuit, deterministic blocks, and stage-wide scope indexing; repaired the bounded semantic/CFG defects above; focused evidence is 9/9, through-PA14 is 1058/1058, PA15 is 21/109 with the baseline failure set unchanged, all 109 covered, and the file audit passes with four existing warnings. |
+| PA15 full-stage / checkpointAudit — typed address/value ownership | Amended the checkpoint so PA12 records one typed `ConstantAddressFact` per namespace initializer, carries `Value`/`ObjectAddress`/`ArrayDecay` context, rejects bare scalar/pointer IdExpression relocations, and preserves direct, one-past, function, and array-element forms; PA15 consumes only typed identity, addend, and projection fields. Focused validation passed `20/20` plus the four probes; through-PA14 passed `1058/1058`; PA15 retained `68/109`, the same 41 named failures, and all `109` covered; fresh immutable `n=256` performance evidence is in `context-perf`; file audit and diff check passed. |

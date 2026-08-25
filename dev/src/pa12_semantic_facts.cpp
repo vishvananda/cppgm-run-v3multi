@@ -5,6 +5,303 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+namespace
+{
+
+bool address_addend_fits(__int128 value, long long* result)
+{
+	if (value < static_cast<__int128>(std::numeric_limits<long long>::min()) ||
+		value > static_cast<__int128>(std::numeric_limits<long long>::max()))
+		return false;
+	*result = static_cast<long long>(value);
+	return true;
+}
+
+}
+
+bool PA11SemanticModel::constant_integer_value(SemanticFactId fact_id,
+	__int128* value, bool* is_unsigned) const
+{
+	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size() ||
+		value == NULL || is_unsigned == NULL)
+		return false;
+	const SemanticFact& fact = semantic_facts_[fact_id.value];
+	if (fact.has_constant_value)
+	{
+		*value = fact.constant_value;
+		*is_unsigned = fact.constant_value_unsigned;
+		return true;
+	}
+	if (fact.has_literal_value)
+	{
+		__int128 literal = static_cast<__int128>(fact.literal_value);
+		if (fact.literal_value_negative) literal = -literal;
+		*value = literal;
+		*is_unsigned = fact.literal_value_unsigned;
+		return true;
+	}
+	return false;
+}
+
+void PA11SemanticModel::record_constant_expression_value(
+	SemanticFactId fact_id, ScopeId scope)
+{
+	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size())
+		return;
+	const SemanticFact& fact = semantic_facts_[fact_id.value];
+	const TypeId object_type = expression_object_type(fact.type);
+	SemanticFact& owner = semantic_facts_[fact_id.value];
+	if (!owner.constant_value_evaluated && owner.source != NULL &&
+		(integral_id(object_type) || enumeration_id(object_type)))
+	{
+		// PA12 is the sole owner of this bounded constant-expression attempt.
+		// The evaluated bit is set even when the typed value is invalid so a
+		// later lowering phase cannot retry semantic evaluation.
+		owner.constant_value_evaluated = true;
+		try
+		{
+			const ConstValue value = eval_constexpr(*owner.source, scope);
+			if (value.valid)
+			{
+				owner.has_constant_value = true;
+				owner.constant_value = value.value;
+				owner.constant_value_unsigned = value.is_unsigned;
+			}
+		}
+		catch (const NonConstantExpression&)
+		{
+			// The typed invalid result is retained by constant_value_evaluated.
+		}
+	}
+}
+
+ConstantAddressFactId PA11SemanticModel::make_constant_address_fact(
+	const ConstantAddressFact& fact)
+{
+	const ConstantAddressFactId result(constant_address_facts_.size());
+	constant_address_facts_.push_back(fact);
+	return result;
+}
+
+bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
+	ScopeId scope, ConstantAddressContext context, ConstantAddressFact* result)
+{
+	if (result == NULL || !fact_id.valid() ||
+		fact_id.value >= semantic_facts_.size())
+		return false;
+	result->evaluated = true;
+	const SemanticFact& fact = semantic_facts_[fact_id.value];
+	if (fact.kind == SemanticFactKind::IdExpression)
+	{
+		if (!fact.binding.valid() || fact.binding.value >= bindings_.size())
+			return false;
+		const Binding& target = binding(fact.binding);
+		if (target.kind == BindingKind::Function)
+		{
+			// A function identity is already an address-producing semantic fact;
+			// both direct function-to-pointer use and explicit &function preserve
+			// the canonical function binding.
+			result->kind = ConstantAddressKind::SymbolAddend;
+			result->target = fact.binding;
+			result->valid = true;
+			return true;
+		}
+		if (target.kind != BindingKind::Variable)
+			return false;
+		bool array_decay = false;
+		if (fact.conversion_begin != InvalidIdentityValue)
+			for (std::size_t i = 0; i < fact.conversion_count; ++i)
+				if (conversion_facts_[fact.conversion_begin + i].kind ==
+					ConversionKind::ArrayToPointer)
+				{
+					array_decay = true;
+					break;
+				}
+		const bool object_address =
+			context == ConstantAddressContext::ObjectAddress &&
+			fact.category == SemanticValueCategory::Lvalue;
+		const TypeId object_type = strip_cv_type(
+			expression_object_type(fact.type));
+		const bool decay_context =
+			context == ConstantAddressContext::ArrayDecay && object_type.valid() &&
+			type_kind(object_type) == TypeKind::Array;
+		if (!object_address && !array_decay &&
+			!decay_context)
+			return false;
+		result->kind = ConstantAddressKind::SymbolAddend;
+		result->target = fact.binding;
+		result->valid = true;
+		return true;
+	}
+
+	std::vector<SemanticFactId> children;
+	if (fact.child_begin != InvalidIdentityValue)
+		for (std::size_t i = 0; i < fact.child_count; ++i)
+			children.push_back(semantic_children_[fact.child_begin + i]);
+	if (fact.kind == SemanticFactKind::UnaryExpression && children.size() == 1 &&
+		(fact.token == SimpleTokenType::OP_AMP ||
+		 fact.token == SimpleTokenType::OP_PLUS))
+		return resolve_constant_address(children.front(), scope,
+			fact.token == SimpleTokenType::OP_AMP ?
+			ConstantAddressContext::ObjectAddress : context, result);
+	if (fact.kind == SemanticFactKind::CastExpression && children.size() == 1)
+	{
+		ConstantAddressContext child_context = context;
+		if (fact.conversion_begin != InvalidIdentityValue)
+			for (std::size_t i = 0; i < fact.conversion_count; ++i)
+				if (conversion_facts_[fact.conversion_begin + i].kind ==
+					ConversionKind::ArrayToPointer)
+				{
+					child_context = ConstantAddressContext::ArrayDecay;
+					break;
+				}
+		return resolve_constant_address(children.front(), scope,
+			child_context, result);
+	}
+
+	if (fact.kind == SemanticFactKind::BinaryExpression && children.size() == 2 &&
+		(fact.token == SimpleTokenType::OP_PLUS ||
+		 fact.token == SimpleTokenType::OP_MINUS))
+	{
+		const TypeId left = strip_cv_type(expression_object_type(
+			semantic_facts_[children[0].value].type));
+		const TypeId right = strip_cv_type(expression_object_type(
+			semantic_facts_[children[1].value].type));
+		const bool left_pointer = left.valid() &&
+			(type_kind(left) == TypeKind::Pointer ||
+			 type_kind(left) == TypeKind::Array);
+		const bool right_pointer = right.valid() &&
+			(type_kind(right) == TypeKind::Pointer ||
+			 type_kind(right) == TypeKind::Array);
+		SemanticFactId pointer_fact;
+		SemanticFactId integer_fact;
+		bool negate = false;
+		if (left_pointer && !right_pointer &&
+			fact.token == SimpleTokenType::OP_PLUS)
+		{
+			pointer_fact = children[0];
+			integer_fact = children[1];
+		}
+		else if (left_pointer && !right_pointer &&
+			fact.token == SimpleTokenType::OP_MINUS)
+		{
+			pointer_fact = children[0];
+			integer_fact = children[1];
+			negate = true;
+		}
+		else if (!left_pointer && right_pointer &&
+			fact.token == SimpleTokenType::OP_PLUS)
+		{
+			pointer_fact = children[1];
+			integer_fact = children[0];
+		}
+		else
+			return false;
+
+		ConstantAddressFact base;
+		if (!resolve_constant_address(pointer_fact, scope,
+			ConstantAddressContext::Value, &base)) return false;
+		__int128 index = 0;
+		bool index_unsigned = false;
+		if (!constant_integer_value(integer_fact, &index, &index_unsigned))
+		{
+			record_constant_expression_value(integer_fact, scope);
+		}
+		if (!constant_integer_value(integer_fact, &index, &index_unsigned))
+			return false;
+		TypeId pointer_type = strip_cv_type(expression_object_type(
+			semantic_facts_[pointer_fact.value].type));
+		if (!pointer_type.valid() ||
+			(type_kind(pointer_type) != TypeKind::Pointer &&
+			 type_kind(pointer_type) != TypeKind::Array))
+			return false;
+		const TypeId element = types_[pointer_type.value].child;
+		const __int128 scale = static_cast<__int128>(type_size(element));
+		const __int128 offset = index * scale * (negate ? -1 : 1);
+		long long addend = 0;
+		if (!address_addend_fits(
+			static_cast<__int128>(base.byte_addend) + offset, &addend))
+			return false;
+		*result = base;
+		result->evaluated = true;
+		result->valid = true;
+		result->kind = ConstantAddressKind::SymbolAddend;
+		result->byte_addend = addend;
+		result->element_type = TypeId();
+		result->index_type = TypeId();
+		result->index_fact = SemanticFactId();
+		result->index_value = 0;
+		result->index_unsigned = false;
+		return true;
+	}
+
+	if (fact.kind == SemanticFactKind::SubscriptExpression &&
+		children.size() == 2)
+	{
+		TypeId sequence = strip_cv_type(expression_object_type(
+			semantic_facts_[children.front().value].type));
+		// A global pointer's stored value is not a static address expression;
+		// only an array object can retain the direct array-element projection.
+		if (context != ConstantAddressContext::ObjectAddress ||
+			!sequence.valid() || type_kind(sequence) != TypeKind::Array)
+			return false;
+		ConstantAddressFact base;
+		if (!resolve_constant_address(children.front(), scope,
+			ConstantAddressContext::Value, &base) ||
+			base.kind != ConstantAddressKind::SymbolAddend)
+			return false;
+		__int128 index = 0;
+		bool index_unsigned = false;
+		if (!constant_integer_value(children.back(), &index, &index_unsigned))
+		{
+			record_constant_expression_value(children.back(), scope);
+		}
+		if (!constant_integer_value(children.back(), &index, &index_unsigned))
+			return false;
+		const TypeId element = types_[sequence.value].child;
+		const __int128 offset = index * static_cast<__int128>(type_size(element));
+		long long addend = 0;
+		if (!address_addend_fits(
+			static_cast<__int128>(base.byte_addend) + offset, &addend))
+			return false;
+		if (base.byte_addend != 0)
+		{
+			*result = base;
+			result->evaluated = true;
+			result->valid = true;
+			result->byte_addend = addend;
+			return true;
+		}
+		*result = base;
+		result->evaluated = true;
+		result->valid = true;
+		result->kind = ConstantAddressKind::ArrayElement;
+		result->byte_addend = addend;
+		result->element_type = fact.type;
+		result->index_type = expression_object_type(
+			semantic_facts_[children.back().value].type);
+		result->index_fact = children.back();
+		result->index_value = index;
+		result->index_unsigned = index_unsigned;
+		return true;
+	}
+	return false;
+}
+
+void PA11SemanticModel::record_constant_address(SemanticFactId fact_id,
+	ScopeId scope)
+{
+	if (!fact_id.valid() || fact_id.value >= semantic_facts_.size())
+		return;
+	SemanticFact& fact = semantic_facts_[fact_id.value];
+	if (fact.constant_address.valid()) return;
+	ConstantAddressFact result;
+	result.evaluated = true;
+	result.valid = resolve_constant_address(fact_id, scope,
+		ConstantAddressContext::Value, &result);
+	fact.constant_address = make_constant_address_fact(result);
+}
+
 void PA11SemanticModel::record_constant_initializer(SemanticFactId fact_id,
 	ScopeId scope)
 {
@@ -23,30 +320,11 @@ void PA11SemanticModel::record_constant_initializer(SemanticFactId fact_id,
 				semantic_children_[fact.child_begin + i], scope);
 		return;
 	}
-	const TypeId object_type = expression_object_type(fact.type);
-	if (!fact.constant_value_evaluated && fact.source != NULL &&
-		(integral_id(object_type) || enumeration_id(object_type)))
-	{
-		// This is the PA12 owner boundary: each direct scalar initializer fact is
-		// evaluated once, and the typed result (or the attempted=false result) is
-		// retained for PA15.  No lowering path retries this evaluator.
-		fact.constant_value_evaluated = true;
-		try
-		{
-			const ConstValue value = eval_constexpr(*fact.source, scope);
-			if (value.valid)
-			{
-				fact.has_constant_value = true;
-				fact.constant_value = value.value;
-				fact.constant_value_unsigned = value.is_unsigned;
-			}
-		}
-		catch (const NonConstantExpression&)
-		{
-			// A typed nonconstant fact is expected for an initializer that
-			// cannot be represented by a static LowIR value.
-		}
-	}
+	record_constant_expression_value(fact_id, scope);
+	// The complete expression tree has now been folded once where its typed
+	// facts permit it.  Resolve the address/relocation relation exactly once at
+	// the initializer owner; descendants are never retried independently.
+	record_constant_address(fact_id, scope);
 }
 
 SemanticFactId PA11SemanticModel::semantic_literal(const PA10AstNode& node)

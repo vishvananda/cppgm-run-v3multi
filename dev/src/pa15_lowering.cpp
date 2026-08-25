@@ -458,115 +458,35 @@ bool Pa15Lowerer::constant_integer(SemanticFactId id, const LowType& type, Opera
 		return true;
 	}
 
-bool Pa15Lowerer::find_address_subscript(SemanticFactId id,
-		SemanticFactId* result) const{
-		if (!id.valid() || id.value >= model_.semantic_facts_.size()) return false;
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (fact.kind == SemanticFactKind::SubscriptExpression)
-		{
-			*result = id;
-			return true;
-		}
-		if (fact.child_begin == InvalidIdentityValue) return false;
-		for (std::size_t i = 0; i < fact.child_count; ++i)
-			if (find_address_subscript(
-				model_.semantic_children_[fact.child_begin + i], result))
-				return true;
-		return false;
-	}
-
-bool Pa15Lowerer::constant_address(SemanticFactId id, SymbolId* target,
-		long long* addend){
-		if (!id.valid() || id.value >= model_.semantic_facts_.size()) return false;
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (fact.kind == SemanticFactKind::IdExpression)
-		{
-			std::map<std::size_t, SymbolId>::const_iterator global =
-				global_symbols_.find(fact.binding.value);
-			if (global != global_symbols_.end())
-			{
-				*target = global->second;
-				*addend = 0;
-				return true;
-			}
-			std::map<std::size_t, SymbolId>::const_iterator function =
-				function_symbols_.find(fact.binding.value);
-			if (function != function_symbols_.end())
-			{
-				*target = function->second;
-				*addend = 0;
-				return true;
-			}
+bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
+		long long* addend, const ConstantAddressFact** relocation) const{
+		if (relocation != NULL) *relocation = NULL;
+		if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
+			target == NULL || addend == NULL)
 			return false;
-		}
-		const std::vector<SemanticFactId> facts = children(id);
-		if (fact.kind == SemanticFactKind::UnaryExpression &&
-			(fact.token == SimpleTokenType::OP_AMP ||
-			 fact.token == SimpleTokenType::OP_PLUS))
-			return facts.size() == 1 && constant_address(facts.front(), target, addend);
-		if (fact.kind == SemanticFactKind::CastExpression)
-			return facts.size() == 1 && constant_address(facts.front(), target, addend);
-		if (fact.kind == SemanticFactKind::BinaryExpression && facts.size() == 2 &&
-			(fact.token == SimpleTokenType::OP_PLUS ||
-			 fact.token == SimpleTokenType::OP_MINUS))
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (!fact.constant_address.valid() ||
+			fact.constant_address.value >= model_.constant_address_facts_.size())
+			return false;
+		const ConstantAddressFact& value =
+			model_.constant_address_facts_[fact.constant_address.value];
+		if (!value.evaluated || !value.valid ||
+			value.kind == ConstantAddressKind::None || !value.target.valid())
+			return false;
+		std::map<std::size_t, SymbolId>::const_iterator global =
+			global_symbols_.find(value.target.value);
+		if (global != global_symbols_.end())
+			*target = global->second;
+		else
 		{
-			const TypeId left_type = model_.semantic_facts_[facts[0].value].type;
-			const TypeId right_type = model_.semantic_facts_[facts[1].value].type;
-			const bool left_pointer = pointer_like(left_type);
-			const bool right_pointer = pointer_like(right_type);
-			SemanticFactId pointer_fact;
-			SemanticFactId integer_fact;
-			bool negate = false;
-			if (left_pointer && !right_pointer && fact.token == SimpleTokenType::OP_PLUS)
-			{
-				pointer_fact = facts[0];
-				integer_fact = facts[1];
-			}
-			else if (left_pointer && !right_pointer &&
-				fact.token == SimpleTokenType::OP_MINUS)
-			{
-				pointer_fact = facts[0];
-				integer_fact = facts[1];
-				negate = true;
-			}
-			else if (!left_pointer && right_pointer &&
-				fact.token == SimpleTokenType::OP_PLUS)
-			{
-				pointer_fact = facts[1];
-				integer_fact = facts[0];
-			}
-			else
-				return false;
-			if (!constant_address(pointer_fact, target, addend)) return false;
-			const LowType integer_type = low_type(
-				model_.semantic_facts_[integer_fact.value].type);
-			Operand index;
-			if (!constant_integer(integer_fact, integer_type, &index))
-				return false;
-			const long long scale = static_cast<long long>(pointer_element_size(
-				model_.semantic_facts_[pointer_fact.value].type));
-			const long long offset = index.int_value * scale;
-			*addend += negate ? -offset : offset;
-			return true;
+			std::map<std::size_t, SymbolId>::const_iterator function =
+				function_symbols_.find(value.target.value);
+			if (function == function_symbols_.end()) return false;
+			*target = function->second;
 		}
-		if (fact.kind == SemanticFactKind::SubscriptExpression && facts.size() == 2)
-		{
-			long long base = 0;
-			if (!constant_address(facts.front(), target, &base)) return false;
-			Operand index;
-			const LowType index_type = low_type(model_.semantic_facts_[facts[1].value].type);
-			if (!constant_integer(facts[1], index_type, &index)) return false;
-			TypeId sequence = model_.semantic_facts_[facts.front().value].type;
-			while (sequence.valid() && model_.type_kind(sequence) == TypeKind::Cv)
-				sequence = model_.types_[sequence.value].child;
-			if (sequence.valid() && model_.type_kind(sequence) == TypeKind::Array)
-				*addend = base + index.int_value * static_cast<long long>(
-					model_.type_size(model_.types_[sequence.value].child));
-			else
-				return false;
-			return true;
-		}
-		return false;
+		*addend = value.byte_addend;
+		if (relocation != NULL) *relocation = &value;
+		return true;
 	}
 
 std::string Pa15Lowerer::internal_value_name(ScopeId owner, NameId name) const{
@@ -612,7 +532,8 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 			const SemanticFactId initializer = initializers[i];
 			SymbolId target;
 			long long addend = 0;
-			if (element_type.is_pointer() && constant_address(initializer, &target, &addend))
+			if (element_type.is_pointer() && map_constant_address(
+				initializer, &target, &addend, NULL))
 			{
 				GlobalDefinition::DataItem item;
 				item.kind = GlobalDefinition::DataItem::ITEM_ADDR;
@@ -732,44 +653,56 @@ void Pa15Lowerer::collect_globals(){
 					entry.type = low_type(binding.type);
 					if (initializers.empty())
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
-					else if (entry.type.is_pointer() && constant_address(initializers.front(),
-						&entry.init_operand.symbol_id, &entry.addr_addend))
-					{
-						SemanticFactId subscript;
-						if (entry.addr_addend != 0 &&
-							find_address_subscript(initializers.front(), &subscript))
-						{
-							const std::vector<SemanticFactId> subscript_children =
-								children(subscript);
-							if (subscript_children.size() != 2)
-								throw std::runtime_error("PA15 global subscript initializer arity");
-							const LowType index_type = low_type(
-								model_.semantic_facts_[subscript_children[1].value].type);
-							Operand index;
-							if (!constant_integer(subscript_children[1], index_type, &index))
-								throw std::runtime_error("PA15 nonconstant global subscript index");
-							pending_global_initializers_.push_back(
-								PendingGlobalInitializer(symbol, entry.init_operand.symbol_id,
-									index, low_type(model_.semantic_facts_[subscript.value].type)));
-							entry.init_kind = GlobalDefinition::INIT_ZERO;
-						}
-						else
-						{
-							entry.init_kind = GlobalDefinition::INIT_ADDR;
-							entry.init_operand.kind = Operand::OP_GLOBAL;
-							if (entry.init_operand.symbol_id == symbol)
-								throw std::runtime_error("PA15 global initializer points at itself");
-							entry.init_operand.presentation_id = symbol_name_for(
-								entry.init_operand.symbol_id);
-							if (!entry.init_operand.presentation_id.valid())
-								throw std::runtime_error("PA15 global initializer target has no name");
-						}
-					}
-					else if (!constant_integer(initializers.front(), entry.type,
-						&entry.init_operand))
-						throw std::runtime_error("PA15 nonconstant global initializer");
 					else
-						entry.init_kind = GlobalDefinition::INIT_INTEGER;
+					{
+						const ConstantAddressFact* relocation = NULL;
+						if (entry.type.is_pointer() && map_constant_address(
+							initializers.front(), &entry.init_operand.symbol_id,
+							&entry.addr_addend, &relocation))
+						{
+							if (relocation->kind == ConstantAddressKind::ArrayElement &&
+								relocation->byte_addend != 0)
+							{
+								if (!relocation->index_fact.valid() ||
+									!relocation->index_type.valid() ||
+									!relocation->element_type.valid())
+									throw std::runtime_error(
+										"PA15 incomplete typed global projection");
+								const LowType index_type =
+									low_type(relocation->index_type);
+								if (!index_type.is_integer())
+									throw std::runtime_error(
+										"PA15 noninteger global projection index");
+								const Operand index = integer_operand(
+									static_cast<long long>(relocation->index_value),
+									index_type);
+								pending_global_initializers_.push_back(
+									PendingGlobalInitializer(symbol,
+										entry.init_operand.symbol_id, index,
+										low_type(relocation->element_type)));
+								entry.init_kind = GlobalDefinition::INIT_ZERO;
+							}
+							else
+							{
+								entry.init_kind = GlobalDefinition::INIT_ADDR;
+								entry.init_operand.kind = Operand::OP_GLOBAL;
+								if (entry.init_operand.symbol_id == symbol)
+									throw std::runtime_error(
+										"PA15 global initializer points at itself");
+								entry.init_operand.presentation_id = symbol_name_for(
+									entry.init_operand.symbol_id);
+								if (!entry.init_operand.presentation_id.valid())
+									throw std::runtime_error(
+										"PA15 global initializer target has no name");
+							}
+						}
+						else if (!constant_integer(initializers.front(), entry.type,
+							&entry.init_operand))
+							throw std::runtime_error(
+								"PA15 nonconstant global initializer");
+						else
+							entry.init_kind = GlobalDefinition::INIT_INTEGER;
+					}
 				}
 				program_.globals.push_back(entry);
 			}

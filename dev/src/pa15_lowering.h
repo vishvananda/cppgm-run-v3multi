@@ -179,10 +179,8 @@ private:
 	LowType low_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
-	bool find_address_subscript(SemanticFactId id,
-		SemanticFactId* result) const;
-	bool constant_address(SemanticFactId id, SymbolId* target,
-		long long* addend);
+	bool map_constant_address(SemanticFactId id, SymbolId* target,
+		long long* addend, const ConstantAddressFact** relocation) const;
 	std::string internal_value_name(ScopeId owner, NameId name) const;
 	SpellingId symbol_name_for(SymbolId target) const;
 	void append_array_data(GlobalDefinition* global, TypeId array_type,
