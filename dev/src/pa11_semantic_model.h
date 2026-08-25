@@ -574,10 +574,13 @@ struct SpecFact
 	bool is_typedef;
 	bool is_constexpr;
 	bool is_static;
+	bool is_extern;
+	bool is_thread_local;
 
 	SpecFact()
 		: base(), has_base(false), anonymous_record(), cv(0),
-		  is_typedef(false), is_constexpr(false), is_static(false)
+		  is_typedef(false), is_constexpr(false), is_static(false),
+		  is_extern(false), is_thread_local(false)
 	{}
 };
 
@@ -806,11 +809,12 @@ struct DeclarationFact
 	std::size_t semantic_begin;
 	std::size_t semantic_count;
 	bool is_constexpr;
+	bool automatic_storage;
 
 	DeclarationFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope), binding_begin(InvalidIdentityValue),
 		  binding_count(0), semantic_begin(InvalidIdentityValue),
-		  semantic_count(0), is_constexpr(false)
+		  semantic_count(0), is_constexpr(false), automatic_storage(false)
 	{}
 };
 
@@ -926,6 +930,24 @@ struct SwitchValidationContext
 
 	explicit SwitchValidationContext(TypeId type = TypeId(), TypeId conversion_type = TypeId())
 		: type(type), conversion_type(conversion_type.valid() ? conversion_type : type), case_values(), has_default(false) {}
+};
+
+struct SwitchInitializationFrame
+{
+	ScopeId scope;
+	std::size_t initialized;
+
+	SwitchInitializationFrame(ScopeId scope = ScopeId())
+		: scope(scope), initialized(0)
+	{}
+};
+
+struct SwitchInitializationState
+{
+	std::vector<SwitchInitializationFrame> lexical_frames;
+	std::size_t active;
+
+	SwitchInitializationState() : lexical_frames(), active(0) {}
 };
 
 class PA11SemanticModel
@@ -1369,6 +1391,14 @@ private:
 	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
 	;
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
+	;
+	bool simple_declaration_has_initializer(const PA10AstNode& node) const
+	;
+	void collect_switch_transfer_points(const PA10AstNode& node,
+		ScopeId scope, SwitchInitializationState* state) const
+	;
+	void validate_switch_initialization(const PA10AstNode& body,
+		ScopeId scope) const
 	;
 	ScopeId prepare_pa12_control(const PA10AstNode& node, ScopeId parent,
 		StatementFactKind kind)

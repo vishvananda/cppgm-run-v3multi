@@ -2224,6 +2224,12 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 		case SimpleTokenType::KW_STATIC:
 			result.is_static = true;
 			break;
+		case SimpleTokenType::KW_EXTERN:
+			result.is_extern = true;
+			break;
+		case SimpleTokenType::KW_THREAD_LOCAL:
+			result.is_thread_local = true;
+			break;
 		case SimpleTokenType::KW_CONST:
 		case SimpleTokenType::KW_VOLATILE:
 			result.cv |= cv_bit(child);
@@ -2470,6 +2476,10 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		throw std::runtime_error("invalid PA11 declarator list");
 	DeclarationFact declaration(&node, scope);
 	declaration.is_constexpr = spec.is_constexpr;
+	declaration.automatic_storage = scope.valid() &&
+		scope.value < scopes_.size() &&
+		scopes_[scope.value].kind == ScopeKind::Block &&
+		!spec.is_static && !spec.is_extern && !spec.is_thread_local;
 	declaration.binding_begin = declaration_bindings_.size();
 	for (std::size_t i = 0; i < list.children.size(); ++i)
 	{
@@ -2825,6 +2835,163 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 	}
 	default:
 		unsupported("declaration form");
+	}
+}
+
+bool PA11SemanticModel::simple_declaration_has_initializer(
+	const PA10AstNode& node) const
+{
+	if (node.kind != PA10NodeKind::SimpleDeclaration)
+		return false;
+	if (node.children.empty())
+		return false;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& child = node.children[i];
+		if (child.kind == PA10NodeKind::InitDeclarator)
+		{
+			if (child.children.size() > 1) return true;
+			continue;
+		}
+		for (std::size_t j = 0; j < child.children.size(); ++j)
+			if (child.children[j].kind == PA10NodeKind::InitDeclarator &&
+				child.children[j].children.size() > 1)
+				return true;
+	}
+	return false;
+}
+
+void PA11SemanticModel::collect_switch_transfer_points(
+	const PA10AstNode& node, ScopeId scope,
+	SwitchInitializationState* state) const
+{
+	if (state == NULL)
+		throw std::runtime_error("PA12 switch initialization state is missing");
+	// A nested switch owns its labels and its declaration-entry checks.  The
+	// enclosing switch resumes after the nested statement with its own state.
+	if (node.kind == PA10NodeKind::SwitchStatement ||
+		node.kind == PA10NodeKind::ClassSpecifier ||
+		node.kind == PA10NodeKind::FunctionDefinition ||
+		node.kind == PA10NodeKind::LambdaExpression)
+		return;
+
+	ScopeId effective = scope;
+	if (node.kind == PA10NodeKind::CompoundStatement)
+		effective = compound_scope(node);
+	else if (node.kind == PA10NodeKind::IfStatement ||
+		node.kind == PA10NodeKind::WhileStatement ||
+		node.kind == PA10NodeKind::DoStatement ||
+		node.kind == PA10NodeKind::ForStatement)
+	{
+		const StatementFact* statement = statement_fact(node);
+		if (statement != NULL) effective = statement->scope;
+	}
+	if (!effective.valid()) effective = scope;
+	const bool entered = state->lexical_frames.empty() ||
+		state->lexical_frames.back().scope != effective;
+	if (entered)
+		state->lexical_frames.push_back(SwitchInitializationFrame(effective));
+
+	if (node.kind == PA10NodeKind::SimpleDeclaration)
+	{
+		const DeclarationFact* declaration = declaration_fact(node);
+		if (declaration != NULL && declaration->automatic_storage &&
+			simple_declaration_has_initializer(node))
+		{
+			++state->lexical_frames.back().initialized;
+			++state->active;
+		}
+	}
+	else if (node.kind == PA10NodeKind::ConditionDeclaration)
+	{
+		const DeclarationFact* declaration = declaration_fact(node);
+		if (declaration != NULL && declaration->automatic_storage)
+		{
+			++state->lexical_frames.back().initialized;
+			++state->active;
+		}
+	}
+	else if (node.kind == PA10NodeKind::Condition)
+	{
+		if (node.children.size() == 1 &&
+			node.children.front().kind == PA10NodeKind::ConditionDeclaration)
+			collect_switch_transfer_points(node.children.front(), effective, state);
+	}
+	else if (node.kind == PA10NodeKind::CaseStatement ||
+		node.kind == PA10NodeKind::DefaultStatement)
+	{
+		if (state->active != 0)
+			throw std::runtime_error(
+				"PA12 case or default label bypasses variable initialization");
+		const std::size_t body_index = node.kind == PA10NodeKind::CaseStatement ?
+			1 : 0;
+		if (node.children.size() <= body_index)
+			throw std::runtime_error("PA12 switch label body is missing");
+		const PA10AstNode& body = node.children[body_index];
+		const ScopeId body_scope = body.kind == PA10NodeKind::CompoundStatement ?
+			compound_scope(body) : effective;
+		collect_switch_transfer_points(body, body_scope, state);
+	}
+	else if (node.kind == PA10NodeKind::CompoundStatement)
+	{
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			collect_switch_transfer_points(node.children[i], effective, state);
+	}
+	else if (node.kind == PA10NodeKind::IfStatement)
+	{
+		if (!node.children.empty())
+			collect_switch_transfer_points(node.children.front(), effective, state);
+		for (std::size_t i = 1; i < node.children.size(); ++i)
+		{
+			const PA10AstNode& wrapper = node.children[i];
+			if (wrapper.children.size() != 1) continue;
+			const PA10AstNode& body = wrapper.children.front();
+			const ScopeId body_scope = body.kind == PA10NodeKind::CompoundStatement ?
+				compound_scope(body) : substatement_scope(body);
+			collect_switch_transfer_points(body, body_scope, state);
+		}
+	}
+	else if (node.kind == PA10NodeKind::WhileStatement ||
+		node.kind == PA10NodeKind::DoStatement)
+	{
+		const bool is_while = node.kind == PA10NodeKind::WhileStatement;
+		const std::size_t condition_index = is_while ? 0 : 1;
+		const std::size_t body_index = is_while ? 1 : 0;
+		if (node.children.size() == 2)
+		{
+			collect_switch_transfer_points(node.children[condition_index],
+				effective, state);
+			const PA10AstNode& body = node.children[body_index];
+			const ScopeId body_scope = body.kind == PA10NodeKind::CompoundStatement ?
+				compound_scope(body) : substatement_scope(body);
+			collect_switch_transfer_points(body, body_scope, state);
+		}
+	}
+	else if (node.kind == PA10NodeKind::ForStatement)
+	{
+		if (node.children.size() >= 3)
+		{
+			collect_switch_transfer_points(node.children.front(), effective, state);
+			for (std::size_t i = 1; i + 1 < node.children.size(); ++i)
+				if (node.children[i].kind == PA10NodeKind::Condition)
+					collect_switch_transfer_points(node.children[i], effective,
+						state);
+			const PA10AstNode& body = node.children.back();
+			const ScopeId body_scope = body.kind == PA10NodeKind::CompoundStatement ?
+				compound_scope(body) : substatement_scope(body);
+			collect_switch_transfer_points(body, body_scope, state);
+		}
+	}
+	else
+	{
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			collect_switch_transfer_points(node.children[i], effective, state);
+	}
+
+	if (entered)
+	{
+		state->active -= state->lexical_frames.back().initialized;
+		state->lexical_frames.pop_back();
 	}
 }
 } // namespace pa11_semantic_internal

@@ -1,99 +1,87 @@
 # PA15 Checkpoint Plan
 
-## Stage Design
+## Boundary and Spec Alignment
 
-This checkpoint keeps PA12 as the semantic owner and lowers its typed
-structured-statement facts directly into the shared typed
-`lowir_model::Program`. It does not parse rendered dumps, LowIR text,
-fixtures, or reference output. The lowerer covers the bounded structured CFG
-slice needed here: `while`, `do`, `for`, `break`, `continue`, condition
-declarations, `switch`/`case`/`default`, fallthrough, and direct `&&`/`||`
-condition branching.
+PA15 keeps PA12 as the semantic owner and lowers its typed statement graph
+directly into the shared typed `lowir_model::Program`. No rendered semantic
+dump, LowIR text, fixture, or reference output is parsed for implementation
+state. The bounded slice is `while`, `do`, `for`, `break`, `continue`,
+condition declarations, `switch`/`case`/`default`, fallthrough, and direct
+`&&`/`||` condition branching. Scalar/global/pointer/enum/floating/goto and
+other remaining PA15 groups stay explicit nonclaims.
 
-Block IDs, operands, instructions, slots, and terminators remain typed. Block
-allocation uses the existing deterministic stem/counter scheme; final block
-presentation follows first CFG/source reachability so normalized LowIR remains
-stable. Break searches the innermost loop-or-switch target; continue searches
-the innermost loop target while skipping intervening switches. Case labels are
-owned by the active switch, including labels nested in its compound or other
-substatements.
+Typed `ScopeId`, `BindingId`, `SemanticFactId`, `TypeId`, `BlockId`,
+`Operand`, `Instruction`, and `SlotId` identities remain intact through
+lowering and serialization. The scope owner index is one stage-wide
+parent-before-child propagation over `O(S+B+F)` structural input and uses
+ordered ownership maps for an honest `O((S+B+F) log B)` slot bound. Switch
+label collection is one traversal per owning switch and stops at nested switch
+facts. The PA12 switch-transfer prepass is one source-order structural walk
+with typed lexical frames (`ScopeId`, initialized-automatic count) and an
+active total; it does not allocate a node-based map per switch. `DeclarationFact`
+stores the automatic-storage fact sourced once from `SpecFact`, so local
+`static`, `extern`, and `thread_local` declarations are not misclassified as
+automatic in this procedural subset. The PA15 repair records each typed CFG
+edge at emission and propagates reachability monotonically through a worklist;
+loop recovery reuses a dense `SemanticFactId`-indexed target table allocated
+once for the translation unit rather than resetting it per function. The
+reachability bitset has no duplicate adjacency index: a newly reachable block
+inspects its canonical typed terminator once, while an emitted edge from an
+already reachable source marks its target immediately.
 
-The stage-wide scope owner index partitions the PA12 scope arena in
-`O(S + B + F)` time and `O(S + B)` space (`S` scopes, `B` bindings, `F`
-functions), once per translation unit. The ordered maps/sets used by slot
-ownership and naming make the honest total slot-ownership bound
-`O((S + B + F) log B)`, still without any `O(F*S)` whole-arena scan. Each
-owned switch pre-collects its labels with one traversal of its statement
-subtree and stops at nested `switch` facts. Thus label collection is `O(F_s)`
-for the facts owned by switch `s` before ordered-label bookkeeping, with no
-repeated case scans or cross-switch cache; structured lowering otherwise visits
-each owned fact a constant number of times. These are structural bounds, not
-claims about unsupported expression lowering or the complete frontend.
+For `A` consumed PA12 facts, `S` scopes, `B` bindings, `N` functions, and `E`
+typed IR edges, the transfer walk is `O(A)` with lexical-depth state; the
+stage-wide scope/slot owner index is `O(S+B+N)` propagation plus the existing
+deterministic `O((S+B+N) log B)` ordered indexes; the loop-target table is
+initialized once in `O(A)` space/time; and reachability is `O(B+E)`. Structured
+label/recovery traversal is linear in owned facts, giving an affected total of
+`O(n log n)` under spec.md §4.
 
-## Failure Map
+## Current Failure Map and Coverage
 
-The clean turn-start PA15 baseline was **13/109 passing and 96 failing**. The
-following baseline triage buckets are exhaustive and sum to 96; names are
-grouped by the dominant missing capability, so a few cross-cutting cases have
-a secondary theme. The exact baseline inventory is recorded below. The final
-broad PA15 run is **21/109 passing and 88 failing**: its exact failure set is
-the baseline inventory below minus the eight newly passing cases
-`100-bad-switch`, `100-continue-inside-switch-targets-loop`,
-`100-do-while-lowering`, `100-for-loop`, `100-nested-switch-cases-stay-inner`,
-`100-switch-condition-declaration`, `100-while-break`, and
-`200-direct-short-circuit-condition-branch`.
-
-| Category | Count | Checkpoint boundary |
-|---|---:|---|
-| Structured control: loops, switch, goto, conditions, short circuit | 17 baseline / 9 final | Eight cases addressed; nine remain |
-| Globals, arrays, pointers, address/decay, subscripting | 40 | Not claimed |
-| Calls, ABI/reference parameters, overloads, linkage, namespace lookup | 18 | Existing scalar/direct-call subset only |
-| Enums, `sizeof`, floating cases, literals, conversions | 13 | Existing scalar conversion subset only |
-| Extended lvalues, compound assignment, inc/dec, slots, scalar extensions | 8 | Not claimed |
-| **Total** | **96 baseline / 88 final** | **No coverage reduction** |
-
-Exact baseline failure inventory (the three checked-in negative tests that
-already matched their expected failure—`100-scoped-enum-no-implicit-int-bad`,
-`100-switch-label-bypasses-initialization-bad`, and
-`200-bad-excess-array-initializer`—are not in this list):
+The clean turn-start baseline is **21/109 passing, 88 failing, all 109
+covered**, from `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The exact failing inventory is:
 
 ```text
-100-array-cv-rvalue-reference-overload  100-bad-switch  100-c-linkage-reference-declaration-metadata
+100-array-cv-rvalue-reference-overload  100-c-linkage-reference-declaration-metadata
 100-condition-declaration-variable-rvalue  100-const-integral-lvalue-overload-category
-100-continue-inside-switch-targets-loop  100-do-while-lowering  100-enum-default-argument-constant-fold
-100-extern-unknown-bound-array-reference  100-for-loop  100-function-pointer-ref-call
-100-global-function-pointer-argument-call  100-global-variable  100-nested-switch-cases-stay-inner
-100-scoped-enum-braced-assignment  100-scoped-enum-previous-enumerator-bitwise-or
-100-sizeof-local-value-shadows-type-name  100-string-hex-escape-code-unit  100-subscript-sizeof
-100-switch-condition-declaration  100-unary-logical-conditional  100-unary-plus-array-decay
-100-unnamed-parameter-storage  100-using-directive-imported-value-function-body  100-while-break
+100-enum-default-argument-constant-fold  100-extern-unknown-bound-array-reference
+100-function-pointer-ref-call  100-global-function-pointer-argument-call
+100-global-variable  100-scoped-enum-braced-assignment
+100-scoped-enum-previous-enumerator-bitwise-or  100-sizeof-local-value-shadows-type-name
+100-string-hex-escape-code-unit  100-subscript-sizeof
+100-unary-logical-conditional  100-unary-plus-array-decay
+100-unnamed-parameter-storage  100-using-directive-imported-value-function-body
 200-address-of-local-const-integral-uses-storage  200-comma-expression-lvalue-address
 200-comma-expression-xvalue-reference-return  200-compound-assignment-evaluates-lhs-once
 200-conditional-array-decay-subscript  200-const-cast-pointer-const-drop
 200-const-cast-reference-array-subscript  200-const-cast-reference-similar-pointer
-200-const-ref-converted-float-argument  200-direct-short-circuit-condition-branch
-200-enum-class-scalar-lowering  200-extern-c-internal-header-const
-200-extern-function-pointer-indirect-call  200-floating-compound-assign-integral-rhs
-200-floating-condition-declaration-negative-zero  200-floating-logical-branch
-200-floating-return-integral-conversion  200-for-init-assignment-expression
-200-for-iteration-discards-void-comma-rhs  200-function-reference-static-cast-call
-200-functional-reference-typedef-cast  200-generated-slot-name-collision
-200-global-address-reinterpret-cast-initializer  200-global-array-bitwise-or-enum-init
-200-global-array-conditional-cast-initializer  200-global-array-decay-compare
-200-global-array-element-address-initializer  200-global-array-one-past-end-pointer
-200-global-array-scalar-cast-init  200-global-array-static-const-byte-init
-200-global-object-address-initializer  200-global-pointer-array-null-fill
-200-global-pointer-array-nullptr-init  200-global-pointer-array-subscript-load
-200-goto-case-block-entry-label  200-goto-case-block-label-after-statement
-200-included-namespace-global-definition  200-inferred-local-array-bound
-200-integral-multiply-compound-assignment  200-literal-logical-short-circuit-omits-unreachable-call
+200-const-ref-converted-float-argument  200-enum-class-scalar-lowering
+200-extern-c-internal-header-const  200-extern-function-pointer-indirect-call
+200-floating-compound-assign-integral-rhs  200-floating-condition-declaration-negative-zero
+200-floating-logical-branch  200-floating-return-integral-conversion
+200-for-init-assignment-expression  200-for-iteration-discards-void-comma-rhs
+200-function-reference-static-cast-call  200-functional-reference-typedef-cast
+200-generated-slot-name-collision  200-global-address-reinterpret-cast-initializer
+200-global-array-bitwise-or-enum-init  200-global-array-conditional-cast-initializer
+200-global-array-decay-compare  200-global-array-element-address-initializer
+200-global-array-one-past-end-pointer  200-global-array-scalar-cast-init
+200-global-array-static-const-byte-init  200-global-object-address-initializer
+200-global-pointer-array-null-fill  200-global-pointer-array-nullptr-init
+200-global-pointer-array-subscript-load  200-goto-case-block-entry-label
+200-goto-case-block-label-after-statement  200-included-namespace-global-definition
+200-inferred-local-array-bound  200-integral-multiply-compound-assignment
+200-literal-logical-short-circuit-omits-unreachable-call
 200-local-direct-init-array-subscript  200-local-function-type-typedef-reference
-200-local-int-slot-width  200-local-lvalue-reference-alias-init  200-lvalue-conditional-address
-200-lvalue-conditional-reference-return  200-namespace-default-argument-declaration-lookup
-200-nested-conditional-array-decay  200-partial-local-array-zero-initialization
-200-pointer-compound-assignment-scale  200-pointer-deref-byte-load  200-pointer-operator-array-decay
+200-local-int-slot-width  200-local-lvalue-reference-alias-init
+200-lvalue-conditional-address  200-lvalue-conditional-reference-return
+200-namespace-default-argument-declaration-lookup  200-nested-conditional-array-decay
+200-partial-local-array-zero-initialization  200-pointer-compound-assignment-scale
+200-pointer-deref-byte-load  200-pointer-operator-array-decay
 200-postfix-incdec-evaluates-lhs-once  200-prefix-incdec-lvalue-address
-200-prefix-pointer-decrement-reference-argument  200-qualified-namespace-overload-definition-symbol
+200-prefix-pointer-decrement-reference-argument
+200-qualified-namespace-overload-definition-symbol
 200-reference-parameter-temp-name-collision  200-reinterpret-enum-to-pointer
 200-reinterpret-reference-conditional-materialization  200-return-void-call-expression
 200-scalar-assignment-address-lvalue  200-scalar-reference-static-cast-return
@@ -104,56 +92,42 @@ already matched their expected failure—`100-scoped-enum-no-implicit-int-bad`,
 300-return-empty-braces-scalar
 ```
 
-## Active Checkpoint
+The structured residuals are condition-declaration rvalues, unary/logical
+conditional expressions, floating condition declarations, for expressions,
+literal logical short-circuit call references, goto/case entry, and the
+scalar expression in `200-switch-case-nested-inside-if`. They were not
+expanded in this checkpoint.
 
-- `dev/src/pa15_lowering.cpp` now consumes the typed PA12 statement graph,
-  carries loop/switch target stacks, lowers structured terminators, assigns
-  condition-declaration storage from PA12-owned scopes, and handles direct
-  short-circuit CFG edges.
-- `dev/src/lowir_model.cpp` serializes typed `switch` terminators; no textual
-  round trip was added.
-- Scope ownership is now indexed once per translation unit with typed
-  parent-before-child propagation; no function scans the full scope arena.
-  Switch lowering records every collected label visit, retains any unvisited
-  allocated block deterministically rather than dropping it, and tracks
-  label-bearing `if` branches so recovered case paths skip mutually exclusive
-  siblings and merge only through typed continuations.
-- Focused checked-in validation improved from **0/9** before the change to
-  **8/9** for the original set, and is **8/10** including
-  `100-condition-declaration-variable-rvalue`: the original eight structured
-  cases pass; the two failures are documented scalar-expression nonclaims.
-  Both out-of-repository dead-label probes passed; the with-else probe emitted
-  `case 2` as `y = 3` followed by a switch-continuation jump, with no `y = 4`
-  store, and CY86 execution returned 0 for `f(2) - 3`.
-- `200-switch-case-nested-inside-if` remains blocked by its separate `main`
-  expression (`run(...) == 2 ? 0 : 1`) and the existing unsupported scalar
-  conditional-expression path; its structured `run` function lowers.
-  `200-for-init-assignment-expression` likewise remains outside this slice
-  because its iteration uses unsupported prefix increment.
-- Broad PA15 ran all 109 tests with **21 passing and 88 failing**. The remaining
-  structured-control failures are `100-condition-declaration-variable-rvalue`,
-  `100-unary-logical-conditional`,
-  `200-floating-condition-declaration-negative-zero`,
-  `200-for-init-assignment-expression`,
-  `200-for-iteration-discards-void-comma-rhs`,
-  `200-goto-case-block-entry-label`, `200-goto-case-block-label-after-statement`,
-  `200-literal-logical-short-circuit-omits-unreachable-call`, and
-  `200-switch-case-nested-inside-if`; the other 79 remain in the
-  non-structured baseline categories.
-- Nonclaims remain scalar conditional expressions, prefix/inc-dec and other
-  extended lvalues, globals/arrays/pointers, indirect/reference-heavy calls,
-  unresolved namespace/linkage extensions, enums/floating conversions, and
-  goto. No fixture, reference, harness, or coverage change was made.
+## Final Checkpoint Evidence
 
-## Performance Evidence
+- Final source repair: typed PA12 switch-entry validation plus typed PA15
+  switch-label/loop recovery.
+- `make -C dev cppgm++`: passed.
+- Focused implicated checked-in set: **9/9 passed**, including the expected
+  failure for `100-switch-label-bypasses-initialization-bad`.
+- Fresh probe matrix: no-label, braced-case, exhaustive non-void, nested
+  while/do/for-without-init/if labels all compiled and passed `lowir2cy86`;
+  nested for-init and while-condition bypass probes were rejected by PA12.
+- Storage-duration probes: initialized local `static` compiled and passed
+  `lowir2cy86`; initialized automatic storage was rejected by PA12. Four
+  label-after-termination probes (top-level, `while`, `do`, `for`) compiled
+  and passed `lowir2cy86`.
+- No test, fixture, reference, harness, or coverage file changed. The final
+  root through-PA14 gate passed **1058/1058**. The final full PA15 report is
+  **21/109 passed, 88 failed, all 109 covered**; its complete failing set is
+  identical to the turn-start baseline. The final PA15 file audit passed with
+  the four existing header-division warnings listed in `pa15/audit.md`, and
+  the final diff check passed.
 
-The immutable freshly built executable was copied outside the repository as
-`/tmp/pa15-perf-amend.hd5A6F/cppgm++-pa15-fresh` with SHA-256
+## Retained Performance and Prior Gate Evidence
+
+The following table is historical target-commit evidence copied from the
+prior checkpoint. The previously recorded paths
+`/tmp/pa15-perf-amend.hd5A6F/measurements.tsv` and
+`/tmp/pa15-perf-amend.hd5A6F/cppgm++-pa15-fresh` do not exist at this
+checkpoint, so neither artifact is claimed to be inspectable. The recorded
+executable SHA-256 was
 `31093ff568ac9d787855b64720c6933b593d2b3d734e7e4b91dba55d71a32972`.
-Generated many-function/control-scope and nested-switch inputs were run in an
-interleaved sequence with three observations per size. Structural counters
-corroborate the one-pass bound; wall time is reported as noisy supporting
-evidence, not as a stronger complexity claim.
 
 | Family / size | Median ms | Input B | Output B | Functions | Blocks | Instructions | Cases |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -164,19 +138,56 @@ evidence, not as a stronger complexity claim.
 | nested switches / 8 | 4.088879 | 656 | 2603 | 2 | 34 | 53 | 8 |
 | nested switches / 16 | 4.904032 | 1616 | 4939 | 2 | 66 | 101 | 16 |
 
-The raw measurement table is outside the repository at
-`/tmp/pa15-perf-amend.hd5A6F/measurements.tsv`.
+Prior target-commit evidence also recorded **1058/1058 through PA14**, a
+successful PA15 file audit with four existing header-division warnings, and
+the then-clean diff check. Those measurements remain historical; the final
+gates for this corrected checkpoint are recorded above.
+
+Fresh corrected-executable evidence uses the immutable copy
+`/tmp/pa15-structured-correction.wf5una/cppgm++-corrected`, SHA-256
+`6e5843f5e44966fd1b4f62b98e3d5ed829b306afb78024b6c1f4e8e180054688`.
+The interleaved raw log is
+`/tmp/pa15-structured-correction.wf5una/measurements-final.tsv`, with medians
+in `.../measurements-final-medians.tsv`. The nested sources are
+`recovery-{32,64,128,256}.cpp`; the many-function/one-loop-per-function
+sources are `many-functions-{32,64,128,256}.cpp`, all in that same existing
+directory. Each round interleaves `nested:32, many:32, nested:128, many:128,
+nested:64, many:64, nested:256, many:256`; all 40 compilations returned
+status 0. The depth-256 LowIR outputs for both families passed `lowir2cy86`.
+
+| Nested recovery depth | Samples | Median ms | Source B | Blocks | Instructions | Switches |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 5 | 115 | 1131 | 102 | 175 | 1 |
+| 64 | 5 | 114 | 2091 | 198 | 335 | 1 |
+| 128 | 5 | 115 | 4011 | 390 | 655 | 1 |
+| 256 | 5 | 114 | 7851 | 774 | 1295 | 1 |
+
+| Many functions / loops | Samples | Median ms | Source B | Functions | Blocks | Instructions | Switches |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 5 | 115 | 1775 | 33 | 129 | 321 | 0 |
+| 64 | 5 | 114 | 3535 | 65 | 257 | 641 | 0 |
+| 128 | 5 | 114 | 7083 | 129 | 513 | 1281 | 0 |
+| 256 | 5 | 115 | 14251 | 257 | 1025 | 2561 | 0 |
+
+Nested counters are `blocks = 3d + 6`, `instructions = 5d + 15`; the
+many-function counters are `functions = d + 1`, `blocks = 4d + 1`, and
+`instructions = 10d + 1`. The repeated medians show no timeout or
+multiplicative growth in either family. The exact unreachable nonempty-tail
+probe retained its source stores and ended with a typed self-jump; its LowIR
+passed `lowir2cy86`. The reachable non-void fallthrough probe rejected with
+`PA15 function falls through without return`. The 114–115 ms process medians
+are startup-dominated, so the structural counters and repeated successful
+runs are the stronger complexity evidence.
+
+## Next Checkpoint
+
+Next checkpoint: the next remaining PA15 code capability after this audit,
+starting with the scalar expression/lvalue boundary. It will be scoped and
+audited separately; this structured-control checkpoint completes its own
+validation and release evidence here.
 
 ## Checkpoint Ledger
 
 | Status | Evidence |
 |---|---|
-| Baseline recorded | 13/109 passing, 96 failing; exact inventory above from the clean pre-change sidecars |
-| Corrections | Stage-wide scope index, complete branch-aware typed label visitation, deterministic all-block retention, corrected complexity bound, and corrected three-negative-test note |
-| Focused validation | Original set 8/9; expanded set 8/10; both raw nested-label probes passed, including CY86 execution |
-| PA15 gate | `make test-pa15`: 21/109 passing, 88 failing; all 109 covered |
-| Prior gate | Through PA14: `1058/1058` passed |
-| Audit | Passed with four pre-existing header-division warnings |
-| Performance | Fresh immutable executable; interleaved medians and structural counters recorded above |
-| Diff sanity | `git diff --check` passed after final source and plan review |
-| Commit | Completed checkpoint state; coherent commit amended after final validation, with no completion claim because 88 PA15 failures remain |
+| Completed — structured-control audit/repair milestone | PA12 typed switch-transfer ownership, PA15 loop/switch recovery, direct short-circuit branching, deterministic block retention, scope indexing, focused 9/9 validation, and validator probes completed; final broad gates and file audit are recorded in the checkpoint review. |

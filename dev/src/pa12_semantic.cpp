@@ -114,6 +114,9 @@ void PA11SemanticModel::process_condition_declaration(
 	const BindingId binding_id = add_value(target, name.path.last(), type, false,
 		false, true, BindingId(), SourcePoint(node.source_begin));
 	DeclarationFact declaration(&node, target);
+	declaration.automatic_storage = target.value < scopes_.size() &&
+		scopes_[target.value].kind == ScopeKind::Block &&
+		!spec.is_static && !spec.is_extern && !spec.is_thread_local;
 	declaration.binding_begin = declaration_bindings_.size();
 	declaration_bindings_.push_back(binding_id);
 	declaration.binding_count = 1;
@@ -348,6 +351,13 @@ void PA11SemanticModel::prepare_pa12_statement(
 	default:
 		return;
 	}
+}
+
+void PA11SemanticModel::validate_switch_initialization(
+	const PA10AstNode& body, ScopeId scope) const
+{
+	SwitchInitializationState state;
+	collect_switch_transfer_points(body, scope, &state);
 }
 
 void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
@@ -2781,6 +2791,7 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 			compound_scope(body_node) : substatement_scope(body_node);
 		if (!body.valid())
 			throw std::runtime_error("PA12 switch body scope is missing");
+		validate_switch_initialization(body_node, body);
 		std::vector<SemanticFactId> children;
 		children.push_back(condition);
 		const SemanticFactId body_fact = semantic_statement(body_node, body,

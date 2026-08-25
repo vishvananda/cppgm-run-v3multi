@@ -2,65 +2,128 @@
 
 ## Current Checkpoint Review
 
-This review covers the landed PA15 typed scalar lowering increment at
-`f77219af1b8aa5dd5e9d2441b580825c593de62b` and its bounded final repair. The
-driver retains one independent PA10/PA11/PA12 semantic owner and lowerer per
-input file, appending each typed result to the shared `lowir_model::Program`.
-There is no cross-translation-unit AST merger or shared semantic coordinator.
+This review is bounded to the landed structured-control increment
+`4bca2ad8f6a4b14d3f6922f1c3a20e42f852eac3` and its affected ownership path.
+The repair in this milestone is limited to typed PA12 switch-entry validation
+and typed PA15 CFG recovery; no unrelated PA15 feature group was re-audited.
 
-PA11 `Binding` owns decoded language linkage and namespace-scope internal
-function storage. `extern "C"` is read from PA10's decoded literal fact, not
-from a rendered dump. The lowerer maps external C linkage to LowIR
-`linkage=c` and the PA14 C object spelling; internal C functions retain the
-PA14 C++ local object spelling while LowIR records `binding=internal`.
-Function headers, parameters, local slots, `BindingId`-to-`SymbolId` call
-targets, `ValueId` producers/owners, if/else blocks, and terminators remain
-typed and deterministic. The cold serializer is the only text boundary.
+The ownership path is continuous:
 
-The existing extern-C/internal fixture was a real raw-output defect even
-though normalized comparison passed. The public regression
-`cppgm.tests/course/pa15/400-raw-lowir-linkage-regression.sh` directly checks
-the raw headers for C linkage, internal binding, and both PA14 object symbols,
-and rejects the old strong/no-linkage headers. No handout fixture, `.ref`, or
-harness was changed.
+- PA12 owns `FunctionFact`, `Scope`, `Binding`, `SemanticFact`, conversion
+  facts, condition declarations, loop/switch statement shapes, and typed case
+  literals. The new PA12 check keeps switch-transfer legality with that
+  semantic owner: an owned case/default target cannot enter an active lexical
+  scope after an initialized automatic declaration. `DeclarationFact` carries
+  the storage-duration fact sourced from `SpecFact`; the validator counts only
+  initialized automatic declarations. Its lexical frames carry `ScopeId` and
+  the initialized count, with one active total, so nested switches are
+  independent owners without a node-based scope map.
+- `Pa15Lowerer` indexes the complete PA12 scope arena once per translation
+  unit, assigns typed slots, and lowers facts directly into typed `Program`
+  functions. Loop targets, switch break targets, and continue targets remain
+  separate typed stack entries; `continue` skips switches and selects the
+  nearest loop. A dense `SemanticFactId`-indexed loop-target table is sized
+  once for the translation unit and retained across all function lowerings.
+- Switch labels are collected once for their owning switch and stop at nested
+  switch facts. Recovery starts at dispatch targets, skips ordinary
+  pre-label statements, preserves fallthrough to already-lowered labels, and
+  recovers labels nested in `if`, `while`, `do`, and `for` without duplicating
+  their ordinary loop lowering. Each loop fact records its typed break and
+  continue blocks once; recovery reuses those targets when a label follows a
+  terminating path. Exhaustive non-void switches retain a required typed
+  continuation block without manufacturing a return value.
+- Conditions remain typed. Direct root `&&` and `||` conditions lower to
+  operand CFG branches; they do not materialize a `land__`/`lor__` result slot.
+  Block IDs, operands, instructions, and final block order remain typed and
+  deterministic. The PA13 serializer is the only text boundary and emits the
+  typed `switch` terminator contract.
 
-The driver computes the complete serialized LowIR string before opening the
-output path. If opening fails, no output is created; after opening, a write or
-flush failure may still leave partial output. This is not an atomic-write
-claim.
+The bounded defects repaired in this path are switch recovery before the first
+label, exhaustive-switch continuation handling, duplicate ordinary lowering
+while recovering nested loops, and storage-duration-blind transfer rejection.
+The PA12 transfer check rejects initialized automatic declarations while
+accepting the focused initialized local-`static` case. This is the procedural
+PA15 boundary: it does not claim complete C++ class/object lifetime or every
+storage-duration rule outside the represented `SpecFact` subset. No fixture,
+reference output, harness, or unrelated semantic feature was changed.
 
-Within one translation unit, declarations and definitions under the same
-linkage context retain compatible typed linkage and merge normally. Linkage
-inheritance from a declaration into a later declaration/definition outside
-that context is not implemented by the current PA11 contract; it is a
-next-checkpoint declaration/linkage nonclaim. Focused PA11/PA12 dump behavior
-remains passing.
+CFG reachability has one owner: the typed block terminator already stored in
+each `Block`. When an edge is emitted from a reachable source, its target is
+marked immediately. When a block first becomes reachable, its canonical
+terminator is inspected once to propagate its existing jump, branch, or
+switch targets. There is no second per-block adjacency allocation. Each block
+bit transitions at most once and each terminator edge is considered a bounded
+number of times. Loop recovery reuses the dense targets saved for an
+already-lowered loop.
 
-Separate input files are intentionally not treated as one source program.
-Two independent inputs containing same-named static functions lower to
-distinct LowIR symbols and each input's call resolves within its own semantic
-owner. Cross-input declaration/definition and namespace-view coordination is
-not claimed and remains the next checkpoint. No claim is made for globals,
-arrays, pointers, references, indirect calls, loops, switch, short circuit,
-enums, floats, or the other remaining PA15 groups.
+For `A` consumed PA12 facts, `S` scopes, `B` bindings, `N` functions, and `E`
+typed IR edges, the PA12 transfer walk is `O(A)` with lexical-depth state; the
+stage-wide scope/slot owner index is `O(S+B+N)` structural propagation plus
+the existing deterministic `O((S+B+N) log B)` ordered indexes; the retained
+loop-target table is initialized once in `O(A)` space/time; and reachability is
+`O(B+E)`. Structured label/recovery traversal is linear in its owned facts,
+so the total affected path is `O(n log n)` under the specification bound, with
+no whole-CFG scan per switch or recovered loop.
 
-## Final Evidence
+PA13 has no typed `unreachable` terminator. A self-jump is therefore emitted
+only at final function exit when monotonic reachability proves the retained
+continuation unreachable. The continuation may be empty or may contain a
+lowered unreachable lexical tail; reachable non-void fallthrough remains an
+error. This is a deliberate LowIR representation, validated below with
+LowIR and CY86 output.
 
-- `make test-pa15`: all 109 cases ran; `13 / 109` passed, `96` failed, exit
-  `2`, with no coverage reduction or added failure.
-- The required through-PA14 report passed `1058 / 1058`.
-- The raw public regression passed; the existing normalized extern-C/internal
-  check passed `1/1`; the focused scalar/linkage set passed `10/10`.
-- Independent-static input probing passed with `@helper` and `@helper__2`,
-  and the caller targeted `@helper__2`. A cross-input declaration/definition
-  probe failed with `PA15 direct call target was not emitted`, as the stated
-  nonclaim.
-- Focused PA11 namespace and PA12 namespace-call checks passed `1/1` each.
-- `perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src` passed with
-  the four existing header-division warnings. `git diff --check` passed.
+## Focused Evidence
+
+- Turn-start evidence in `last-test.log`: **21/109 passing, 88 failing, all
+  109 covered**. The final root through-PA14 gate passed **1058/1058**. The
+  final full PA15 report is **21/109 passing, 88 failing, all 109 covered**,
+  and its complete failing set is identical to the turn-start set.
+- `make -C dev cppgm++`: passed.
+- The implicated checked-in control set, including the expected-failure
+  switch-initialization fixture, passed **9/9**:
+  `100-bad-switch`,
+  `100-switch-label-bypasses-initialization-bad`,
+  `100-continue-inside-switch-targets-loop`,
+  `100-do-while-lowering`, `100-for-loop`,
+  `100-nested-switch-cases-stay-inner`,
+  `100-switch-condition-declaration`, `100-while-break`, and
+  `200-direct-short-circuit-condition-branch`.
+- Fresh stdin probes passed LowIR compilation and `lowir2cy86` validation for
+  nested `while`, `do`, `for` without an initializer, and `if` labels, plus
+  no-label, braced-case, and exhaustive-switch probes. Separate `for`-init
+  and while-condition bypass probes were rejected by PA12 with the typed
+  initialization diagnostic.
+- The focused storage-duration probes passed: initialized local `static`
+  compiled (LowIR and CY86 both status 0), while initialized automatic storage
+  was rejected with `PA12 case or default label bypasses variable
+  initialization`.
+- Four focused label-after-termination probes (top-level, `while`, `do`, and
+  `for`) each compiled and passed `lowir2cy86` (0); the nested recovery sample
+  at `/tmp/pa15-structured-correction.wf5una/measurements-final.tsv` has five
+  interleaved samples per depth, all status 0, and the corresponding depth-256
+  LowIR passed CY86 validation. Its structural counts grow linearly from 102
+  blocks/175 instructions at depth 32 to 774/1295 at depth 256. The exact
+  unreachable nonempty-tail probe compiled, retained its tail instructions,
+  and passed CY86; the reachable non-void fallthrough probe was rejected.
+- The many-function/one-loop-per-function family in the same final measurement
+  log reached 257 functions, 1,025 blocks, and 2,561 instructions at size 256
+  with status 0. This exercises the translation-unit loop-target table rather
+  than a per-function semantic-arena reset.
+- The immutable corrected executable was
+  `/tmp/pa15-structured-correction.wf5una/cppgm++-corrected` with SHA-256
+  `6e5843f5e44966fd1b4f62b98e3d5ed829b306afb78024b6c1f4e8e180054688`; its
+  interleaved raw measurements are at
+  `/tmp/pa15-structured-correction.wf5una/measurements-final.tsv`.
+- The prior target-commit performance table remains historical evidence only;
+  its old temporary artifacts are not present or inspectable at this
+  checkpoint. The fresh immutable-executable table, SHA-256, and actual paths
+  are recorded in `pa15/plan.md`.
+- The final PA15 file audit passed with four existing header-division warnings:
+  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, and
+  `pa11_semantic_model.h`. The final `git diff --check` also passed.
 
 ## Audit Ledger
 
 | Checkpoint | Evidence and disposition |
 |---|---|
-| PA15 full-stage / checkpointAudit — typed scalar linkage/storage ownership | Preserved independent-input lowering, repaired canonical PA11 linkage/storage facts and LowIR mapping, added the raw public regression, corrected output-open behavior and documentation, and retained all remaining feature groups as explicit nonclaims. |
+| PA15 full-stage / checkpointAudit — structured control and typed switch ownership | Audited PA12-to-LowIR ownership for loops, break/continue, condition declarations, switch labels/fallthrough, nested labels, direct short circuit, deterministic blocks, and stage-wide scope indexing; repaired the bounded semantic/CFG defects above; focused evidence is 9/9, through-PA14 is 1058/1058, PA15 is 21/109 with the baseline failure set unchanged, all 109 covered, and the file audit passes with four existing warnings. |

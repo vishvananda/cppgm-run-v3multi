@@ -55,6 +55,18 @@ struct ControlTarget
 		: loop(loop), break_target(break_target), continue_target(continue_target) {}
 };
 
+struct LoopTarget
+{
+	bool valid;
+	BlockId break_target;
+	BlockId continue_target;
+
+	LoopTarget(BlockId break_target = BlockId(),
+		BlockId continue_target = BlockId())
+		: valid(break_target.valid() && continue_target.valid()),
+		  break_target(break_target), continue_target(continue_target) {}
+};
+
 struct SwitchArm
 {
 	SemanticFactId fact;
@@ -87,7 +99,7 @@ class Pa15Lowerer
 public:
 	Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		: model_(model), program_(program), spelling_ids_(), used_symbols_(),
-			  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
+		  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
 		  function_program_indexes_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), function_scope_variables_(), next_symbol_(0),
@@ -95,7 +107,9 @@ public:
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), block_indexes_(), control_stack_(),
-		  switch_stack_(), block_order_(), ordered_block_ids_() {}
+		  switch_stack_(), block_order_(), ordered_block_ids_(),
+		  loop_targets_(), reachability_base_(0), reachable_blocks_(),
+		  reachability_work_() {}
 
 	void run()
 	{
@@ -103,6 +117,9 @@ public:
 		initialize_identity_counters();
 		clear_value_records();
 		collect_functions();
+		// SemanticFactId values are translation-unit identities.  Allocate this
+		// dense table once, then retain targets across all function lowerings.
+		loop_targets_.resize(model_.semantic_facts_.size());
 		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 			lower_function(function_plans_[i]);
 		finalize_value_records();
@@ -138,6 +155,10 @@ private:
 	std::vector<SwitchContext> switch_stack_;
 	std::vector<BlockId> block_order_;
 	std::set<std::size_t> ordered_block_ids_;
+	std::vector<LoopTarget> loop_targets_;
+	std::size_t reachability_base_;
+	std::vector<unsigned char> reachable_blocks_;
+	std::vector<BlockId> reachability_work_;
 
 	void initialize_spelling_ids()
 	{
@@ -783,6 +804,9 @@ private:
 		function().blocks.push_back(created);
 		const std::size_t index = function().blocks.size() - 1;
 		block_indexes_[created.block_id.index] = index;
+		if (created.block_id.index < reachability_base_)
+			throw std::runtime_error("PA15 block identity precedes reachability base");
+		reachable_blocks_.push_back(0);
 		return index;
 	}
 
@@ -791,6 +815,100 @@ private:
 		block_indexes_.clear();
 		for (std::size_t i = 0; i < function().blocks.size(); ++i)
 			block_indexes_[function().blocks[i].block_id.index] = i;
+	}
+
+	std::size_t reachability_index(BlockId id) const
+	{
+		if (!id.valid() || id.index < reachability_base_ ||
+			id.index - reachability_base_ >= reachable_blocks_.size())
+			throw std::runtime_error("PA15 reachability identity is not owned");
+		return id.index - reachability_base_;
+	}
+
+	bool is_reachable(BlockId id) const
+	{
+		return reachable_blocks_[reachability_index(id)] != 0;
+	}
+
+	BlockId edge_target(const Operand& operand) const
+	{
+		if (operand.kind != Operand::OP_LABEL || !operand.block_id.valid())
+			throw std::runtime_error("PA15 terminator edge has no block target");
+		return operand.block_id;
+	}
+
+	void enqueue_reachable(BlockId id)
+	{
+		const std::size_t index = reachability_index(id);
+		if (reachable_blocks_[index] == 0)
+		{
+			reachable_blocks_[index] = 1;
+			reachability_work_.push_back(id);
+		}
+	}
+
+	void propagate_existing_terminator_edges(BlockId source)
+	{
+		const Block& current = function().blocks[block_index(source)];
+		if (current.instructions.empty()) return;
+		const Instruction& terminator = current.instructions.back();
+		switch (terminator.kind)
+		{
+		case Instruction::IK_JUMP:
+			enqueue_reachable(edge_target(terminator.first));
+			break;
+		case Instruction::IK_BRANCH:
+			enqueue_reachable(edge_target(terminator.second));
+			enqueue_reachable(edge_target(terminator.third));
+			break;
+		case Instruction::IK_SWITCH:
+			enqueue_reachable(edge_target(terminator.second));
+			if (terminator.args.size() % 2 != 0)
+				throw std::runtime_error("PA15 switch terminator has odd arm data");
+			for (std::size_t i = 1; i < terminator.args.size(); i += 2)
+				enqueue_reachable(edge_target(terminator.args[i]));
+			break;
+		default:
+			break;
+		}
+	}
+
+	void mark_reachable(BlockId start)
+	{
+		if (is_reachable(start)) return;
+		reachability_work_.clear();
+		enqueue_reachable(start);
+		while (!reachability_work_.empty())
+		{
+			const BlockId source = reachability_work_.back();
+			reachability_work_.pop_back();
+			propagate_existing_terminator_edges(source);
+		}
+	}
+
+	void propagate_edge(BlockId source, BlockId target)
+	{
+		if (is_reachable(source)) mark_reachable(target);
+	}
+
+	void remember_loop_target(SemanticFactId id, BlockId break_target,
+		BlockId continue_target)
+	{
+		if (!id.valid())
+			throw std::runtime_error("PA15 loop fact has no identity");
+		if (id.value >= loop_targets_.size())
+			throw std::runtime_error("PA15 loop fact is outside target table");
+		if (loop_targets_[id.value].valid)
+			throw std::runtime_error("PA15 loop was lowered twice");
+		loop_targets_[id.value] = LoopTarget(break_target, continue_target);
+	}
+
+	const LoopTarget* remembered_loop_target(SemanticFactId id) const
+	{
+		if (!id.valid() || id.value >= loop_targets_.size() ||
+			!loop_targets_[id.value].valid)
+			return NULL;
+		return &loop_targets_[id.value];
 	}
 
 	BlockId block_id(std::size_t index) const
@@ -1337,21 +1455,26 @@ private:
 
 	void emit_jump(BlockId target)
 	{
+		const BlockId source = current_block_id();
 		Instruction jump;
 		jump.kind = Instruction::IK_JUMP;
 		jump.first = block_operand(target);
 		block().instructions.push_back(jump);
+		propagate_edge(source, target);
 	}
 
 	void emit_branch(const Operand& condition, BlockId true_target,
 		BlockId false_target)
 	{
+		const BlockId source = current_block_id();
 		Instruction branch;
 		branch.kind = Instruction::IK_BRANCH;
 		branch.first = condition;
 		branch.second = block_operand(true_target);
 		branch.third = block_operand(false_target);
 		block().instructions.push_back(branch);
+		propagate_edge(source, true_target);
+		propagate_edge(source, false_target);
 	}
 
 	bool condition_is_empty(SemanticFactId id) const
@@ -1454,6 +1577,79 @@ private:
 		return found->second;
 	}
 
+	bool switch_label_was_lowered(SemanticFactId id) const
+	{
+		if (switch_stack_.empty())
+			throw std::runtime_error("PA15 switch label context is missing");
+		const SwitchContext& context = switch_stack_.back();
+		return context.lowered_labels.find(id.value) !=
+			context.lowered_labels.end();
+	}
+
+	BlockId switch_label_existing_target(SemanticFactId id) const
+	{
+		if (switch_stack_.empty())
+			throw std::runtime_error("PA15 switch label context is missing");
+		const SwitchContext& context = switch_stack_.back();
+		const std::map<std::size_t, BlockId>::const_iterator found =
+			context.labels.find(id.value);
+		if (found == context.labels.end())
+			throw std::runtime_error("PA15 switch label owner mismatch");
+		return found->second;
+	}
+
+	void terminate_unreachable_block(BlockId id)
+	{
+		if (terminated(id)) return;
+		if (is_reachable(id))
+			throw std::runtime_error("PA15 reachable block cannot be a sink");
+		const BlockId saved_current = current_block_id();
+		set_current(id);
+		// A proven-unreachable retained tail may already contain lowered source
+		// instructions.  Terminate both empty and populated tails structurally;
+		// reachable non-void fallthrough is rejected by the caller.
+		emit_jump(id);
+		if (saved_current.valid()) set_current(saved_current);
+		else current_block_ = InvalidIdentityValue;
+	}
+
+	bool lower_switch_label_recovery(SemanticFactId id)
+	{
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		const bool already_lowered = switch_label_was_lowered(id);
+		const BlockId target = already_lowered ?
+			switch_label_existing_target(id) : switch_label_target(id);
+		if (already_lowered)
+		{
+			// A recovery path may fall through to a label whose body was already
+			// emitted by the ordinary entry path.  Join it to that typed block,
+			// then stop this recovery walk so the existing body is not duplicated.
+			if (current_block_ != InvalidIdentityValue &&
+				current_block_id() != target && !terminated(block()))
+				emit_jump(target);
+			current_block_ = InvalidIdentityValue;
+			return true;
+		}
+		if (current_block_ != InvalidIdentityValue &&
+			current_block_id() != target && !terminated(block()))
+			emit_jump(target);
+		set_current(target);
+		const std::vector<SemanticFactId> facts = children(id);
+		if (fact.kind == SemanticFactKind::CaseStatement)
+		{
+			if (facts.size() != 2)
+				throw std::runtime_error("PA15 invalid case statement");
+			lower_statement(facts.back());
+		}
+		else
+		{
+			if (facts.size() != 1)
+				throw std::runtime_error("PA15 invalid default statement");
+			lower_statement(facts.front());
+		}
+		return true;
+	}
+
 	bool collect_switch_labels(SemanticFactId id, SwitchContext* context)
 	{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
@@ -1508,6 +1704,165 @@ private:
 			throw std::runtime_error("PA15 switch label context is missing");
 		return switch_stack_.back().label_subtrees.find(id.value) !=
 			switch_stack_.back().label_subtrees.end();
+	}
+
+	void finish_switch_loop(const LoopTarget& target)
+	{
+		control_stack_.pop_back();
+		// Keep the typed lexical continuation available so source statements
+		// after an unreachable loop end are still serialized.  The final
+		// function check sinks this block only if it remains both unreachable
+		// and empty.
+		set_current(target.break_target);
+	}
+
+	void recover_existing_switch_loop(SemanticFactId body_fact,
+		const LoopTarget& target)
+	{
+		control_stack_.push_back(ControlTarget(true, target.break_target,
+			target.continue_target));
+		current_block_ = InvalidIdentityValue;
+		lower_switch_body(body_fact);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(target.continue_target);
+		finish_switch_loop(target);
+	}
+
+	void lower_switch_while(SemanticFactId id)
+	{
+		const std::vector<SemanticFactId> facts = children(id);
+		if (facts.size() != 2)
+			throw std::runtime_error("PA15 invalid recovered while fact");
+		const LoopTarget* existing = remembered_loop_target(id);
+		if (existing != NULL)
+		{
+			recover_existing_switch_loop(facts[1], *existing);
+			return;
+		}
+		const BlockId condition = block_id(new_block("while_cond"));
+		const BlockId body = block_id(new_block("while_body"));
+		const BlockId end = block_id(new_block("while_end"));
+		remember_loop_target(id, end, condition);
+		set_current(condition);
+		if (has_direct_short_circuit(facts[0]))
+			lower_condition_branch(facts[0], body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(facts[0]);
+			emit_branch(value.value, body, end);
+		}
+		control_stack_.push_back(ControlTarget(true, end, condition));
+		set_current(body);
+		lower_statement(facts[1]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		current_block_ = InvalidIdentityValue;
+		// The first pass lowers the ordinary loop once.  This recovery pass only
+		// visits labels not reached by that pass; nested loops reuse their saved
+		// typed targets instead of duplicating their ordinary lowering.
+		lower_switch_body(facts[1]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		finish_switch_loop(loop_targets_[id.value]);
+	}
+
+	void lower_switch_do(SemanticFactId id)
+	{
+		const std::vector<SemanticFactId> facts = children(id);
+		if (facts.size() != 2)
+			throw std::runtime_error("PA15 invalid recovered do fact");
+		const LoopTarget* existing = remembered_loop_target(id);
+		if (existing != NULL)
+		{
+			recover_existing_switch_loop(facts[0], *existing);
+			return;
+		}
+		const BlockId body = block_id(new_block("do_body"));
+		const BlockId condition = block_id(new_block("do_cond"));
+		const BlockId end = block_id(new_block("do_end"));
+		remember_loop_target(id, end, condition);
+		control_stack_.push_back(ControlTarget(true, end, condition));
+		set_current(body);
+		lower_statement(facts[0]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		current_block_ = InvalidIdentityValue;
+		lower_switch_body(facts[0]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		set_current(condition);
+		if (has_direct_short_circuit(facts[1]))
+			lower_condition_branch(facts[1], body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(facts[1]);
+			emit_branch(value.value, body, end);
+		}
+		finish_switch_loop(loop_targets_[id.value]);
+	}
+
+	void lower_switch_for(SemanticFactId id)
+	{
+		const std::vector<SemanticFactId> facts = children(id);
+		if (facts.size() < 2)
+			throw std::runtime_error("PA15 invalid recovered for fact");
+		SemanticFactId condition_fact;
+		SemanticFactId iteration_fact;
+		for (std::size_t i = 1; i + 1 < facts.size(); ++i)
+		{
+			const SemanticFactKind kind = model_.semantic_facts_[facts[i].value].kind;
+			if (kind == SemanticFactKind::Condition) condition_fact = facts[i];
+			else if (kind == SemanticFactKind::Iteration) iteration_fact = facts[i];
+		}
+		const LoopTarget* existing = remembered_loop_target(id);
+		if (existing != NULL)
+		{
+			recover_existing_switch_loop(facts.back(), *existing);
+			return;
+		}
+		const BlockId initialization = block_id(new_block("for_init"));
+		const BlockId condition = block_id(new_block("for_cond"));
+		const BlockId body = block_id(new_block("for_body"));
+		const BlockId iteration = block_id(new_block("for_iter"));
+		const BlockId end = block_id(new_block("for_end"));
+		// This synthetic entry is intentionally not connected to the switch
+		// dispatch.  A dispatch directly to a nested case bypasses for-init;
+		// later loop iterations enter through condition/body as usual.
+		remember_loop_target(id, end, iteration);
+		set_current(initialization);
+		lower_statement(facts[0]);
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		set_current(condition);
+		if (!condition_fact.valid() || condition_is_empty(condition_fact))
+			emit_jump(body);
+		else if (has_direct_short_circuit(condition_fact))
+			lower_condition_branch(condition_fact, body, end);
+		else
+		{
+			const LoweredValue value = lower_condition(condition_fact);
+			emit_branch(value.value, body, end);
+		}
+		control_stack_.push_back(ControlTarget(true, end, iteration));
+		set_current(body);
+		lower_statement(facts.back());
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(iteration);
+		current_block_ = InvalidIdentityValue;
+		lower_switch_body(facts.back());
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(iteration);
+		set_current(iteration);
+		if (iteration_fact.valid())
+		{
+			const std::vector<SemanticFactId> expression = children(iteration_fact);
+			if (expression.size() != 1)
+				throw std::runtime_error("PA15 invalid recovered for iteration fact");
+			(void)lower_expression(expression.front());
+		}
+		if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			emit_jump(condition);
+		finish_switch_loop(loop_targets_[id.value]);
 	}
 
 	bool lower_switch_body(SemanticFactId id)
@@ -1565,6 +1920,25 @@ private:
 			return entered_label;
 		}
 		if (current_block_ == InvalidIdentityValue &&
+			switch_subtree_has_label(id))
+		{
+			if (fact.kind == SemanticFactKind::WhileStatement)
+			{
+				lower_switch_while(id);
+				return true;
+			}
+			if (fact.kind == SemanticFactKind::DoStatement)
+			{
+				lower_switch_do(id);
+				return true;
+			}
+			if (fact.kind == SemanticFactKind::ForStatement)
+			{
+				lower_switch_for(id);
+				return true;
+			}
+		}
+		if (current_block_ == InvalidIdentityValue &&
 			!switch_subtree_has_label(id)) return false;
 		if (fact.kind == SemanticFactKind::CompoundStatement)
 		{
@@ -1577,8 +1951,7 @@ private:
 		if (fact.kind == SemanticFactKind::CaseStatement ||
 			fact.kind == SemanticFactKind::DefaultStatement)
 		{
-			lower_statement(id);
-			return true;
+			return lower_switch_label_recovery(id);
 		}
 		if (current_block_ != InvalidIdentityValue)
 		{
@@ -1644,13 +2017,20 @@ private:
 			instruction.args.push_back(block_operand(context.arms[i].target));
 		}
 		block().instructions.push_back(instruction);
+		const BlockId dispatch_source = current_block_id();
+		propagate_edge(dispatch_source, context.default_target);
+		for (std::size_t i = 0; i < context.arms.size(); ++i)
+			if (!context.arms[i].is_default)
+				propagate_edge(dispatch_source, context.arms[i].target);
 
 		switch_stack_.push_back(context);
 		control_stack_.push_back(ControlTarget(false, end));
 		if (facts.size() == 2)
 		{
-			if (context.arms.empty()) set_current(end);
-			else set_current(context.arms.front().target);
+			// Dispatch enters a case/default target directly.  There is no
+			// lexical fallthrough into statements before the first label, so the
+			// recovery walk must begin with no current block and skip that prefix.
+			current_block_ = InvalidIdentityValue;
 			lower_switch_body(facts[1]);
 			finish_switch_labels();
 		}
@@ -1659,16 +2039,20 @@ private:
 			emit_jump(end);
 		control_stack_.pop_back();
 		switch_stack_.pop_back();
+		// Preserve the typed continuation for source statements after an
+		// unreachable switch end; an empty one is sunk only at function exit.
 		set_current(end);
 	}
 
-	void lower_while(const std::vector<SemanticFactId>& facts)
+	void lower_while(SemanticFactId id)
 	{
+		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() != 2)
 			throw std::runtime_error("PA15 invalid while fact");
 		const BlockId condition = block_id(new_block("while_cond"));
 		const BlockId body = block_id(new_block("while_body"));
 		const BlockId end = block_id(new_block("while_end"));
+		remember_loop_target(id, end, condition);
 		emit_jump(condition);
 		set_current(condition);
 		if (has_direct_short_circuit(facts[0]))
@@ -1687,13 +2071,15 @@ private:
 		set_current(end);
 	}
 
-	void lower_do(const std::vector<SemanticFactId>& facts)
+	void lower_do(SemanticFactId id)
 	{
+		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() != 2)
 			throw std::runtime_error("PA15 invalid do fact");
 		const BlockId body = block_id(new_block("do_body"));
 		const BlockId condition = block_id(new_block("do_cond"));
 		const BlockId end = block_id(new_block("do_end"));
+		remember_loop_target(id, end, condition);
 		emit_jump(body);
 		control_stack_.push_back(ControlTarget(true, end, condition));
 		set_current(body);
@@ -1712,8 +2098,9 @@ private:
 		set_current(end);
 	}
 
-	void lower_for(const std::vector<SemanticFactId>& facts)
+	void lower_for(SemanticFactId id)
 	{
+		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() < 2)
 			throw std::runtime_error("PA15 invalid for fact");
 		lower_statement(facts[0]);
@@ -1729,6 +2116,7 @@ private:
 		const BlockId body = block_id(new_block("for_body"));
 		const BlockId iteration = block_id(new_block("for_iter"));
 		const BlockId end = block_id(new_block("for_end"));
+		remember_loop_target(id, end, iteration);
 		emit_jump(condition);
 		set_current(condition);
 		if (!condition_fact.valid() || condition_is_empty(condition_fact))
@@ -1811,13 +2199,13 @@ private:
 			lower_switch(facts);
 			break;
 		case SemanticFactKind::WhileStatement:
-			lower_while(facts);
+			lower_while(id);
 			break;
 		case SemanticFactKind::DoStatement:
-			lower_do(facts);
+			lower_do(id);
 			break;
 		case SemanticFactKind::ForStatement:
-			lower_for(facts);
+			lower_for(id);
 			break;
 		case SemanticFactKind::ForInitStatement:
 			for (std::size_t i = 0; i < facts.size(); ++i)
@@ -1976,6 +2364,9 @@ private:
 		switch_stack_.clear();
 		block_order_.clear();
 		ordered_block_ids_.clear();
+		reachability_base_ = next_block_;
+		reachable_blocks_.clear();
+		reachability_work_.clear();
 		Function& target = function();
 		used_value_names_.clear();
 		for (std::size_t i = 0; i < target.params.size(); ++i)
@@ -1984,7 +2375,9 @@ private:
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 			target.params[i].value_id = allocate_value();
 		const std::size_t value_begin = target.value_begin.index;
-		set_current(block_id(new_block("entry")));
+		const BlockId entry = block_id(new_block("entry"));
+		set_current(entry);
+		mark_reachable(entry);
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 		{
 			const lowir_model::Parameter& parameter = target.params[i];
@@ -2005,12 +2398,23 @@ private:
 		if (current_block_ != InvalidIdentityValue &&
 			!terminated(block()))
 		{
-			if (!target.return_type.is_void())
-				throw std::runtime_error("PA15 function falls through without return");
-			Instruction instruction;
-			instruction.kind = Instruction::IK_RETURN;
-			instruction.type = target.return_type;
-			block().instructions.push_back(instruction);
+			const BlockId continuation = current_block_id();
+			if (!is_reachable(continuation))
+			{
+				// Only a proven-unreachable continuation may become a structural
+				// sink.  Its retained source tail may be empty or populated.
+				terminate_unreachable_block(continuation);
+				current_block_ = InvalidIdentityValue;
+			}
+			else
+			{
+				if (!target.return_type.is_void())
+					throw std::runtime_error("PA15 function falls through without return");
+				Instruction instruction;
+				instruction.kind = Instruction::IK_RETURN;
+				instruction.type = target.return_type;
+				block().instructions.push_back(instruction);
+			}
 		}
 		target.value_count = next_value_ - value_begin;
 		reorder_function_blocks();
