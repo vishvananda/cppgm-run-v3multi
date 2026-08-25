@@ -53,7 +53,9 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
 	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
-	function_fact_index_(), class_function_facts_(), synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
+	function_fact_index_(), function_binding_fact_index_(),
+	function_default_arguments_(), class_function_facts_(),
+	synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(),
@@ -1411,101 +1413,6 @@ void PA11SemanticModel::add_qualified_enum_view(ScopeId parent, NamedRecordId re
 	scopes_[parent.value].scope_views.push_back(scope_view_id);
 	named_[record.value].dump_scope_view = scope_view_id;
 }
-TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeId scope,
-	NamedRecordId* anonymous_record)
-{
-	const bool scoped = enum_is_scoped(node);
-	const NamePath name = enum_name(node);
-	const bool definition = !node.children.empty() &&
-		child_of_kind(node, PA10NodeKind::Enumerator) != NULL;
-	bool has_underlying = false;
-	TypeId underlying = fundamental(FundamentalType::Int);
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-		if (node.children[i].kind == PA10NodeKind::TypeId)
-		{
-			underlying = type_from_type_id(node.children[i], scope);
-			has_underlying = true;
-		}
-	if (name.empty() && !scoped && !definition)
-		throw std::runtime_error("opaque unscoped enum");
-	if (!scoped && !definition && !has_underlying && !name.empty())
-	{
-		const TypeId existing = lookup_type_path(name, scope);
-		const NamedRecordId record = named_record_for_type(existing);
-		if (!record.valid() || record.value >= named_.size() ||
-			named_[record.value].kind != NamedKind::Enum)
-			throw std::runtime_error("undeclared elaborated enum");
-		return existing;
-	}
-	ScopeId owner = scope;
-	if (!name.empty())
-	{
-		owner = declaration_scope(name, scope);
-		if (!owner.valid())
-			throw std::runtime_error("unresolved enum declaration scope");
-	}
-	TypeId type;
-	if (name.empty())
-	{
-		type = create_anonymous_enum(owner, scoped, has_underlying,
-			underlying, definition);
-		if (anonymous_record != NULL)
-			*anonymous_record = named_record_for_type(type);
-	}
-	else
-	{
-		type = ensure_named_enum(owner, name.last(), scoped, has_underlying,
-			underlying, definition);
-		add_type_binding(owner, name.last(), type, ClassTag::Struct, false,
-			SourcePoint(node.source_begin));
-		if (definition && name.components.size() > 1)
-			add_qualified_enum_view(scope, named_record_for_type(type), name);
-	}
-	ScopeId value_scope = owner;
-	const NamedRecordId record_id = named_record_for_type(type);
-	if (record_id.valid() && named_[record_id.value].scope.valid())
-		value_scope = named_[record_id.value].scope;
-	std::int64_t next_value = 0;
-	bool have_next = false;
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		const PA10AstNode& child = node.children[i];
-		if (child.kind != PA10NodeKind::Enumerator)
-			continue;
-		ConstValue value;
-		if (!child.children.empty())
-			value = eval_constexpr(child.children.front(), owner);
-		if (!value.valid)
-		{
-			if (have_next && next_value == std::numeric_limits<std::int64_t>::max())
-				throw std::runtime_error("enumerator value overflow");
-			value = ConstValue(true, have_next ?
-				static_cast<__int128>(next_value) : 0, false);
-		}
-		if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
-			value.value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
-			throw std::runtime_error("enumerator value overflow");
-		add_enumerator(value_scope, name_from_spelling(child.producer_spelling),
-			type, static_cast<std::int64_t>(value.value),
-			SourcePoint(node.source_begin));
-		next_value = static_cast<std::int64_t>(value.value) + 1;
-		have_next = true;
-	}
-	return type;
-}
-void PA11SemanticModel::add_enumerator(ScopeId scope, NameId name, TypeId type,
-	std::int64_t value, SourcePoint declaration_point)
-{
-	Scope& current = scopes_[scope.value];
-	if (current.types.find(name) != NULL ||
-		direct_namespace_exists(scope, name) || direct_value_exists(scope, name))
-		throw std::runtime_error("enumerator conflicts with binding");
-	Binding enumerator(BindingKind::Enumerator, name, type);
-	enumerator.has_value = true;
-	enumerator.value = value;
-	const BindingId index = store_binding(scope, enumerator);
-	append_value_index(scope, name, index, ScopeId(), declaration_point);
-}
 bool PA11SemanticModel::integral_type(FundamentalType type) const
 {
 	switch (type)
@@ -1790,7 +1697,25 @@ ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node, ScopeId sc
 		const Binding& value_binding = binding(values.front().binding);
 		if (!value_binding.has_value)
 			throw NonConstantExpression("value is not a constant");
-		return ConstValue(true, value_binding.value, false);
+		bool value_unsigned = value_binding.value_unsigned;
+		__int128 value = value_unsigned ?
+			static_cast<__int128>(value_binding.value_bits) :
+			static_cast<__int128>(value_binding.value);
+		const NamedRecordId record = named_record_for_type(value_binding.type);
+		const bool enum_value = record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Enum;
+		const bool enum_underlying = enum_value &&
+			named_[record.value].has_underlying;
+		if (enum_underlying)
+			value_unsigned = unsigned_integral_type(value_binding.type);
+		if (value_unsigned && (!enum_value || enum_underlying))
+		{
+			const __int128 modulus = static_cast<__int128>(1) <<
+				type_size(value_binding.type) * 8;
+			value %= modulus;
+			if (value < 0) value += modulus;
+		}
+		return ConstValue(true, value, value_unsigned);
 	}
 	if (node.kind == PA10NodeKind::UnaryExpression)
 	{

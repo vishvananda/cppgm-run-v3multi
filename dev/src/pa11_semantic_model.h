@@ -243,6 +243,8 @@ struct Binding
 	std::vector<ClassTag> declaration_tags;
 	bool has_value;
 	std::int64_t value;
+	std::uint64_t value_bits;
+	bool value_unsigned;
 	bool has_definition;
 	LanguageLinkage language_linkage;
 	bool internal_linkage;
@@ -251,7 +253,8 @@ struct Binding
 		TypeId type = TypeId())
 		: kind(kind), name(name), type(type), has_tag(false),
 		  class_tag(ClassTag::Struct), declaration_tags(),
-		  has_value(false), value(0), has_definition(false),
+		  has_value(false), value(0), value_bits(0), value_unsigned(false),
+		  has_definition(false),
 		  language_linkage(LanguageLinkage::Cxx), internal_linkage(false)
 	{}
 };
@@ -843,6 +846,10 @@ struct SemanticFact
 	bool constant_value_unsigned;
 	bool constant_value_evaluated;
 	ConstantAddressFactId constant_address;
+	// PA12's canonical operand/operation type.  Comparisons retain this
+	// separately from their bool result so PA15 can preserve source signedness
+	// after the PA13 scalar spelling normalization.
+	TypeId operation_type;
 	// The expression's arithmetic result is normalized to the PA15 size_t
 	// LowIR representation.  The sizeof fact itself remains unsigned long;
 	// this marker is a typed semantic relation for containing expressions.
@@ -864,6 +871,7 @@ struct SemanticFact
 			has_constant_value(false), constant_value(0),
 			constant_value_unsigned(false), constant_value_evaluated(false),
 			constant_address(),
+			operation_type(),
 			size_type_derived(false),
 			has_callee(false)
 	{}
@@ -899,12 +907,16 @@ struct FunctionFact
 	ScopeId function_scope;
 	ScopeId body_scope;
 	SemanticFactId body_fact;
+	std::size_t default_argument_begin;
+	std::size_t default_argument_count;
 
 	FunctionFact(const PA10AstNode* node = NULL, ScopeId owner = ScopeId(),
 		BindingId binding = BindingId(), ScopeId function_scope = ScopeId(),
 		ScopeId body_scope = ScopeId())
 		: node(node), owner(owner), binding(binding),
-		  function_scope(function_scope), body_scope(body_scope), body_fact()
+		  function_scope(function_scope), body_scope(body_scope), body_fact(),
+		  default_argument_begin(InvalidIdentityValue),
+		  default_argument_count(0)
 	{}
 };
 
@@ -1091,6 +1103,9 @@ private:
 	std::vector<FunctionFact> function_facts_;
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
+	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> >
+		function_binding_fact_index_;
+	std::vector<SemanticFactId> function_default_arguments_;
 	std::vector<FunctionFactId> class_function_facts_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
@@ -1338,7 +1353,8 @@ private:
 	NamedRecordId* anonymous_record)
 	;
 	void add_enumerator(ScopeId scope, NameId name, TypeId type,
-		std::int64_t value, SourcePoint declaration_point = SourcePoint())
+		__int128 value, bool value_unsigned = false,
+		SourcePoint declaration_point = SourcePoint())
 	;
 	bool integral_type(FundamentalType type) const
 	;
@@ -1368,6 +1384,9 @@ private:
 	void record_constant_address(SemanticFactId fact, ScopeId scope)
 	;
 	bool resolve_constant_address_impl(SemanticFactId fact, ScopeId scope,
+		ConstantAddressContext context, ConstantAddressFact* result)
+	;
+	bool resolve_constant_address_literal(const SemanticFact& fact,
 		ConstantAddressContext context, ConstantAddressFact* result)
 	;
 	bool constant_address_fact_well_formed(
@@ -1470,6 +1489,11 @@ private:
 	;
 	FunctionFact* function_fact(const PA10AstNode& node)
 	;
+	const FunctionFact* function_fact_for_binding(BindingId binding) const
+	;
+	SemanticFactId function_default_argument(BindingId binding,
+		std::size_t parameter) const
+	;
 	const NamespaceFact* namespace_fact(const PA10AstNode& node) const
 	;
 	ScopeId compound_scope(const PA10AstNode& node) const
@@ -1481,6 +1505,8 @@ private:
 	void prepare_pa12()
 	;
 	void prepare_pa12_member_parameter(FunctionFact& function)
+	;
+	void record_function_default_arguments(FunctionFact& function)
 	;
 	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;
@@ -1536,6 +1562,8 @@ private:
 		const PA10AstNode& source)
 	;
 	bool fundamental_of(TypeId type, FundamentalType* result) const
+	;
+	bool unsigned_integral_type(TypeId type) const
 	;
 	bool integral_id(TypeId type) const
 	;

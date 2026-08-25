@@ -263,10 +263,10 @@ private:
 		const LowType& type, const LoweredValue& left, const LoweredValue& right);
 	LoweredValue emit_compare_value(lowir_model::ComparePredicate predicate,
 		const LowType& type, const LoweredValue& left, const LoweredValue& right);
-	LoweredValue integer_i64(const LoweredValue& source);
+	LoweredValue integer_i64(const LoweredValue& source, TypeId source_type);
 	std::size_t pointer_element_size(TypeId type) const;
 	LoweredValue pointer_offset(const LoweredValue& base, TypeId base_type,
-		const LoweredValue& amount, bool negative);
+		const LoweredValue& amount, TypeId amount_type, bool negative);
 	LoweredValue lower_incdec(SemanticFactId id, bool postfix);
 	SimpleTokenType fact_token(SemanticFactId id) const;
 	LoweredValue lower_assignment(SemanticFactId id, bool preserve_lvalue = false);
@@ -289,7 +289,7 @@ private:
 	bool is_comparison(SimpleTokenType token) const;
 	lowir_model::ComparePredicate compare_predicate(SimpleTokenType token,
 		bool is_unsigned) const;
-	bool unsigned_type_for(const LowType& type) const;
+	bool unsigned_type_for(TypeId type) const;
 	lowir_model::BinaryOperator binary_operator(SimpleTokenType token,
 		bool is_unsigned) const;
 	void emit_jump(BlockId target);

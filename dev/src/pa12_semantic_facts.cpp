@@ -17,6 +17,158 @@ bool address_addend_fits(__int128 value, long long* result)
 	return true;
 }
 
+const PA10AstNode* default_argument_expression(const PA10AstNode& parameter)
+{
+	for (std::size_t i = 0; i < parameter.children.size(); ++i)
+	{
+		const PA10AstNode& child = parameter.children[i];
+		if (child.kind != PA10NodeKind::DefaultArgument)
+			continue;
+		if (child.children.size() != 1)
+			return NULL;
+		const PA10AstNode* initializer = &child.children.front();
+		if (initializer->kind == PA10NodeKind::Initializer ||
+			initializer->kind == PA10NodeKind::ParenInitializer)
+		{
+			if (initializer->children.size() != 1)
+				return NULL;
+			initializer = &initializer->children.front();
+		}
+		return initializer;
+	}
+	return NULL;
+}
+
+}
+
+bool PA11SemanticModel::unsigned_integral_type(TypeId type) const
+{
+	type = strip_cv_type(expression_object_type(type));
+	const NamedRecordId record = named_record_for_type(type);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum)
+	{
+		if (!named_[record.value].has_underlying)
+			return false;
+		return unsigned_integral_type(named_[record.value].underlying);
+	}
+	FundamentalType fundamental_type;
+	return fundamental_of(type, &fundamental_type) &&
+		integral_type(fundamental_type) && unsigned_type(fundamental_type);
+}
+
+bool PA11SemanticModel::enumeration_id(TypeId type) const
+{
+	const NamedRecordId record = named_record_for_type(type);
+	return record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum;
+}
+
+TypeId PA11SemanticModel::promote_integral_type(TypeId type) const
+{
+	type = strip_cv_type(expression_object_type(type));
+	const NamedRecordId record = named_record_for_type(type);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum &&
+		!named_[record.value].scoped_enum)
+	{
+		return promote_integral_type(named_[record.value].has_underlying ?
+			strip_cv_type(expression_object_type(named_[record.value].underlying)) :
+			fundamental(FundamentalType::Int));
+	}
+	FundamentalType fundamental_type;
+	if (!fundamental_of(type, &fundamental_type))
+		return type;
+	switch (fundamental_type)
+	{
+	case FundamentalType::Bool:
+	case FundamentalType::SignedChar:
+	case FundamentalType::UnsignedChar:
+	case FundamentalType::ShortInt:
+	case FundamentalType::UnsignedShortInt:
+	case FundamentalType::Char:
+		return fundamental(FundamentalType::Int);
+	case FundamentalType::Char16T:
+	case FundamentalType::WcharT:
+		return fundamental(FundamentalType::Int);
+	case FundamentalType::Char32T:
+		return fundamental(type_size(type) <
+			type_size(fundamental(FundamentalType::Int)) ?
+			FundamentalType::Int : FundamentalType::UnsignedInt);
+	default:
+		return type;
+	}
+}
+
+const FunctionFact* PA11SemanticModel::function_fact_for_binding(
+	BindingId binding_id) const
+{
+	const FunctionFactId* found = function_binding_fact_index_.find(binding_id);
+	if (found == NULL || !found->valid() || found->value >= function_facts_.size())
+		return NULL;
+	return &function_facts_[found->value];
+}
+SemanticFactId PA11SemanticModel::function_default_argument(
+	BindingId binding_id, std::size_t parameter) const
+{
+	const FunctionFact* function = function_fact_for_binding(binding_id);
+	if (function == NULL || parameter >= function->default_argument_count ||
+		function->default_argument_begin == InvalidIdentityValue)
+		return SemanticFactId();
+	const std::size_t index = function->default_argument_begin + parameter;
+	if (index >= function_default_arguments_.size())
+		return SemanticFactId();
+	return function_default_arguments_[index];
+}
+
+void PA11SemanticModel::record_function_default_arguments(FunctionFact& function)
+{
+	if (function.default_argument_begin != InvalidIdentityValue)
+		return;
+	if (!function.binding.valid() || function.binding.value >= bindings_.size())
+		throw std::runtime_error("PA12 default argument function is missing");
+	const TypeId function_type = binding(function.binding).type;
+	if (type_kind(function_type) != TypeKind::Function)
+		throw std::runtime_error("PA12 default argument type is not a function");
+	const TypeKey& signature = types_[function_type.value];
+	function.default_argument_begin = function_default_arguments_.size();
+	function.default_argument_count = signature.parameters.size();
+	const PA10AstNode* clause = NULL;
+	if (function.node != NULL && function.node->children.size() > 1)
+		clause = top_parameter_clause(function.node->children[1]);
+	std::size_t parameter_index = 0;
+	if (clause != NULL)
+	{
+		for (std::size_t i = 0; i < clause->children.size(); ++i)
+		{
+			const PA10AstNode& parameter = clause->children[i];
+			if (parameter.kind == PA10NodeKind::ParameterPack)
+				continue;
+			if (parameter.kind != PA10NodeKind::ParameterDeclaration)
+				throw std::runtime_error("PA12 invalid default parameter");
+			if (parameter_index >= signature.parameters.size())
+				throw std::runtime_error("PA12 default parameter count mismatch");
+			const PA10AstNode* expression =
+				default_argument_expression(parameter);
+			SemanticFactId fact;
+			if (expression != NULL)
+			{
+				const ExprInfo value = semantic_expression_for_target(
+					*expression, function.owner, signature.parameters[parameter_index]);
+				const ExprInfo converted = apply_context_conversion(value,
+					signature.parameters[parameter_index],
+					semantic_facts_[value.fact.value].source);
+				fact = converted.fact;
+			}
+			function_default_arguments_.push_back(fact);
+			++parameter_index;
+		}
+	}
+	while (parameter_index < signature.parameters.size())
+	{
+		function_default_arguments_.push_back(SemanticFactId());
+		++parameter_index;
+	}
 }
 
 bool PA11SemanticModel::constant_integer_value(SemanticFactId fact_id,
@@ -163,6 +315,53 @@ bool PA11SemanticModel::resolve_constant_address(SemanticFactId fact_id,
 	return true;
 }
 
+bool PA11SemanticModel::resolve_constant_address_literal(
+	const SemanticFact& fact, ConstantAddressContext context,
+	ConstantAddressFact* result)
+{
+	if (fact.conversion_begin == InvalidIdentityValue)
+	{
+		// A transparent cast wrapper owns the ArrayToPointer conversion;
+		// its child literal has no conversion range of its own.
+		if (fact.conversion_count != 0 ||
+			context != ConstantAddressContext::ArrayDecay)
+			return false;
+	}
+	else if (fact.conversion_count == 0)
+	{
+		if (context != ConstantAddressContext::ArrayDecay)
+			return false;
+	}
+	else
+	{
+		const ConversionFact& terminal = conversion_facts_[
+			fact.conversion_begin + fact.conversion_count - 1];
+		if (terminal.kind != ConversionKind::ArrayToPointer ||
+			!pointer_id(terminal.target))
+			return false;
+	}
+	const TypeId array_type = strip_cv_type(expression_object_type(fact.type));
+	if (!array_type.valid() || type_kind(array_type) != TypeKind::Array)
+		return false;
+	const TypeId element_type = types_[array_type.value].child;
+	const std::size_t element_size = type_size(element_type);
+	const LiteralData& literal = fact.source->literal;
+	if (element_size == 0 || literal.element_count != fact.literal_element_count ||
+		fact.literal_element_count > std::numeric_limits<std::size_t>::max() /
+			element_size || literal.bytes.size() !=
+			fact.literal_element_count * element_size)
+		return false;
+	result->kind = ConstantAddressKind::Literal;
+	result->valid = true;
+	result->element_type = element_type;
+	result->literal_element_count = fact.literal_element_count;
+	result->literal_byte_begin = constant_address_literal_bytes_.size();
+	result->literal_byte_count = literal.bytes.size();
+	constant_address_literal_bytes_.insert(constant_address_literal_bytes_.end(),
+		literal.bytes.begin(), literal.bytes.end());
+	return true;
+}
+
 bool PA11SemanticModel::resolve_constant_address_impl(SemanticFactId fact_id,
 	ScopeId scope, ConstantAddressContext context, ConstantAddressFact* result)
 {
@@ -179,55 +378,7 @@ bool PA11SemanticModel::resolve_constant_address_impl(SemanticFactId fact_id,
 	if (fact.kind == SemanticFactKind::Literal &&
 		fact.literal_element_count != 0 && fact.source != NULL &&
 		fact.source->kind == PA10NodeKind::Literal)
-	{
-		// A decoded array literal becomes a constant address only through its
-		// terminal ArrayToPointer conversion.  Preserve the already-decoded
-		// payload in the PA12-owned address fact; PA15 will only allocate the
-		// corresponding LowIR symbol and remap this typed identity.
-		if (fact.conversion_begin == InvalidIdentityValue)
-		{
-			// A transparent cast wrapper owns the ArrayToPointer conversion;
-			// its child literal has no conversion range of its own.
-			if (fact.conversion_count != 0 ||
-				context != ConstantAddressContext::ArrayDecay)
-				return false;
-		}
-		else if (fact.conversion_count == 0)
-		{
-			if (context != ConstantAddressContext::ArrayDecay)
-				return false;
-		}
-		else
-		{
-			const ConversionFact& terminal = conversion_facts_[
-				fact.conversion_begin + fact.conversion_count - 1];
-			if (terminal.kind != ConversionKind::ArrayToPointer ||
-				!pointer_id(terminal.target))
-				return false;
-		}
-		const TypeId array_type = strip_cv_type(
-			expression_object_type(fact.type));
-		if (!array_type.valid() || type_kind(array_type) != TypeKind::Array)
-			return false;
-		const TypeId element_type = types_[array_type.value].child;
-		const std::size_t element_size = type_size(element_type);
-		const LiteralData& literal = fact.source->literal;
-		if (element_size == 0 || literal.element_count !=
-			fact.literal_element_count || fact.literal_element_count >
-			std::numeric_limits<std::size_t>::max() / element_size ||
-			literal.bytes.size() != fact.literal_element_count * element_size)
-			return false;
-		result->kind = ConstantAddressKind::Literal;
-		result->valid = true;
-		result->element_type = element_type;
-		result->literal_element_count = fact.literal_element_count;
-		result->literal_byte_begin = constant_address_literal_bytes_.size();
-		result->literal_byte_count = literal.bytes.size();
-		constant_address_literal_bytes_.insert(
-			constant_address_literal_bytes_.end(), literal.bytes.begin(),
-			literal.bytes.end());
-		return true;
-	}
+		return resolve_constant_address_literal(fact, context, result);
 	if (fact.kind == SemanticFactKind::IdExpression)
 	{
 		if (!fact.binding.valid() || fact.binding.value >= bindings_.size())

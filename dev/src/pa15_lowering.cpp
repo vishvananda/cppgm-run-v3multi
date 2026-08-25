@@ -401,7 +401,10 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I64; return result;
 		case FundamentalType::UnsignedLongInt:
 		case FundamentalType::UnsignedLongLongInt:
-			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_U64; return result;
+			// PA13's scalar LowIR contract exposes the 64-bit slot as i64.
+			// Enum lowering reaches this path through PA11's selected
+			// underlying representation, so keep the boundary canonical.
+			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I64; return result;
 		case FundamentalType::WcharT:
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I32; return result;
 		case FundamentalType::Char16T:
@@ -2025,6 +2028,8 @@ lowir_model::ConversionOperator Pa15Lowerer::conversion_operator(const Conversio
 				(source_fundamental == FundamentalType::Bool ||
 				 model_.unsigned_type(source_fundamental)))
 				return lowir_model::COP_ZEXT;
+			if (model_.unsigned_integral_type(conversion.source))
+				return lowir_model::COP_ZEXT;
 			return lowir_model::COP_SEXT;
 		}
 		throw std::runtime_error("PA15 same-width conversion reached instruction emission");
@@ -2063,7 +2068,8 @@ LoweredValue Pa15Lowerer::emit_compare_value(lowir_model::ComparePredicate predi
 			result_type, false);
 	}
 
-LoweredValue Pa15Lowerer::integer_i64(const LoweredValue& source){
+LoweredValue Pa15Lowerer::integer_i64(const LoweredValue& source,
+	TypeId source_type){
 		LowType i64;
 		i64.kind = LowType::TYPE_INTEGER;
 		i64.integer_kind = LowType::INTEGER_I64;
@@ -2083,7 +2089,7 @@ LoweredValue Pa15Lowerer::integer_i64(const LoweredValue& source){
 		instruction.kind = Instruction::IK_CONVERT;
 		instruction.source_type = source.type;
 		instruction.first = source.value;
-		instruction.conversion_operator = unsigned_type_for(source.type) ?
+		instruction.conversion_operator = unsigned_type_for(source_type) ?
 			lowir_model::COP_ZEXT : lowir_model::COP_SEXT;
 		const ValueId value = destination(i64, &instruction);
 		block().instructions.push_back(instruction);
@@ -2104,14 +2110,14 @@ std::size_t Pa15Lowerer::pointer_element_size(TypeId type) const{
 	}
 
 LoweredValue Pa15Lowerer::pointer_offset(const LoweredValue& base, TypeId base_type,
-		const LoweredValue& amount, bool negative){
+		const LoweredValue& amount, TypeId amount_type, bool negative){
 		const LowType offset_type = []() {
 			LowType result;
 			result.kind = LowType::TYPE_INTEGER;
 			result.integer_kind = LowType::INTEGER_I64;
 			return result;
 		}();
-		LoweredValue scaled = integer_i64(amount);
+		LoweredValue scaled = integer_i64(amount, amount_type);
 		const std::size_t element_size = pointer_element_size(base_type);
 		if (element_size != 1)
 			scaled = emit_binary_value(lowir_model::BOP_MUL, offset_type, scaled,
@@ -2150,7 +2156,8 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 		LoweredValue updated;
 		if (target_type.is_pointer())
 			updated = pointer_offset(old, model_.semantic_facts_[operands.front().value].type,
-				amount, fact_token(id) == SimpleTokenType::OP_DEC);
+				amount, model_.fundamental(FundamentalType::Int),
+				fact_token(id) == SimpleTokenType::OP_DEC);
 		else
 		{
 			const LowType operation_type = target_type;
@@ -2206,6 +2213,8 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 			right = lower_expression(operands[1]);
 		}
 		const LowType target = left.type;
+		const TypeId target_semantic_type = model_.expression_object_type(
+			model_.semantic_facts_[operands[0].value].type);
 		if (fact.token == SimpleTokenType::OP_ASS)
 		{
 			emit_store(target, right.value, left.value);
@@ -2220,7 +2229,8 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 		LoweredValue updated;
 		if (pointer_compound)
 			updated = pointer_offset(old, model_.semantic_facts_[operands[0].value].type,
-				right, fact.token == SimpleTokenType::OP_MINUSASS);
+				right, model_.semantic_facts_[operands[1].value].type,
+				fact.token == SimpleTokenType::OP_MINUSASS);
 		else
 		{
 			const lowir_model::BinaryOperator operation = binary_operator(
@@ -2229,7 +2239,7 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 				fact.token == SimpleTokenType::OP_STARASS ? SimpleTokenType::OP_STAR :
 				fact.token == SimpleTokenType::OP_DIVASS ? SimpleTokenType::OP_DIV :
 				fact.token == SimpleTokenType::OP_MODASS ? SimpleTokenType::OP_MOD :
-				fact.token, unsigned_type_for(target));
+				fact.token, unsigned_type_for(target_semantic_type));
 			if (operation == lowir_model::BOP_INVALID)
 				throw std::runtime_error("PA15 unsupported compound assignment");
 			updated = emit_binary_value(operation, target, old,
@@ -2617,12 +2627,20 @@ lowir_model::ComparePredicate Pa15Lowerer::compare_predicate(SimpleTokenType tok
 		return lowir_model::CPP_INVALID;
 	}
 
-bool Pa15Lowerer::unsigned_type_for(const LowType& type) const{
-		return type.kind == LowType::TYPE_INTEGER &&
-			(type.integer_kind == LowType::INTEGER_U8 ||
-			 type.integer_kind == LowType::INTEGER_U16 ||
-			 type.integer_kind == LowType::INTEGER_U32 ||
-			 type.integer_kind == LowType::INTEGER_U64);
+bool Pa15Lowerer::unsigned_type_for(TypeId type) const{
+		type = model_.strip_cv_type(model_.expression_object_type(type));
+		const NamedRecordId record = model_.named_record_for_type(type);
+		if (record.valid() && record.value < model_.named_.size() &&
+			model_.named_[record.value].kind == NamedKind::Enum)
+		{
+			if (!model_.named_[record.value].has_underlying)
+				return false;
+			return unsigned_type_for(model_.named_[record.value].underlying);
+		}
+		FundamentalType fundamental_type;
+		return model_.fundamental_of(type, &fundamental_type) &&
+			model_.integral_type(fundamental_type) &&
+			model_.unsigned_type(fundamental_type);
 	}
 
 lowir_model::BinaryOperator Pa15Lowerer::binary_operator(SimpleTokenType token,

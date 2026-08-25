@@ -160,13 +160,15 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			{
 				result = pointer_offset(left,
 					model_.semantic_facts_[operands[0].value].type, right,
+					model_.semantic_facts_[operands[1].value].type,
 					fact.token == SimpleTokenType::OP_MINUS);
 			}
 			else if (fact.token == SimpleTokenType::OP_PLUS && right_pointer &&
 				!left_pointer && right.type.is_pointer())
 			{
 				result = pointer_offset(right,
-					model_.semantic_facts_[operands[1].value].type, left, false);
+					model_.semantic_facts_[operands[1].value].type, left,
+					model_.semantic_facts_[operands[0].value].type, false);
 			}
 			else if (fact.token == SimpleTokenType::OP_MINUS && left_pointer &&
 				right_pointer && left.type.is_pointer() && right.type.is_pointer())
@@ -189,33 +191,48 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 							static_cast<long long>(element_size), i64), i64, false));
 				result = quotient;
 			}
-				else if (is_comparison(fact.token))
+			else if (is_comparison(fact.token))
+			{
+				const TypeId operation_type = fact.operation_type.valid() ?
+					fact.operation_type :
+					model_.expression_object_type(
+						model_.semantic_facts_[operands[0].value].type);
+				const NamedRecordId operation_record =
+					model_.named_record_for_type(operation_type);
+				const bool scoped_enum_operation = operation_record.valid() &&
+					operation_record.value < model_.named_.size() &&
+					model_.named_[operation_record.value].kind == NamedKind::Enum &&
+					model_.named_[operation_record.value].scoped_enum;
+				LowType compare_type = operation_type.valid() ?
+					low_type(operation_type) : left.physical_type;
+				if (!compare_type.valid())
 				{
-					LowType compare_type = left.physical_type;
-					if (!compare_type.valid())
-					{
-						compare_type = low_type(model_.expression_object_type(
+					compare_type = low_type(model_.expression_object_type(
 						model_.semantic_facts_[operands[0].value].type));
 				}
-				if (!compare_type.is_pointer() && compare_type.is_integer() &&
+				if (!scoped_enum_operation && !compare_type.is_pointer() &&
+					compare_type.is_integer() &&
 					compare_type.integer_width() < 32)
 				{
 					compare_type.kind = LowType::TYPE_INTEGER;
 					compare_type.integer_kind = LowType::INTEGER_I32;
 				}
-					result = emit_compare_value(compare_predicate(fact.token,
-						unsigned_type_for(compare_type)), compare_type,
-						LoweredValue(left.value, compare_type, false, compare_type),
-						LoweredValue(right.value, compare_type, false, compare_type));
+				result = emit_compare_value(compare_predicate(fact.token,
+					operation_type.valid() && unsigned_type_for(operation_type)),
+					compare_type,
+					LoweredValue(left.value, compare_type, false, compare_type),
+					LoweredValue(right.value, compare_type, false, compare_type));
 			}
 			else
 			{
-				LowType type = low_type(fact.type);
+				const TypeId operation_type = fact.operation_type.valid() ?
+					fact.operation_type : fact.type;
+				LowType type = low_type(operation_type);
 				if (fact.size_type_derived && type.is_integer() &&
 					type.integer_width() == 64)
 					type = size_low_type();
 				const lowir_model::BinaryOperator operation = binary_operator(
-					fact.token, unsigned_type_for(type));
+					fact.token, unsigned_type_for(operation_type));
 				if (operation == lowir_model::BOP_INVALID)
 					throw std::runtime_error("PA15 unsupported binary operator");
 				result = emit_binary_value(operation, type, left,

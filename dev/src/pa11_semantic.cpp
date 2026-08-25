@@ -5,6 +5,154 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeId scope,
+	NamedRecordId* anonymous_record)
+{
+	const bool scoped = enum_is_scoped(node);
+	const NamePath name = enum_name(node);
+	const bool definition = !node.children.empty() &&
+		child_of_kind(node, PA10NodeKind::Enumerator) != NULL;
+	bool has_underlying = false;
+	TypeId underlying = fundamental(FundamentalType::Int);
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (node.children[i].kind == PA10NodeKind::TypeId)
+		{
+			underlying = type_from_type_id(node.children[i], scope);
+			has_underlying = true;
+		}
+	if (name.empty() && !scoped && !definition)
+		throw std::runtime_error("opaque unscoped enum");
+	if (!scoped && !definition && !has_underlying && !name.empty())
+	{
+		const TypeId existing = lookup_type_path(name, scope);
+		const NamedRecordId record = named_record_for_type(existing);
+		if (!record.valid() || record.value >= named_.size() ||
+			named_[record.value].kind != NamedKind::Enum)
+			throw std::runtime_error("undeclared elaborated enum");
+		return existing;
+	}
+	ScopeId owner = scope;
+	if (!name.empty())
+	{
+		owner = declaration_scope(name, scope);
+		if (!owner.valid())
+			throw std::runtime_error("unresolved enum declaration scope");
+	}
+	TypeId type;
+	if (name.empty())
+	{
+		type = create_anonymous_enum(owner, scoped, has_underlying,
+			underlying, definition);
+		if (anonymous_record != NULL)
+			*anonymous_record = named_record_for_type(type);
+	}
+	else
+	{
+		type = ensure_named_enum(owner, name.last(), scoped, has_underlying,
+			underlying, definition);
+		add_type_binding(owner, name.last(), type, ClassTag::Struct, false,
+			SourcePoint(node.source_begin));
+		if (definition && name.components.size() > 1)
+			add_qualified_enum_view(scope, named_record_for_type(type), name);
+	}
+	ScopeId value_scope = owner;
+	const NamedRecordId record_id = named_record_for_type(type);
+	if (record_id.valid() && named_[record_id.value].scope.valid())
+		value_scope = named_[record_id.value].scope;
+	__int128 next_value = 0;
+	bool have_next = false;
+	bool have_value_range = false;
+	__int128 minimum_value = 0;
+	__int128 maximum_value = 0;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& child = node.children[i];
+		if (child.kind != PA10NodeKind::Enumerator)
+			continue;
+		ConstValue value;
+		if (!child.children.empty())
+			value = eval_constexpr(child.children.front(), value_scope);
+		if (!value.valid)
+		{
+			value = ConstValue(true, have_next ?
+				next_value : 0, have_next && next_value >
+				static_cast<__int128>(std::numeric_limits<std::int64_t>::max()));
+		}
+		if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
+			value.value > static_cast<__int128>(std::numeric_limits<std::uint64_t>::max()))
+			throw std::runtime_error("enumerator value overflow");
+		if (scoped && !has_underlying &&
+			(value.value < static_cast<__int128>(std::numeric_limits<int>::min()) ||
+				value.value > static_cast<__int128>(std::numeric_limits<int>::max())))
+			throw std::runtime_error("scoped enum value is not representable by int");
+		if (!have_value_range)
+		{
+			minimum_value = value.value;
+			maximum_value = value.value;
+			have_value_range = true;
+		}
+		else
+		{
+			if (value.value < minimum_value) minimum_value = value.value;
+			if (value.value > maximum_value) maximum_value = value.value;
+		}
+		add_enumerator(value_scope, name_from_spelling(child.producer_spelling),
+			type, value.value, value.is_unsigned,
+			SourcePoint(node.source_begin));
+		next_value = value.value + 1;
+		have_next = true;
+	}
+	if (definition && record_id.valid() && record_id.value < named_.size() &&
+		!has_underlying)
+	{
+		// Publish the selected representation once.  All later consumers use
+		// this canonical enum fact for promotions, storage, and LowIR types.
+		TypeId selected = fundamental(FundamentalType::Int);
+		if (scoped)
+		{
+			if (have_value_range &&
+				(minimum_value < static_cast<__int128>(std::numeric_limits<int>::min()) ||
+					maximum_value > static_cast<__int128>(std::numeric_limits<int>::max())))
+				throw std::runtime_error("scoped enum value is not representable by int");
+			selected = fundamental(FundamentalType::Int);
+		}
+		else if (have_value_range &&
+			minimum_value >= static_cast<__int128>(std::numeric_limits<int>::min()) &&
+			maximum_value <= static_cast<__int128>(std::numeric_limits<int>::max()))
+			selected = fundamental(FundamentalType::Int);
+		else if (have_value_range && minimum_value >= 0 &&
+			maximum_value <= static_cast<__int128>(std::numeric_limits<unsigned int>::max()))
+			selected = fundamental(FundamentalType::UnsignedInt);
+		else if (have_value_range &&
+			minimum_value >= static_cast<__int128>(std::numeric_limits<long>::min()) &&
+			maximum_value <= static_cast<__int128>(std::numeric_limits<long>::max()))
+			selected = fundamental(FundamentalType::LongInt);
+		else if (have_value_range && minimum_value >= 0 &&
+			maximum_value <= static_cast<__int128>(std::numeric_limits<unsigned long>::max()))
+			selected = fundamental(FundamentalType::UnsignedLongInt);
+		else
+			throw std::runtime_error("enum value has no supported underlying type");
+		named_[record_id.value].has_underlying = true;
+		named_[record_id.value].underlying = selected;
+	}
+	return type;
+}
+void PA11SemanticModel::add_enumerator(ScopeId scope, NameId name, TypeId type,
+	__int128 value, bool value_unsigned, SourcePoint declaration_point)
+{
+	Scope& current = scopes_[scope.value];
+	if (current.types.find(name) != NULL ||
+		direct_namespace_exists(scope, name) || direct_value_exists(scope, name))
+		throw std::runtime_error("enumerator conflicts with binding");
+	Binding enumerator(BindingKind::Enumerator, name, type);
+	enumerator.has_value = true;
+	enumerator.value = static_cast<std::int64_t>(value);
+	enumerator.value_bits = static_cast<std::uint64_t>(value);
+	enumerator.value_unsigned = value_unsigned;
+	const BindingId index = store_binding(scope, enumerator);
+	append_value_index(scope, name, index, ScopeId(), declaration_point);
+}
+
 void PA11SemanticModel::dump(std::ostream& output) const
 {
 	output << "translation-unit\n";
@@ -380,7 +528,13 @@ void PA11SemanticModel::dump_binding(std::ostream& output, BindingId binding_id,
 		else
 			output << render_binding_type(value);
 		if (value.kind == BindingKind::Enumerator && value.has_value)
-			output << ' ' << value.value;
+		{
+			output << ' ';
+			if (value.value_unsigned)
+				output << value.value_bits;
+			else
+				output << value.value;
+		}
 		output << '\n';
 	}
 }
@@ -559,6 +713,7 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const FunctionFactId function_id(function_facts_.size());
 	function_facts_.push_back(function_fact);
 	function_fact_index_.set(&node, function_id);
+	function_binding_fact_index_.set(function_binding, function_id);
 }
 ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
 {
