@@ -191,6 +191,7 @@ abi_mangle::AbiOperatorTerminalKind operator_terminal_kind(const string & spelli
     {"bit-and", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_AND},
     {"bit-or", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_OR},
     {"bit-xor", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_XOR},
+    {"assign", abi_mangle::ABI_OPERATOR_TERMINAL_ASSIGN},
     {"plus-assign", abi_mangle::ABI_OPERATOR_TERMINAL_PLUS_ASSIGN},
     {"minus-assign", abi_mangle::ABI_OPERATOR_TERMINAL_MINUS_ASSIGN},
     {"multiply-assign", abi_mangle::ABI_OPERATOR_TERMINAL_MULTIPLY_ASSIGN},
@@ -226,6 +227,85 @@ abi_mangle::AbiOperatorTerminalKind operator_terminal_kind(const string & spelli
   }
   if(spelling == "literal") return abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL;
   throw logic_error("unknown ABI operator terminal '" + spelling + "'");
+}
+
+string special_terminal_spelling(abi_mangle::AbiFunctionSpecialTerminalKind terminal)
+{
+  switch(terminal) {
+  case abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE:
+    return "constructor-complete";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE:
+    return "constructor-base";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_ALLOCATING:
+    return "constructor-allocating";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_DELETING:
+    return "destructor-deleting";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE:
+    return "destructor-complete";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE:
+    return "destructor-base";
+  case abi_mangle::ABI_SPECIAL_TERMINAL_NONE:
+    break;
+  }
+  throw logic_error("unknown ABI special function terminal");
+}
+
+string operator_terminal_spelling(abi_mangle::AbiOperatorTerminalKind terminal)
+{
+  switch(terminal) {
+  case abi_mangle::ABI_OPERATOR_TERMINAL_NEW: return "new";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_NEW_ARRAY: return "new-array";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DELETE: return "delete";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DELETE_ARRAY: return "delete-array";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_UNARY_PLUS: return "unary-plus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BINARY_PLUS: return "binary-plus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_PLUS: return "plus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_UNARY_MINUS: return "unary-minus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BINARY_MINUS: return "binary-minus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_MINUS: return "minus";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_ADDRESS_OF: return "address-of";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DEREF: return "deref";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_COMPLEMENT: return "complement";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_MULTIPLY: return "multiply";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DIVIDE: return "divide";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_REMAINDER: return "remainder";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_AND: return "bit-and";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_OR: return "bit-or";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_XOR: return "bit-xor";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_ASSIGN: return "assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_PLUS_ASSIGN: return "plus-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_MINUS_ASSIGN: return "minus-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_MULTIPLY_ASSIGN: return "multiply-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DIVIDE_ASSIGN: return "divide-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_REMAINDER_ASSIGN: return "remainder-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_AND_ASSIGN: return "bit-and-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_OR_ASSIGN: return "bit-or-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_BIT_XOR_ASSIGN: return "bit-xor-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LEFT_SHIFT: return "left-shift";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_RIGHT_SHIFT: return "right-shift";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LEFT_SHIFT_ASSIGN: return "left-shift-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_RIGHT_SHIFT_ASSIGN: return "right-shift-assign";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_EQUAL: return "equal";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_NOT_EQUAL: return "not-equal";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LESS: return "less";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_GREATER: return "greater";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LESS_EQUAL: return "less-equal";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_GREATER_EQUAL: return "greater-equal";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_NOT: return "logical-not";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_AND: return "logical-and";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_OR: return "logical-or";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_INCREMENT: return "increment";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_DECREMENT: return "decrement";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_COMMA: return "comma";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_MEMBER_POINTER: return "member-pointer";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_ARROW: return "arrow";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_CALL: return "call";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_INDEX: return "index";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL: return "literal";
+  case abi_mangle::ABI_OPERATOR_TERMINAL_NONE:
+    break;
+  }
+  throw logic_error("unknown ABI operator terminal");
 }
 
 size_t parse_index(const string & spelling)
@@ -650,13 +730,16 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.kind = words[0] == "terminal" ? abi_mangle::ABI_FUNCTION_RECORD_TERMINAL :
       abi_mangle::ABI_FUNCTION_RECORD_TERMINAL_SOURCE;
     result.terminal = words[1];
-    result.special_terminal = special_terminal_kind(words[1]);
+    result.special_terminal = words[0] == "terminal" ? special_terminal_kind(words[1]) :
+      abi_mangle::ABI_SPECIAL_TERMINAL_NONE;
+    if(result.special_terminal != abi_mangle::ABI_SPECIAL_TERMINAL_NONE) {
+      result.terminal.clear();
+    }
     return result;
   }
   if(words[0] == "operator-terminal") {
     if(words.size() < 2 || words.size() > 3) throw logic_error("invalid operator terminal");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_OPERATOR_TERMINAL;
-    result.terminal = words[1];
     result.operator_terminal = operator_terminal_kind(words[1]);
     if(words.size() == 3) result.literal_suffix = words[2];
     if(result.operator_terminal == abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL &&
@@ -668,7 +751,6 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
   if(words[0] == "conversion-terminal") {
     if(words.size() != 2) throw logic_error("invalid conversion terminal");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_CONVERSION_TERMINAL;
-    result.terminal = words[1];
     size_t at = 1;
     result.conversion_type = parse_type_words(words, at, interner);
     result.has_conversion_type = true;
@@ -1000,9 +1082,13 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
       if(words.size() < 4) throw logic_error("incomplete namespace lambda function target");
       result.target.function.kind = ABI_FUNCTION_TARGET_NAMESPACE_LAMBDA;
       result.target.function.source_name = parse_source_component(words[2]).components[0];
-      result.target.function.terminal = words[3];
+      result.target.function.special_terminal = special_terminal_kind(words[3]);
       if(words[3] == "operator-call" || words[3] == "call") {
         result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+      }
+      if(result.target.function.special_terminal == ABI_SPECIAL_TERMINAL_NONE &&
+         result.target.function.operator_terminal == ABI_OPERATOR_TERMINAL_NONE) {
+        result.target.function.terminal = words[3];
       }
       for(size_t i = 4; i < words.size(); ++i) result.target.function.namespace_qualifiers.push_back(words[i]);
     } else if(words[1] == "local" || words[1] == "lambda") {
@@ -1011,10 +1097,13 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
       if(words[1] == "lambda") {
         if(words.size() < 5) throw logic_error("incomplete lambda function target");
         result.target.function.discriminator = words[3];
-        result.target.function.terminal = words[4];
         result.target.function.special_terminal = special_terminal_kind(words[4]);
         if(words[4] == "operator-call" || words[4] == "call") {
           result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+        }
+        if(result.target.function.special_terminal == ABI_SPECIAL_TERMINAL_NONE &&
+           result.target.function.operator_terminal == ABI_OPERATOR_TERMINAL_NONE) {
+          result.target.function.terminal = words[4];
         }
         for(size_t i = 5; i < words.size(); ++i) {
           size_t at = i;
@@ -1024,10 +1113,13 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
       } else {
         if(words.size() < 5) throw logic_error("incomplete local function target");
         result.target.function.source_name = parse_source_component(words[3]).components[0];
-        result.target.function.terminal = words[4];
         result.target.function.special_terminal = special_terminal_kind(words[4]);
         if(words[4] == "operator-call" || words[4] == "call") {
           result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+        }
+        if(result.target.function.special_terminal == ABI_SPECIAL_TERMINAL_NONE &&
+           result.target.function.operator_terminal == ABI_OPERATOR_TERMINAL_NONE) {
+          result.target.function.terminal = words[4];
         }
         if(words.size() >= 6) result.target.function.discriminator = words[5];
         for(size_t i = 6; i < words.size(); ++i) {
@@ -1205,6 +1297,111 @@ string type_spelling(const AbiFactCase & fact_case, const AbiType & type)
   }
 }
 
+void serialize_function_terminal(ostringstream & output,
+                                 const AbiFunctionTarget & target)
+{
+  if(target.operator_terminal != ABI_OPERATOR_TERMINAL_NONE) {
+    if(target.operator_terminal == ABI_OPERATOR_TERMINAL_LITERAL) {
+      throw logic_error("cannot serialize a literal function target without its suffix");
+    }
+    output << operator_terminal_spelling(target.operator_terminal);
+  } else if(target.special_terminal != ABI_SPECIAL_TERMINAL_NONE) {
+    output << special_terminal_spelling(target.special_terminal);
+  } else if(!target.terminal.empty()) {
+    output << target.terminal;
+  } else {
+    throw logic_error("function target has no terminal");
+  }
+}
+
+enum FunctionTargetSerializationMode
+{
+  FUNCTION_TARGET_SERIALIZE_TOP_LEVEL,
+  FUNCTION_TARGET_SERIALIZE_CONTEXT
+};
+
+void serialize_function_target(ostringstream & output,
+                               const AbiFactCase & fact_case,
+                               const AbiFunctionTarget & target,
+                               FunctionTargetSerializationMode mode)
+{
+  const bool context_form = mode == FUNCTION_TARGET_SERIALIZE_CONTEXT;
+  if(context_form && target.kind != ABI_FUNCTION_TARGET_PATH) {
+    throw logic_error("ABI function context must use a path target");
+  }
+  if(!context_form && target.kind != ABI_FUNCTION_TARGET_PATH) {
+    output << "function ";
+  }
+  switch(target.kind) {
+  case ABI_FUNCTION_TARGET_PATH:
+    if(!target.terminal.empty() ||
+       target.special_terminal != ABI_SPECIAL_TERMINAL_NONE ||
+       target.operator_terminal != ABI_OPERATOR_TERMINAL_NONE ||
+       !target.source_name.empty() || !target.discriminator.empty() ||
+       !target.namespace_qualifiers.empty()) {
+      throw logic_error("ABI path target has incompatible terminal fields");
+    }
+    if(!context_form && !target.path_operands.empty() &&
+       !target.signature_parameter_types.empty()) {
+      throw logic_error("ABI path target mixes template operands and signature parameters");
+    }
+    if(context_form && !target.path_operands.empty()) {
+      throw logic_error("ABI function context cannot carry template path operands");
+    }
+    if(!context_form && target.path_operands.empty() &&
+       !target.signature_parameter_types.empty()) {
+      output << "function " << join_qualified_name(target.name);
+    } else {
+      output << "function path " << join_qualified_name(target.name);
+    }
+    for(vector<AbiFunctionPathOperand>::const_iterator it = target.path_operands.begin();
+        it != target.path_operands.end(); ++it) {
+      if(it->kind == ABI_FUNCTION_PATH_TEMPLATE_ARGUMENT) {
+        output << " " << definition_ref_spelling(fact_case, it->argument_ref);
+      } else {
+        throw logic_error("cannot serialize unsupported ABI function path operand");
+      }
+    }
+    if(context_form || target.path_operands.empty()) {
+      for(vector<AbiType>::const_iterator it = target.signature_parameter_types.begin();
+          it != target.signature_parameter_types.end(); ++it) {
+        output << " " << type_spelling(fact_case, *it);
+      }
+    }
+    break;
+  case ABI_FUNCTION_TARGET_ENCODING:
+    output << "encoding";
+    break;
+  case ABI_FUNCTION_TARGET_LOCAL:
+    output << "local " << definition_ref_spelling(fact_case, target.context_ref)
+           << " " << target.source_name << " ";
+    serialize_function_terminal(output, target);
+    output << " " << target.discriminator;
+    for(vector<AbiType>::const_iterator it = target.signature_parameter_types.begin();
+        it != target.signature_parameter_types.end(); ++it) {
+      output << " " << type_spelling(fact_case, *it);
+    }
+    break;
+  case ABI_FUNCTION_TARGET_LAMBDA:
+    output << "lambda " << definition_ref_spelling(fact_case, target.context_ref)
+           << " " << target.discriminator << " ";
+    serialize_function_terminal(output, target);
+    for(vector<AbiType>::const_iterator it = target.signature_parameter_types.begin();
+        it != target.signature_parameter_types.end(); ++it) {
+      output << " " << type_spelling(fact_case, *it);
+    }
+    break;
+  case ABI_FUNCTION_TARGET_NAMESPACE_LAMBDA:
+    output << "namespace-lambda " << target.source_name << " ";
+    serialize_function_terminal(output, target);
+    for(vector<string>::const_iterator it = target.namespace_qualifiers.begin();
+        it != target.namespace_qualifiers.end(); ++it) {
+      output << " " << *it;
+    }
+    break;
+  }
+}
+
 string serialize_fact_file(const AbiFactFile & file)
 {
   ostringstream output;
@@ -1219,6 +1416,14 @@ string serialize_fact_file(const AbiFactFile & file)
         if(d.kind == ABI_DEFINITION_TYPE) output << "let-type " << definition_ref_spelling(*c, d.id) << " " << type_spelling(*c, d.type) << "\n";
         else if(d.kind == ABI_DEFINITION_TEMPLATE_ARGUMENT && d.template_argument.kind == ABI_TEMPLATE_ARGUMENT_VALUE)
           output << "let-arg " << definition_ref_spelling(*c, d.id) << " value " << type_spelling(*c, d.template_argument.value_type) << " " << d.template_argument.value << "\n";
+        else if(d.kind == ABI_DEFINITION_CONTEXT && d.context.kind == ABI_CONTEXT_RAW)
+          output << "let-context " << definition_ref_spelling(*c, d.id) << " raw " << d.context.fragment << "\n";
+        else if(d.kind == ABI_DEFINITION_CONTEXT && d.context.kind == ABI_CONTEXT_FUNCTION) {
+          output << "let-context " << definition_ref_spelling(*c, d.id) << " ";
+          serialize_function_target(output, *c, d.context.function,
+                                    FUNCTION_TARGET_SERIALIZE_CONTEXT);
+          output << "\n";
+        }
         else output << "let-arg " << definition_ref_spelling(*c, d.id) << " type " << type_spelling(*c, d.template_argument.type) << "\n";
       } else if(it->kind == ABI_FACT_RECORD_FUNCTION) {
         const AbiFunctionRecord & f = it->function;
@@ -1226,8 +1431,63 @@ string serialize_fact_file(const AbiFactFile & file)
         else if(f.kind == ABI_FUNCTION_RECORD_RESULT) output << "result " << type_spelling(*c, f.type) << "\n";
         else if(f.kind == ABI_FUNCTION_RECORD_VARIADIC) output << "variadic\n";
         else if(f.kind == ABI_FUNCTION_RECORD_ABI_TAG) output << "abi-tag " << f.name << "\n";
-        else if(f.kind == ABI_FUNCTION_RECORD_TERMINAL) output << "terminal " << f.terminal << "\n";
+        else if(f.kind == ABI_FUNCTION_RECORD_TERMINAL) {
+          output << "terminal ";
+          if(f.special_terminal != ABI_SPECIAL_TERMINAL_NONE)
+            output << special_terminal_spelling(f.special_terminal);
+          else if(!f.terminal.empty())
+            output << f.terminal;
+          else
+            throw logic_error("terminal record has no spelling");
+          output << "\n";
+        }
         else if(f.kind == ABI_FUNCTION_RECORD_TERMINAL_SOURCE) output << "terminal-source " << f.terminal << "\n";
+        else if(f.kind == ABI_FUNCTION_RECORD_OPERATOR_TERMINAL) {
+          output << "operator-terminal " << operator_terminal_spelling(f.operator_terminal);
+          if(f.operator_terminal == ABI_OPERATOR_TERMINAL_LITERAL)
+            output << " " << f.literal_suffix;
+          else if(!f.literal_suffix.empty())
+            throw logic_error("non-literal operator terminal has a literal suffix");
+          output << "\n";
+        }
+        else if(f.kind == ABI_FUNCTION_RECORD_CONVERSION_TERMINAL) {
+          if(!f.has_conversion_type)
+            throw logic_error("conversion terminal has no typed conversion type");
+          output << "conversion-terminal " << type_spelling(*c, f.conversion_type) << "\n";
+        }
+        else if(f.kind == ABI_FUNCTION_RECORD_LOCAL_CONTEXT) {
+          output << "local-context " << definition_ref_spelling(*c, f.context_ref);
+          if(!f.source_name.components.empty()) output << " " << join_qualified_name(f.source_name);
+          if(!f.discriminator.empty()) output << " " << f.discriminator;
+          output << "\n";
+        }
+        else if(f.kind == ABI_FUNCTION_RECORD_LAMBDA_CONTEXT) {
+          output << "lambda-context " << definition_ref_spelling(*c, f.context_ref)
+                 << " " << f.discriminator;
+          for(vector<AbiType>::const_iterator type = f.types.begin(); type != f.types.end(); ++type)
+            output << " " << type_spelling(*c, *type);
+          output << "\n";
+        }
+        else if(f.kind == ABI_FUNCTION_RECORD_NAMESPACE_LAMBDA_CONTEXT) {
+          output << "namespace-lambda-context " << join_qualified_name(f.source_name);
+          for(vector<string>::const_iterator qualifier = f.namespace_qualifiers.begin();
+              qualifier != f.namespace_qualifiers.end(); ++qualifier)
+            output << " " << *qualifier;
+          output << "\n";
+        }
+        else if(f.kind == ABI_FUNCTION_RECORD_QUALIFIER) {
+          output << "function-qualifier";
+          for(vector<AbiFunctionQualifier>::const_iterator qualifier = f.qualifiers.begin();
+              qualifier != f.qualifiers.end(); ++qualifier) {
+            switch(*qualifier) {
+            case ABI_FUNCTION_QUALIFIER_CONST: output << " const"; break;
+            case ABI_FUNCTION_QUALIFIER_VOLATILE: output << " volatile"; break;
+            case ABI_FUNCTION_QUALIFIER_LVALUE_REFERENCE: output << " lvalue-ref"; break;
+            case ABI_FUNCTION_QUALIFIER_RVALUE_REFERENCE: output << " rvalue-ref"; break;
+            }
+          }
+          output << "\n";
+        }
         else if(f.kind == ABI_FUNCTION_RECORD_NAME_STD) output << "name-std\n";
         else if(f.kind == ABI_FUNCTION_RECORD_NAME_SOURCE && !f.source_name.components.empty())
           output << "name-source " << join_qualified_name(f.source_name) << "\n";
@@ -1235,6 +1495,11 @@ string serialize_fact_file(const AbiFactFile & file)
         const AbiTargetRecord & t = it->target;
         switch(t.kind) {
         case ABI_TARGET_FACT_TYPE: output << "type " << type_spelling(*c, t.type) << "\n"; break;
+        case ABI_TARGET_FACT_FUNCTION:
+          serialize_function_target(output, *c, t.function,
+                                    FUNCTION_TARGET_SERIALIZE_TOP_LEVEL);
+          output << "\n";
+          break;
         case ABI_TARGET_FACT_VARIABLE: output << "variable " << join_qualified_name(t.name) << "\n"; break;
         case ABI_TARGET_FACT_TYPEINFO: output << "typeinfo " << type_spelling(*c, t.type) << "\n"; break;
         case ABI_TARGET_FACT_VTABLE: output << "vtable " << type_spelling(*c, t.type) << "\n"; break;

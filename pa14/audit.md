@@ -2,6 +2,144 @@
 
 ## Current Checkpoint Review
 
+This review audits landed commit `0c6543189f0c505f6dea9ecb64ec23631b12d8d6`
+from `16d775c44d9daf7b1b852e0d14f6c672595ec186`.  The bounded ownership is
+the complete checked-in `200-*` family and preservation of the `100-*` family:
+
+```text
+fact-file line -> dev/abimangle.cpp adapter -> canonical AbiFactCase
+                 -> dev/src/abi_mangle.cpp FactEncoder -> ABI spelling
+```
+
+The 200 facts are decoded once into `AbiQualifiedName` components, typed
+operator/special-terminal enums, typed conversion types, qualifier vectors,
+contexts, and thunk adjustments.  Ordinary source-name terminals remain
+source strings; `terminal-source` is not decoded as a special terminal.  Fixed
+operator, conversion, and special-member vocabulary is not duplicated in the
+generic `terminal` fields, including direct local/lambda/namespace-lambda
+targets.  The only raw ABI fragment retained at this boundary is an explicitly
+normalized raw local-context fragment.
+
+### Representative fact traces
+
+- `200-abi-tagged-function` parses `ns::f` into components and `cxx11` into a
+  function tag record; the encoder sorts the tag vector at the ABI spelling
+  boundary and emits `_ZN2ns1fB5cxx11Ei`.  The `foo`, `bar` case emits
+  `_Z1fB3barB3foov`, confirming canonical tag order.  Tagged type definitions
+  feed the same typed name path before the `TI`/`TV` special prefixes.
+- `200-member-function-cv-qualifier-order` stores `const volatile` as enum
+  qualifiers, and the nested-name encoder emits the ABI order `VK`:
+  `_ZNVK9cv_member4callEdd`.  It does not use source qualifier order as an
+  identity key.
+- Operator records use `AbiOperatorTerminalKind`: `plus`, `plus-assign`,
+  literal `_digits`, and `assign` reach `pl`, `pL`, `li7_digits`, and `aS`
+  respectively.  Unary versus binary `plus`/`minus` uses the explicit
+  parameter count and member shape.  Conversion records retain a typed
+  `AbiType`; `C::operator C` emits `_ZN1CcvS_Ev` after the owner prefix has
+  established the `S_` substitution.  Special-member records use only the
+  typed `C1`--`C3`/`D0`--`D2` enum at emission.
+- `200-builtin-transform-type` parses `__remove_reference` and its `ptr:int`
+  operand as a typed transform tree, emitting `u18__remove_referenceIPiE`.
+  No rendered transform name is reparsed.
+- Function-context local classes, lambdas, and namespace lambdas all retain
+  typed context/reference fields.  Function and raw contexts emit the same
+  local-name prefix shape, while namespace-scope lambda closures emit
+  `N2ns3$_0E`; the two local lambda forms emit the checked-in `cl` call
+  operator names.  Direct target call and special-member terminals use their
+  typed enums rather than parallel raw words.  Local entity discriminator 11
+  now follows the ABI `__10_` form, while source terminals such as `run` stay
+  source names.
+- `200-tls-wrapper` emits `_ZTWN2ns1xE` by applying `ZTW` to the typed data
+  name.  Ordinary, virtual-base, covariant, and virtual-result thunk records
+  append typed `h`/`v` call-offset components before one function-target
+  encoding, producing the four checked-in offset shapes without reparsing a
+  rendered target.
+- Qualified-prefix substitutions use interned component IDs in a per-case
+  trie.  The leaf key includes the complete canonically sorted ABI-tag ID
+  vector, so a tagged and untagged name cannot alias.  The local-context
+  lambda substitution case emits `NS_1CE`, demonstrating prefix identity and
+  insertion order through the typed path.
+
+### Architecture, complexity, and evidence
+
+`AbiFactCase` is the one production semantic model for this path.  The
+encoder consumes its typed records directly; `join_qualified_name` is limited
+to adapter serialization/external-symbol boundaries, and no rendered ABI name
+is fed back into parsing or substitution lookup.  Definition references are
+dense per-case IDs, operator and special-member vocabularies are enums,
+conversion types are typed trees, and ABI tags remain arbitrary source
+identifiers rather than a replacement for a semantic type.  Cold fact
+serialization renders typed terminal spellings from enums/types and preserves
+the affected function/context forms without making them a second semantic
+owner.  The only whole-case scans are the bounded target/fact
+collection steps at function entry; recursive type, context, and thunk paths
+do not rescan the case.  Trie/map lookup and tag sorting keep ordinary work in
+the O(n log n) class for the consumed fact/name size.
+
+The final affected build was copied to an immutable mode-0555 candidate
+(285264 bytes, SHA-256
+`a7ce5a388a49bfd338b3d15499a88d3b0a386d11b2b492cf6fba3713fe5b5cdb`).  With
+256 repeated named-type parameters and equivalent qualified-name inputs,
+interleaved five-sample runs used 397597, 792349, and 1581854 bytes for owner
+depths 256, 512, and 1024.  Median `/usr/bin/time` results were:
+
+```text
+depth   input bytes   elapsed   user   sys   max RSS
+  256       397597      0.02s  0.01s 0.00s    9208 KiB
+  512       792349      0.04s  0.03s 0.00s   12460 KiB
+ 1024      1581854      0.07s  0.06s 0.01s   18764 KiB
+```
+
+The near-doubling timings track the equivalent input-size increase.  This is
+representative encoder-process evidence for the substitution path, not a
+claim about later PA14 families.
+
+### Findings and bounded repairs
+
+- Restored the missing typed `assign` operator terminal (`aS`) lost during the
+  enum migration.
+- Corrected member unary `operator+()`/`operator-()` classification; a member
+  with no explicit operand is unary, whereas one with an explicit operand is
+  binary.
+- Kept `terminal-source` as an ordinary source terminal instead of allowing
+  a spelling such as `constructor-complete` to select a special-member code.
+- Implemented the two-digit local discriminator production required for
+  occurrences whose encoded number is at least 10.
+- Made typed operator, conversion, and special-member terminals canonical in
+  the adapter; fixed vocabulary is rendered on demand by the cold serializer,
+  while ordinary source terminals and literal suffix payloads remain raw
+  source data.
+- Added `cppgm.tests/course/pa14/200-typed-terminal-regression.t` with exact
+  hand-derived output for assignment, member unary operators, a
+  `terminal-source`/special-spelling collision, and the `__10_` discriminator.
+
+Focused `100-*` and `200-*` checks both pass 25/25, and the course regression
+passes 1/1 through the PA14 check harness.  The final `make test-pa14` covers
+all 111 checked-in tests and passes 57: 100=25/25, 200=25/25, 300=7/37,
+400=0/4, 500=0/13, and 600=0/7.  Its 54-test failure set is exactly equal
+to the 54-test set in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+there are no current-only regressions and no baseline failures that newly
+pass to mask a regression.  The exact through-PA13 gate passes 947/947.  The
+stage file audit passes with four existing `bad-division` warnings for
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, and
+`pa11_semantic_model.h`; `git diff --check` and the warning-clean C++11
+compile pass.  No handout fixtures, handout references, harnesses, or other
+stage surfaces were modified; the only added test surface is the one course
+regression and its hand-derived `.ref` pair.  Generated `.my`/`.check`
+artifacts were not retained.
+
+### Uncertainties and exclusions
+
+The audit does not claim new 300--600 behavior, broader dependent/template
+substitution, construction-vtable coverage, or compiler-owned PA15 use.  The
+small checked-in 200 family cannot exercise every possible ABI tag, local
+discriminator, operator, or offset magnitude, so the focused regression and
+direct probes cover the new repaired edges while the fixture suite covers the
+landed contract.  The performance sample includes parsing and retained fact
+storage and is not an encoder-only allocation profile.
+
+## Prior Checkpoint Review (historical)
+
 This review is bounded to the complete checked-in `100-*` family and the
 ownership path introduced by `a95729060db60598a9e1f490346d093db7e99c3e`:
 
@@ -148,4 +286,5 @@ label is available.
 
 | Audit | Starting point | Bounded result | Working-tree status |
 |---|---|---|---|
-| Current PA14 typed-foundation checkpoint | `a95729060db60598a9e1f490346d093db7e99c3e` | Numeric canonical IDs, one append type path, dense cycle state, typed terminal/linkage/builtin ownership, explicit 128-bit rejection, focused and broad validation complete | Broad validation complete; bounded five-path repair finalized |
+| Prior PA14 typed-foundation checkpoint | `a95729060db60598a9e1f490346d093db7e99c3e` | Numeric canonical IDs, one append type path, dense cycle state, typed terminal/linkage/builtin ownership, explicit 128-bit rejection, focused and broad validation complete | Broad validation complete; bounded five-path repair finalized |
+| Current PA14 complete typed 200-family checkpoint audit | `16d775c44d9daf7b1b852e0d14f6c672595ec186` → landed `0c6543189f0c505f6dea9ecb64ec23631b12d8d6` | Complete 100/200 focused behavior preserved; typed ABI tags, qualifiers, terminals, contexts, TLS/thunks, and qualified-prefix substitutions traced; four bounded semantic repairs plus typed-continuity cleanup made; durable course regression added; full-stage, through-PA13, file-audit, diff-check, compile, and exact failure-set preservation validated | Checkpoint-audit changes committed; worktree clean |

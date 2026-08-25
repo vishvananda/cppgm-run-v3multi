@@ -876,7 +876,9 @@ private:
     if(spelling.empty()) return std::string();
     const unsigned long long ordinal = decimal_discriminator(spelling);
     if(ordinal == 0) return std::string();
-    return "_" + number_string(ordinal - 1);
+    const unsigned long long number = ordinal - 1;
+    if(number < 10) return "_" + number_string(number);
+    return "__" + number_string(number) + "_";
   }
 
   std::string lambda_discriminator(const std::string & spelling) const
@@ -997,9 +999,12 @@ private:
         facts.std_prefix = true;
         break;
       case ABI_FUNCTION_RECORD_TERMINAL:
-      case ABI_FUNCTION_RECORD_TERMINAL_SOURCE:
         facts.terminal = record.terminal;
         facts.special_terminal = record.special_terminal;
+        break;
+      case ABI_FUNCTION_RECORD_TERMINAL_SOURCE:
+        facts.terminal = record.terminal;
+        facts.special_terminal = ABI_SPECIAL_TERMINAL_NONE;
         break;
       case ABI_FUNCTION_RECORD_OPERATOR_TERMINAL:
         facts.operator_terminal = record.operator_terminal;
@@ -1081,11 +1086,11 @@ private:
     case ABI_OPERATOR_TERMINAL_UNARY_PLUS: return "ps";
     case ABI_OPERATOR_TERMINAL_BINARY_PLUS: return "pl";
     case ABI_OPERATOR_TERMINAL_PLUS:
-      return member || parameter_count > 1 ? "pl" : "ps";
+      return (member ? parameter_count != 0 : parameter_count > 1) ? "pl" : "ps";
     case ABI_OPERATOR_TERMINAL_UNARY_MINUS: return "ng";
     case ABI_OPERATOR_TERMINAL_BINARY_MINUS: return "mi";
     case ABI_OPERATOR_TERMINAL_MINUS:
-      return member || parameter_count > 1 ? "mi" : "ng";
+      return (member ? parameter_count != 0 : parameter_count > 1) ? "mi" : "ng";
     case ABI_OPERATOR_TERMINAL_ADDRESS_OF: return "ad";
     case ABI_OPERATOR_TERMINAL_DEREF: return "de";
     case ABI_OPERATOR_TERMINAL_COMPLEMENT: return "co";
@@ -1095,6 +1100,7 @@ private:
     case ABI_OPERATOR_TERMINAL_BIT_AND: return "an";
     case ABI_OPERATOR_TERMINAL_BIT_OR: return "or";
     case ABI_OPERATOR_TERMINAL_BIT_XOR: return "eo";
+    case ABI_OPERATOR_TERMINAL_ASSIGN: return "aS";
     case ABI_OPERATOR_TERMINAL_PLUS_ASSIGN: return "pL";
     case ABI_OPERATOR_TERMINAL_MINUS_ASSIGN: return "mI";
     case ABI_OPERATOR_TERMINAL_MULTIPLY_ASSIGN: return "mL";
@@ -1207,6 +1213,8 @@ private:
     if(facts.operator_terminal != ABI_OPERATOR_TERMINAL_NONE) {
       output += operator_code(facts.operator_terminal, true,
                               facts.parameter_count, facts.literal_suffix);
+    } else if(facts.special_terminal != ABI_SPECIAL_TERMINAL_NONE) {
+      output += special_terminal_code(facts.special_terminal);
     } else if(!facts.terminal.empty()) {
       output += source_name(facts.terminal);
     } else {

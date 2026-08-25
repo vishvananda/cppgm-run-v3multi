@@ -214,6 +214,7 @@ enum AbiOperatorTerminalKind
   ABI_OPERATOR_TERMINAL_BIT_AND,
   ABI_OPERATOR_TERMINAL_BIT_OR,
   ABI_OPERATOR_TERMINAL_BIT_XOR,
+  ABI_OPERATOR_TERMINAL_ASSIGN,
   ABI_OPERATOR_TERMINAL_PLUS_ASSIGN,
   ABI_OPERATOR_TERMINAL_MINUS_ASSIGN,
   ABI_OPERATOR_TERMINAL_MULTIPLY_ASSIGN,
@@ -382,6 +383,9 @@ struct AbiFunctionTarget
   AbiDefinitionId context_ref;
   std::string source_name;
   std::string discriminator;
+  // Only an ordinary source terminal is stored here.  Fixed operator and
+  // special-member vocabulary is represented by the typed enums below and
+  // rendered by the encoder or cold serializer when needed.
   std::string terminal;
   AbiFunctionSpecialTerminalKind special_terminal = ABI_SPECIAL_TERMINAL_NONE;
   AbiOperatorTerminalKind operator_terminal = ABI_OPERATOR_TERMINAL_NONE;
@@ -444,6 +448,8 @@ struct AbiFunctionRecord
   AbiDefinitionId context_ref;
   AbiQualifiedName source_name;
   std::string discriminator;
+  // Ordinary source-terminal text only; typed operator, conversion, and
+  // special-member terminals do not duplicate their vocabulary here.
   std::string terminal;
   std::string literal_suffix;
   AbiType type;
