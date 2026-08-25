@@ -19,13 +19,20 @@ owner arguments. The public enum has an explicit validity predicate; the
 encoder and cold serializer reject invalid values. Empty template-template
 argument lists are rejected at both typed boundaries.
 
-The new state is O(1) per case. Existing `std::map` structural/trie lookups
-remain O(log n), with typed key comparison proportional to operand width; no
-retry, rescan, rendered key, or growing candidate-vector path was added.
+Scalar control state is O(1) per case. `StructuralId` equality and dense
+definition-vector access are O(1). Constructor indexing, target selection,
+function fact/name collection, and parameter emission make a constant number
+of bounded linear passes over `fact_case_.records`, so ordinary collection is
+O(n). Structural/name interning and substitution lookups are map-backed
+O(log n), giving ordinary O(n log n) indexing for fixed-width typed operands;
+key construction and comparison add work proportional to operand width. No
+retry-until-stable or repeated whole-case rescan loop, rendered key, or growing
+candidate-vector path was added.
 
-## Failure Map
+## Historical Failure Map
 
-Clean HEAD `bf99cd9c` started this checkpoint at 104/111: 100=25/25,
+Historical clean HEAD `bf99cd9c` started the final-600 checkpoint at 104/111:
+100=25/25,
 200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7. The complete 600
 failure set was:
 
@@ -62,15 +69,15 @@ Validation results:
 
 | command | result |
 |---|---|
-| `make -C pa14 check TEST='tests/abi/600-*.t'` | PASS (7/7) |
-| `make -C pa14 check TEST='../cppgm.tests/course/pa14/*.t'` | PASS (10/10) |
-| `CXX=${CXX:-g++} sh cppgm.tests/course/pa14/400-public-typed-model-regression.sh` | PASS |
-| `g++ -std=c++11 -Wall -Wextra -Werror -Idev/src -fsyntax-only dev/src/abi_mangle.cpp dev/abimangle.cpp` | PASS |
-| `make test-pa14` | PASS (111/111) |
-| `n=14; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi` | PASS (947/947) |
-| `make test-report-through-pa14` | PASS (1058/1058) |
-| `perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src` | PASS; 4 known nonfatal header warnings |
-| `git diff --check` | PASS |
+| `make -C pa14 check TEST='tests/abi/600-*.t'` | exit 0 (7/7) |
+| `make -C pa14 check TEST='../cppgm.tests/course/pa14/*.t'` | exit 0 (10/10) |
+| `CXX=${CXX:-g++} sh cppgm.tests/course/pa14/400-public-typed-model-regression.sh` | exit 0 |
+| `g++ -std=c++11 -Wall -Wextra -Werror -Idev/src -fsyntax-only dev/src/abi_mangle.cpp dev/abimangle.cpp` | exit 0 |
+| `make test-pa14` | exit 0 (111/111) |
+| `n=14; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi` | exit 0 (947/947) |
+| `make test-report-through-pa14` | exit 0 (1058/1058), final serial rerun |
+| `perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src` | exit 0; 4 known nonfatal header warnings |
+| `git diff --check` | exit 0 |
 
 No handout test, reference, harness, or generated repository file changed.
 
@@ -109,5 +116,9 @@ not an allocation or general asymptotic proof beyond this workload.
 | PA14 dependent 400/500 boundary | 104/111 with seven 600 failures | 400/500 focused coverage 17/17; 100–300 preservation 87/87; serializer and public typed-model checks passed. |
 | PA14 typed 600 boundary | 104/111; exactly the seven failures above | 600=7/7, PA14=111/111, through-PA13=947/947, through-PA14=1058/1058; public boundary and benchmark evidence recorded. |
 
-Final handoff uses commit message `PA14: complete typed ABI name boundary`;
-the post-commit `git status --short` result is empty.
+The final audit was validated against source checkpoint `f156044b` and the
+serial through-PA14 gate completed with exit 0 (`1058/1058`).  The file audit
+completed with exit 0 and the four known nonfatal header warnings recorded
+above.  The durable audit consolidation was committed as
+`PA14: finalize full-stage architecture audit`; post-commit `git status --short`
+is empty.
