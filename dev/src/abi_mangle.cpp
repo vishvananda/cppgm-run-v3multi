@@ -1,9 +1,6 @@
 #include "abi_mangle.h"
 
 #include <algorithm>
-#include <limits>
-#include <map>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -27,34 +24,33 @@ std::string source_name(const std::string & name)
   return output.str();
 }
 
-std::vector<std::string> split_qualified_name(const std::string & spelling)
+bool is_unsupported_wide_integral_value_type(const AbiType & original)
 {
-  std::string name = spelling;
-  while(name.size() >= 2 && name.compare(0, 2, "::") == 0) {
-    name.erase(0, 2);
+  const AbiType * type = &original;
+  while(type->kind == ABI_TYPE_CV) {
+    if(type->types.empty()) return false;
+    type = &type->types[0];
   }
-  if(name.empty()) {
-    throw std::logic_error("empty qualified ABI name");
-  }
+  return type->kind == ABI_TYPE_BUILTIN &&
+    (type->builtin == ABI_BUILTIN_INT128 ||
+     type->builtin == ABI_BUILTIN_UNSIGNED_INT128);
+}
 
-  std::vector<std::string> components;
-  std::size_t begin = 0;
-  while(begin < name.size()) {
-    const std::size_t separator = name.find("::", begin);
-    const std::size_t end = separator == std::string::npos ? name.size() : separator;
-    if(end == begin) {
-      throw std::logic_error("empty component in qualified ABI name");
-    }
-    components.push_back(name.substr(begin, end - begin));
-    if(separator == std::string::npos) {
-      break;
-    }
-    begin = separator + 2;
-    if(begin == name.size()) {
-      throw std::logic_error("trailing scope separator in qualified ABI name");
-    }
+// This is only for the true external-symbol boundary (C linkage or a raw
+// symbol fact).  Semantic names are kept as AbiQualifiedName throughout the
+// encoder and are never reconstructed from this spelling.
+std::string join_name_for_external_symbol(const AbiQualifiedName & name)
+{
+  if(name.components.empty()) {
+    throw std::logic_error("empty external ABI name");
   }
-  return components;
+  std::string result;
+  for(std::vector<std::string>::const_iterator it = name.components.begin();
+      it != name.components.end(); ++it) {
+    if(it != name.components.begin()) result += "::";
+    result += *it;
+  }
+  return result;
 }
 
 std::string tag_suffix(const std::vector<std::string> & tags)
@@ -69,37 +65,26 @@ std::string tag_suffix(const std::vector<std::string> & tags)
   return output.str();
 }
 
-class SubstitutionTable
+class ActiveDefinitionScope
 {
 public:
-  void remember(const std::string & structural_key)
+  ActiveDefinitionScope(std::vector<unsigned char> & state, std::size_t index)
+    : state_(state), index_(index)
   {
-    if(structural_key.empty() || entries_.find(structural_key) != entries_.end()) {
-      return;
+    if(index_ >= state_.size() || state_[index_] != 0) {
+      throw std::logic_error("cyclic ABI type definition");
     }
-    entries_[structural_key] = entries_.size();
+    state_[index_] = 1;
   }
 
-  bool contains(const std::string & structural_key) const
+  ~ActiveDefinitionScope()
   {
-    return entries_.find(structural_key) != entries_.end();
-  }
-
-  std::string spelling(const std::string & structural_key) const
-  {
-    std::map<std::string, std::size_t>::const_iterator found =
-      entries_.find(structural_key);
-    if(found == entries_.end()) {
-      throw std::logic_error("missing ABI substitution entry");
-    }
-    if(found->second == 0) {
-      return "S_";
-    }
-    return "S" + number_string(found->second - 1) + "_";
+    state_[index_] = 0;
   }
 
 private:
-  std::map<std::string, std::size_t> entries_;
+  std::vector<unsigned char> & state_;
+  std::size_t index_;
 };
 
 class FactEncoder
@@ -113,14 +98,18 @@ public:
       if(it->kind != ABI_FACT_RECORD_DEFINITION) {
         continue;
       }
-      if(it->definition.id.empty()) {
-        throw std::logic_error("ABI definition has an empty id");
+      if(it->definition.id.index == ABI_INVALID_DEFINITION_ID) {
+        throw std::logic_error("ABI definition is not canonically indexed");
       }
-      if(definitions_.find(it->definition.id) != definitions_.end()) {
+      if(it->definition.id.index >= definitions_.size()) {
+        definitions_.resize(it->definition.id.index + 1, NULL);
+      }
+      if(definitions_[it->definition.id.index] != NULL) {
         throw std::logic_error("duplicate ABI definition id");
       }
-      definitions_[it->definition.id] = &it->definition;
+      definitions_[it->definition.id.index] = &it->definition;
     }
+    active_types_.assign(definitions_.size(), 0);
   }
 
   std::string encode()
@@ -144,12 +133,16 @@ public:
     case ABI_TARGET_FACT_TYPE:
       return encode_type(target->type);
     case ABI_TARGET_FACT_FUNCTION:
-      if(target->c_linkage) return target->function.qualified_name;
+      if(target->linkage == ABI_LINKAGE_C) {
+        if(target->function.name.components.empty()) {
+          throw std::logic_error("C linkage function has an empty name");
+        }
+        return target->function.name.components.back();
+      }
       return encode_function(target->function);
     case ABI_TARGET_FACT_VARIABLE: {
-      const std::vector<std::string> components = split_qualified_name(target->qualified_name);
-      if(components.size() == 1) return components[0];
-      return "_Z" + encode_name(target->qualified_name, std::vector<std::string>());
+      if(target->name.components.size() == 1) return target->name.components[0];
+      return "_Z" + encode_name(target->name, std::vector<std::string>());
     }
     case ABI_TARGET_FACT_TYPEINFO:
       return "_ZTI" + encode_type(target->type);
@@ -161,7 +154,7 @@ public:
       return "_ZTC" + encode_type(target->type) + number_string(target->base_offset) +
         "_" + encode_type(target->base_type);
     case ABI_TARGET_FACT_THREAD_LOCAL_WRAPPER:
-      return "_ZTH" + encode_name(target->qualified_name, std::vector<std::string>());
+      return "_ZTH" + encode_name(target->name, std::vector<std::string>());
     case ABI_TARGET_FACT_THUNK:
     case ABI_TARGET_FACT_VIRTUAL_BASE_THUNK:
       return encode_thunk(*target);
@@ -171,71 +164,53 @@ public:
 
 private:
   const AbiFactCase & fact_case_;
-  std::map<std::string, const AbiDefinitionRecord *> definitions_;
-  SubstitutionTable substitutions_;
-  std::set<std::string> active_types_;
+  std::vector<const AbiDefinitionRecord *> definitions_;
+  std::vector<unsigned char> active_types_;
 
-  const AbiDefinitionRecord & definition(const std::string & id) const
+  const AbiDefinitionRecord & definition(const AbiDefinitionId & id) const
   {
-    std::map<std::string, const AbiDefinitionRecord *>::const_iterator found =
-      definitions_.find(id);
-    if(found == definitions_.end()) {
-      throw std::logic_error("unknown ABI definition id '" + id + "'");
+    if(id.index == ABI_INVALID_DEFINITION_ID || id.index >= definitions_.size() ||
+       definitions_[id.index] == NULL) {
+      throw std::logic_error("unknown ABI definition index");
     }
-    return *found->second;
+    return *definitions_[id.index];
   }
 
-  const AbiType & type_definition(const std::string & id) const
+  const AbiType & type_definition(const AbiDefinitionId & id) const
   {
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_TYPE) {
-      throw std::logic_error("ABI id '" + id + "' is not a type definition");
+      throw std::logic_error("ABI definition is not a type definition");
     }
     return record.type;
   }
 
-  const AbiTemplateArgument & argument_definition(const std::string & id) const
+  const AbiTemplateArgument & argument_definition(const AbiDefinitionId & id) const
   {
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_TEMPLATE_ARGUMENT) {
-      throw std::logic_error("ABI id '" + id + "' is not an argument definition");
+      throw std::logic_error("ABI definition is not an argument definition");
     }
     return record.template_argument;
   }
 
-  std::string type_key(const AbiType & type) const
-  {
-    std::ostringstream key;
-    key << static_cast<int>(type.kind) << ":" << type.name << ":" << type.index << ":";
-    key << (type.is_const ? "c" : "-") << (type.is_volatile ? "v" : "-");
-    key << ":" << type.array_bound.value << ":" << type.expression_ref;
-    for(std::vector<AbiType>::const_iterator it = type.types.begin();
-        it != type.types.end(); ++it) {
-      key << "[" << type_key(*it) << "]";
-    }
-    for(std::vector<std::string>::const_iterator it = type.argument_refs.begin();
-        it != type.argument_refs.end(); ++it) {
-      key << "{" << *it << "}";
-    }
-    return key.str();
-  }
-
-  std::string encode_name(const std::string & spelling,
+  std::string encode_name(const AbiQualifiedName & name,
                           const std::vector<std::string> & tags)
   {
-    const std::vector<std::string> components = split_qualified_name(spelling);
+    const std::vector<std::string> & components = name.components;
+    if(components.empty()) {
+      throw std::logic_error("empty qualified ABI name");
+    }
     const std::string suffix = tag_suffix(tags);
     std::ostringstream output;
     if(components.size() == 1) {
       output << source_name(components[0]) << suffix;
-      substitutions_.remember("name:" + spelling + ":" + suffix);
       return output.str();
     }
 
     if(components[0] == "std") {
       if(components.size() == 2) {
         output << "St" << source_name(components[1]) << suffix;
-        substitutions_.remember("name:" + spelling + ":" + suffix);
         return output.str();
       }
       output << "NSt";
@@ -246,7 +221,6 @@ private:
         }
       }
       output << "E";
-      substitutions_.remember("name:" + spelling + ":" + suffix);
       return output.str();
     }
 
@@ -258,106 +232,182 @@ private:
       }
     }
     output << "E";
-    substitutions_.remember("name:" + spelling + ":" + suffix);
     return output.str();
   }
 
   std::string encode_type(const AbiType & original)
   {
-    const std::string key = type_key(original);
-    if(original.kind != ABI_TYPE_NAME_OR_REFERENCE) {
-      substitutions_.remember("type:" + key);
-    }
-    return encode_type_impl(original);
+    std::string result;
+    append_type(original, result);
+    return result;
   }
 
-  std::string encode_type_impl(const AbiType & original)
+  void append_type(const AbiType & original, std::string & output)
   {
     const AbiType * type = &original;
-    if(type->kind == ABI_TYPE_NAME_OR_REFERENCE && !type->name.empty()) {
-      std::map<std::string, const AbiDefinitionRecord *>::const_iterator found =
-        definitions_.find(type->name);
-      if(found != definitions_.end()) {
-        if(active_types_.find(type->name) != active_types_.end()) {
-          throw std::logic_error("cyclic ABI type definition");
-        }
-        active_types_.insert(type->name);
-        const std::string result = encode_type_impl(type_definition(type->name));
-        active_types_.erase(type->name);
-        return result;
-      }
+    if(type->kind == ABI_TYPE_NAME_OR_REFERENCE &&
+       type->definition_ref.index != ABI_INVALID_DEFINITION_ID) {
+      const AbiType & definition_type = type_definition(type->definition_ref);
+      ActiveDefinitionScope active(active_types_, type->definition_ref.index);
+      append_type(definition_type, output);
+      return;
     }
 
     switch(type->kind) {
     case ABI_TYPE_NAME_OR_REFERENCE:
-      return encode_name(type->name, type->abi_tags);
     case ABI_TYPE_NAMED:
-      return encode_name(type->name, type->abi_tags);
+      output += encode_name(type->name, type->abi_tags);
+      return;
     case ABI_TYPE_BUILTIN:
-      return builtin_code(type->name);
+      output += builtin_code(type->builtin);
+      return;
     case ABI_TYPE_TEMPLATE_PARAMETER:
-      return template_parameter(type->index);
+      output += template_parameter(type->index);
+      return;
     case ABI_TYPE_POINTER:
-      return "P" + encode_type_impl(type->types.at(0));
+      output.push_back('P');
+      append_type(type->types.at(0), output);
+      return;
     case ABI_TYPE_LVALUE_REFERENCE:
-      return "R" + encode_type_impl(type->types.at(0));
+      output.push_back('R');
+      append_type(type->types.at(0), output);
+      return;
     case ABI_TYPE_RVALUE_REFERENCE:
-      return "O" + encode_type_impl(type->types.at(0));
+      output.push_back('O');
+      append_type(type->types.at(0), output);
+      return;
     case ABI_TYPE_CV:
-      return encode_cv_type(*type);
-    case ABI_TYPE_PACK_EXPANSION:
-      return "Dp" + encode_type_impl(type->types.at(0));
-    case ABI_TYPE_VENDOR_QUALIFIED:
-      return "U" + source_name(type->name) + encode_type_impl(type->types.at(0));
+      append_cv_type(type, output);
+      return;
     case ABI_TYPE_ARRAY:
-      return encode_array(*type);
+      append_array(type, output);
+      return;
     case ABI_TYPE_FUNCTION:
-      return encode_function_type(*type);
+      append_function_type(type, output);
+      return;
     case ABI_TYPE_MEMBER_POINTER:
-      return "M" + encode_type_impl(type->types.at(0)) + encode_type_impl(type->types.at(1));
+      output.push_back('M');
+      append_type(type->types.at(0), output);
+      append_type(type->types.at(1), output);
+      return;
+    case ABI_TYPE_PACK_EXPANSION:
+      output.push_back('D');
+      output.push_back('p');
+      append_type(type->types.at(0), output);
+      return;
+    case ABI_TYPE_VENDOR_QUALIFIED:
+      if(type->name.components.size() != 1) {
+        throw std::logic_error("vendor qualifier is not a source component");
+      }
+      output.push_back('U');
+      output += source_name(type->name.components[0]);
+      append_type(type->types.at(0), output);
+      return;
+    case ABI_TYPE_BUILTIN_TRANSFORM:
+      if(type->name.components.size() != 1) {
+        throw std::logic_error("builtin transform is not a source component");
+      }
+      output.push_back('u');
+      output += source_name(type->name.components[0]);
+      append_type(type->types.at(0), output);
+      return;
     case ABI_TYPE_TEMPLATE_SPECIALIZATION:
     case ABI_TYPE_STD_TEMPLATE_SPECIALIZATION:
     case ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION:
-      return encode_template_specialization(*type);
-    case ABI_TYPE_BUILTIN_TRANSFORM:
-      return "u" + source_name(type->name) + encode_type_impl(type->types.at(0));
+      append_template_specialization(*type, output);
+      return;
     case ABI_TYPE_MEMBER:
-      return encode_member_type(*type);
+      append_member_type(*type, output);
+      return;
     case ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION:
-      return encode_template_specialization(*type);
+      append_template_specialization(*type, output);
+      return;
     case ABI_TYPE_DECLTYPE_EXPRESSION:
-      return "Dt" + encode_expression_reference(type->expression_ref) + "E";
+      output += "Dt";
+      output += encode_expression_reference(type->expression_ref);
+      output.push_back('E');
+      return;
     case ABI_TYPE_LAMBDA_CLOSURE:
-      return encode_lambda_type(*type);
+      append_lambda_type(*type, output);
+      return;
     case ABI_TYPE_LOCAL_TYPE:
-      return encode_local_type(*type);
+      append_local_type(*type, output);
+      return;
     case ABI_TYPE_NAMESPACE_LAMBDA:
-      return encode_namespace_lambda_type(*type);
+      append_namespace_lambda_type(*type, output);
+      return;
     }
     throw std::logic_error("unknown ABI type kind");
   }
 
-  std::string builtin_code(const std::string & name) const
+  void append_cv_type(const AbiType * type, std::string & output)
   {
-    static const char * const names[] = {
-      "void", "wchar", "bool", "char", "schar", "uchar", "short", "ushort",
-      "int", "uint", "long", "ulong", "longlong", "ulonglong", "int128",
-      "uint128", "float", "double", "longdouble", "float128", "ellipsis",
-      "char16", "char32", "char8", "nullptr"
-    };
-    static const char * const codes[] = {
-      "v", "w", "b", "c", "a", "h", "s", "t", "i", "j", "l", "m", "x",
-      "y", "n", "o", "f", "d", "e", "g", "z", "Ds", "Di", "Du", "Dn"
-    };
-    for(std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-      if(name == names[i]) {
-        return codes[i];
+    bool is_const = false;
+    bool is_volatile = false;
+    const AbiType * base = type;
+    while(base->kind == ABI_TYPE_CV) {
+      is_const = is_const || base->is_const;
+      is_volatile = is_volatile || base->is_volatile;
+      if(base->types.empty()) {
+        throw std::logic_error("qualified ABI type has no base type");
+      }
+      base = &base->types[0];
+    }
+    if(is_volatile) output.push_back('V');
+    if(is_const) output.push_back('K');
+    append_type(*base, output);
+  }
+
+  void append_array(const AbiType * type, std::string & output)
+  {
+    output.push_back('A');
+    switch(type->array_bound.kind) {
+    case ABI_ARRAY_BOUND_VALUE:
+      output += number_string(type->array_bound.value);
+      break;
+    case ABI_ARRAY_BOUND_RAW:
+      output += type->array_bound.raw;
+      break;
+    case ABI_ARRAY_BOUND_EXPRESSION:
+      output += encode_expression_reference(type->array_bound.expression_ref);
+      break;
+    }
+    output.push_back('_');
+    append_type(type->types.at(0), output);
+  }
+
+  void append_function_type(const AbiType * type, std::string & output)
+  {
+    if(type->types.empty()) {
+      throw std::logic_error("function ABI type has no result type");
+    }
+    output.push_back('F');
+    if(type->is_const) output.push_back('K');
+    if(type->is_volatile) output.push_back('V');
+    append_type(type->types[0], output);
+    if(type->types.size() == 1) {
+      output.push_back('v');
+    } else {
+      for(std::size_t i = 1; i < type->types.size(); ++i) {
+        append_type(type->types[i], output);
       }
     }
-    if(name == "complex-float") return "Cf";
-    if(name == "complex-double") return "Cd";
-    if(name == "complex-longdouble") return "Ce";
-    throw std::logic_error("unknown ABI builtin type '" + name + "'");
+    if(type->variadic) output.push_back('z');
+    output.push_back('E');
+  }
+
+  std::string builtin_code(AbiBuiltinKind name) const
+  {
+    static const char * const codes[] = {
+      "", "v", "w", "b", "c", "a", "h", "s", "t", "i", "j", "l", "m",
+      "x", "y", "n", "o", "f", "d", "e", "g", "z", "Ds", "Di", "Du", "Dn",
+      "Cf", "Cd", "Ce"
+    };
+    const std::size_t index = static_cast<std::size_t>(name);
+    if(index == 0 || index >= sizeof(codes) / sizeof(codes[0])) {
+      throw std::logic_error("invalid ABI builtin kind");
+    }
+    return codes[index];
   }
 
   std::string template_parameter(std::size_t index) const
@@ -368,64 +418,8 @@ private:
     return "T" + number_string(index - 1) + "_";
   }
 
-  std::string encode_cv_type(const AbiType & type)
-  {
-    bool is_const = false;
-    bool is_volatile = false;
-    const AbiType * base = &type;
-    while(base->kind == ABI_TYPE_CV) {
-      is_const = is_const || base->is_const;
-      is_volatile = is_volatile || base->is_volatile;
-      if(base->types.empty()) {
-        throw std::logic_error("qualified ABI type has no base type");
-      }
-      base = &base->types[0];
-    }
-    std::string result;
-    if(is_volatile) result += "V";
-    if(is_const) result += "K";
-    return result + encode_type_impl(*base);
-  }
-
-  std::string encode_array(const AbiType & type)
-  {
-    std::string result = "A";
-    switch(type.array_bound.kind) {
-    case ABI_ARRAY_BOUND_VALUE:
-      result += type.array_bound.value;
-      break;
-    case ABI_ARRAY_BOUND_RAW:
-      result += type.array_bound.value;
-      break;
-    case ABI_ARRAY_BOUND_EXPRESSION:
-      result += encode_expression_reference(type.expression_ref);
-      break;
-    }
-    result += "_";
-    return result + encode_type_impl(type.types.at(0));
-  }
-
-  std::string encode_function_type(const AbiType & type)
-  {
-    if(type.types.empty()) {
-      throw std::logic_error("function ABI type has no result type");
-    }
-    std::string result = "F";
-    if(type.is_const) result += "K";
-    if(type.is_volatile) result += "V";
-    result += encode_type_impl(type.types[0]);
-    if(type.types.size() == 1) {
-      result += "v";
-    } else {
-      for(std::size_t i = 1; i < type.types.size(); ++i) {
-        result += encode_type_impl(type.types[i]);
-      }
-    }
-    if(type.variadic) result += "z";
-    return result + "E";
-  }
-
-  std::string encode_template_specialization(const AbiType & type)
+  void append_template_specialization(const AbiType & type,
+                                      std::string & output)
   {
     std::string prefix;
     if(type.kind == ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION) {
@@ -435,12 +429,13 @@ private:
     } else {
       prefix = encode_name(type.name, type.abi_tags);
     }
-    std::string result = prefix + "I";
-    for(std::vector<std::string>::const_iterator it = type.argument_refs.begin();
+    output += prefix;
+    output.push_back('I');
+    for(std::vector<AbiDefinitionId>::const_iterator it = type.argument_refs.begin();
         it != type.argument_refs.end(); ++it) {
-      result += encode_argument(argument_definition(*it));
+      output += encode_argument(argument_definition(*it));
     }
-    return result + "E";
+    output.push_back('E');
   }
 
   std::string encode_argument(const AbiTemplateArgument & argument)
@@ -457,7 +452,7 @@ private:
       return encode_expression_reference(argument.entity_ref);
     case ABI_TEMPLATE_ARGUMENT_PACK: {
       std::string result = "J";
-      for(std::vector<std::string>::const_iterator it = argument.argument_refs.begin();
+      for(std::vector<AbiDefinitionId>::const_iterator it = argument.argument_refs.begin();
           it != argument.argument_refs.end(); ++it) {
         result += encode_argument(argument_definition(*it));
       }
@@ -468,7 +463,10 @@ private:
     case ABI_TEMPLATE_ARGUMENT_TEMPLATE_ENTITY:
       return encode_name(argument.name, std::vector<std::string>());
     case ABI_TEMPLATE_ARGUMENT_MEMBER_TEMPLATE_ENTITY:
-      return encode_type(argument.owner_type) + source_name(argument.name);
+      if(argument.name.components.size() != 1) {
+        throw std::logic_error("member template name is not a source component");
+      }
+      return encode_type(argument.owner_type) + source_name(argument.name.components[0]);
     case ABI_TEMPLATE_ARGUMENT_EXTERNAL_ENTITY:
       return "L" + argument.symbol + "E";
     case ABI_TEMPLATE_ARGUMENT_MEMBER_EXTERNAL_ENTITY:
@@ -481,14 +479,12 @@ private:
   bool is_unsigned_builtin(const AbiType & type, unsigned int * bits) const
   {
     if(type.kind != ABI_TYPE_BUILTIN) return false;
-    if(type.name == "uint") { *bits = 32; return true; }
-    if(type.name == "ulong") { *bits = 64; return true; }
-    if(type.name == "uchar") { *bits = 8; return true; }
-    if(type.name == "ushort") { *bits = 16; return true; }
-    if(type.name == "ulonglong" || type.name == "uint128") {
-      *bits = type.name == "uint128" ? 128 : 64;
-      return true;
-    }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_INT) { *bits = 32; return true; }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_LONG) { *bits = 64; return true; }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_CHAR) { *bits = 8; return true; }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_SHORT) { *bits = 16; return true; }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_LONG_LONG) { *bits = 64; return true; }
+    if(type.builtin == ABI_BUILTIN_UNSIGNED_INT128) { *bits = 128; return true; }
     return false;
   }
 
@@ -496,6 +492,9 @@ private:
   {
     if(!argument.has_value_type) {
       throw std::logic_error("typed ABI value is missing its value type");
+    }
+    if(is_unsupported_wide_integral_value_type(argument.value_type)) {
+      throw std::logic_error("128-bit integral ABI values are unsupported by the stored value representation");
     }
     const std::string type = encode_type(argument.value_type);
     const unsigned long long raw = static_cast<unsigned long long>(argument.value);
@@ -523,24 +522,21 @@ private:
     }
     const AbiEntityFact & entity = definition(argument.entity_ref).entity;
     if(entity.kind == ABI_ENTITY_FACT_SYMBOL) {
-      return "L" + entity.qualified_name + "E";
+      return "L" + join_name_for_external_symbol(entity.name) + "E";
     }
     if(entity.kind == ABI_ENTITY_FACT_VARIABLE) {
-      std::string result = "L_Z" + encode_name(entity.qualified_name,
+      std::string result = "L_Z" + encode_name(entity.name,
                                                 std::vector<std::string>()) + "E";
       return result;
     }
     return "L_Z" + encode_function(entity.function) + "E";
   }
 
-  std::string encode_expression_reference(const std::string & id)
+  std::string encode_expression_reference(const AbiDefinitionId & id)
   {
-    if(id.empty()) {
-      throw std::logic_error("empty ABI expression reference");
-    }
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_EXPRESSION) {
-      throw std::logic_error("ABI id '" + id + "' is not an expression");
+      throw std::logic_error("ABI definition is not an expression");
     }
     if(record.expression.kind == ABI_EXPRESSION_LITERAL ||
        record.expression.kind == ABI_EXPRESSION_INTEGRAL_VALUE) {
@@ -549,52 +545,56 @@ private:
     return record.expression.text;
   }
 
-  std::string encode_member_type(const AbiType & type)
+  void append_member_type(const AbiType & type, std::string & output)
   {
-    if(type.types.empty() || type.name.empty()) {
+    if(type.types.empty() || type.name.components.size() != 1) {
       throw std::logic_error("member ABI type is incomplete");
     }
-    return encode_type_impl(type.types[0]) + source_name(type.name);
+    append_type(type.types[0], output);
+    output += source_name(type.name.components[0]);
   }
 
-  std::string encode_lambda_type(const AbiType & type)
+  void append_lambda_type(const AbiType & type, std::string & output)
   {
     const AbiLocalContext & context = definition(type.context_ref).context;
-    std::string result = context.kind == ABI_CONTEXT_RAW ? context.fragment :
-      "Z" + encode_function(context.function) + "E";
-    result += "Ul";
-    if(type.types.empty()) result += "v";
+    if(context.kind == ABI_CONTEXT_RAW) output += context.fragment;
+    else output += "Z" + encode_function(context.function) + "E";
+    output += "Ul";
+    if(type.types.empty()) output += "v";
     else for(std::vector<AbiType>::const_iterator it = type.types.begin();
-              it != type.types.end(); ++it) result += encode_type_impl(*it);
-    result += "E";
-    if(!type.discriminator.empty() && type.discriminator != "0") result += type.discriminator;
-    return result + "_";
+              it != type.types.end(); ++it) append_type(*it, output);
+    output.push_back('E');
+    if(!type.discriminator.empty() && type.discriminator != "0") output += type.discriminator;
+    output.push_back('_');
   }
 
-  std::string encode_namespace_lambda_type(const AbiType & type)
+  void append_namespace_lambda_type(const AbiType & type, std::string & output)
   {
-    std::string result = "Ul" + type.name + "E";
-    if(!type.discriminator.empty() && type.discriminator != "0") result += type.discriminator;
-    result += "_";
+    if(type.name.components.size() != 1) {
+      throw std::logic_error("namespace lambda source name is not a component");
+    }
+    output += "Ul" + type.name.components[0] + "E";
+    if(!type.discriminator.empty() && type.discriminator != "0") output += type.discriminator;
+    output.push_back('_');
     for(std::vector<std::string>::const_iterator it = type.namespace_qualifiers.begin();
         it != type.namespace_qualifiers.end(); ++it) {
       (void)it;
     }
-    return result;
   }
 
-  std::string encode_local_type(const AbiType & type)
+  void append_local_type(const AbiType & type, std::string & output)
   {
     const AbiLocalContext & context = definition(type.context_ref).context;
-    std::string result = context.kind == ABI_CONTEXT_RAW ? context.fragment :
-      "Z" + encode_function(context.function) + "E";
-    result += "N" + source_name(type.name) + "E";
-    if(!type.discriminator.empty() && type.discriminator != "0") result += "_" + type.discriminator;
-    return result;
+    if(context.kind == ABI_CONTEXT_RAW) output += context.fragment;
+    else output += "Z" + encode_function(context.function) + "E";
+    if(type.name.components.size() != 1) {
+      throw std::logic_error("local type name is not a component");
+    }
+    output += "N" + source_name(type.name.components[0]) + "E";
+    if(!type.discriminator.empty() && type.discriminator != "0") output += "_" + type.discriminator;
   }
 
-  std::string encode_function_type_parameters(const AbiFunctionTarget & target,
-                                              const std::vector<AbiFunctionRecord> & records)
+  std::string encode_function_type_parameters(const AbiFunctionTarget & target)
   {
     std::string result;
     bool has_parameter = false;
@@ -609,49 +609,54 @@ private:
       result += encode_type(*it);
       has_parameter = true;
     }
-    for(std::vector<AbiFunctionRecord>::const_iterator it = records.begin();
-        it != records.end(); ++it) {
-      if(it->kind != ABI_FUNCTION_RECORD_PARAMETER) continue;
-      result += encode_type(it->type);
+    for(std::vector<AbiFactRecord>::const_iterator it = fact_case_.records.begin();
+        it != fact_case_.records.end(); ++it) {
+      if(it->kind != ABI_FACT_RECORD_FUNCTION ||
+         it->function.kind != ABI_FUNCTION_RECORD_PARAMETER) continue;
+      result += encode_type(it->function.type);
       has_parameter = true;
     }
     bool variadic = false;
-    for(std::vector<AbiFunctionRecord>::const_iterator it = records.begin();
-        it != records.end(); ++it) {
-      if(it->kind == ABI_FUNCTION_RECORD_VARIADIC) variadic = true;
+    for(std::vector<AbiFactRecord>::const_iterator it = fact_case_.records.begin();
+        it != fact_case_.records.end(); ++it) {
+      if(it->kind == ABI_FACT_RECORD_FUNCTION &&
+         it->function.kind == ABI_FUNCTION_RECORD_VARIADIC) variadic = true;
     }
     if(!has_parameter) result += "v";
     if(variadic) result += "z";
     return result;
   }
 
-  std::vector<std::string> source_components(const std::vector<AbiFunctionRecord> & records) const
+  AbiQualifiedName source_components() const
   {
-    std::vector<std::string> components;
-    for(std::vector<AbiFunctionRecord>::const_iterator it = records.begin();
-        it != records.end(); ++it) {
-      if(it->kind != ABI_FUNCTION_RECORD_NAME_SOURCE) continue;
-      if(it->source_name.empty() || it->source_name == "-") continue;
-      const std::vector<std::string> split = split_qualified_name(it->source_name);
-      components.insert(components.end(), split.begin(), split.end());
+    AbiQualifiedName components;
+    for(std::vector<AbiFactRecord>::const_iterator it = fact_case_.records.begin();
+        it != fact_case_.records.end(); ++it) {
+      if(it->kind != ABI_FACT_RECORD_FUNCTION ||
+         it->function.kind != ABI_FUNCTION_RECORD_NAME_SOURCE) continue;
+      if(it->function.source_name.components.empty()) continue;
+      components.components.insert(components.components.end(),
+                                   it->function.source_name.components.begin(),
+                                   it->function.source_name.components.end());
     }
     return components;
   }
 
-  std::string encode_components(const std::vector<std::string> & components,
-                                const std::vector<std::string> & tags,
-                                bool std_prefix)
+  std::string encode_name_with_std_prefix(const AbiQualifiedName & name,
+                                          const std::vector<std::string> & tags,
+                                          bool std_prefix)
   {
-    if(components.empty()) {
+    if(name.components.empty()) {
       throw std::logic_error("ABI function has no name components");
     }
-    std::string spelling;
-    if(std_prefix) spelling = "std::";
-    for(std::size_t i = 0; i < components.size(); ++i) {
-      if(i != 0) spelling += "::";
-      spelling += components[i];
+    if(!std_prefix) {
+      return encode_name(name, tags);
     }
-    return encode_name(spelling, tags);
+    AbiQualifiedName prefixed;
+    prefixed.components.push_back("std");
+    prefixed.components.insert(prefixed.components.end(), name.components.begin(),
+                               name.components.end());
+    return encode_name(prefixed, tags);
   }
 
   std::string operator_code(const std::string & name, bool unary) const
@@ -693,13 +698,12 @@ private:
     throw std::logic_error("unknown ABI operator terminal '" + name + "'");
   }
 
-  std::string encode_function_name(const AbiFunctionTarget & target,
-                                   const std::vector<AbiFunctionRecord> & records)
+  std::string encode_function_name(const AbiFunctionTarget & target)
   {
-    if(target.kind == ABI_FUNCTION_TARGET_PATH && target.qualified_name.empty()) {
+    if(target.kind == ABI_FUNCTION_TARGET_PATH && target.name.components.empty()) {
       throw std::logic_error("function path has an empty name");
     }
-    std::vector<std::string> components;
+    AbiQualifiedName components;
     bool std_prefix = false;
     std::vector<std::string> tags;
     std::string terminal;
@@ -708,39 +712,44 @@ private:
     bool has_operator = false;
     bool constructor = false;
     bool destructor = false;
-    for(std::vector<AbiFunctionRecord>::const_iterator it = records.begin();
-        it != records.end(); ++it) {
-      switch(it->kind) {
+    AbiFunctionSpecialTerminalKind special_terminal = ABI_SPECIAL_TERMINAL_NONE;
+    for(std::vector<AbiFactRecord>::const_iterator fact = fact_case_.records.begin();
+        fact != fact_case_.records.end(); ++fact) {
+      if(fact->kind != ABI_FACT_RECORD_FUNCTION) continue;
+      const AbiFunctionRecord & record = fact->function;
+      switch(record.kind) {
       case ABI_FUNCTION_RECORD_NAME_STD:
         std_prefix = true;
         break;
       case ABI_FUNCTION_RECORD_NAME_SOURCE:
         break;
       case ABI_FUNCTION_RECORD_TERMINAL:
-        terminal = it->terminal;
+        terminal = record.terminal;
+        special_terminal = record.special_terminal;
         break;
       case ABI_FUNCTION_RECORD_TERMINAL_SOURCE:
-        terminal = it->terminal;
+        terminal = record.terminal;
+        special_terminal = record.special_terminal;
         break;
       case ABI_FUNCTION_RECORD_OPERATOR_TERMINAL:
-        terminal = it->terminal;
-        literal = it->literal_suffix;
+        terminal = record.terminal;
+        literal = record.literal_suffix;
         has_operator = true;
         break;
       case ABI_FUNCTION_RECORD_CONVERSION_TERMINAL:
-        conversion = it->terminal;
+        conversion = record.terminal;
         break;
       case ABI_FUNCTION_RECORD_ABI_TAG:
-        tags.push_back(it->name);
+        tags.push_back(record.name);
         break;
       default:
         break;
       }
     }
     if(target.kind == ABI_FUNCTION_TARGET_PATH) {
-      components = split_qualified_name(target.qualified_name);
+      components = target.name;
     } else {
-      components = source_components(records);
+      components = source_components();
       if(target.kind == ABI_FUNCTION_TARGET_NAMESPACE_LAMBDA) {
         std::string result = "N";
         for(std::vector<std::string>::const_iterator it = target.namespace_qualifiers.begin();
@@ -753,28 +762,38 @@ private:
       }
     }
 
-    for(std::vector<std::string>::const_iterator it = components.begin();
-        it != components.end(); ++it) {
+    for(std::vector<std::string>::const_iterator it = components.components.begin();
+        it != components.components.end(); ++it) {
       if(*it == "operator") has_operator = true;
     }
-    if(terminal == "constructor-complete" || terminal == "constructor-base" ||
-       terminal == "constructor-allocating") constructor = true;
-    if(terminal == "destructor-deleting" || terminal == "destructor-complete" ||
-       terminal == "destructor-base") destructor = true;
+    constructor = special_terminal == ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE ||
+      special_terminal == ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE ||
+      special_terminal == ABI_SPECIAL_TERMINAL_CONSTRUCTOR_ALLOCATING;
+    destructor = special_terminal == ABI_SPECIAL_TERMINAL_DESTRUCTOR_DELETING ||
+      special_terminal == ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE ||
+      special_terminal == ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE;
 
     if(constructor || destructor) {
-      if(components.empty()) throw std::logic_error("special function has no owner");
+      if(components.components.empty()) throw std::logic_error("special function has no owner");
       std::string result = "N";
-      for(std::vector<std::string>::const_iterator it = components.begin();
-          it != components.end(); ++it) {
+      for(std::vector<std::string>::const_iterator it = components.components.begin();
+          it != components.components.end(); ++it) {
         result += source_name(*it);
       }
       if(constructor) {
-        result += terminal == "constructor-base" ? "C2" :
-          (terminal == "constructor-allocating" ? "C3" : "C1");
+        switch(special_terminal) {
+        case ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE: result += "C1"; break;
+        case ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE: result += "C2"; break;
+        case ABI_SPECIAL_TERMINAL_CONSTRUCTOR_ALLOCATING: result += "C3"; break;
+        default: throw std::logic_error("constructor has no special terminal kind");
+        }
       } else {
-        result += terminal == "destructor-deleting" ? "D0" :
-          (terminal == "destructor-base" ? "D2" : "D1");
+        switch(special_terminal) {
+        case ABI_SPECIAL_TERMINAL_DESTRUCTOR_DELETING: result += "D0"; break;
+        case ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE: result += "D1"; break;
+        case ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE: result += "D2"; break;
+        default: throw std::logic_error("destructor has no special terminal kind");
+        }
       }
       return result + "E";
     }
@@ -782,8 +801,10 @@ private:
     if(conversion.empty() && has_operator) {
       const std::string code = literal.empty() ? operator_code(terminal, false) :
         "li" + source_name(literal);
-      if(components.size() > 1 && components.back() == "operator") components.pop_back();
-      std::string result = encode_components(components, tags, std_prefix);
+      if(components.components.size() > 1 && components.components.back() == "operator") {
+        components.components.pop_back();
+      }
+      std::string result = encode_name_with_std_prefix(components, tags, std_prefix);
       if(result.size() >= 1 && result[result.size() - 1] == 'E') {
         result.erase(result.size() - 1);
         result += code + "E";
@@ -793,40 +814,32 @@ private:
       return result;
     }
     if(!conversion.empty()) {
-      if(components.size() > 1 && components.back() == "operator") components.pop_back();
-      std::string result = encode_components(components, tags, std_prefix);
+      if(components.components.size() > 1 && components.components.back() == "operator") {
+        components.components.pop_back();
+      }
+      std::string result = encode_name_with_std_prefix(components, tags, std_prefix);
       if(result.size() >= 1 && result[result.size() - 1] == 'E') result.erase(result.size() - 1);
-      result += "cv" + encode_type(parse_type_for_conversion(conversion)) + "E";
-      return result;
+      for(std::vector<AbiFactRecord>::const_iterator fact = fact_case_.records.begin();
+          fact != fact_case_.records.end(); ++fact) {
+        if(fact->kind == ABI_FACT_RECORD_FUNCTION &&
+           fact->function.kind == ABI_FUNCTION_RECORD_CONVERSION_TERMINAL &&
+           fact->function.has_conversion_type) {
+          result += "cv" + encode_type(fact->function.conversion_type) + "E";
+          return result;
+        }
+      }
+      throw std::logic_error("conversion terminal has no typed conversion type");
     }
     if(target.kind == ABI_FUNCTION_TARGET_PATH) {
-      return encode_name(target.qualified_name, tags);
+      return encode_name(target.name, tags);
     }
-    return encode_components(components, tags, std_prefix);
-  }
-
-  AbiType parse_type_for_conversion(const std::string & name) const
-  {
-    AbiType result;
-    if(name.find("::") != std::string::npos || name == "int" || name == "void") {
-      result.kind = name == "int" || name == "void" ? ABI_TYPE_BUILTIN : ABI_TYPE_NAMED;
-      result.name = name;
-      return result;
-    }
-    result.kind = ABI_TYPE_BUILTIN;
-    result.name = name;
-    return result;
+    return encode_name_with_std_prefix(components, tags, std_prefix);
   }
 
   std::string encode_function(const AbiFunctionTarget & target)
   {
-    std::vector<AbiFunctionRecord> records;
-    for(std::vector<AbiFactRecord>::const_iterator it = fact_case_.records.begin();
-        it != fact_case_.records.end(); ++it) {
-      if(it->kind == ABI_FACT_RECORD_FUNCTION) records.push_back(it->function);
-    }
-    const std::string name = encode_function_name(target, records);
-    const std::string params = encode_function_type_parameters(target, records);
+    const std::string name = encode_function_name(target);
+    const std::string params = encode_function_type_parameters(target);
     return "_Z" + name + params;
   }
 

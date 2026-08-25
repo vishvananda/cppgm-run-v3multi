@@ -8,6 +8,25 @@
 
 namespace abi_mangle {
 
+static const std::size_t ABI_INVALID_DEFINITION_ID =
+  static_cast<std::size_t>(-1);
+
+// A qualified name is a semantic sequence of source-name components.  The
+// line-oriented adapter may receive one `a::b` token, but the encoder never
+// stores or reparses that joined spelling.
+struct AbiQualifiedName
+{
+  std::vector<std::string> components;
+};
+
+// Definition identity is a dense, per-case canonical index.  Source spelling
+// belongs to the line adapter's cold diagnostic sidecar, not to this reusable
+// semantic model.
+struct AbiDefinitionId
+{
+  std::size_t index = ABI_INVALID_DEFINITION_ID;
+};
+
 enum AbiFactRecordKind
 {
   ABI_FACT_RECORD_DEFINITION,
@@ -49,6 +68,45 @@ enum AbiTypeKind
   ABI_TYPE_LAMBDA_CLOSURE,
   ABI_TYPE_LOCAL_TYPE,
   ABI_TYPE_NAMESPACE_LAMBDA
+};
+
+enum AbiBuiltinKind
+{
+  ABI_BUILTIN_INVALID,
+  ABI_BUILTIN_VOID,
+  ABI_BUILTIN_WCHAR,
+  ABI_BUILTIN_BOOL,
+  ABI_BUILTIN_CHAR,
+  ABI_BUILTIN_SIGNED_CHAR,
+  ABI_BUILTIN_UNSIGNED_CHAR,
+  ABI_BUILTIN_SHORT,
+  ABI_BUILTIN_UNSIGNED_SHORT,
+  ABI_BUILTIN_INT,
+  ABI_BUILTIN_UNSIGNED_INT,
+  ABI_BUILTIN_LONG,
+  ABI_BUILTIN_UNSIGNED_LONG,
+  ABI_BUILTIN_LONG_LONG,
+  ABI_BUILTIN_UNSIGNED_LONG_LONG,
+  ABI_BUILTIN_INT128,
+  ABI_BUILTIN_UNSIGNED_INT128,
+  ABI_BUILTIN_FLOAT,
+  ABI_BUILTIN_DOUBLE,
+  ABI_BUILTIN_LONG_DOUBLE,
+  ABI_BUILTIN_FLOAT128,
+  ABI_BUILTIN_ELLIPSIS,
+  ABI_BUILTIN_CHAR16,
+  ABI_BUILTIN_CHAR32,
+  ABI_BUILTIN_CHAR8,
+  ABI_BUILTIN_NULLPTR,
+  ABI_BUILTIN_COMPLEX_FLOAT,
+  ABI_BUILTIN_COMPLEX_DOUBLE,
+  ABI_BUILTIN_COMPLEX_LONG_DOUBLE
+};
+
+enum AbiLinkageKind
+{
+  ABI_LINKAGE_CXX,
+  ABI_LINKAGE_C
 };
 
 enum AbiArrayBoundKind
@@ -161,6 +219,17 @@ enum AbiFunctionRecordKind
   ABI_FUNCTION_RECORD_RESULT
 };
 
+enum AbiFunctionSpecialTerminalKind
+{
+  ABI_SPECIAL_TERMINAL_NONE,
+  ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE,
+  ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE,
+  ABI_SPECIAL_TERMINAL_CONSTRUCTOR_ALLOCATING,
+  ABI_SPECIAL_TERMINAL_DESTRUCTOR_DELETING,
+  ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE,
+  ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE
+};
+
 enum AbiFunctionQualifier
 {
   ABI_FUNCTION_QUALIFIER_CONST,
@@ -172,17 +241,21 @@ enum AbiFunctionQualifier
 struct AbiArrayBound
 {
   AbiArrayBoundKind kind = ABI_ARRAY_BOUND_VALUE;
-  std::string value;
+  std::size_t value = 0;
+  std::string raw;
+  AbiDefinitionId expression_ref;
 };
 
 struct AbiType
 {
   AbiTypeKind kind = ABI_TYPE_NAME_OR_REFERENCE;
-  std::string name;
+  AbiBuiltinKind builtin = ABI_BUILTIN_INVALID;
+  AbiQualifiedName name;
+  AbiDefinitionId definition_ref;
   std::string substitution;
   std::string standard_substitution;
-  std::string expression_ref;
-  std::string context_ref;
+  AbiDefinitionId expression_ref;
+  AbiDefinitionId context_ref;
   std::string discriminator;
   AbiArrayBound array_bound;
   std::size_t index = 0;
@@ -194,7 +267,7 @@ struct AbiType
   bool substitutable = false;
   bool standard_substitution_includes_arguments = false;
   std::vector<AbiType> types;
-  std::vector<std::string> argument_refs;
+  std::vector<AbiDefinitionId> argument_refs;
   std::vector<std::string> namespace_qualifiers;
   std::vector<std::string> abi_tags;
 };
@@ -205,9 +278,9 @@ struct AbiTemplateArgument
   AbiType type;
   AbiType value_type;
   AbiType owner_type;
-  std::string name;
+  AbiQualifiedName name;
   std::string substitution;
-  std::string entity_ref;
+  AbiDefinitionId entity_ref;
   std::string symbol;
   long long value = 0;
   std::size_t index = 0;
@@ -220,7 +293,7 @@ struct AbiTemplateArgument
   bool member_function_rvalue_ref = false;
   bool member_function_variadic = false;
   std::vector<AbiType> parameter_types;
-  std::vector<std::string> argument_refs;
+  std::vector<AbiDefinitionId> argument_refs;
 };
 
 struct AbiDependentExpression
@@ -230,13 +303,13 @@ struct AbiDependentExpression
   AbiType value_type;
   std::string text;
   std::string op;
-  std::string entity_ref;
+  AbiDefinitionId entity_ref;
   long long value = 0;
   std::size_t index = 0;
   bool close_member_owner = false;
   bool address_of = false;
-  std::vector<std::string> expression_refs;
-  std::vector<std::string> argument_refs;
+  std::vector<AbiDefinitionId> expression_refs;
+  std::vector<AbiDefinitionId> argument_refs;
   std::vector<AbiType> type_arguments;
 };
 
@@ -244,14 +317,14 @@ struct AbiFunctionPathOperand
 {
   AbiFunctionPathOperandKind kind = ABI_FUNCTION_PATH_TYPE;
   AbiType type;
-  std::string argument_ref;
+  AbiDefinitionId argument_ref;
 };
 
 struct AbiFunctionTarget
 {
   AbiFunctionTargetKind kind = ABI_FUNCTION_TARGET_PATH;
-  std::string qualified_name;
-  std::string context_ref;
+  AbiQualifiedName name;
+  AbiDefinitionId context_ref;
   std::string source_name;
   std::string discriminator;
   std::string terminal;
@@ -270,7 +343,7 @@ struct AbiLocalContext
 struct AbiEntityFact
 {
   AbiEntityFactKind kind = ABI_ENTITY_FACT_VARIABLE;
-  std::string qualified_name;
+  AbiQualifiedName name;
   AbiFunctionTarget function;
   bool internal_linkage = false;
 };
@@ -278,7 +351,7 @@ struct AbiEntityFact
 struct AbiDefinitionRecord
 {
   AbiDefinitionKind kind = ABI_DEFINITION_TYPE;
-  std::string id;
+  AbiDefinitionId id;
   AbiType type;
   AbiTemplateArgument template_argument;
   AbiDependentExpression expression;
@@ -289,11 +362,11 @@ struct AbiDefinitionRecord
 struct AbiTargetRecord
 {
   AbiTargetFactKind kind = ABI_TARGET_FACT_TYPE;
-  bool c_linkage = false;
+  AbiLinkageKind linkage = ABI_LINKAGE_CXX;
   AbiType type;
   AbiType base_type;
   AbiFunctionTarget function;
-  std::string qualified_name;
+  AbiQualifiedName name;
   unsigned long long base_offset = 0;
   long long this_adjust = 0;
   bool has_result_adjust = false;
@@ -311,16 +384,19 @@ struct AbiFunctionRecord
   std::string complete_substitution;
   std::string standard_substitution;
   bool standard_substitution_includes_arguments = false;
-  std::string context_ref;
-  std::string source_name;
+  AbiDefinitionId context_ref;
+  AbiQualifiedName source_name;
   std::string discriminator;
   std::string terminal;
   std::string literal_suffix;
   AbiType type;
+  AbiType conversion_type;
+  bool has_conversion_type = false;
   std::vector<AbiType> types;
-  std::vector<std::string> argument_refs;
+  std::vector<AbiDefinitionId> argument_refs;
   std::vector<std::string> namespace_qualifiers;
   std::vector<AbiFunctionQualifier> qualifiers;
+  AbiFunctionSpecialTerminalKind special_terminal = ABI_SPECIAL_TERMINAL_NONE;
 };
 
 struct AbiFactRecord
@@ -334,6 +410,9 @@ struct AbiFactRecord
 struct AbiFactCase
 {
   std::string label;
+  // Adapter-only labels for diagnostics and optional round-tripping.  The
+  // encoder uses only AbiDefinitionId::index; labels are never semantic IDs.
+  std::vector<std::string> definition_labels;
   std::vector<AbiFactRecord> records;
 };
 

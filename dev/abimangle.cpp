@@ -10,29 +10,159 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <set>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 
 using namespace std;
 
 namespace {
 
-bool is_builtin_name(const string & name)
+abi_mangle::AbiBuiltinKind builtin_kind(const string & name)
 {
-  static const char * const names[] = {
-    "void", "wchar", "bool", "char", "schar", "uchar", "short", "ushort",
-    "int", "uint", "long", "ulong", "longlong", "ulonglong", "int128",
-    "uint128", "float", "double", "longdouble", "float128", "ellipsis",
-    "char16", "char32", "char8", "nullptr", "complex-float", "complex-double",
-    "complex-longdouble"
+  struct BuiltinName {
+    const char * spelling;
+    abi_mangle::AbiBuiltinKind kind;
+  };
+  static const BuiltinName names[] = {
+    {"void", abi_mangle::ABI_BUILTIN_VOID},
+    {"wchar", abi_mangle::ABI_BUILTIN_WCHAR},
+    {"bool", abi_mangle::ABI_BUILTIN_BOOL},
+    {"char", abi_mangle::ABI_BUILTIN_CHAR},
+    {"schar", abi_mangle::ABI_BUILTIN_SIGNED_CHAR},
+    {"uchar", abi_mangle::ABI_BUILTIN_UNSIGNED_CHAR},
+    {"short", abi_mangle::ABI_BUILTIN_SHORT},
+    {"ushort", abi_mangle::ABI_BUILTIN_UNSIGNED_SHORT},
+    {"int", abi_mangle::ABI_BUILTIN_INT},
+    {"uint", abi_mangle::ABI_BUILTIN_UNSIGNED_INT},
+    {"long", abi_mangle::ABI_BUILTIN_LONG},
+    {"ulong", abi_mangle::ABI_BUILTIN_UNSIGNED_LONG},
+    {"longlong", abi_mangle::ABI_BUILTIN_LONG_LONG},
+    {"ulonglong", abi_mangle::ABI_BUILTIN_UNSIGNED_LONG_LONG},
+    {"int128", abi_mangle::ABI_BUILTIN_INT128},
+    {"uint128", abi_mangle::ABI_BUILTIN_UNSIGNED_INT128},
+    {"float", abi_mangle::ABI_BUILTIN_FLOAT},
+    {"double", abi_mangle::ABI_BUILTIN_DOUBLE},
+    {"longdouble", abi_mangle::ABI_BUILTIN_LONG_DOUBLE},
+    {"float128", abi_mangle::ABI_BUILTIN_FLOAT128},
+    {"ellipsis", abi_mangle::ABI_BUILTIN_ELLIPSIS},
+    {"char16", abi_mangle::ABI_BUILTIN_CHAR16},
+    {"char32", abi_mangle::ABI_BUILTIN_CHAR32},
+    {"char8", abi_mangle::ABI_BUILTIN_CHAR8},
+    {"nullptr", abi_mangle::ABI_BUILTIN_NULLPTR},
+    {"complex-float", abi_mangle::ABI_BUILTIN_COMPLEX_FLOAT},
+    {"complex-double", abi_mangle::ABI_BUILTIN_COMPLEX_DOUBLE},
+    {"complex-longdouble", abi_mangle::ABI_BUILTIN_COMPLEX_LONG_DOUBLE}
   };
   for(size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-    if(name == names[i]) return true;
+    if(name == names[i].spelling) return names[i].kind;
   }
-  return false;
+  return abi_mangle::ABI_BUILTIN_INVALID;
+}
+
+abi_mangle::AbiQualifiedName parse_qualified_name(const string & spelling)
+{
+  abi_mangle::AbiQualifiedName result;
+  size_t begin = spelling.compare(0, 2, "::") == 0 ? 2 : 0;
+  if(begin == spelling.size()) throw logic_error("empty qualified ABI name");
+  while(begin < spelling.size()) {
+    const size_t separator = spelling.find("::", begin);
+    const size_t end = separator == string::npos ? spelling.size() : separator;
+    if(end == begin) throw logic_error("empty component in qualified ABI name");
+    result.components.push_back(spelling.substr(begin, end - begin));
+    if(separator == string::npos) return result;
+    begin = separator + 2;
+    if(begin == spelling.size()) {
+      throw logic_error("trailing scope separator in qualified ABI name");
+    }
+  }
+  throw logic_error("empty qualified ABI name");
+}
+
+abi_mangle::AbiQualifiedName parse_source_component(const string & spelling)
+{
+  abi_mangle::AbiQualifiedName result = parse_qualified_name(spelling);
+  if(result.components.size() != 1) {
+    throw logic_error("ABI source name must have one component");
+  }
+  return result;
+}
+
+struct DefinitionInterner
+{
+  map<string, size_t> indexes;
+  vector<string> labels;
+  vector<unsigned char> defined;
+
+  size_t intern(const string & spelling)
+  {
+    if(spelling.empty() || spelling == "-") {
+      throw logic_error("invalid ABI definition reference");
+    }
+    map<string, size_t>::const_iterator found = indexes.find(spelling);
+    if(found != indexes.end()) return found->second;
+    const size_t index = labels.size();
+    indexes.insert(make_pair(spelling, index));
+    labels.push_back(spelling);
+    defined.push_back(0);
+    return index;
+  }
+
+  abi_mangle::AbiDefinitionId reference(const string & spelling)
+  {
+    abi_mangle::AbiDefinitionId result;
+    result.index = intern(spelling);
+    return result;
+  }
+
+  abi_mangle::AbiDefinitionId define(const string & spelling)
+  {
+    const size_t index = intern(spelling);
+    if(defined[index]) {
+      throw logic_error("duplicate ABI definition id '" + spelling + "'");
+    }
+    defined[index] = 1;
+    abi_mangle::AbiDefinitionId result;
+    result.index = index;
+    return result;
+  }
+
+  bool is_defined(size_t index) const
+  {
+    return index < defined.size() && defined[index] != 0;
+  }
+
+  const string & spelling(size_t index) const
+  {
+    if(index >= labels.size()) throw logic_error("unknown ABI definition index");
+    return labels[index];
+  }
+};
+
+abi_mangle::AbiFunctionSpecialTerminalKind special_terminal_kind(const string & spelling)
+{
+  if(spelling == "constructor-complete") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE;
+  }
+  if(spelling == "constructor-base") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE;
+  }
+  if(spelling == "constructor-allocating") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_ALLOCATING;
+  }
+  if(spelling == "destructor-deleting") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_DELETING;
+  }
+  if(spelling == "destructor-complete") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
+  }
+  if(spelling == "destructor-base") {
+    return abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE;
+  }
+  return abi_mangle::ABI_SPECIAL_TERMINAL_NONE;
 }
 
 size_t parse_index(const string & spelling)
@@ -62,13 +192,33 @@ long long parse_value(const string & spelling)
   return value;
 }
 
+bool is_unsupported_wide_integral_value_type(const abi_mangle::AbiType & original)
+{
+  const abi_mangle::AbiType * type = &original;
+  while(type->kind == abi_mangle::ABI_TYPE_CV) {
+    if(type->types.empty()) return false;
+    type = &type->types[0];
+  }
+  return type->kind == abi_mangle::ABI_TYPE_BUILTIN &&
+    (type->builtin == abi_mangle::ABI_BUILTIN_INT128 ||
+     type->builtin == abi_mangle::ABI_BUILTIN_UNSIGNED_INT128);
+}
+
+void reject_unsupported_wide_integral_value_type(const abi_mangle::AbiType & type)
+{
+  if(is_unsupported_wide_integral_value_type(type)) {
+    throw logic_error("128-bit integral ABI values are unsupported by the stored value representation");
+  }
+}
+
 bool is_single_colon(const string & value, size_t at)
 {
   return value[at] == ':' && (at == 0 || value[at - 1] != ':') &&
     (at + 1 == value.size() || value[at + 1] != ':');
 }
 
-abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at);
+abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at,
+                                          DefinitionInterner & interner);
 
 bool consume_compact_prefix(const string & spelling, size_t & at, const char * prefix)
 {
@@ -79,23 +229,25 @@ bool consume_compact_prefix(const string & spelling, size_t & at, const char * p
 }
 
 abi_mangle::AbiType make_unary_type(abi_mangle::AbiTypeKind kind,
-                                    const abi_mangle::AbiType & child)
+                                    abi_mangle::AbiType child)
 {
   abi_mangle::AbiType result;
   result.kind = kind;
-  result.types.push_back(child);
+  result.types.push_back(std::move(child));
   return result;
 }
 
-abi_mangle::AbiType parse_compact_type(const string & spelling)
+abi_mangle::AbiType parse_compact_type(const string & spelling,
+                                       DefinitionInterner & interner)
 {
   size_t at = 0;
-  abi_mangle::AbiType result = parse_compact_type_at(spelling, at);
+  abi_mangle::AbiType result = parse_compact_type_at(spelling, at, interner);
   if(at != spelling.size()) throw logic_error("trailing compact ABI type fields");
   return result;
 }
 
-abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
+abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at,
+                                          DefinitionInterner & interner)
 {
   const size_t begin = at;
   abi_mangle::AbiTypeKind unary_kind = abi_mangle::ABI_TYPE_POINTER;
@@ -120,7 +272,7 @@ abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
   if(at != begin) {
     if(at == spelling.size()) throw logic_error("missing child type in compact ABI type");
     abi_mangle::AbiType result = make_unary_type(unary_kind,
-                                                  parse_compact_type_at(spelling, at));
+                                                  parse_compact_type_at(spelling, at, interner));
     if(is_cv) {
       result.is_const = is_const;
       result.is_volatile = is_volatile;
@@ -135,14 +287,14 @@ abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
       throw logic_error("invalid compact array type '" + spelling + "'");
     }
     const string bound = spelling.substr(bound_begin, at - bound_begin);
-    parse_index(bound);
+    const size_t bound_value = parse_index(bound);
     ++at;
     if(at == spelling.size()) throw logic_error("missing compact array element type");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_ARRAY;
     result.array_bound.kind = abi_mangle::ABI_ARRAY_BOUND_VALUE;
-    result.array_bound.value = bound;
-    result.types.push_back(parse_compact_type_at(spelling, at));
+    result.array_bound.value = bound_value;
+    result.types.push_back(parse_compact_type_at(spelling, at, interner));
     return result;
   }
 
@@ -163,8 +315,8 @@ abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
     at = separator + 1;
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_MEMBER_POINTER;
-    result.types.push_back(parse_compact_type(owner));
-    result.types.push_back(parse_compact_type_at(spelling, at));
+    result.types.push_back(parse_compact_type(owner, interner));
+    result.types.push_back(parse_compact_type_at(spelling, at, interner));
     return result;
   }
 
@@ -172,7 +324,7 @@ abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
     if(at == spelling.size()) throw logic_error("empty named ABI type");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_NAMED;
-    result.name = spelling.substr(at);
+    result.name = parse_qualified_name(spelling.substr(at));
     at = spelling.size();
     return result;
   }
@@ -188,14 +340,19 @@ abi_mangle::AbiType parse_compact_type_at(const string & spelling, size_t & at)
 
   if(at == spelling.size()) throw logic_error("empty compact ABI type");
   abi_mangle::AbiType result;
-  result.name = spelling.substr(at);
-  result.kind = is_builtin_name(result.name) ? abi_mangle::ABI_TYPE_BUILTIN :
-    abi_mangle::ABI_TYPE_NAME_OR_REFERENCE;
+  const string token = spelling.substr(at);
+  result.builtin = builtin_kind(token);
+  result.kind = result.builtin == abi_mangle::ABI_BUILTIN_INVALID ?
+    abi_mangle::ABI_TYPE_NAME_OR_REFERENCE : abi_mangle::ABI_TYPE_BUILTIN;
+  if(result.kind == abi_mangle::ABI_TYPE_NAME_OR_REFERENCE) {
+    result.name = parse_qualified_name(token);
+  }
   at = spelling.size();
   return result;
 }
 
-abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
+abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at,
+                                     DefinitionInterner & interner)
 {
   if(at >= words.size()) throw logic_error("missing ABI type");
   const string spelling = words[at++];
@@ -204,11 +361,11 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
     const abi_mangle::AbiTypeKind kind = spelling == "ptr" ?
       abi_mangle::ABI_TYPE_POINTER : (spelling == "ref" ?
       abi_mangle::ABI_TYPE_LVALUE_REFERENCE : abi_mangle::ABI_TYPE_RVALUE_REFERENCE);
-    return make_unary_type(kind, parse_type_words(words, at));
+    return make_unary_type(kind, parse_type_words(words, at, interner));
   }
   if(spelling == "const" || spelling == "volatile") {
     abi_mangle::AbiType result = make_unary_type(abi_mangle::ABI_TYPE_CV,
-                                                  parse_type_words(words, at));
+                                                  parse_type_words(words, at, interner));
     result.is_const = spelling == "const";
     result.is_volatile = spelling == "volatile";
     return result;
@@ -218,44 +375,43 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_ARRAY;
     result.array_bound.kind = abi_mangle::ABI_ARRAY_BOUND_VALUE;
-    result.array_bound.value = words[at++];
-    parse_index(result.array_bound.value);
-    result.types.push_back(parse_type_words(words, at));
+    result.array_bound.value = parse_index(words[at++]);
+    result.types.push_back(parse_type_words(words, at, interner));
     return result;
   }
   if(spelling == "member-pointer") {
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_MEMBER_POINTER;
-    result.types.push_back(parse_type_words(words, at));
-    result.types.push_back(parse_type_words(words, at));
+    result.types.push_back(parse_type_words(words, at, interner));
+    result.types.push_back(parse_type_words(words, at, interner));
     return result;
   }
   if(spelling == "function-type" || spelling == "function-type-variadic") {
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_FUNCTION;
     result.variadic = spelling == "function-type-variadic";
-    result.types.push_back(parse_type_words(words, at));
-    while(at < words.size()) result.types.push_back(parse_type_words(words, at));
+    result.types.push_back(parse_type_words(words, at, interner));
+    while(at < words.size()) result.types.push_back(parse_type_words(words, at, interner));
     return result;
   }
   if(spelling == "vendor") {
     if(at >= words.size()) throw logic_error("missing vendor qualifier name");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_VENDOR_QUALIFIED;
-    result.name = words[at++];
-    result.types.push_back(parse_type_words(words, at));
+    result.name = parse_source_component(words[at++]);
+    result.types.push_back(parse_type_words(words, at, interner));
     return result;
   }
   if(spelling == "builtin-transform") {
     if(at >= words.size()) throw logic_error("missing builtin transform name");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_BUILTIN_TRANSFORM;
-    result.name = words[at++];
-    result.types.push_back(parse_type_words(words, at));
+    result.name = parse_source_component(words[at++]);
+    result.types.push_back(parse_type_words(words, at, interner));
     return result;
   }
   if(spelling == "tagged") {
-    abi_mangle::AbiType result = parse_type_words(words, at);
+    abi_mangle::AbiType result = parse_type_words(words, at, interner);
     while(at < words.size()) result.abi_tags.push_back(words[at++]);
     return result;
   }
@@ -263,7 +419,7 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
     if(at >= words.size()) throw logic_error("missing named ABI type name");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_NAMED;
-    result.name = words[at++];
+    result.name = parse_qualified_name(words[at++]);
     return result;
   }
   if(spelling == "template-param" || spelling == "template-param-subst") {
@@ -283,44 +439,44 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
       if(at >= words.size()) throw logic_error("missing standard template flag");
       result.standard_substitution_includes_arguments = words[at++] == "yes";
       if(at >= words.size()) throw logic_error("missing standard template name");
-      result.name = words[at++];
+      result.name = parse_qualified_name(words[at++]);
     } else {
-      result.name = words[at++];
+      result.name = parse_qualified_name(words[at++]);
     }
-    while(at < words.size()) result.argument_refs.push_back(words[at++]);
+    while(at < words.size()) result.argument_refs.push_back(interner.reference(words[at++]));
     return result;
   }
   if(spelling == "member") {
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_MEMBER;
-    result.types.push_back(parse_type_words(words, at));
+    result.types.push_back(parse_type_words(words, at, interner));
     if(at >= words.size()) throw logic_error("missing member ABI type name");
-    result.name = words[at++];
+    result.name = parse_source_component(words[at++]);
     return result;
   }
   if(spelling == "member-template") {
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION;
-    result.types.push_back(parse_type_words(words, at));
-    while(at < words.size()) result.argument_refs.push_back(words[at++]);
+    result.types.push_back(parse_type_words(words, at, interner));
+    while(at < words.size()) result.argument_refs.push_back(interner.reference(words[at++]));
     return result;
   }
   if(spelling == "decltype") {
     if(at >= words.size()) throw logic_error("missing decltype expression id");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_DECLTYPE_EXPRESSION;
-    result.expression_ref = words[at++];
+    result.expression_ref = interner.reference(words[at++]);
     return result;
   }
   if(spelling == "pack") {
     return make_unary_type(abi_mangle::ABI_TYPE_PACK_EXPANSION,
-                           parse_type_words(words, at));
+                           parse_type_words(words, at, interner));
   }
   if(spelling == "namespace-lambda") {
     if(at >= words.size()) throw logic_error("missing namespace lambda source name");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_NAMESPACE_LAMBDA;
-    result.name = words[at++];
+    result.name = parse_source_component(words[at++]);
     while(at < words.size()) result.namespace_qualifiers.push_back(words[at++]);
     return result;
   }
@@ -328,7 +484,7 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
     if(at + 1 >= words.size()) throw logic_error("incomplete lambda closure type");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_LAMBDA_CLOSURE;
-    result.context_ref = words[at++];
+    result.context_ref = interner.reference(words[at++]);
     result.discriminator = words[at++];
     return result;
   }
@@ -336,13 +492,13 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at)
     if(at + 1 >= words.size()) throw logic_error("incomplete local type");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_LOCAL_TYPE;
-    result.context_ref = words[at++];
-    result.name = words[at++];
+    result.context_ref = interner.reference(words[at++]);
+    result.name = parse_source_component(words[at++]);
     if(at < words.size()) result.discriminator = words[at++];
     return result;
   }
 
-  return parse_compact_type(spelling);
+  return parse_compact_type(spelling, interner);
 }
 
 void require_end(const vector<string> & words, size_t at)
@@ -352,36 +508,40 @@ void require_end(const vector<string> & words, size_t at)
 
 abi_mangle::AbiFunctionTarget parse_function_path(const vector<string> & words,
                                                   size_t name_at,
-                                                  bool path_keyword)
+                                                  bool path_keyword,
+                                                  DefinitionInterner & interner)
 {
   if(name_at >= words.size()) throw logic_error("missing ABI function name");
   abi_mangle::AbiFunctionTarget result;
   result.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
-  result.qualified_name = words[name_at++];
+  result.name = parse_qualified_name(words[name_at++]);
   if(path_keyword) {
     while(name_at < words.size()) {
       abi_mangle::AbiFunctionPathOperand operand;
       operand.kind = abi_mangle::ABI_FUNCTION_PATH_TEMPLATE_ARGUMENT;
-      operand.argument_ref = words[name_at++];
+      operand.argument_ref = interner.reference(words[name_at++]);
       result.path_operands.push_back(operand);
     }
   } else {
     while(name_at < words.size()) {
       size_t type_at = name_at;
-      result.signature_parameter_types.push_back(parse_type_words(words, type_at));
+      result.signature_parameter_types.push_back(parse_type_words(words, type_at, interner));
       name_at = type_at;
     }
   }
   return result;
 }
 
-abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words)
+abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words,
+                                                   DefinitionInterner & interner)
 {
   if(words.empty()) throw logic_error("empty ABI function record");
   abi_mangle::AbiFunctionRecord result;
   if(words[0] == "name-source") {
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_NAME_SOURCE;
-    if(words.size() >= 2) result.source_name = words[1];
+    if(words.size() >= 2 && words[1] != "-") {
+      result.source_name = parse_qualified_name(words[1]);
+    }
     if(words.size() >= 3) result.substitution = words[2];
     if(words.size() > 3) throw logic_error("too many name-source fields");
     return result;
@@ -397,13 +557,15 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.name = words[1];
     if(words.size() >= 3) result.substitution = words[2];
     if(words.size() >= 4) result.complete_substitution = words[3];
-    for(size_t i = 4; i < words.size(); ++i) result.argument_refs.push_back(words[i]);
+    for(size_t i = 4; i < words.size(); ++i) {
+      result.argument_refs.push_back(interner.reference(words[i]));
+    }
     return result;
   }
   if(words[0] == "function-template-arg") {
     if(words.size() != 2) throw logic_error("invalid function-template-arg record");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_FUNCTION_TEMPLATE_ARGUMENT;
-    result.argument_refs.push_back(words[1]);
+    result.argument_refs.push_back(interner.reference(words[1]));
     return result;
   }
   if(words[0] == "function-template-prefix") {
@@ -418,8 +580,8 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.kind = words[0] == "local-context" ? abi_mangle::ABI_FUNCTION_RECORD_LOCAL_CONTEXT :
       (words[0] == "lambda-context" ? abi_mangle::ABI_FUNCTION_RECORD_LAMBDA_CONTEXT :
        abi_mangle::ABI_FUNCTION_RECORD_NAMESPACE_LAMBDA_CONTEXT);
-    result.context_ref = words[1];
-    if(words.size() >= 3) result.source_name = words[2];
+    result.context_ref = interner.reference(words[1]);
+    if(words.size() >= 3) result.source_name = parse_qualified_name(words[2]);
     if(words.size() >= 4) result.discriminator = words[3];
     return result;
   }
@@ -428,6 +590,7 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.kind = words[0] == "terminal" ? abi_mangle::ABI_FUNCTION_RECORD_TERMINAL :
       abi_mangle::ABI_FUNCTION_RECORD_TERMINAL_SOURCE;
     result.terminal = words[1];
+    result.special_terminal = special_terminal_kind(words[1]);
     return result;
   }
   if(words[0] == "operator-terminal") {
@@ -441,6 +604,10 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     if(words.size() != 2) throw logic_error("invalid conversion terminal");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_CONVERSION_TERMINAL;
     result.terminal = words[1];
+    size_t at = 1;
+    result.conversion_type = parse_type_words(words, at, interner);
+    result.has_conversion_type = true;
+    require_end(words, at);
     return result;
   }
   if(words[0] == "variadic") {
@@ -470,24 +637,24 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.kind = words[0] == "param" ? abi_mangle::ABI_FUNCTION_RECORD_PARAMETER :
       abi_mangle::ABI_FUNCTION_RECORD_RESULT;
     size_t at = 1;
-    result.type = parse_type_words(words, at);
+    result.type = parse_type_words(words, at, interner);
     require_end(words, at);
     return result;
   }
   throw logic_error("unknown ABI function record '" + words[0] + "'");
 }
 
-abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
+abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
+                                                  DefinitionInterner & interner)
 {
   if(words.size() < 2) throw logic_error("incomplete ABI definition record");
   abi_mangle::AbiFactRecord result;
   result.kind = abi_mangle::ABI_FACT_RECORD_DEFINITION;
-  result.definition.id = words[1];
-  if(result.definition.id.empty() || result.definition.id == "-") throw logic_error("invalid ABI definition id");
+  result.definition.id = interner.define(words[1]);
   if(words[0] == "let-type") {
     result.definition.kind = abi_mangle::ABI_DEFINITION_TYPE;
     size_t at = 2;
-    result.definition.type = parse_type_words(words, at);
+    result.definition.type = parse_type_words(words, at, interner);
     require_end(words, at);
     return result;
   }
@@ -498,17 +665,18 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
     size_t at = 3;
     if(kind == "type") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_TYPE;
-      result.definition.template_argument.type = parse_type_words(words, at);
+      result.definition.template_argument.type = parse_type_words(words, at, interner);
     } else if(kind == "value") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_VALUE;
-      result.definition.template_argument.value_type = parse_type_words(words, at);
+      result.definition.template_argument.value_type = parse_type_words(words, at, interner);
+      reject_unsupported_wide_integral_value_type(result.definition.template_argument.value_type);
       result.definition.template_argument.has_value_type = true;
       if(at >= words.size()) throw logic_error("missing ABI template value");
       result.definition.template_argument.value = parse_value(words[at++]);
     } else if(kind == "expression") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_EXPRESSION;
       if(at >= words.size()) throw logic_error("missing ABI expression argument reference");
-      result.definition.template_argument.entity_ref = words[at++];
+      result.definition.template_argument.entity_ref = interner.reference(words[at++]);
     } else if(kind == "template-param-template") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_TEMPLATE_PARAMETER_TEMPLATE;
       if(at >= words.size()) throw logic_error("missing template-template parameter index");
@@ -516,12 +684,12 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
     } else if(kind == "entity-address") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_ENTITY;
       if(at >= words.size()) throw logic_error("missing entity reference");
-      result.definition.template_argument.entity_ref = words[at++];
+      result.definition.template_argument.entity_ref = interner.reference(words[at++]);
       result.definition.template_argument.address_of = true;
     } else if(kind == "template-entity") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_TEMPLATE_ENTITY;
       if(at >= words.size()) throw logic_error("missing template entity name");
-      result.definition.template_argument.name = words[at++];
+      result.definition.template_argument.name = parse_qualified_name(words[at++]);
     } else {
       throw logic_error("unknown ABI template argument kind '" + kind + "'");
     }
@@ -544,7 +712,9 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
     } else {
       result.definition.expression.kind = abi_mangle::ABI_EXPRESSION_ENTITY;
       result.definition.expression.text = words[3];
-      for(size_t i = 4; i < words.size(); ++i) result.definition.expression.expression_refs.push_back(words[i]);
+      for(size_t i = 4; i < words.size(); ++i) {
+        result.definition.expression.expression_refs.push_back(interner.reference(words[i]));
+      }
     }
     return result;
   }
@@ -558,7 +728,7 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
       require_end(words, 4);
     } else if(context_kind == "function") {
       result.definition.context.kind = abi_mangle::ABI_CONTEXT_FUNCTION;
-      result.definition.context.function = parse_function_path(words, 3, false);
+      result.definition.context.function = parse_function_path(words, 3, false, interner);
     } else {
       throw logic_error("unknown ABI context kind '" + context_kind + "'");
     }
@@ -570,16 +740,16 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
     const string entity_kind = words[2];
     if(entity_kind == "symbol") {
       result.definition.entity.kind = abi_mangle::ABI_ENTITY_FACT_SYMBOL;
-      result.definition.entity.qualified_name = words[3];
+      result.definition.entity.name = parse_qualified_name(words[3]);
       require_end(words, 4);
     } else if(entity_kind == "variable" || entity_kind == "internal-variable") {
       result.definition.entity.kind = abi_mangle::ABI_ENTITY_FACT_VARIABLE;
-      result.definition.entity.qualified_name = words[3];
+      result.definition.entity.name = parse_qualified_name(words[3]);
       result.definition.entity.internal_linkage = entity_kind == "internal-variable";
       require_end(words, 4);
     } else if(entity_kind == "function") {
       result.definition.entity.kind = abi_mangle::ABI_ENTITY_FACT_FUNCTION;
-      result.definition.entity.function = parse_function_path(words, 3, false);
+      result.definition.entity.function = parse_function_path(words, 3, false, interner);
     } else {
       throw logic_error("unknown ABI entity kind '" + entity_kind + "'");
     }
@@ -588,14 +758,145 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words)
   throw logic_error("unknown ABI definition record '" + words[0] + "'");
 }
 
+void resolve_definition_ref(abi_mangle::AbiDefinitionId & ref,
+                           const DefinitionInterner & interner)
+{
+  if(ref.index == abi_mangle::ABI_INVALID_DEFINITION_ID) return;
+  if(!interner.is_defined(ref.index)) {
+    throw logic_error("unknown ABI definition id '" + interner.spelling(ref.index) + "'");
+  }
+}
+
+void canonicalize_type(abi_mangle::AbiType & type,
+                       const DefinitionInterner & interner)
+{
+  if(type.kind == abi_mangle::ABI_TYPE_NAME_OR_REFERENCE &&
+     type.definition_ref.index == abi_mangle::ABI_INVALID_DEFINITION_ID &&
+     type.name.components.size() == 1) {
+    map<string, size_t>::const_iterator found = interner.indexes.find(type.name.components[0]);
+    if(found != interner.indexes.end() && interner.is_defined(found->second)) {
+      type.definition_ref.index = found->second;
+      type.name.components.clear();
+    }
+  }
+  resolve_definition_ref(type.definition_ref, interner);
+  resolve_definition_ref(type.expression_ref, interner);
+  resolve_definition_ref(type.context_ref, interner);
+  if(type.array_bound.kind == abi_mangle::ABI_ARRAY_BOUND_EXPRESSION) {
+    resolve_definition_ref(type.array_bound.expression_ref, interner);
+  }
+  for(vector<abi_mangle::AbiType>::iterator it = type.types.begin();
+      it != type.types.end(); ++it) {
+    canonicalize_type(*it, interner);
+  }
+  for(vector<abi_mangle::AbiDefinitionId>::iterator it = type.argument_refs.begin();
+      it != type.argument_refs.end(); ++it) {
+    resolve_definition_ref(*it, interner);
+  }
+}
+
+void canonicalize_function_target(abi_mangle::AbiFunctionTarget & target,
+                                  const DefinitionInterner & interner)
+{
+  resolve_definition_ref(target.context_ref, interner);
+  for(vector<abi_mangle::AbiFunctionPathOperand>::iterator it = target.path_operands.begin();
+      it != target.path_operands.end(); ++it) {
+    resolve_definition_ref(it->argument_ref, interner);
+    canonicalize_type(it->type, interner);
+  }
+  for(vector<abi_mangle::AbiType>::iterator it = target.signature_parameter_types.begin();
+      it != target.signature_parameter_types.end(); ++it) {
+    canonicalize_type(*it, interner);
+  }
+}
+
+void canonicalize_argument(abi_mangle::AbiTemplateArgument & argument,
+                           const DefinitionInterner & interner)
+{
+  canonicalize_type(argument.type, interner);
+  canonicalize_type(argument.value_type, interner);
+  canonicalize_type(argument.owner_type, interner);
+  resolve_definition_ref(argument.entity_ref, interner);
+  for(vector<abi_mangle::AbiType>::iterator it = argument.parameter_types.begin();
+      it != argument.parameter_types.end(); ++it) {
+    canonicalize_type(*it, interner);
+  }
+  for(vector<abi_mangle::AbiDefinitionId>::iterator it = argument.argument_refs.begin();
+      it != argument.argument_refs.end(); ++it) {
+    resolve_definition_ref(*it, interner);
+  }
+}
+
+void canonicalize_expression(abi_mangle::AbiDependentExpression & expression,
+                             const DefinitionInterner & interner)
+{
+  canonicalize_type(expression.type, interner);
+  canonicalize_type(expression.value_type, interner);
+  resolve_definition_ref(expression.entity_ref, interner);
+  for(vector<abi_mangle::AbiDefinitionId>::iterator it = expression.expression_refs.begin();
+      it != expression.expression_refs.end(); ++it) {
+    resolve_definition_ref(*it, interner);
+  }
+  for(vector<abi_mangle::AbiDefinitionId>::iterator it = expression.argument_refs.begin();
+      it != expression.argument_refs.end(); ++it) {
+    resolve_definition_ref(*it, interner);
+  }
+  for(vector<abi_mangle::AbiType>::iterator it = expression.type_arguments.begin();
+      it != expression.type_arguments.end(); ++it) {
+    canonicalize_type(*it, interner);
+  }
+}
+
+void canonicalize_case(abi_mangle::AbiFactCase & fact_case,
+                       const DefinitionInterner & interner)
+{
+  for(vector<abi_mangle::AbiFactRecord>::iterator it = fact_case.records.begin();
+      it != fact_case.records.end(); ++it) {
+    if(it->kind == abi_mangle::ABI_FACT_RECORD_DEFINITION) {
+      abi_mangle::AbiDefinitionRecord & definition = it->definition;
+      if(definition.kind == abi_mangle::ABI_DEFINITION_TYPE) {
+        canonicalize_type(definition.type, interner);
+      } else if(definition.kind == abi_mangle::ABI_DEFINITION_TEMPLATE_ARGUMENT) {
+        canonicalize_argument(definition.template_argument, interner);
+      } else if(definition.kind == abi_mangle::ABI_DEFINITION_EXPRESSION) {
+        canonicalize_expression(definition.expression, interner);
+      } else if(definition.kind == abi_mangle::ABI_DEFINITION_CONTEXT) {
+        if(definition.context.kind == abi_mangle::ABI_CONTEXT_FUNCTION) {
+          canonicalize_function_target(definition.context.function, interner);
+        }
+      } else if(definition.kind == abi_mangle::ABI_DEFINITION_ENTITY &&
+                definition.entity.kind == abi_mangle::ABI_ENTITY_FACT_FUNCTION) {
+        canonicalize_function_target(definition.entity.function, interner);
+      }
+    } else if(it->kind == abi_mangle::ABI_FACT_RECORD_TARGET) {
+      canonicalize_type(it->target.type, interner);
+      canonicalize_type(it->target.base_type, interner);
+      canonicalize_function_target(it->target.function, interner);
+    } else {
+      canonicalize_type(it->function.type, interner);
+      if(it->function.has_conversion_type) {
+        canonicalize_type(it->function.conversion_type, interner);
+      }
+      resolve_definition_ref(it->function.context_ref, interner);
+      for(vector<abi_mangle::AbiDefinitionId>::iterator ref = it->function.argument_refs.begin();
+          ref != it->function.argument_refs.end(); ++ref) {
+        resolve_definition_ref(*ref, interner);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 namespace abi_mangle {
 
-AbiFactRecord parse_fact_record_words(const vector<string> & words)
+AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
+                                                   DefinitionInterner & interner)
 {
   if(words.empty()) throw logic_error("empty ABI fact record");
-  if(words[0].compare(0, 4, "let-") == 0) return parse_definition_record(words);
+  if(words[0].compare(0, 4, "let-") == 0) {
+    return parse_definition_record(words, interner);
+  }
   if(words[0] == "param" || words[0] == "result" || words[0] == "variadic" ||
      words[0] == "name-source" || words[0] == "name-std" || words[0] == "name-template" ||
      words[0] == "function-template-arg" || words[0] == "function-template-prefix" ||
@@ -606,7 +907,7 @@ AbiFactRecord parse_fact_record_words(const vector<string> & words)
      words[0] == "function-qualifier" || words[0] == "qualifier") {
     AbiFactRecord result;
     result.kind = ABI_FACT_RECORD_FUNCTION;
-    result.function = parse_function_record(words);
+    result.function = parse_function_record(words, interner);
     return result;
   }
 
@@ -615,7 +916,7 @@ AbiFactRecord parse_fact_record_words(const vector<string> & words)
   if(words[0] == "type") {
     result.target.kind = ABI_TARGET_FACT_TYPE;
     size_t at = 1;
-    result.target.type = parse_type_words(words, at);
+    result.target.type = parse_type_words(words, at, interner);
     require_end(words, at);
   } else if(words[0] == "function") {
     result.target.kind = ABI_TARGET_FACT_FUNCTION;
@@ -624,7 +925,7 @@ AbiFactRecord parse_fact_record_words(const vector<string> & words)
       require_end(words, 2);
       result.target.function.kind = ABI_FUNCTION_TARGET_ENCODING;
     } else if(words[1] == "path") {
-      result.target.function = parse_function_path(words, 2, true);
+      result.target.function = parse_function_path(words, 2, true, interner);
     } else if(words[1] == "namespace-lambda") {
       if(words.size() < 4) throw logic_error("incomplete namespace lambda function target");
       result.target.function.kind = ABI_FUNCTION_TARGET_NAMESPACE_LAMBDA;
@@ -634,47 +935,47 @@ AbiFactRecord parse_fact_record_words(const vector<string> & words)
     } else if(words[1] == "local" || words[1] == "lambda") {
       if(words.size() < 5) throw logic_error("incomplete local function target");
       result.target.function.kind = words[1] == "local" ? ABI_FUNCTION_TARGET_LOCAL : ABI_FUNCTION_TARGET_LAMBDA;
-      result.target.function.context_ref = words[2];
+      result.target.function.context_ref = interner.reference(words[2]);
       result.target.function.source_name = words[3];
       result.target.function.terminal = words[4];
       if(words.size() >= 6) result.target.function.discriminator = words[5];
       for(size_t i = 6; i < words.size(); ++i) {
         size_t at = i;
-        result.target.function.signature_parameter_types.push_back(parse_type_words(words, at));
+        result.target.function.signature_parameter_types.push_back(parse_type_words(words, at, interner));
         i = at - 1;
       }
     } else {
-      result.target.function = parse_function_path(words, 1, false);
+      result.target.function = parse_function_path(words, 1, false, interner);
     }
   } else if(words[0] == "c-function") {
     if(words.size() < 2) throw logic_error("incomplete C function target");
     result.target.kind = ABI_TARGET_FACT_FUNCTION;
-    result.target.c_linkage = true;
-    result.target.function = parse_function_path(words, 1, false);
+    result.target.linkage = abi_mangle::ABI_LINKAGE_C;
+    result.target.function = parse_function_path(words, 1, false, interner);
   } else if(words[0] == "variable") {
     if(words.size() != 2) throw logic_error("invalid ABI variable target");
     result.target.kind = ABI_TARGET_FACT_VARIABLE;
-    result.target.qualified_name = words[1];
+    result.target.name = parse_qualified_name(words[1]);
   } else if(words[0] == "typeinfo" || words[0] == "vtable" || words[0] == "vtt") {
     if(words.size() < 2) throw logic_error("incomplete ABI special target");
     result.target.kind = words[0] == "typeinfo" ? ABI_TARGET_FACT_TYPEINFO :
       (words[0] == "vtable" ? ABI_TARGET_FACT_VTABLE : ABI_TARGET_FACT_VTT);
     size_t at = 1;
-    result.target.type = parse_type_words(words, at);
+    result.target.type = parse_type_words(words, at, interner);
     require_end(words, at);
   } else if(words[0] == "construction-vtable") {
     if(words.size() < 4) throw logic_error("incomplete construction vtable target");
     result.target.kind = ABI_TARGET_FACT_CONSTRUCTION_VTABLE;
     size_t at = 1;
-    result.target.type = parse_type_words(words, at);
+    result.target.type = parse_type_words(words, at, interner);
     if(at >= words.size()) throw logic_error("missing construction vtable offset");
     result.target.base_offset = parse_index(words[at++]);
-    result.target.base_type = parse_type_words(words, at);
+    result.target.base_type = parse_type_words(words, at, interner);
     require_end(words, at);
   } else if(words[0] == "tls-wrapper") {
     if(words.size() != 3 || words[1] != "variable") throw logic_error("invalid TLS wrapper target");
     result.target.kind = ABI_TARGET_FACT_THREAD_LOCAL_WRAPPER;
-    result.target.qualified_name = words[2];
+    result.target.name = parse_qualified_name(words[2]);
   } else if(words[0] == "thunk" || words[0] == "virtual-base-thunk") {
     result.target.kind = words[0] == "thunk" ? ABI_TARGET_FACT_THUNK : ABI_TARGET_FACT_VIRTUAL_BASE_THUNK;
     size_t at = 1;
@@ -694,18 +995,32 @@ AbiFactRecord parse_fact_record_words(const vector<string> & words)
     if(at >= words.size() || words[at++] != "function") throw logic_error("missing thunk function target");
     vector<string> function_words(words.begin() + at, words.end());
     if(function_words.empty() || function_words[0] != "path") throw logic_error("thunk requires function path");
-    result.target.function = parse_function_path(function_words, 1, true);
+    result.target.function = parse_function_path(function_words, 1, true, interner);
   } else {
     throw logic_error("unknown ABI target record '" + words[0] + "'");
   }
   return result;
 }
 
+AbiFactRecord parse_fact_record_words(const vector<string> & words)
+{
+  DefinitionInterner interner;
+  return parse_fact_record_words_with_context(words, interner);
+}
+
 AbiFactFile parse_fact_text(const string & text)
 {
   AbiFactFile result;
   AbiFactCase current;
-  set<string> definition_ids;
+  DefinitionInterner interner;
+  const auto finish_case = [&]() {
+    if(current.records.empty()) return;
+    canonicalize_case(current, interner);
+    current.definition_labels = interner.labels;
+    result.cases.push_back(std::move(current));
+    current = AbiFactCase();
+    interner = DefinitionInterner();
+  };
   istringstream input(text);
   string line;
   while(getline(input, line)) {
@@ -716,51 +1031,85 @@ AbiFactFile parse_fact_text(const string & text)
     string word;
     while(line_stream >> word) words.push_back(word);
     if(words.empty()) {
-      if(!current.records.empty()) {
-        result.cases.push_back(current);
-        current = AbiFactCase();
-        definition_ids.clear();
-      }
+      finish_case();
       continue;
     }
     if(words[0] == "case") {
       if(words.size() != 2) throw logic_error("case requires one label");
-      if(!current.records.empty()) {
-        result.cases.push_back(current);
-        current = AbiFactCase();
-        definition_ids.clear();
-      }
+      finish_case();
       current.label = words[1];
       continue;
     }
-    AbiFactRecord record = parse_fact_record_words(words);
-    if(record.kind == ABI_FACT_RECORD_DEFINITION &&
-       !definition_ids.insert(record.definition.id).second) {
-      throw logic_error("duplicate ABI definition id '" + record.definition.id + "'");
-    }
-    current.records.push_back(record);
+    AbiFactRecord record = parse_fact_record_words_with_context(words, interner);
+    current.records.push_back(std::move(record));
   }
-  if(!current.records.empty()) result.cases.push_back(current);
+  finish_case();
   if(result.cases.empty()) throw logic_error("ABI fact file has no cases");
   return result;
 }
 
-string type_spelling(const AbiType & type)
+string join_qualified_name(const AbiQualifiedName & name)
+{
+  if(name.components.empty()) throw logic_error("empty ABI name");
+  string result;
+  for(vector<string>::const_iterator it = name.components.begin();
+      it != name.components.end(); ++it) {
+    if(it != name.components.begin()) result += "::";
+    result += *it;
+  }
+  return result;
+}
+
+string builtin_spelling(AbiBuiltinKind kind)
+{
+  static const char * const names[] = {
+    "", "void", "wchar", "bool", "char", "schar", "uchar", "short",
+    "ushort", "int", "uint", "long", "ulong", "longlong", "ulonglong",
+    "int128", "uint128", "float", "double", "longdouble", "float128",
+    "ellipsis", "char16", "char32", "char8", "nullptr", "complex-float",
+    "complex-double", "complex-longdouble"
+  };
+  const size_t index = static_cast<size_t>(kind);
+  if(index >= sizeof(names) / sizeof(names[0]) || kind == ABI_BUILTIN_INVALID) {
+    throw logic_error("invalid ABI builtin kind");
+  }
+  return names[index];
+}
+
+string definition_ref_spelling(const AbiFactCase & fact_case,
+                               const AbiDefinitionId & ref)
+{
+  if(ref.index < fact_case.definition_labels.size() &&
+     !fact_case.definition_labels[ref.index].empty()) {
+    return fact_case.definition_labels[ref.index];
+  }
+  ostringstream index;
+  index << ref.index;
+  return "D" + index.str();
+}
+
+string type_spelling(const AbiFactCase & fact_case, const AbiType & type)
 {
   ostringstream index;
   switch(type.kind) {
-  case ABI_TYPE_BUILTIN: return type.name;
-  case ABI_TYPE_NAMED: return "named:" + type.name;
-  case ABI_TYPE_NAME_OR_REFERENCE: return type.name;
-  case ABI_TYPE_POINTER: return "ptr:" + type_spelling(type.types.at(0));
-  case ABI_TYPE_LVALUE_REFERENCE: return "ref:" + type_spelling(type.types.at(0));
-  case ABI_TYPE_RVALUE_REFERENCE: return "rref:" + type_spelling(type.types.at(0));
-  case ABI_TYPE_CV: return string(type.is_const ? "const:" : "volatile:") + type_spelling(type.types.at(0));
-  case ABI_TYPE_ARRAY: return "array:" + type.array_bound.value + ":" + type_spelling(type.types.at(0));
+  case ABI_TYPE_BUILTIN: return builtin_spelling(type.builtin);
+  case ABI_TYPE_NAMED: return "named:" + join_qualified_name(type.name);
+  case ABI_TYPE_NAME_OR_REFERENCE:
+    if(type.definition_ref.index != ABI_INVALID_DEFINITION_ID) {
+      return definition_ref_spelling(fact_case, type.definition_ref);
+    }
+    return join_qualified_name(type.name);
+  case ABI_TYPE_POINTER: return "ptr:" + type_spelling(fact_case, type.types.at(0));
+  case ABI_TYPE_LVALUE_REFERENCE: return "ref:" + type_spelling(fact_case, type.types.at(0));
+  case ABI_TYPE_RVALUE_REFERENCE: return "rref:" + type_spelling(fact_case, type.types.at(0));
+  case ABI_TYPE_CV: return string(type.is_const ? "const:" : "volatile:") + type_spelling(fact_case, type.types.at(0));
+  case ABI_TYPE_ARRAY:
+    index << type.array_bound.value;
+    return "array:" + index.str() + ":" + type_spelling(fact_case, type.types.at(0));
   case ABI_TYPE_TEMPLATE_PARAMETER:
     index << type.index;
     return "template-param:" + index.str();
-  default: return type.name;
+  default: return type.name.components.empty() ? string() : join_qualified_name(type.name);
   }
 }
 
@@ -775,28 +1124,29 @@ string serialize_fact_file(const AbiFactFile & file)
     for(vector<AbiFactRecord>::const_iterator it = c->records.begin(); it != c->records.end(); ++it) {
       if(it->kind == ABI_FACT_RECORD_DEFINITION) {
         const AbiDefinitionRecord & d = it->definition;
-        if(d.kind == ABI_DEFINITION_TYPE) output << "let-type " << d.id << " " << type_spelling(d.type) << "\n";
+        if(d.kind == ABI_DEFINITION_TYPE) output << "let-type " << definition_ref_spelling(*c, d.id) << " " << type_spelling(*c, d.type) << "\n";
         else if(d.kind == ABI_DEFINITION_TEMPLATE_ARGUMENT && d.template_argument.kind == ABI_TEMPLATE_ARGUMENT_VALUE)
-          output << "let-arg " << d.id << " value " << type_spelling(d.template_argument.value_type) << " " << d.template_argument.value << "\n";
-        else output << "let-arg " << d.id << " type " << type_spelling(d.template_argument.type) << "\n";
+          output << "let-arg " << definition_ref_spelling(*c, d.id) << " value " << type_spelling(*c, d.template_argument.value_type) << " " << d.template_argument.value << "\n";
+        else output << "let-arg " << definition_ref_spelling(*c, d.id) << " type " << type_spelling(*c, d.template_argument.type) << "\n";
       } else if(it->kind == ABI_FACT_RECORD_FUNCTION) {
         const AbiFunctionRecord & f = it->function;
-        if(f.kind == ABI_FUNCTION_RECORD_PARAMETER) output << "param " << type_spelling(f.type) << "\n";
-        else if(f.kind == ABI_FUNCTION_RECORD_RESULT) output << "result " << type_spelling(f.type) << "\n";
+        if(f.kind == ABI_FUNCTION_RECORD_PARAMETER) output << "param " << type_spelling(*c, f.type) << "\n";
+        else if(f.kind == ABI_FUNCTION_RECORD_RESULT) output << "result " << type_spelling(*c, f.type) << "\n";
         else if(f.kind == ABI_FUNCTION_RECORD_VARIADIC) output << "variadic\n";
         else if(f.kind == ABI_FUNCTION_RECORD_ABI_TAG) output << "abi-tag " << f.name << "\n";
         else if(f.kind == ABI_FUNCTION_RECORD_TERMINAL) output << "terminal " << f.terminal << "\n";
         else if(f.kind == ABI_FUNCTION_RECORD_TERMINAL_SOURCE) output << "terminal-source " << f.terminal << "\n";
         else if(f.kind == ABI_FUNCTION_RECORD_NAME_STD) output << "name-std\n";
-        else if(f.kind == ABI_FUNCTION_RECORD_NAME_SOURCE) output << "name-source " << f.source_name << "\n";
+        else if(f.kind == ABI_FUNCTION_RECORD_NAME_SOURCE && !f.source_name.components.empty())
+          output << "name-source " << join_qualified_name(f.source_name) << "\n";
       } else {
         const AbiTargetRecord & t = it->target;
         switch(t.kind) {
-        case ABI_TARGET_FACT_TYPE: output << "type " << type_spelling(t.type) << "\n"; break;
-        case ABI_TARGET_FACT_VARIABLE: output << "variable " << t.qualified_name << "\n"; break;
-        case ABI_TARGET_FACT_TYPEINFO: output << "typeinfo " << type_spelling(t.type) << "\n"; break;
-        case ABI_TARGET_FACT_VTABLE: output << "vtable " << type_spelling(t.type) << "\n"; break;
-        case ABI_TARGET_FACT_VTT: output << "vtt " << type_spelling(t.type) << "\n"; break;
+        case ABI_TARGET_FACT_TYPE: output << "type " << type_spelling(*c, t.type) << "\n"; break;
+        case ABI_TARGET_FACT_VARIABLE: output << "variable " << join_qualified_name(t.name) << "\n"; break;
+        case ABI_TARGET_FACT_TYPEINFO: output << "typeinfo " << type_spelling(*c, t.type) << "\n"; break;
+        case ABI_TARGET_FACT_VTABLE: output << "vtable " << type_spelling(*c, t.type) << "\n"; break;
+        case ABI_TARGET_FACT_VTT: output << "vtt " << type_spelling(*c, t.type) << "\n"; break;
         default: output << "target\n"; break;
         }
       }
