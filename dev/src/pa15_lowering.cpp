@@ -8,11 +8,11 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
 		  function_name_ids_(), global_symbols_(), global_name_ids_(),
-		  symbol_name_ids_(), variable_facts_(), declaration_by_binding_(),
-		  slot_by_binding_(), slot_spellings_(),
+		  symbol_name_ids_(), string_literal_symbols_(), variable_facts_(),
+		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
 		  function_scope_variables_(), next_symbol_(0),
-		  next_value_(program.values.size()),
+		  string_literal_ordinal_(0), next_value_(program.values.size()),
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), generated_slot_ordinal_(0), block_indexes_(), control_stack_(),
@@ -458,6 +458,94 @@ bool Pa15Lowerer::constant_integer(SemanticFactId id, const LowType& type, Opera
 		return true;
 	}
 
+bool Pa15Lowerer::typed_pointer_zero(SemanticFactId id) const{
+		if (!id.valid() || id.value >= model_.semantic_facts_.size())
+			return false;
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.conversion_begin == InvalidIdentityValue ||
+			fact.conversion_begin + fact.conversion_count >
+			model_.conversion_facts_.size())
+			return false;
+		for (std::size_t i = 0; i < fact.conversion_count; ++i)
+		{
+			const ConversionFact& conversion = model_.conversion_facts_[
+				fact.conversion_begin + i];
+			if (conversion.kind == ConversionKind::NullptrToPointer ||
+				conversion.kind == ConversionKind::NullIntegerToPointer)
+				return true;
+		}
+		return false;
+	}
+
+bool Pa15Lowerer::map_string_literal_address(SemanticFactId id,
+		SymbolId* target, long long* addend){
+		if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
+			target == NULL || addend == NULL)
+			return false;
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind != SemanticFactKind::Literal ||
+			fact.literal_element_count == 0 || fact.source == NULL ||
+			fact.source->kind != PA10NodeKind::Literal)
+			return false;
+		if (fact.conversion_begin == InvalidIdentityValue ||
+			fact.conversion_begin + fact.conversion_count >
+			model_.conversion_facts_.size())
+			return false;
+		bool array_to_pointer = false;
+		for (std::size_t i = 0; i < fact.conversion_count; ++i)
+			if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
+				ConversionKind::ArrayToPointer)
+				array_to_pointer = true;
+		if (!array_to_pointer)
+			return false;
+		std::map<std::size_t, SymbolId>::const_iterator found =
+			string_literal_symbols_.find(id.value);
+		if (found != string_literal_symbols_.end())
+		{
+			*target = found->second;
+			*addend = 0;
+			return true;
+		}
+		const TypeId array_type = model_.strip_cv_type(fact.type);
+		if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
+			return false;
+		const TypeId element = model_.types_[array_type.value].child;
+		const LowType element_type = low_type(element);
+		const std::size_t element_size = element_type.storage_size();
+		const LiteralData& literal = fact.source->literal;
+		if (element_size == 0 || literal.element_count !=
+			fact.literal_element_count || literal.bytes.size() !=
+			fact.literal_element_count * element_size)
+			return false;
+
+		GlobalDefinition string_global;
+		string_global.symbol_id = SymbolId(next_symbol_++);
+		std::ostringstream name;
+		name << "__strlit__" << ++string_literal_ordinal_;
+		string_global.name_id = symbol_spelling(name.str());
+		string_global.structured = true;
+		string_global.metadata.binding = lowir_model::SBM_INTERNAL;
+		for (std::size_t i = 0; i < fact.literal_element_count; ++i)
+		{
+			std::uint64_t value = 0;
+			for (std::size_t byte = 0; byte < element_size; ++byte)
+				value |= static_cast<std::uint64_t>(literal.bytes[
+					i * element_size + byte]) << (byte * 8);
+			GlobalDefinition::DataItem item;
+			item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
+			item.type = element_type;
+			item.literal_operand = integer_operand(
+				static_cast<long long>(value), element_type);
+			string_global.data_items.push_back(item);
+		}
+		string_literal_symbols_[id.value] = string_global.symbol_id;
+		symbol_name_ids_[string_global.symbol_id.index] = string_global.name_id;
+		program_.globals.push_back(string_global);
+		*target = string_global.symbol_id;
+		*addend = 0;
+		return true;
+	}
+
 bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
 		long long* addend, const ConstantAddressFact** relocation) const{
 		if (relocation != NULL) *relocation = NULL;
@@ -528,8 +616,13 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 				pending_zero_bytes += element_type.storage_size();
 				continue;
 			}
-			flush_zeroes();
 			const SemanticFactId initializer = initializers[i];
+			if (element_type.is_pointer() && typed_pointer_zero(initializer))
+			{
+				pending_zero_bytes += element_type.storage_size();
+				continue;
+			}
+			flush_zeroes();
 			SymbolId target;
 			long long addend = 0;
 			if (element_type.is_pointer() && map_constant_address(
@@ -543,6 +636,20 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 				item.symbol_name_id = symbol_name_for(target);
 				if (!item.symbol_name_id.valid())
 					throw std::runtime_error("PA15 global address target has no name");
+				global->data_items.push_back(item);
+				continue;
+			}
+			if (element_type.is_pointer() && map_string_literal_address(
+				initializer, &target, &addend))
+			{
+				GlobalDefinition::DataItem item;
+				item.kind = GlobalDefinition::DataItem::ITEM_ADDR;
+				item.type = element_type;
+				item.symbol_id = target;
+				item.addr_addend = addend;
+				item.symbol_name_id = symbol_name_for(target);
+				if (!item.symbol_name_id.valid())
+					throw std::runtime_error("PA15 string literal target has no name");
 				global->data_items.push_back(item);
 				continue;
 			}
@@ -652,6 +759,9 @@ void Pa15Lowerer::collect_globals(){
 				{
 					entry.type = low_type(binding.type);
 					if (initializers.empty())
+						entry.init_kind = GlobalDefinition::INIT_ZERO;
+					else if (entry.type.is_pointer() && typed_pointer_zero(
+						initializers.front()))
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
 					else
 					{
@@ -1619,6 +1729,21 @@ LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
 			value = 1;
 		else if (fact.token == SimpleTokenType::KW_FALSE)
 			value = 0;
+		else if (fact.token == SimpleTokenType::KW_NULLPTR)
+		{
+			LowType pointer;
+			pointer.kind = LowType::TYPE_POINTER;
+			Operand operand = integer_operand(0, pointer);
+			operand.presentation_id = intern_spelling("nullptr");
+			Instruction instruction;
+			instruction.kind = Instruction::IK_COPY;
+			instruction.type = pointer;
+			instruction.first = operand;
+			const ValueId result = destination(pointer, &instruction);
+			block().instructions.push_back(instruction);
+			return LoweredValue(temporary_operand(result,
+				instruction.destination_name_id), pointer, false);
+		}
 		else if (fact.source != NULL && fact.source->kind == PA10NodeKind::Literal)
 		{
 			const ConstValue decoded = model_.literal_constant(*fact.source);

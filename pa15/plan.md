@@ -1,31 +1,41 @@
-# PA15 Typed Address/Value Boundary Checkpoint
+# PA15 Typed Null Initializer Checkpoint
 
-## Spec Alignment and Ownership
+## Current Stage Design and Ownership
 
-This checkpoint implements the PA11-to-PA12-to-PA15 typed boundary required by
-`spec.md` §§2, 3, 4, 5, and 7:
+The active PA15 design follows the PA11-to-PA12-to-PA15 typed boundary in
+`spec.md` §§2, 4, 5, and 7, with §3 identity ownership where LowIR symbols are
+introduced:
 
 - PA11 owns canonical `BindingId`, `TypeId`, `ScopeId`, declaration, linkage,
   storage, function, and scope facts.
 - PA12 owns `SemanticFactId` expression identity, selected bindings, value
   categories, conversions, typed `sizeof`, one-time integral constant values,
-  and one-time namespace-initializer relocation facts. Each
-  `ConstantAddressFact` has explicit `evaluated`/`valid` state and canonical
-  target/addend/projection/index fields. Its resolver carries typed `Value`,
-  `ObjectAddress`, and `ArrayDecay` context: variable IdExpressions become
-  relocations only for recorded array decay or explicit address-of operands;
-  function identity remains a function relocation.
+  and one-time namespace-initializer relocation facts. `ConversionFact` owns
+  null-pointer and null-integer-to-pointer decisions; `ConstantAddressFact` has
+  explicit `evaluated`/`valid` state and canonical target/addend/projection/
+  index fields. Its resolver carries typed `Value`, `ObjectAddress`, and
+  `ArrayDecay` context: variable IdExpressions become relocations only for
+  recorded array decay or explicit address-of operands; function identity
+  remains a function relocation.
 - PA15 builds deterministic binding/declaration/function-scope/global/local
   indexes once and consumes typed facts for global declarations/definitions,
   local/global addresses, references as referent addresses, arrays, decay,
   subscripts, projections, pointer scaling, address/value conversion,
-  assignment/comma/conditional category preservation, and compound/prefix/
-  postfix single LHS evaluation.
+  assignment/comma/conditional category preservation, compound/prefix/
+  postfix single LHS evaluation, and scalar/structured pointer zero
+  initialization. Missing and typed-null array elements share one coalesced
+  zero-data path. The only adjacent fixture correction is decoded string
+  literal address materialization for pointer-array `ArrayToPointer` facts.
+- The PA15 README nominally places string literals outside this milestone, but
+  both selected checked-in fixtures require their typed literal backing globals.
+  This tension is contained to already-decoded `LiteralData` plus a recorded
+  `ArrayToPointer` fact, with one symbol per `SemanticFactId`; it does not add
+  arbitrary string-expression lowering or a parallel string-init model.
 - LowIR remains one typed in-memory `Program`; `IK_INDEX` preserves typed
   element/projection information and `lowir_model.cpp` is only the serializer.
   `frontend_source_sets.mk` wires `pa12_semantic_facts.cpp` and the PA15
-  lowering units. No semantic text, token lookup, fixture name, or host
-  compiler is used in the source-to-LowIR path.
+  lowering units. No token/text lookup, fixture-name logic, host compiler, or
+  reference/compiler shell-out is used in the source-to-LowIR path.
 
 The repaired address path is ordinary linear work over its typed expression
 facts, with the existing deterministic indexes bounded by `O(n log n)`. The
@@ -39,13 +49,13 @@ Historical evidence preserves the pre-increment `21/109` passing baseline and
 the resulting `21` to `68` progress. The turn-start full-stage result was
 `68/109` passing, exactly 41 failures, all `109` covered; its authoritative log
 is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The fresh final log is
-`/tmp/pa15-typed-relocation-correction.6EMMbb/full-pa15-context-final.log`.
-Both inventories are byte-for-byte equal after sorting, with 41 names:
-the fresh sorted extraction is retained at
-`/tmp/pa15-typed-relocation-correction.6EMMbb/failures-context-sorted.txt` and
-was compared with the historical
-`/tmp/pa15-typed-relocation-correction.6EMMbb/failures-start-sorted.txt`.
+The fresh final log is `/tmp/pa15-null-final-full.log`, with the sorted
+turn-start and final inventories retained at
+`/tmp/pa15-null-turn-start-failures.txt` and
+`/tmp/pa15-null-final-failures.txt`. The final 39-name map below is byte-for-byte
+equal to the turn-start map after removing exactly the two selected target
+names; `70 + 39 = 109`, so coverage is complete and no replacement failure was
+introduced.
 
 ```text
 100-const-integral-lvalue-overload-category
@@ -69,8 +79,6 @@ was compared with the historical
 200-function-reference-static-cast-call
 200-functional-reference-typedef-cast
 200-global-address-reinterpret-cast-initializer
-200-global-pointer-array-null-fill
-200-global-pointer-array-nullptr-init
 200-goto-case-block-entry-label
 200-goto-case-block-label-after-statement
 200-included-namespace-global-definition
@@ -92,31 +100,39 @@ was compared with the historical
 ```
 
 No residual failure is counted as passing, and no new failure substitutes for
-one of these names.
+one of these names. The removed names are
+`200-global-pointer-array-null-fill` and
+`200-global-pointer-array-nullptr-init`; both pass in the focused and full
+gates below.
 
 ## Focused and Final Validation
 
-Fresh focused validation passed `20/20` for the representative address/value,
-array, reference, category, pointer-scaling, and single-evaluation cases.
-The focused matrix output is retained at
-`/tmp/pa15-typed-relocation-correction.6EMMbb/focused-matrix-context.log`.
-The temporary probes under
-`/tmp/pa15-typed-relocation-correction.6EMMbb/probes` show `&object` as
-`addr @value`, array decay and one-past as `addr @data` and
-`addr @data + 16`, `&array[1]` as the checked-in runtime
-`index i32 [projection=array_element]` form, and both direct and explicit
-function pointers as `addr @function`. The bare pointer probe exits with
-`PA15 nonconstant global initializer` and emits no `addr @pointer`.
+The focused and final results are:
 
-The exact final gate results are:
-
-| command | result |
+| command or case | result |
 |---|---|
 | `make -C dev cppgm++` | exit `0` |
-| exact `n=15` through-PA14 command | exit `0`, `1058/1058`; log: `/tmp/pa15-typed-relocation-correction.6EMMbb/through-pa14-context-final.log` |
-| `make test-pa15` | exit `2`, `68/109`, 41 unchanged failures, all `109` covered; log: `/tmp/pa15-typed-relocation-correction.6EMMbb/full-pa15-context-final.log` |
-| `perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src` | exit `0`, five nonfatal header warnings; log: `/tmp/pa15-typed-relocation-correction.6EMMbb/file-audit-context-final.log` |
+| target pair: `200-global-pointer-array-null-fill`, `200-global-pointer-array-nullptr-init` | pass, `2/2` |
+| named 8-case address/array/scalar-zero matrix | pass, `8/8`; log: `/tmp/pa15-null-final-regression-matrix.log` |
+| stdin scalar pointer probe (`int* = nullptr`, `int* = 0`) | exit `0`; both globals serialize as `zero`; log/output under `/tmp/pa15-scalar-pointer-null-zero-final.*` |
+| `make test-pa15` | exit `2`, `70/109`, 39 residual failures, all `109` covered; log: `/tmp/pa15-null-final-full.log` |
+| exact `n=15` through-PA14 gate | exit `0`, `1058/1058`; log: `/tmp/pa15-null-final-through-pa14.log` |
+| `perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src` | exit `0`, five nonfatal header warnings; log: `/tmp/pa15-null-final-file-audit.log` |
 | `git diff --check` | pass |
+
+The named regression matrix is `100-global-variable`,
+`200-comma-expression-lvalue-address`,
+`200-compound-assignment-evaluates-lhs-once` (scalar zero),
+`200-global-object-address-initializer`,
+`200-global-array-element-address-initializer`,
+`200-global-array-one-past-end-pointer`,
+`200-global-pointer-array-subscript-load`, and
+`200-global-array-decay-compare`; the target pair above is also checked
+separately.
+
+The focused target logs are `/tmp/pa15-null-fill-final-focused.log` and
+`/tmp/pa15-nullptr-init-final-focused.log`. The prior checkpoint's `20/20`
+address/value matrix and probes remain retained historical evidence.
 
 The exact through-PA14 command was:
 
@@ -175,16 +191,46 @@ its typed binary facts grow from 32 to 256. The many-global family grows from
 the timing medians provide representative bounded evidence, not a universal
 performance proof.
 
-## Explicit Next Checkpoint
+Checkpoint performance evidence uses immutable candidate
+`/tmp/pa15-null-pointer-perf.QgTN8n/cppgm++-candidate` (mode `0555`, SHA-256
+`c3588fb8bf456126470bba224e96213b4c61b878898408650e0109796e73223a`), generated
+ordinary decoded string/null/missing pointer arrays, and five interleaved
+samples of twenty compilations per size. Raw timings are in
+`/tmp/pa15-null-pointer-perf.QgTN8n/timings-batch.tsv`; structural counts are in
+`/tmp/pa15-null-pointer-perf.QgTN8n/structure.tsv`; medians are in
+`/tmp/pa15-null-pointer-perf.QgTN8n/medians.tsv`.
 
-The next bounded PA15 capability is typed global pointer null/zero initializer
-lowering, selected from the residual `200-global-pointer-array-null-fill` and
-`200-global-pointer-array-nullptr-init` failures. It will trace PA12
-`nullptr`/null-integer conversion ownership through PA15 scalar and structured
-pointer zero initialization while preserving the current 41-failure ceiling.
+| elements | input bytes/lines | LowIR lines | globals (string backing + array) | array addr/zero items | median wall/user/system s | median RSS KiB |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 340/28 | 118 | 13 (12 + 1) | 12/12 | 0.004000/0.001500/0.002500 | 7376 |
+| 128 | 1311/124 | 512 | 61 (60 + 1) | 60/60 | 0.004500/0.002000/0.002500 | 7568 |
+| 512 | 5343/508 | 2240 | 253 (252 + 1) | 252/252 | 0.008000/0.004500/0.003500 | 7220 |
+
+The changed array path is one pass over the bound, coalesces adjacent missing
+and typed-null pointer bytes, and performs one typed conversion range scan per
+initialized pointer; the string-address side map is `O(log m)` for `m` distinct
+literal facts and emits each decoded payload once. Structural output grows
+linearly with the generated elements and the bounded timings show no
+superlinear trend; process-startup cost dominates the smallest sample, so this
+is evidence for the changed surface, not a universal performance claim.
+
+## Active Checkpoint
+
+The typed global pointer null/zero initializer checkpoint is complete. Its
+owner chain is PA12 `ConversionFact` for
+`nullptr`/integer-zero conversion -> PA15 scalar `INIT_ZERO` or structured
+`ITEM_ZERO` -> typed LowIR serialization. Top-level pointer cv is discarded by
+the value conversion while pointee qualification remains checked. The next
+bounded checkpoint is typed enum scalar lowering, selected from the residual
+`200-enum-class-scalar-lowering` failure and its related scoped/unscoped enum
+residuals (`200-scoped-enum-global-constant-init`,
+`200-scoped-enum-unsigned-high-bit`, and
+`200-unscoped-enum-promotion-overload`).
 
 ## Checkpoint Ledger
 
 | status | checkpoint | completed evidence |
 |---|---|---|
+| Complete | PA15 full-stage / typed global pointer null-zero lowering | PA12 top-level pointer-object cv correction; PA15 typed null conversion consumer for scalar and structured globals; narrow pointer-array decoded-literal address materialization required by the two fixtures; target `2/2`, named regression matrix `8/8`, scalar pointer probe exit `0`, build exit `0`; final PA15 `70/109` with exactly the two target names removed and all `109` covered; through-PA14 `1058/1058`; file audit passed with five existing warnings; performance evidence recorded; diff-check passed. |
+| Next | PA15 / typed enum scalar lowering | Selected from fresh residual `200-enum-class-scalar-lowering` and related enum failures named above. |
 | Complete | PA15 full-stage / checkpointAudit — typed address/value ownership | Amended PA12 relocation ownership with explicit `Value`/`ObjectAddress`/`ArrayDecay` context, rejecting bare pointer/scalar lvalue relocations while preserving object, array, one-past, function, and array-element forms; focused `20/20` plus probes, through-PA14 `1058/1058`, PA15 `68/109` with the exact unchanged 41 names and all `109` covered, fresh immutable `n=256` performance evidence, file audit pass, and diff-check pass. |

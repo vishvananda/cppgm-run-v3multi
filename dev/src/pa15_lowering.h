@@ -138,6 +138,7 @@ private:
 	std::map<std::size_t, SymbolId> global_symbols_;
 	std::map<std::size_t, SpellingId> global_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
+	std::map<std::size_t, SymbolId> string_literal_symbols_;
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
@@ -146,6 +147,7 @@ private:
 	std::vector<PendingGlobalInitializer> pending_global_initializers_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
+	std::size_t string_literal_ordinal_;
 	std::size_t next_value_;
 	std::size_t next_slot_;
 	std::size_t next_block_;
@@ -179,6 +181,9 @@ private:
 	LowType low_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
+	bool typed_pointer_zero(SemanticFactId id) const;
+	bool map_string_literal_address(SemanticFactId id, SymbolId* target,
+		long long* addend);
 	bool map_constant_address(SemanticFactId id, SymbolId* target,
 		long long* addend, const ConstantAddressFact** relocation) const;
 	std::string internal_value_name(ScopeId owner, NameId name) const;

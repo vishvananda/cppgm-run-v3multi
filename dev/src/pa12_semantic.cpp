@@ -1096,6 +1096,16 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 	if (null_integer &&
 		pointer_id(by_value_target))
 		return ConversionChoice(true, 1, ConversionKind::NullIntegerToPointer);
+	// Top-level cv belongs to the pointer object and is discarded by
+	// lvalue-to-rvalue conversion; pointee qualification remains typed.
+	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
+		types_[by_value_source.value].child ==
+			types_[by_value_target.value].child &&
+		types_[by_value_source.value].cv !=
+		types_[by_value_target.value].cv)
+		return ConversionChoice(true, 0,
+			category == SemanticValueCategory::Lvalue ?
+			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
 	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
 		pointer_convertible(by_value_source, by_value_target))
 	{
