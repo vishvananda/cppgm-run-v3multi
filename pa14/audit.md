@@ -2,6 +2,242 @@
 
 ## Current Checkpoint Review
 
+This review audits landed commit `490d1ec79877424ca537b522d81885eca049e81f`
+(`pa14: complete typed 300 ABI boundary`) from parent
+`12eaf37b894f60474c190542736e220ee87e93b4`.  The bounded ownership is the
+complete checked-in `300-*` family and preservation of the earlier `100-*` and
+`200-*` families:
+
+```text
+fact-file line -> dev/abimangle.cpp adapter -> canonical AbiFactCase
+                 -> dev/src/abi_mangle.cpp FactEncoder -> exact ABI spelling
+```
+
+The turn-start full-stage baseline covers all 111 handout tests and passes
+88/111: `100=25/25`, `200=25/25`, `300=37/37`, `400=1/4`, `500=0/13`, and
+`600=0/7`.  The exact 23 failures are retained as the bounded nonclaim:
+
+```text
+400-dependent-alias-type-id
+400-dependent-owner-member-template
+400-dependent-rebind-other
+500-dependent-bitset-words
+500-dependent-call-expression
+500-dependent-cast-expression
+500-dependent-expression-type-substitution-order
+500-dependent-function-parameter-decltype-param
+500-dependent-object-member-expression
+500-dependent-pack-expression
+500-dependent-sizeof-type-expression
+500-dependent-type-trait-expression
+500-distinct-integral-decltype-substitution
+500-distinct-type-trait-expression-substitution
+500-equivalent-dependent-expr-substitution
+500-equivalent-integral-decltype-substitution
+600-function-local-class-template-arg
+600-function-template-local-class-arg
+600-function-template-local-lambda-arg
+600-inline-namespace-basic-string-param
+600-nested-helper-owner
+600-template-param-template-type-substitution
+600-template-parameter-pack-reference-constructor
+```
+
+The final broad validation reproduced that result exactly.  The required
+through-PA13 gate passed `947/947`; `make test-pa14` covered all 111 handout
+tests and passed `88/111` with `100=25/25`, `200=25/25`, `300=37/37`,
+`400=1/4`, `500=0/13`, and `600=0/7`.  Its failure identities are exactly the
+23 names above, with no turn-start passing test newly failing.  The required
+file audit passed with four nonfatal pre-existing `bad-division` warnings in
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, and
+`pa11_semantic_model.h`; it reported no fatal findings.
+
+### Representative typed-300 traces
+
+- `300-function-template-prefix-result` parses `name-source`, a typed
+  `function-template-prefix`, one typed function-template argument, a typed
+  result, and parameters.  `collect_function_facts` preserves those fields;
+  `function_prefix_identity` is a structural key, and the pending prefix is
+  published immediately before the function's own template-argument list;
+  the complete name emits
+  `_Z9addressofIiEPT_RS0_`.  Conversion prefixes and operator prefixes use
+  the corresponding typed terminal shape and are checked against the actual
+  function facts.
+- `300-abi-tagged-function-template` and the canonical CV/name-substitution
+  cases retain ABI tags, adjacent CV wrappers, and qualified-name components
+  as typed data.  `type_identity` flattens CV order and resolves canonical
+  definition references; `append_type` then emits one spelling path, so
+  equivalent `const volatile`/name forms share a candidate without using a
+  rendered mangled string as a key.
+- `300-std-allocator-substitution` and
+  `300-std-ostream-member-template-result` carry a typed standard-substitution
+  enum and typed argument references.  The enum owns identity and emission;
+  retained `Sa`/`So` text is validated at the adapter boundary only.  The
+  reusable encoder reads no standard-substitution spelling.  A mismatched
+  code/name pair now fails instead of emitting a plausible abbreviation.
+- A direct two-owner probe with `C1::fn` and `C2::fn` initially exposed a
+  substitution keyed only by the unqualified `fn` component.  The member
+  template argument key now includes the typed owner, member component, and
+  typed member flags; the repaired hand-derived output is
+  `6HolderIN2C12fnEN2C22fnEE`.  The member name is no longer independently
+  inserted into the substitution table.  This follows the Itanium compression
+  rule in `../doc/itanium-mangling.txt` §5.1.10 that qualified-name prefixes,
+  not arbitrary unqualified components, are substitution candidates.
+- A mixed qualified-owner probe encoded `ns::Outer<int>::f` and then passed the
+  already-encoded `ns::Outer<int>` as a typed parameter.  The owner-position
+  name path now publishes `ns` as `S_`, the dedicated typed `ns::Outer`
+  template-prefix as `S0_` before `IiE`, and the complete `ns::Outer<int>` as `S1_`
+  after its operands, exactly as the local Itanium §5.1.10 example requires.
+  The hand-derived output is `_ZN2ns5OuterIiE1fES1_`; the complete typed
+  specialization still crosses the name/type boundary.  Plain components
+  after a template owner continue through the mixed-prefix path.
+- `300-function-prefix-after-owner-template-regression` places the owner
+  `Outer<int>` argument list before the actual function-template argument
+  `float`; its hand-derived output is `_ZN2ns5OuterIiE1fIfEES1_`.  The
+  pending function-prefix candidate is published only by the explicit
+  terminal-function argument role, never by the owner's or a nested
+  argument's list.  `300-multiple-template-owner-composition-regression`
+  emits `_ZN2ns5OuterIiE5InnerIfE1fEv`; the second owner key is composed from
+  the complete first specialization, so its earlier template arguments are
+  not flattened away.
+- `300-template-entity-prefix-reuse-regression` adds a function-template
+  argument naming the ordinary qualified template entity `ns::Outer` after
+  the structured owner has emitted `ns::Outer<int>::f`.  Its hand-derived
+  output is `_ZN2ns5OuterIiE1fIS0_EES1_`: the template entity reuses the
+  already-published typed `ns::Outer` prefix slot `S0_`, while the complete
+  owner parameter remains `S1_`; the pending function-prefix slot is therefore
+  still published only immediately before the actual function argument list.
+- `300-unqualified-template-entity-prefix-reuse-regression` covers the same
+  ordering for a global `Holder<int>::f`.  Its hand-derived output is
+  `_ZN6HolderIiE1fIS_EES0_`: the typed global `Holder` prefix is `S_`, the
+  complete specialization is `S0_`, and the later template-entity argument
+  reuses `S_` without making an arbitrary unqualified source component a
+  candidate.
+- `300-member-function-pointer-nttp`, the external/member entity cases, and
+  the direct nested probe trace typed owner/member/entity facts through
+  `argument_identity`, `entity_identity`, `encode_entity_argument`, and the
+  isolated nested symbol encoder.  Nested entity functions now collect and
+  emit only their own target path/signature facts; they cannot reuse the
+  enclosing function's `param`, name, or template records.  The regression
+  output for an outer `param H` is
+  `_ZN1p3useENS_6HolderIXadL_ZN1p1C1fEiEEEE`.
+- The new hand-derived value regression exercises `const uint`, a `uint`
+  alias, and a dependent `uint` value of `-1`, emitting respectively
+  `6HolderILKj4294967295EE`, `6HolderILj4294967295EE`, and
+  `6HolderITnT_Lj4294967295EE`.  Builtin resolution follows CV and type
+  definition references, and the same boundary rejects dependent `int128` or
+  `uint128` values because the canonical stored value is 64-bit.  Signed
+  minimum handling and standard substitutions remain green in the checked-in
+  family.
+- `member-external-address` is an intentional raw external-symbol boundary,
+  consistent with the PA14 README's raw external-symbol fact contract: the
+  stored symbol is emitted verbatim for the `L...` entity address, while
+  the typed owner/member/function fields validate the shape and participate in
+  the complete non-rendered argument identity.  The raw spelling is not fed to
+  the qualified-name trie or looked up as an independent substitution
+  candidate.  The encoder does not reconstruct or cross-check an already-known
+  external symbol against those typed facts; producer consistency at this
+  explicit boundary is a nonclaim.
+
+### Ownership, identity, ordering, and exception safety
+
+The adapter builds one canonical `AbiFactCase` with dense numeric definition
+IDs.  `StructuralKey` retains domain/kind, scalar flags and values, interned
+source components, and ordered child identities.  Template IDs include typed
+arguments; ordinary template prefixes and template-entity arguments share one
+dedicated typed identity for both qualified and unqualified names, while
+function-prefix keys include owner template-name arguments and exclude later
+function-template operands; entity/member keys retain typed owner, member,
+function-qualifier, parameter, and address facts.  No rendered mangled spelling
+is a semantic key.  Raw spelling fields remain only as cold metadata or true
+external-symbol/context boundaries.
+
+Candidate publication follows the ABI's left-to-right structure: an ordinary
+owner template-prefix is published before that component's template operands,
+and its complete specialization is published only after those operands.  A
+function-template prefix is published immediately before the function's own
+template-argument list through an explicit typed emission role; owner and
+nested argument lists cannot trigger it.  Final function and operator names
+remain excluded from ordinary name substitution candidates.  The pending
+function-prefix candidate is scoped with RAII, as are structural-identity and
+type-definition active marks.  Nested entity symbols swap the complete
+substitution state and restore it on both success and exception; nested
+function fact collection is separately bounded to its typed target.  There is
+one production `FactEncoder` path, no whole-case retry or rescan, no
+host/reference/compiler shell-out, and no hardcoded test answer.  Qualified-
+name edges use trie/map identities and tag canonicalization is the only
+sorted operand; the source structure supports plausible O(n log n) map-backed
+work for ordinary consumed fact/name sizes rather than rendered-string or
+growing-vector keys.  This is not a theorem for arbitrarily wide structural
+keys or later families.
+
+### Bounded repairs and focused evidence
+
+The audit repairs are limited to the owned paths: CV/alias-aware unsigned
+normalization, dependent-wide-value rejection, nested entity target isolation,
+RAII cleanup of active/pending state, complete function-prefix identity fields,
+typed standard-substitution validation,
+function-prefix consistency checks, owner template-prefix ordering, ordinary
+typed template-entity/prefix identity for qualified and unqualified names,
+explicit function-template
+argument-role publication, composed multi-owner identity, member-external
+data/function validation, and the short local/lambda target adapter bounds
+check.  The only added test surface is the small set of
+hand-derived course regressions and one negative rejection under
+`cppgm.tests/course/pa14/`; no handout test, `.ref`, harness, wrapper, or
+reference was regenerated or modified.
+
+The focused evidence is:
+
+```text
+make -B -C dev abimangle                              PASS
+g++ -std=c++11 -Wall -Wextra -Werror -Idev/src        PASS
+  -fsyntax-only dev/src/abi_mangle.cpp dev/abimangle.cpp
+make -C pa14 check TEST='tests/abi/100-*.t'           PASS 25/25
+make -C pa14 check TEST='tests/abi/200-*.t'           PASS 25/25
+make -C pa14 check TEST='tests/abi/300-*.t'           PASS 37/37
+course PA14 focused regressions                        PASS 9/9
+typed mismatch/cycle/wide probes                      PASS (rejected)
+```
+
+The final broad gate commands were:
+
+```text
+n=14; ... make test-report-through-pa13                  PASS 947/947
+make test-pa14                                             88/111, exit 2;
+                                                           exact authorized 23-failure set
+perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src
+                                                           PASS, 4 nonfatal warnings
+```
+
+For performance, the corrected post-repair executable was copied to an
+immutable mode-0555 temporary binary of 405800 bytes, SHA-256
+`7bb13fa11ae1c0cac9d69a17e01df57552e84037873c6e971c852d6b3121299d`.  Seven
+interleaved runs used equivalent generated cases with a 64-component
+qualified prefix, one nested entity-function address, one template owner, and
+one function parameter per case.  The inputs were 256/512/1024 cases,
+273040/546960/1094992 bytes and 1792/3584/7168 fact lines.  `/usr/bin/time`
+medians were:
+
+```text
+cases   wall   user   sys   max RSS
+  256   0.14   0.12  0.01   15596 KiB
+  512   0.28   0.25  0.03   27340 KiB
+ 1024   0.55   0.48  0.06   51320 KiB
+```
+
+The measured wall ratios are 2.00x and 1.96x for the two doublings; the
+near-doubling follows equivalent input growth and is consistent with the
+trie/map and structural-key facts above.  This is full parse/retain/encode
+process evidence, not an allocation proof or a claim about the incomplete
+400--600 families.
+
+The bounded checkpoint changes are committed in the authorized normal
+checkpoint commit, and final verification leaves the worktree clean.  No
+handout test/ref, harness, wrapper, or unrelated stage surface was changed.
+
+## Prior Checkpoint Review (historical): typed 200 family
+
 This review audits landed commit `0c6543189f0c505f6dea9ecb64ec23631b12d8d6`
 from `16d775c44d9daf7b1b852e0d14f6c672595ec186`.  The bounded ownership is
 the complete checked-in `200-*` family and preservation of the `100-*` family:
@@ -138,7 +374,7 @@ direct probes cover the new repaired edges while the fixture suite covers the
 landed contract.  The performance sample includes parsing and retained fact
 storage and is not an encoder-only allocation profile.
 
-## Prior Checkpoint Review (historical)
+## Earlier Checkpoint Review (historical): typed 100 family
 
 This review is bounded to the complete checked-in `100-*` family and the
 ownership path introduced by `a95729060db60598a9e1f490346d093db7e99c3e`:
@@ -288,3 +524,4 @@ label is available.
 |---|---|---|---|
 | Prior PA14 typed-foundation checkpoint | `a95729060db60598a9e1f490346d093db7e99c3e` | Numeric canonical IDs, one append type path, dense cycle state, typed terminal/linkage/builtin ownership, explicit 128-bit rejection, focused and broad validation complete | Broad validation complete; bounded five-path repair finalized |
 | Current PA14 complete typed 200-family checkpoint audit | `16d775c44d9daf7b1b852e0d14f6c672595ec186` → landed `0c6543189f0c505f6dea9ecb64ec23631b12d8d6` | Complete 100/200 focused behavior preserved; typed ABI tags, qualifiers, terminals, contexts, TLS/thunks, and qualified-prefix substitutions traced; four bounded semantic repairs plus typed-continuity cleanup made; durable course regression added; full-stage, through-PA13, file-audit, diff-check, compile, and exact failure-set preservation validated | Checkpoint-audit changes committed; worktree clean |
+| Current PA14 typed-300 checkpoint audit | `12eaf37b894f60474c190542736e220ee87e93b4` → landed `490d1ec79877424ca537b522d81885eca049e81f` | Complete 300 focused behavior preserved; typed substitution keys, CV/alias value normalization, dependent-wide rejection, enum-only standard continuity, complete member-template identity, ordinary qualified and unqualified typed template-entity/prefix identity, owner template-prefix/complete-specialization order, explicit function-prefix timing, composed multi-owner identity, mixed qualified-owner identity, template-prefix validation, and nested entity-target isolation audited and repaired; no speculative empty-argument restriction added; nine hand-derived course regressions and refreshed representative immutable interleaved performance evidence recorded; final through-PA13 947/947, PA14 88/111 with the exact 23 authorized nonclaim failures, and file audit pass with four nonfatal warnings | Checkpoint-audit changes committed; final worktree clean |

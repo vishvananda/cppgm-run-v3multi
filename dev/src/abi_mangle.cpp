@@ -1,20 +1,16 @@
 #include "abi_mangle.h"
-
 #include <algorithm>
 #include <map>
 #include <sstream>
 #include <stdexcept>
-
 namespace abi_mangle {
 namespace {
-
 std::string number_string(unsigned long long value)
 {
   std::ostringstream output;
   output << value;
   return output.str();
 }
-
 std::string source_name(const std::string & name)
 {
   if(name.empty()) {
@@ -24,19 +20,6 @@ std::string source_name(const std::string & name)
   output << name.size() << name;
   return output.str();
 }
-
-bool is_unsupported_wide_integral_value_type(const AbiType & original)
-{
-  const AbiType * type = &original;
-  while(type->kind == ABI_TYPE_CV) {
-    if(type->types.empty()) return false;
-    type = &type->types[0];
-  }
-  return type->kind == ABI_TYPE_BUILTIN &&
-    (type->builtin == ABI_BUILTIN_INT128 ||
-     type->builtin == ABI_BUILTIN_UNSIGNED_INT128);
-}
-
 // This is only for the true external-symbol boundary (C linkage or a raw
 // symbol fact).  Semantic names are kept as AbiQualifiedName throughout the
 // encoder and are never reconstructed from this spelling.
@@ -53,7 +36,6 @@ std::string join_name_for_external_symbol(const AbiQualifiedName & name)
   }
   return result;
 }
-
 std::string tag_suffix(const std::vector<std::string> & tags)
 {
   std::vector<std::string> sorted = tags;
@@ -65,7 +47,6 @@ std::string tag_suffix(const std::vector<std::string> & tags)
   }
   return output.str();
 }
-
 class ActiveDefinitionScope
 {
 public:
@@ -77,17 +58,33 @@ public:
     }
     state_[index_] = 1;
   }
-
   ~ActiveDefinitionScope()
   {
     state_[index_] = 0;
   }
-
 private:
   std::vector<unsigned char> & state_;
   std::size_t index_;
 };
-
+class ActiveIdentityScope
+{
+public:
+  ActiveIdentityScope(std::vector<unsigned char> & state, std::size_t index)
+    : state_(state), index_(index)
+  {
+    if(index_ >= state_.size() || state_[index_] != 0) {
+      throw std::logic_error("cyclic ABI structural identity");
+    }
+    state_[index_] = 1;
+  }
+  ~ActiveIdentityScope()
+  {
+    state_[index_] = 0;
+  }
+private:
+  std::vector<unsigned char> & state_;
+  std::size_t index_;
+};
 class FactEncoder
 {
 public:
@@ -113,7 +110,6 @@ public:
     active_types_.assign(definitions_.size(), 0);
     active_identity_definitions_.assign(definitions_.size(), 0);
   }
-
   std::string encode()
   {
     const AbiTargetRecord * target = NULL;
@@ -130,7 +126,6 @@ public:
     if(target == NULL) {
       throw std::logic_error("ABI fact case has no target");
     }
-
     switch(target->kind) {
     case ABI_TARGET_FACT_TYPE:
       return encode_type(target->type);
@@ -171,12 +166,10 @@ public:
     }
     throw std::logic_error("unknown ABI target kind");
   }
-
 private:
   const AbiFactCase & fact_case_;
   std::vector<const AbiDefinitionRecord *> definitions_;
   std::vector<unsigned char> active_types_;
-
   // Substitution identity is semantic name structure, not rendered ABI text.
   // A trie stores each qualified-name edge once, so registering every ABI
   // prefix does not copy an ever-growing vector for each prefix.
@@ -185,30 +178,25 @@ private:
   static const ComponentId INVALID_COMPONENT_ID = static_cast<ComponentId>(-1);
   static const StructuralId INVALID_STRUCTURAL_ID = static_cast<StructuralId>(-1);
   static const std::size_t INVALID_SUBSTITUTION_INDEX = static_cast<std::size_t>(-1);
-
   struct TagKey
   {
     std::vector<ComponentId> components;
-
     bool operator<(const TagKey & other) const
     {
       return components < other.components;
     }
   };
-
   struct NameTrieNode
   {
     std::map<ComponentId, std::size_t> children;
     std::map<TagKey, std::size_t> tagged_substitutions;
     std::size_t untagged_substitution;
     StructuralId path_identity;
-
     NameTrieNode()
       : untagged_substitution(INVALID_SUBSTITUTION_INDEX),
         path_identity(INVALID_STRUCTURAL_ID)
     {}
   };
-
   struct SubstitutionState
   {
     std::vector<NameTrieNode> substitution_trie;
@@ -216,14 +204,12 @@ private:
     std::size_t next_substitution_index;
     bool pending_function_prefix_candidate;
     StructuralId pending_function_prefix_identity;
-
     SubstitutionState()
       : substitution_trie(1),
         next_substitution_index(0),
         pending_function_prefix_candidate(false),
         pending_function_prefix_identity(INVALID_STRUCTURAL_ID)
     {}
-
     void swap(SubstitutionState & other)
     {
       substitution_trie.swap(other.substitution_trie);
@@ -235,10 +221,23 @@ private:
                 other.pending_function_prefix_identity);
     }
   };
-
+  struct PendingFunctionPrefixScope
+  {
+    SubstitutionState & state;
+    const bool pending;
+    const StructuralId identity;
+    explicit PendingFunctionPrefixScope(SubstitutionState & state)
+      : state(state), pending(state.pending_function_prefix_candidate),
+        identity(state.pending_function_prefix_identity)
+    {}
+    ~PendingFunctionPrefixScope()
+    {
+      state.pending_function_prefix_candidate = pending;
+      state.pending_function_prefix_identity = identity;
+    }
+  };
   std::map<std::string, ComponentId> component_indexes_;
   std::vector<std::string> component_spellings_;
-
   struct StructuralKey
   {
     unsigned int domain;
@@ -246,11 +245,9 @@ private:
     std::vector<unsigned long long> scalars;
     std::vector<ComponentId> components;
     std::vector<StructuralId> children;
-
     StructuralKey()
       : domain(0), kind(0)
     {}
-
     bool operator<(const StructuralKey & other) const
     {
       if(domain != other.domain) return domain < other.domain;
@@ -260,7 +257,6 @@ private:
       return children < other.children;
     }
   };
-
   enum StructuralDomain
   {
     STRUCTURAL_NAME,
@@ -274,7 +270,11 @@ private:
     STRUCTURAL_FUNCTION_PREFIX,
     STRUCTURAL_FUNCTION_TARGET
   };
-
+  enum TemplateArgumentEmissionRole
+  {
+    TEMPLATE_ARGUMENT_NESTED,
+    TEMPLATE_ARGUMENT_FUNCTION
+  };
   std::map<StructuralKey, StructuralId> structural_indexes_;
   std::vector<StructuralKey> structural_nodes_;
   std::map<std::size_t, StructuralId> type_definition_identities_;
@@ -284,7 +284,6 @@ private:
   std::map<std::size_t, StructuralId> context_definition_identities_;
   std::vector<unsigned char> active_identity_definitions_;
   SubstitutionState substitution_state_;
-
   const AbiDefinitionRecord & definition(const AbiDefinitionId & id) const
   {
     if(id.index == ABI_INVALID_DEFINITION_ID || id.index >= definitions_.size() ||
@@ -293,7 +292,6 @@ private:
     }
     return *definitions_[id.index];
   }
-
   const AbiType & type_definition(const AbiDefinitionId & id) const
   {
     const AbiDefinitionRecord & record = definition(id);
@@ -302,7 +300,6 @@ private:
     }
     return record.type;
   }
-
   const AbiTemplateArgument & argument_definition(const AbiDefinitionId & id) const
   {
     const AbiDefinitionRecord & record = definition(id);
@@ -311,7 +308,6 @@ private:
     }
     return record.template_argument;
   }
-
   StructuralId intern_structural(const StructuralKey & key)
   {
     std::map<StructuralKey, StructuralId>::const_iterator found =
@@ -322,7 +318,6 @@ private:
     structural_nodes_.push_back(key);
     return id;
   }
-
   void append_name_identity_fields(StructuralKey & key,
                                    const std::vector<std::string> & components,
                                    const std::vector<std::string> & tags)
@@ -341,14 +336,12 @@ private:
     std::sort(tag_ids.begin(), tag_ids.end());
     key.components.insert(key.components.end(), tag_ids.begin(), tag_ids.end());
   }
-
   void append_name_identity_fields(StructuralKey & key,
                                    const AbiQualifiedName & name,
                                    const std::vector<std::string> & tags)
   {
     append_name_identity_fields(key, name.components, tags);
   }
-
   StructuralId name_identity(const std::vector<std::string> & components,
                              const std::vector<std::string> & tags)
   {
@@ -373,13 +366,26 @@ private:
     std::sort(key.components.begin(), key.components.end());
     return intern_structural(key);
   }
-
   StructuralId name_component_identity(const std::string & component)
   {
     const std::size_t node = ensure_path_child(0, intern_component(component));
     return substitution_state_.substitution_trie[node].path_identity;
   }
-
+  StructuralId ordinary_template_entity_identity(
+    const std::vector<std::string> & components)
+  {
+    if(components.empty()) throw std::logic_error("empty template entity name");
+    StructuralKey key;
+    // A template entity is a complete typed ABI construct, even when its
+    // source name has one component.  Keep it out of the generic name trie so
+    // an unrelated unqualified name component cannot become substitutable.
+    key.domain = STRUCTURAL_TEMPLATE_PREFIX;
+    key.kind = 2;
+    key.scalars.push_back(components.size());
+    for(std::vector<std::string>::const_iterator it = components.begin();
+        it != components.end(); ++it) key.components.push_back(intern_component(*it));
+    return intern_structural(key);
+  }
   StructuralId name_identity_with_path(StructuralId path,
                                        const std::vector<std::string> & tags)
   {
@@ -399,27 +405,6 @@ private:
     std::sort(key.components.begin(), key.components.end());
     return intern_structural(key);
   }
-
-  AbiStandardSubstitutionKind standard_kind_from_spelling(
-    const std::string & spelling) const
-  {
-    if(spelling.empty() || spelling == "-") return ABI_STANDARD_SUBSTITUTION_NONE;
-    if(spelling == "Sa") return ABI_STANDARD_SUBSTITUTION_ALLOCATOR;
-    if(spelling == "Sb") return ABI_STANDARD_SUBSTITUTION_BASIC_STRING;
-    if(spelling == "Ss") return ABI_STANDARD_SUBSTITUTION_STRING;
-    if(spelling == "Si") return ABI_STANDARD_SUBSTITUTION_ISTREAM;
-    if(spelling == "So") return ABI_STANDARD_SUBSTITUTION_OSTREAM;
-    if(spelling == "Sd") return ABI_STANDARD_SUBSTITUTION_IOSTREAM;
-    throw std::logic_error("unknown ABI standard substitution");
-  }
-
-  AbiStandardSubstitutionKind effective_standard_kind(
-    AbiStandardSubstitutionKind kind, const std::string & spelling) const
-  {
-    if(kind != ABI_STANDARD_SUBSTITUTION_NONE) return kind;
-    return standard_kind_from_spelling(spelling);
-  }
-
   std::string standard_substitution_code(AbiStandardSubstitutionKind kind) const
   {
     switch(kind) {
@@ -433,18 +418,45 @@ private:
     }
     throw std::logic_error("missing ABI standard substitution");
   }
-
-  unsigned long long normalized_integral_value(const AbiType & type,
-                                              long long value) const
+  bool resolve_builtin_kind(const AbiType & original, AbiBuiltinKind * result)
   {
-    const AbiType * base = &type;
-    while(base->kind == ABI_TYPE_CV) {
-      if(base->types.empty()) throw std::logic_error("qualified value type has no base");
-      base = &base->types[0];
+    const AbiType * type = &original;
+    while(type->kind == ABI_TYPE_CV) {
+      if(type->types.empty()) {
+        throw std::logic_error("qualified value type has no base");
+      }
+      type = &type->types[0];
     }
+    if(type->kind == ABI_TYPE_BUILTIN) {
+      *result = type->builtin;
+      return true;
+    }
+    if(type->kind == ABI_TYPE_NAME_OR_REFERENCE &&
+       type->definition_ref.index != ABI_INVALID_DEFINITION_ID) {
+      const AbiType & definition_type = type_definition(type->definition_ref);
+      ActiveDefinitionScope active(active_types_, type->definition_ref.index);
+      return resolve_builtin_kind(definition_type, result);
+    }
+    return false;
+  }
+  bool is_unsupported_wide_integral_value_type(const AbiType & type)
+  {
+    AbiBuiltinKind builtin = ABI_BUILTIN_INVALID;
+    return resolve_builtin_kind(type, &builtin) &&
+      (builtin == ABI_BUILTIN_INT128 ||
+       builtin == ABI_BUILTIN_UNSIGNED_INT128);
+  }
+  unsigned long long normalized_integral_value(const AbiType & type,
+                                              long long value)
+  {
+    if(is_unsupported_wide_integral_value_type(type)) {
+      throw std::logic_error("128-bit integral ABI values are unsupported by the stored value representation");
+    }
+    AbiBuiltinKind builtin = ABI_BUILTIN_INVALID;
+    const bool builtin_type = resolve_builtin_kind(type, &builtin);
     unsigned int bits = 0;
-    if(base->kind == ABI_TYPE_BUILTIN) {
-      switch(base->builtin) {
+    if(builtin_type) {
+      switch(builtin) {
       case ABI_BUILTIN_UNSIGNED_CHAR: bits = 8; break;
       case ABI_BUILTIN_UNSIGNED_SHORT: bits = 16; break;
       case ABI_BUILTIN_UNSIGNED_INT: bits = 32; break;
@@ -459,7 +471,6 @@ private:
     }
     return raw;
   }
-
   StructuralId type_definition_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -469,25 +480,21 @@ private:
        active_identity_definitions_[id.index] != 0) {
       throw std::logic_error("cyclic ABI type identity");
     }
-    active_identity_definitions_[id.index] = 1;
+    ActiveIdentityScope active(active_identity_definitions_, id.index);
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_TYPE) {
-      active_identity_definitions_[id.index] = 0;
       throw std::logic_error("ABI definition is not a type identity");
     }
     const StructuralId result = type_identity(record.type);
-    active_identity_definitions_[id.index] = 0;
     type_definition_identities_.insert(std::make_pair(id.index, result));
     return result;
   }
-
   StructuralId type_identity(const AbiType & original)
   {
     if(original.kind == ABI_TYPE_NAME_OR_REFERENCE &&
        original.definition_ref.index != ABI_INVALID_DEFINITION_ID) {
       return type_definition_identity(original.definition_ref);
     }
-
     if(original.kind == ABI_TYPE_CV) {
       bool is_const = false;
       bool is_volatile = false;
@@ -507,7 +514,6 @@ private:
       key.children.push_back(type_identity(*base));
       return intern_structural(key);
     }
-
     StructuralKey key;
     key.domain = STRUCTURAL_TYPE;
     switch(original.kind) {
@@ -575,8 +581,8 @@ private:
       if(original.kind == ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION) {
         key.scalars.push_back(original.index);
       } else {
-        const AbiStandardSubstitutionKind standard = effective_standard_kind(
-          original.standard_substitution_kind, original.standard_substitution);
+        const AbiStandardSubstitutionKind standard =
+          original.standard_substitution_kind;
         key.scalars.push_back(standard);
         key.scalars.push_back(original.standard_substitution_includes_arguments ? 1 : 0);
         append_name_identity_fields(key, original.name, original.abi_tags);
@@ -633,7 +639,6 @@ private:
     }
     return intern_structural(key);
   }
-
   StructuralId argument_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -643,10 +648,9 @@ private:
        active_identity_definitions_[id.index] != 0) {
       throw std::logic_error("cyclic ABI argument identity");
     }
-    active_identity_definitions_[id.index] = 1;
+    ActiveIdentityScope active(active_identity_definitions_, id.index);
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_TEMPLATE_ARGUMENT) {
-      active_identity_definitions_[id.index] = 0;
       throw std::logic_error("ABI definition is not an argument identity");
     }
     const AbiTemplateArgument & argument = record.template_argument;
@@ -723,11 +727,33 @@ private:
       break;
     }
     const StructuralId result = intern_structural(key);
-    active_identity_definitions_[id.index] = 0;
     argument_definition_identities_.insert(std::make_pair(id.index, result));
     return result;
   }
-
+  StructuralId member_template_entity_identity(
+    const AbiTemplateArgument & argument)
+  {
+    if(argument.name.components.size() != 1) {
+      throw std::logic_error("member template identity is not a source component");
+    }
+    StructuralKey key;
+    key.domain = STRUCTURAL_ARGUMENT;
+    key.kind = ABI_TEMPLATE_ARGUMENT_MEMBER_TEMPLATE_ENTITY;
+    key.scalars.push_back(argument.has_value_type ? 1 : 0);
+    key.scalars.push_back(argument.address_of ? 1 : 0);
+    key.scalars.push_back(argument.member_is_function ? 1 : 0);
+    key.scalars.push_back(argument.member_function_const ? 1 : 0);
+    key.scalars.push_back(argument.member_function_volatile ? 1 : 0);
+    key.scalars.push_back(argument.member_function_lvalue_ref ? 1 : 0);
+    key.scalars.push_back(argument.member_function_rvalue_ref ? 1 : 0);
+    key.scalars.push_back(argument.member_function_variadic ? 1 : 0);
+    key.children.push_back(type_identity(argument.owner_type));
+    key.scalars.push_back(argument.name.components.size());
+    key.components.push_back(intern_component(argument.name.components[0]));
+    // The adapter's substitution field is a rendered observation of the
+    // member template.  The owner and source member are the semantic identity.
+    return intern_structural(key);
+  }
   StructuralId expression_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -737,10 +763,9 @@ private:
        active_identity_definitions_[id.index] != 0) {
       throw std::logic_error("cyclic ABI expression identity");
     }
-    active_identity_definitions_[id.index] = 1;
+    ActiveIdentityScope active(active_identity_definitions_, id.index);
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_EXPRESSION) {
-      active_identity_definitions_[id.index] = 0;
       throw std::logic_error("ABI definition is not an expression identity");
     }
     const AbiDependentExpression & expression = record.expression;
@@ -776,11 +801,9 @@ private:
     for(std::vector<AbiType>::const_iterator it = expression.type_arguments.begin();
         it != expression.type_arguments.end(); ++it) key.children.push_back(type_identity(*it));
     const StructuralId result = intern_structural(key);
-    active_identity_definitions_[id.index] = 0;
     expression_definition_identities_.insert(std::make_pair(id.index, result));
     return result;
   }
-
   StructuralId function_target_identity(const AbiFunctionTarget & target)
   {
     StructuralKey key;
@@ -818,7 +841,6 @@ private:
         it != target.signature_parameter_types.end(); ++it) key.children.push_back(type_identity(*it));
     return intern_structural(key);
   }
-
   StructuralId entity_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -828,10 +850,9 @@ private:
        active_identity_definitions_[id.index] != 0) {
       throw std::logic_error("cyclic ABI entity identity");
     }
-    active_identity_definitions_[id.index] = 1;
+    ActiveIdentityScope active(active_identity_definitions_, id.index);
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_ENTITY) {
-      active_identity_definitions_[id.index] = 0;
       throw std::logic_error("ABI definition is not an entity identity");
     }
     const AbiEntityFact & entity = record.entity;
@@ -846,11 +867,9 @@ private:
       key.children.push_back(function_target_identity(entity.function));
     }
     const StructuralId result = intern_structural(key);
-    active_identity_definitions_[id.index] = 0;
     entity_definition_identities_.insert(std::make_pair(id.index, result));
     return result;
   }
-
   StructuralId context_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -860,10 +879,9 @@ private:
        active_identity_definitions_[id.index] != 0) {
       throw std::logic_error("cyclic ABI context identity");
     }
-    active_identity_definitions_[id.index] = 1;
+    ActiveIdentityScope active(active_identity_definitions_, id.index);
     const AbiDefinitionRecord & record = definition(id);
     if(record.kind != ABI_DEFINITION_CONTEXT) {
-      active_identity_definitions_[id.index] = 0;
       throw std::logic_error("ABI definition is not a context identity");
     }
     StructuralKey key;
@@ -875,13 +893,12 @@ private:
       key.children.push_back(function_target_identity(record.context.function));
     }
     const StructuralId result = intern_structural(key);
-    active_identity_definitions_[id.index] = 0;
     context_definition_identities_.insert(std::make_pair(id.index, result));
     return result;
   }
-
   StructuralId template_id_identity(const AbiFunctionRecord & record,
-                                     const std::vector<std::string> & tags)
+                                     const std::vector<std::string> & tags,
+                                     const std::vector<std::string> & name_components)
   {
     StructuralKey key;
     // A template-id occurring as a name component and the corresponding
@@ -889,19 +906,60 @@ private:
     // same typed structural key so a later type occurrence can find the
     // name occurrence (and vice versa).
     key.domain = STRUCTURAL_TYPE;
-    const AbiStandardSubstitutionKind standard = effective_standard_kind(
-      record.standard_substitution_kind, record.standard_substitution);
+    const AbiStandardSubstitutionKind standard =
+      record.standard_substitution_kind;
     key.kind = standard == ABI_STANDARD_SUBSTITUTION_NONE ?
       ABI_TYPE_TEMPLATE_SPECIALIZATION : ABI_TYPE_STD_TEMPLATE_SPECIALIZATION;
     key.scalars.push_back(standard);
     key.scalars.push_back(record.standard_substitution_includes_arguments ? 1 : 0);
-    std::vector<std::string> name(1, record.name);
-    append_name_identity_fields(key, name, tags);
+    append_name_identity_fields(key, name_components, tags);
     for(std::vector<AbiDefinitionId>::const_iterator it = record.argument_refs.begin();
         it != record.argument_refs.end(); ++it) key.children.push_back(argument_identity(*it));
     return intern_structural(key);
   }
-
+  StructuralId composed_template_prefix_identity(StructuralId parent,
+                                                  const AbiFunctionRecord & record)
+  {
+    StructuralKey key;
+    // A prefix rooted in a prior specialized owner is a distinct composed
+    // component from both an ordinary typed template entity and the complete
+    // nested specialization.  Its parent retains all earlier owner
+    // arguments; it must not be flattened into a source-name path.
+    key.domain = STRUCTURAL_TEMPLATE_PREFIX;
+    key.kind = 1;
+    key.scalars.push_back(record.standard_substitution_kind);
+    key.scalars.push_back(record.standard_substitution_includes_arguments ? 1 : 0);
+    key.components.push_back(intern_component(record.name));
+    if(parent != INVALID_STRUCTURAL_ID) key.children.push_back(parent);
+    return intern_structural(key);
+  }
+  StructuralId composed_template_id_identity(StructuralId prefix,
+                                              const AbiFunctionRecord & record,
+                                              const std::vector<std::string> & tags)
+  {
+    StructuralKey key;
+    // A later template owner is represented by the already-complete owner
+    // plus this component and its arguments.  It is deliberately kept out of
+    // the ordinary type-key domain: the PA14 typed model has no corresponding
+    // nested template-specialization type record, so claiming equivalence to a
+    // flattened spelling would lose the earlier owner's template arguments.
+    key.domain = STRUCTURAL_TEMPLATE_ID;
+    key.kind = record.standard_substitution_kind == ABI_STANDARD_SUBSTITUTION_NONE ?
+      ABI_TYPE_TEMPLATE_SPECIALIZATION : ABI_TYPE_STD_TEMPLATE_SPECIALIZATION;
+    key.scalars.push_back(record.standard_substitution_kind);
+    key.scalars.push_back(record.standard_substitution_includes_arguments ? 1 : 0);
+    key.scalars.push_back(tags.size());
+    std::vector<ComponentId> tag_ids;
+    for(std::vector<std::string>::const_iterator it = tags.begin();
+        it != tags.end(); ++it) tag_ids.push_back(intern_component(*it));
+    std::sort(tag_ids.begin(), tag_ids.end());
+    key.components.insert(key.components.end(), tag_ids.begin(), tag_ids.end());
+    if(prefix != INVALID_STRUCTURAL_ID) key.children.push_back(prefix);
+    key.scalars.push_back(record.argument_refs.size());
+    for(std::vector<AbiDefinitionId>::const_iterator it = record.argument_refs.begin();
+        it != record.argument_refs.end(); ++it) key.children.push_back(argument_identity(*it));
+    return intern_structural(key);
+  }
   void register_structural_candidate(StructuralId id)
   {
     if(substitution_state_.structural_substitution_indexes.find(id) ==
@@ -910,7 +968,6 @@ private:
         std::make_pair(id, substitution_state_.next_substitution_index++));
     }
   }
-
   bool find_structural_substitution(StructuralId id, std::size_t * index) const
   {
     std::map<StructuralId, std::size_t>::const_iterator found =
@@ -919,14 +976,12 @@ private:
     *index = found->second;
     return true;
   }
-
   ComponentId find_component(const std::string & spelling) const
   {
     std::map<std::string, ComponentId>::const_iterator found =
       component_indexes_.find(spelling);
     return found == component_indexes_.end() ? INVALID_COMPONENT_ID : found->second;
   }
-
   ComponentId intern_component(const std::string & spelling)
   {
     std::map<std::string, ComponentId>::const_iterator found =
@@ -937,7 +992,6 @@ private:
     component_spellings_.push_back(spelling);
     return id;
   }
-
   std::vector<ComponentId> canonical_tag_ids(const std::vector<std::string> & tags,
                                               bool create,
                                               bool * known)
@@ -959,7 +1013,6 @@ private:
               });
     return result;
   }
-
   std::size_t find_path_node(const std::vector<std::string> & components) const
   {
     if(components.empty()) return 0;
@@ -977,7 +1030,6 @@ private:
     }
     return node;
   }
-
   std::size_t ensure_path_child(std::size_t node, ComponentId component)
   {
     std::map<ComponentId, std::size_t>::const_iterator found =
@@ -1002,14 +1054,12 @@ private:
       intern_structural(key);
     return child;
   }
-
   bool find_substitution(const std::vector<std::string> & components,
                          const std::vector<std::string> & tags,
                          std::size_t * index)
   {
     return find_structural_substitution(name_identity(components, tags), index);
   }
-
   void add_substitution_at_node(std::size_t node,
                                 StructuralId path_identity,
                                 const std::vector<std::string> & tags)
@@ -1035,7 +1085,6 @@ private:
         std::make_pair(key, index));
     }
   }
-
   void add_substitution(const std::vector<std::string> & components,
                         const std::vector<std::string> & tags)
   {
@@ -1048,7 +1097,6 @@ private:
     add_substitution_at_node(
       node, substitution_state_.substitution_trie[node].path_identity, tags);
   }
-
   void append_substitution(std::size_t index, std::string & output) const
   {
     static const char digits[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -1065,7 +1113,6 @@ private:
     }
     output.push_back('_');
   }
-
   std::size_t deepest_untagged_prefix(const std::vector<std::string> & components,
                                       std::size_t component_count,
                                       std::size_t * node)
@@ -1083,7 +1130,6 @@ private:
     }
     return deepest;
   }
-
   void append_scope_prefix(const std::vector<std::string> & components,
                            std::string & output,
                            StructuralId * complete_identity = NULL)
@@ -1131,7 +1177,6 @@ private:
       }
       return;
     }
-
     std::size_t node = 0;
     const std::size_t start = deepest_untagged_prefix(components, components.size(), &node);
     if(start != 0) {
@@ -1154,7 +1199,6 @@ private:
       *complete_identity = substitution_state_.substitution_trie[node].path_identity;
     }
   }
-
   void append_named_type_name(const AbiQualifiedName & name,
                               const std::vector<std::string> & tags,
                               std::string & output)
@@ -1166,7 +1210,6 @@ private:
       append_substitution(index, output);
       return;
     }
-
     const std::string suffix = tag_suffix(tags);
     if(components.size() == 1) {
       output += source_name(components[0]);
@@ -1190,7 +1233,6 @@ private:
       add_substitution(components, tags);
       return;
     }
-
     output.push_back('N');
     std::size_t node = 0;
     const std::size_t prefix_count = components.size() - 1;
@@ -1218,18 +1260,19 @@ private:
       node, substitution_state_.substitution_trie[node].path_identity, tags);
     output.push_back('E');
   }
-
   void append_nested_name(const std::vector<std::string> & owner,
                           const std::vector<AbiFunctionQualifier> & qualifiers,
                           const std::string & terminal,
                           const std::vector<std::string> & tags,
                           const std::vector<AbiDefinitionId> & template_arguments,
-                          std::string & output)
+                          std::string & output,
+                          TemplateArgumentEmissionRole argument_role =
+                            TEMPLATE_ARGUMENT_NESTED)
   {
     if(owner.empty()) {
       output += terminal;
       output += tag_suffix(tags);
-      append_template_arguments(template_arguments, output);
+      append_template_arguments(template_arguments, output, argument_role);
       return;
     }
     const bool simple_std_function = owner.size() == 1 && owner[0] == "std" &&
@@ -1238,19 +1281,17 @@ private:
       output += "St";
       output += terminal;
       output += tag_suffix(tags);
-      append_template_arguments(template_arguments, output);
+      append_template_arguments(template_arguments, output, argument_role);
       return;
     }
-
     output.push_back('N');
     append_function_qualifiers(qualifiers, output);
     append_scope_prefix(owner, output);
     output += terminal;
     output += tag_suffix(tags);
-    append_template_arguments(template_arguments, output);
+    append_template_arguments(template_arguments, output, argument_role);
     output.push_back('E');
   }
-
   void append_nested_name(const std::vector<std::string> & owner,
                           const std::vector<AbiFunctionQualifier> & qualifiers,
                           const std::string & terminal,
@@ -1260,7 +1301,6 @@ private:
     const std::vector<AbiDefinitionId> empty_arguments;
     append_nested_name(owner, qualifiers, terminal, tags, empty_arguments, output);
   }
-
   void append_data_name(const AbiQualifiedName & name, std::string & output)
   {
     if(name.components.empty()) throw std::logic_error("empty ABI data name");
@@ -1273,20 +1313,44 @@ private:
                        source_name(name.components.back()),
                        std::vector<std::string>(), output);
   }
-
-  std::string encode_name(const AbiQualifiedName & name,
-                          const std::vector<std::string> & tags)
+  std::string encode_template_entity(const AbiQualifiedName & name)
   {
+    if(name.components.empty()) throw std::logic_error("empty template entity name");
+    const StructuralId identity =
+      ordinary_template_entity_identity(name.components);
+    std::size_t substitution = 0;
+    if(find_structural_substitution(identity, &substitution)) {
+      std::string result;
+      append_substitution(substitution, result);
+      return result;
+    }
     std::string result;
-    append_named_type_name(name, tags, result);
+    if(name.components.size() == 1) {
+      result += source_name(name.components[0]);
+    } else if(name.components[0] == "std" && name.components.size() == 2) {
+      result += "St";
+      result += source_name(name.components[1]);
+    } else {
+      result.push_back('N');
+      std::vector<std::string> owner(name.components.begin(),
+                                     name.components.end() - 1);
+      append_scope_prefix(owner, result);
+      result += source_name(name.components.back());
+      result.push_back('E');
+    }
+    register_structural_candidate(identity);
     return result;
   }
-
   void append_template_arguments(const std::vector<AbiDefinitionId> & refs,
-                                 std::string & output)
+                                 std::string & output,
+                                 TemplateArgumentEmissionRole argument_role =
+                                   TEMPLATE_ARGUMENT_NESTED)
   {
     if(refs.empty()) return;
-    if(substitution_state_.pending_function_prefix_candidate) {
+    // Owner and nested argument lists must not publish the pending function
+    // prefix.  Only the explicit terminal-function call site opts in.
+    if(argument_role == TEMPLATE_ARGUMENT_FUNCTION &&
+       substitution_state_.pending_function_prefix_candidate) {
       register_structural_candidate(
         substitution_state_.pending_function_prefix_identity);
       substitution_state_.pending_function_prefix_candidate = false;
@@ -1298,14 +1362,12 @@ private:
     }
     output.push_back('E');
   }
-
   std::string encode_type(const AbiType & original)
   {
     std::string result;
     append_type(original, result);
     return result;
   }
-
   void append_type(const AbiType & original, std::string & output)
   {
     const AbiType * type = &original;
@@ -1316,12 +1378,10 @@ private:
       append_type(definition_type, output);
       return;
     }
-
     if(type->kind == ABI_TYPE_TEMPLATE_PARAMETER) {
       append_template_parameter(type->index, output);
       return;
     }
-
     const bool substitutable = type->kind != ABI_TYPE_NAME_OR_REFERENCE &&
       type->kind != ABI_TYPE_NAMED && type->kind != ABI_TYPE_BUILTIN;
     if(substitutable) {
@@ -1337,11 +1397,9 @@ private:
     }
     append_type_body(*type, output);
   }
-
   void append_type_body(const AbiType & original, std::string & output)
   {
     const AbiType * type = &original;
-
     switch(type->kind) {
     case ABI_TYPE_NAME_OR_REFERENCE:
     case ABI_TYPE_NAMED:
@@ -1430,7 +1488,6 @@ private:
     }
     throw std::logic_error("unknown ABI type kind");
   }
-
   void append_cv_type(const AbiType * type, std::string & output)
   {
     bool is_const = false;
@@ -1448,7 +1505,6 @@ private:
     if(is_const) output.push_back('K');
     append_type(*base, output);
   }
-
   void append_array(const AbiType * type, std::string & output)
   {
     output.push_back('A');
@@ -1466,7 +1522,6 @@ private:
     output.push_back('_');
     append_type(type->types.at(0), output);
   }
-
   void append_function_type(const AbiType * type, std::string & output)
   {
     if(type->types.empty()) {
@@ -1488,7 +1543,6 @@ private:
     if(type->rvalue_ref) output.push_back('O');
     output.push_back('E');
   }
-
   std::string builtin_code(AbiBuiltinKind name) const
   {
     static const char * const codes[] = {
@@ -1502,7 +1556,6 @@ private:
     }
     return codes[index];
   }
-
   std::string template_parameter(std::size_t index) const
   {
     if(index == 0) {
@@ -1510,7 +1563,6 @@ private:
     }
     return "T" + number_string(index - 1) + "_";
   }
-
   void append_template_parameter(std::size_t index, std::string & output)
   {
     StructuralKey key;
@@ -1526,12 +1578,14 @@ private:
     output += template_parameter(index);
     register_structural_candidate(identity);
   }
-
   void append_template_specialization(const AbiType & type,
                                       std::string & output)
   {
-    const AbiStandardSubstitutionKind standard = effective_standard_kind(
-      type.standard_substitution_kind, type.standard_substitution);
+    const AbiStandardSubstitutionKind standard = type.standard_substitution_kind;
+    if(type.kind == ABI_TYPE_STD_TEMPLATE_SPECIALIZATION &&
+       standard == ABI_STANDARD_SUBSTITUTION_NONE) {
+      throw std::logic_error("standard template specialization has no typed substitution identity");
+    }
     if(type.kind == ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION) {
       append_template_parameter(type.index, output);
     } else if(standard != ABI_STANDARD_SUBSTITUTION_NONE) {
@@ -1586,7 +1640,6 @@ private:
       output.push_back('E');
     }
   }
-
   std::string encode_argument(const AbiTemplateArgument & argument)
   {
     switch(argument.kind) {
@@ -1619,24 +1672,23 @@ private:
         return result;
       }
     case ABI_TEMPLATE_ARGUMENT_TEMPLATE_ENTITY:
-      return encode_name(argument.name, std::vector<std::string>());
+      return encode_template_entity(argument.name);
     case ABI_TEMPLATE_ARGUMENT_MEMBER_TEMPLATE_ENTITY:
       if(argument.name.components.size() != 1) {
         throw std::logic_error("member template name is not a source component");
       }
       {
+        const StructuralId identity = member_template_entity_identity(argument);
         std::string result = "N";
         append_member_template_prefix(argument.owner_type, result);
-        std::vector<std::string> member_name(1, argument.name.components[0]);
         std::size_t member_substitution = 0;
-        if(find_substitution(member_name, std::vector<std::string>(),
-                             &member_substitution)) {
+        if(find_structural_substitution(identity, &member_substitution)) {
           append_substitution(member_substitution, result);
         } else {
           result += source_name(argument.name.components[0]);
         }
         result.push_back('E');
-        add_substitution(member_name, std::vector<std::string>());
+        register_structural_candidate(identity);
         return result;
       }
     case ABI_TEMPLATE_ARGUMENT_EXTERNAL_ENTITY:
@@ -1647,19 +1699,18 @@ private:
     }
     throw std::logic_error("unknown ABI template argument kind");
   }
-
-  bool is_unsigned_builtin(const AbiType & type, unsigned int * bits) const
+  bool is_unsigned_builtin(const AbiType & type, unsigned int * bits)
   {
-    if(type.kind != ABI_TYPE_BUILTIN) return false;
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_INT) { *bits = 32; return true; }
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_LONG) { *bits = 64; return true; }
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_CHAR) { *bits = 8; return true; }
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_SHORT) { *bits = 16; return true; }
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_LONG_LONG) { *bits = 64; return true; }
-    if(type.builtin == ABI_BUILTIN_UNSIGNED_INT128) { *bits = 128; return true; }
+    AbiBuiltinKind builtin = ABI_BUILTIN_INVALID;
+    if(!resolve_builtin_kind(type, &builtin)) return false;
+    if(builtin == ABI_BUILTIN_UNSIGNED_INT) { *bits = 32; return true; }
+    if(builtin == ABI_BUILTIN_UNSIGNED_LONG) { *bits = 64; return true; }
+    if(builtin == ABI_BUILTIN_UNSIGNED_CHAR) { *bits = 8; return true; }
+    if(builtin == ABI_BUILTIN_UNSIGNED_SHORT) { *bits = 16; return true; }
+    if(builtin == ABI_BUILTIN_UNSIGNED_LONG_LONG) { *bits = 64; return true; }
+    if(builtin == ABI_BUILTIN_UNSIGNED_INT128) { *bits = 128; return true; }
     return false;
   }
-
   std::string encode_value_argument(const AbiTemplateArgument & argument)
   {
     if(!argument.has_value_type) {
@@ -1670,9 +1721,11 @@ private:
     }
     return encode_value_literal(argument.value_type, argument.value);
   }
-
   std::string encode_value_literal(const AbiType & value_type, long long value)
   {
+    if(is_unsupported_wide_integral_value_type(value_type)) {
+      throw std::logic_error("128-bit integral ABI values are unsupported by the stored value representation");
+    }
     const std::string type = encode_type(value_type);
     const unsigned long long raw = static_cast<unsigned long long>(value);
     unsigned int bits = 0;
@@ -1691,7 +1744,6 @@ private:
     }
     return "L" + type + encoded_value + "E";
   }
-
   void append_member_template_prefix(const AbiType & original,
                                      std::string & output)
   {
@@ -1702,10 +1754,14 @@ private:
       append_member_template_prefix(definition_type, output);
       return;
     }
-    const AbiStandardSubstitutionKind standard = effective_standard_kind(
-      original.standard_substitution_kind, original.standard_substitution);
+    const AbiStandardSubstitutionKind standard =
+      original.standard_substitution_kind;
     if(original.kind == ABI_TYPE_TEMPLATE_SPECIALIZATION ||
        original.kind == ABI_TYPE_STD_TEMPLATE_SPECIALIZATION) {
+      if(original.kind == ABI_TYPE_STD_TEMPLATE_SPECIALIZATION &&
+         standard == ABI_STANDARD_SUBSTITUTION_NONE) {
+        throw std::logic_error("standard member template owner has no typed substitution identity");
+      }
       if(standard != ABI_STANDARD_SUBSTITUTION_NONE) {
         output += standard_substitution_code(standard);
       } else {
@@ -1742,9 +1798,11 @@ private:
     }
     append_type(original, output);
   }
-
   std::string encode_entity_argument(const AbiTemplateArgument & argument)
   {
+    // A member-external argument is already an ABI symbol boundary.  Its raw
+    // spelling is emitted here only; argument_identity keeps the typed
+    // owner/member shape separate from the qualified-name substitution trie.
     std::string symbol;
     if(!argument.symbol.empty()) {
       symbol = argument.symbol;
@@ -1754,7 +1812,6 @@ private:
     if(argument.address_of) return "XadL" + symbol + "EE";
     return "L" + symbol + "E";
   }
-
   std::string encode_entity_symbol(const AbiEntityFact & entity)
   {
     // An external entity's nested name is its own ABI spelling boundary.  It
@@ -1770,7 +1827,7 @@ private:
       } else if(entity.kind == ABI_ENTITY_FACT_VARIABLE) {
         result = encode_variable_symbol(entity);
       } else if(entity.kind == ABI_ENTITY_FACT_FUNCTION) {
-        result = encode_function(entity.function);
+        result = encode_function(entity.function, false);
       } else {
         throw std::logic_error("unknown ABI entity kind");
       }
@@ -1781,7 +1838,6 @@ private:
     substitution_state_.swap(nested_state);
     return result;
   }
-
   std::string encode_variable_symbol(const AbiEntityFact & entity)
   {
     if(entity.name.components.empty()) {
@@ -1802,7 +1858,6 @@ private:
     }
     return result;
   }
-
   std::string encode_expression_reference(const AbiDefinitionId & id)
   {
     const AbiDefinitionRecord & record = definition(id);
@@ -1820,7 +1875,6 @@ private:
     }
     return record.expression.text;
   }
-
   void append_member_type(const AbiType & type, std::string & output)
   {
     if(type.types.empty() || type.name.components.size() != 1) {
@@ -1831,7 +1885,6 @@ private:
     output += source_name(type.name.components[0]);
     output.push_back('E');
   }
-
   unsigned long long decimal_discriminator(const std::string & spelling) const
   {
     if(spelling.empty() || spelling[0] == '-') {
@@ -1845,7 +1898,6 @@ private:
     }
     return value;
   }
-
   std::string local_entity_discriminator(const std::string & spelling) const
   {
     if(spelling.empty()) return std::string();
@@ -1855,13 +1907,11 @@ private:
     if(number < 10) return "_" + number_string(number);
     return "__" + number_string(number) + "_";
   }
-
   std::string lambda_discriminator(const std::string & spelling) const
   {
     if(spelling.empty()) return std::string();
     return number_string(decimal_discriminator(spelling));
   }
-
   void append_local_context_prefix(const AbiLocalContext & context,
                                    std::string & output)
   {
@@ -1875,7 +1925,6 @@ private:
     append_function_target_encoding(context.function, output);
     output.push_back('E');
   }
-
   void append_lambda_type(const AbiType & type, std::string & output)
   {
     const AbiLocalContext & context = definition(type.context_ref).context;
@@ -1888,7 +1937,6 @@ private:
     output += lambda_discriminator(type.discriminator);
     output.push_back('_');
   }
-
   void append_namespace_lambda_type(const AbiType & type, std::string & output)
   {
     if(type.name.components.size() != 1) {
@@ -1902,7 +1950,6 @@ private:
     output += source_name(type.name.components[0]);
     output.push_back('E');
   }
-
   void append_local_type(const AbiType & type, std::string & output)
   {
     const AbiLocalContext & context = definition(type.context_ref).context;
@@ -1915,7 +1962,6 @@ private:
     output += local_entity_discriminator(type.discriminator);
     output.push_back('E');
   }
-
   struct FunctionFacts
   {
     bool std_prefix = false;
@@ -1939,7 +1985,6 @@ private:
     const AbiFunctionRecord * lambda_context = NULL;
     const AbiFunctionRecord * namespace_lambda_context = NULL;
   };
-
   void append_function_qualifiers(const std::vector<AbiFunctionQualifier> & qualifiers,
                                   std::string & output) const
   {
@@ -1960,9 +2005,9 @@ private:
     if(lvalue) output.push_back('R');
     if(rvalue) output.push_back('O');
   }
-
   void collect_function_facts(const AbiFunctionTarget & target,
-                              FunctionFacts & facts) const
+                              FunctionFacts & facts,
+                              bool include_case_records = true) const
   {
     if(target.kind == ABI_FUNCTION_TARGET_PATH ||
        target.kind == ABI_FUNCTION_TARGET_LOCAL) {
@@ -1997,10 +2042,13 @@ private:
     }
     for(std::vector<AbiFactRecord>::const_iterator it = fact_case_.records.begin();
         it != fact_case_.records.end(); ++it) {
+      if(!include_case_records) break;
       if(it->kind != ABI_FACT_RECORD_FUNCTION) continue;
       const AbiFunctionRecord & record = it->function;
       switch(record.kind) {
       case ABI_FUNCTION_RECORD_NAME_SOURCE:
+        facts.name_records.push_back(&record);
+        break;
       case ABI_FUNCTION_RECORD_NAME_TEMPLATE:
         facts.name_records.push_back(&record);
         break;
@@ -2017,6 +2065,18 @@ private:
         facts.is_function_template = true;
         if(facts.function_template_prefix != NULL) {
           throw std::logic_error("ABI function has multiple template prefixes");
+        }
+        if(!record.has_function_template_prefix) {
+          throw std::logic_error("function template prefix has no typed identity");
+        }
+        if(record.function_template_prefix_conversion &&
+           record.function_template_prefix_operator != ABI_OPERATOR_TERMINAL_NONE) {
+          throw std::logic_error("function template prefix has conflicting terminal identities");
+        }
+        if(!record.function_template_prefix_conversion &&
+           record.function_template_prefix_operator == ABI_OPERATOR_TERMINAL_NONE &&
+           record.function_template_prefix_name.components.empty()) {
+          throw std::logic_error("function template prefix has no typed name");
         }
         facts.function_template_prefix = &record;
         break;
@@ -2079,8 +2139,27 @@ private:
        facts.name_records.back()->kind == ABI_FUNCTION_RECORD_NAME_TEMPLATE) {
       facts.is_function_template = true;
     }
+    if(facts.function_template_prefix != NULL) {
+      const AbiFunctionRecord & prefix = *facts.function_template_prefix;
+      if(prefix.function_template_prefix_conversion) {
+        if(!facts.has_conversion_type ||
+           facts.operator_terminal != ABI_OPERATOR_TERMINAL_NONE) {
+          throw std::logic_error("conversion function template prefix does not match the function terminal");
+        }
+      } else if(prefix.function_template_prefix_operator != ABI_OPERATOR_TERMINAL_NONE) {
+        if(facts.operator_terminal != prefix.function_template_prefix_operator ||
+           facts.has_conversion_type) {
+          throw std::logic_error("operator function template prefix does not match the function terminal");
+        }
+      } else {
+        AbiQualifiedName actual = function_source_components();
+        if(actual.components.empty()) actual = target.name;
+        if(actual.components != prefix.function_template_prefix_name.components) {
+          throw std::logic_error("function template prefix name does not match the function name");
+        }
+      }
+    }
   }
-
   StructuralId function_prefix_identity(const AbiFunctionTarget & target,
                                         const FunctionFacts & facts)
   {
@@ -2093,7 +2172,6 @@ private:
     key.scalars.push_back(facts.operator_terminal);
     key.scalars.push_back(facts.std_prefix ? 1 : 0);
     key.scalars.push_back(facts.has_conversion_type ? 1 : 0);
-
     key.scalars.push_back(target.name.components.size());
     for(std::vector<std::string>::const_iterator it = target.name.components.begin();
         it != target.name.components.end(); ++it) {
@@ -2110,7 +2188,6 @@ private:
     }
     key.scalars.push_back(target.discriminator.size());
     if(!target.discriminator.empty()) key.components.push_back(intern_component(target.discriminator));
-
     key.scalars.push_back(facts.name_records.size());
     for(std::vector<const AbiFunctionRecord *>::const_iterator it =
           facts.name_records.begin(); it != facts.name_records.end(); ++it) {
@@ -2126,12 +2203,16 @@ private:
       } else if(record.kind == ABI_FUNCTION_RECORD_NAME_TEMPLATE) {
         key.scalars.push_back(record.name.size());
         key.components.push_back(intern_component(record.name));
-        key.scalars.push_back(effective_standard_kind(
-          record.standard_substitution_kind, record.standard_substitution));
+        key.scalars.push_back(record.standard_substitution_kind);
         key.scalars.push_back(record.standard_substitution_includes_arguments ? 1 : 0);
+        key.scalars.push_back(record.argument_refs.size());
+        for(std::vector<AbiDefinitionId>::const_iterator argument =
+              record.argument_refs.begin(); argument != record.argument_refs.end();
+            ++argument) {
+          key.children.push_back(argument_identity(*argument));
+        }
       }
     }
-
     key.scalars.push_back(facts.qualifiers.size());
     for(std::vector<AbiFunctionQualifier>::const_iterator it = facts.qualifiers.begin();
         it != facts.qualifiers.end(); ++it) key.scalars.push_back(*it);
@@ -2142,7 +2223,6 @@ private:
         it != sorted_tags.end(); ++it) key.components.push_back(intern_component(*it));
     key.scalars.push_back(facts.literal_suffix.size());
     if(!facts.literal_suffix.empty()) key.components.push_back(intern_component(facts.literal_suffix));
-
     if(facts.function_template_prefix != NULL) {
       const AbiFunctionRecord & prefix = *facts.function_template_prefix;
       key.scalars.push_back(1);
@@ -2172,7 +2252,6 @@ private:
     }
     return intern_structural(key);
   }
-
   AbiQualifiedName function_source_components() const
   {
     AbiQualifiedName components;
@@ -2186,7 +2265,6 @@ private:
     }
     return components;
   }
-
   std::string special_terminal_code(AbiFunctionSpecialTerminalKind terminal) const
   {
     switch(terminal) {
@@ -2200,7 +2278,6 @@ private:
     }
     throw std::logic_error("unknown ABI special function terminal");
   }
-
   std::string operator_code(AbiOperatorTerminalKind terminal,
                             bool member,
                             std::size_t parameter_count,
@@ -2263,7 +2340,6 @@ private:
     }
     throw std::logic_error("unknown ABI operator terminal");
   }
-
   void append_conversion_name(const std::vector<std::string> & components,
                               const FunctionFacts & facts,
                               std::string & output)
@@ -2280,39 +2356,64 @@ private:
     output += "cv";
     append_type(facts.conversion_type, output);
     output += tag_suffix(facts.tags);
-    append_template_arguments(facts.template_argument_refs, output);
+    append_template_arguments(facts.template_argument_refs, output,
+                              TEMPLATE_ARGUMENT_FUNCTION);
     output.push_back('E');
   }
-
   void append_name_template_component(const AbiFunctionRecord & record,
                                       const std::vector<std::string> & tags,
                                       std::string & output,
-                                      StructuralId * complete_identity_out = NULL)
+                                      StructuralId * complete_identity_out = NULL,
+                                      const std::vector<std::string> * identity_name = NULL,
+                                      StructuralId prefix_identity = INVALID_STRUCTURAL_ID,
+                                      bool owner_position = false,
+                                      TemplateArgumentEmissionRole argument_role =
+                                        TEMPLATE_ARGUMENT_NESTED,
+                                      StructuralId complete_identity_override = INVALID_STRUCTURAL_ID)
   {
     if(record.name.empty()) {
       throw std::logic_error("ABI template name has no source component");
     }
-    const AbiStandardSubstitutionKind standard = effective_standard_kind(
-      record.standard_substitution_kind, record.standard_substitution);
+    const AbiStandardSubstitutionKind standard =
+      record.standard_substitution_kind;
     // Compute the complete identity before emitting operands, but publish it
     // only after the template-id has actually been traversed.  Substitution
     // candidates are introduced by completed ABI constructs; reserving an
     // index before their operands would make later indices depend on guesses.
-    const StructuralId complete_identity = template_id_identity(record, tags);
+    const std::vector<std::string> default_name(1, record.name);
+    const std::vector<std::string> & name_components =
+      identity_name == NULL ? default_name : *identity_name;
+    const StructuralId complete_identity = complete_identity_override == INVALID_STRUCTURAL_ID ?
+      template_id_identity(record, tags, name_components) : complete_identity_override;
     if(standard != ABI_STANDARD_SUBSTITUTION_NONE) {
       output += standard_substitution_code(standard);
     } else {
-      output += source_name(record.name);
+      if(owner_position) {
+        if(prefix_identity == INVALID_STRUCTURAL_ID) {
+          throw std::logic_error("owner template has no typed prefix identity");
+        }
+        std::size_t prefix_substitution = 0;
+        if(find_structural_substitution(prefix_identity, &prefix_substitution)) {
+          append_substitution(prefix_substitution, output);
+        } else {
+          output += source_name(record.name);
+        }
+        // The prefix is a substitutable component and precedes the operands
+        // in the ABI candidate order.  The final specialization is still
+        // published below, after all of its operands.
+        register_structural_candidate(prefix_identity);
+      } else {
+        output += source_name(record.name);
+      }
     }
     output += tag_suffix(tags);
     if(standard == ABI_STANDARD_SUBSTITUTION_NONE ||
        !record.standard_substitution_includes_arguments) {
-      append_template_arguments(record.argument_refs, output);
+      append_template_arguments(record.argument_refs, output, argument_role);
     }
     register_structural_candidate(complete_identity);
     if(complete_identity_out != NULL) *complete_identity_out = complete_identity;
   }
-
   StructuralId mixed_prefix_identity(StructuralId parent,
                                      StructuralId component)
   {
@@ -2324,7 +2425,6 @@ private:
     key.children.push_back(component);
     return intern_structural(key);
   }
-
   void append_mixed_plain_component(StructuralId & parent,
                                     const std::string & component,
                                     std::string & output)
@@ -2341,7 +2441,6 @@ private:
     register_structural_candidate(complete_identity);
     parent = complete_identity;
   }
-
   void append_structured_function_name(const FunctionFacts & facts,
                                        std::string & output)
   {
@@ -2350,12 +2449,10 @@ private:
       bool is_template;
       std::string source;
       const AbiFunctionRecord * record;
-
       NameComponent()
         : is_template(false), record(NULL)
       {}
     };
-
     std::vector<NameComponent> components;
     for(std::vector<const AbiFunctionRecord *>::const_iterator it =
           facts.name_records.begin(); it != facts.name_records.end(); ++it) {
@@ -2380,39 +2477,41 @@ private:
     if(components.empty()) {
       throw std::logic_error("ABI function has no encoded name components");
     }
-
     if(facts.std_prefix && components.front().source != "std") {
       NameComponent std_component;
       std_component.source = "std";
       components.insert(components.begin(), std_component);
     }
-
     const NameComponent & final_component = components.back();
     const bool final_has_template = final_component.is_template;
     if(components.size() == 1 && facts.qualifiers.empty()) {
       if(final_has_template) {
-        append_name_template_component(*final_component.record, facts.tags, output);
+        append_name_template_component(*final_component.record, facts.tags, output,
+                                       NULL, NULL, INVALID_STRUCTURAL_ID, false,
+                                       TEMPLATE_ARGUMENT_FUNCTION);
       } else {
         output += source_name(final_component.source);
         output += tag_suffix(facts.tags);
-        append_template_arguments(facts.template_argument_refs, output);
+        append_template_arguments(facts.template_argument_refs, output,
+                                  TEMPLATE_ARGUMENT_FUNCTION);
       }
       return;
     }
-
     if(components.size() == 2 && !components[0].is_template &&
        components[0].source == "std" && facts.qualifiers.empty()) {
       output += "St";
       if(final_has_template) {
-        append_name_template_component(*final_component.record, facts.tags, output);
+        append_name_template_component(*final_component.record, facts.tags, output,
+                                       NULL, NULL, INVALID_STRUCTURAL_ID, false,
+                                       TEMPLATE_ARGUMENT_FUNCTION);
       } else {
         output += source_name(final_component.source);
         output += tag_suffix(facts.tags);
-        append_template_arguments(facts.template_argument_refs, output);
+        append_template_arguments(facts.template_argument_refs, output,
+                                  TEMPLATE_ARGUMENT_FUNCTION);
       }
       return;
     }
-
     output.push_back('N');
     append_function_qualifiers(facts.qualifiers, output);
     const std::size_t owner_count = components.size() - 1;
@@ -2436,11 +2535,38 @@ private:
           }
         }
         StructuralId template_identity = INVALID_STRUCTURAL_ID;
+        std::vector<std::string> template_name_components;
+        StructuralId template_prefix = INVALID_STRUCTURAL_ID;
+        if(!template_seen) {
+          for(std::size_t j = 0; j <= i; ++j) {
+            template_name_components.push_back(components[j].source);
+          }
+          // Both qualified and unqualified ordinary template names are
+          // complete typed entities.  Their owner-position prefix and a
+          // template-entity argument therefore share this identity, while
+          // generic source-name components remain in the separate name trie.
+          template_prefix = ordinary_template_entity_identity(
+            template_name_components);
+        } else {
+          // For multiple template owners, retain the complete prior owner in
+          // the key instead of flattening away its template arguments.
+          template_prefix = composed_template_prefix_identity(
+            owner_identity, *components[i].record);
+          template_identity = composed_template_id_identity(
+            template_prefix, *components[i].record, std::vector<std::string>());
+        }
         append_name_template_component(*components[i].record,
                                        std::vector<std::string>(), output,
-                                       &template_identity);
-        owner_identity = mixed_prefix_identity(owner_identity, template_identity);
-        register_structural_candidate(owner_identity);
+                                       &template_identity,
+                                       template_seen ? NULL : &template_name_components,
+                                       template_prefix,
+                                       true,
+                                       TEMPLATE_ARGUMENT_NESTED,
+                                       template_identity);
+        // The template-id is a complete typed class specialization.  Keep
+        // that identity as the owner for subsequent mixed components so a
+        // later type occurrence can use the same candidate.
+        owner_identity = template_identity;
         plain_begin = i + 1;
         template_seen = true;
       }
@@ -2460,15 +2586,17 @@ private:
       }
     }
     if(final_has_template) {
-      append_name_template_component(*final_component.record, facts.tags, output);
+      append_name_template_component(*final_component.record, facts.tags, output,
+                                     NULL, NULL, INVALID_STRUCTURAL_ID, false,
+                                     TEMPLATE_ARGUMENT_FUNCTION);
     } else {
       output += source_name(final_component.source);
       output += tag_suffix(facts.tags);
-      append_template_arguments(facts.template_argument_refs, output);
+      append_template_arguments(facts.template_argument_refs, output,
+                                TEMPLATE_ARGUMENT_FUNCTION);
     }
     output.push_back('E');
   }
-
   void append_function_name_from_components(const AbiQualifiedName & original,
                                             const FunctionFacts & facts,
                                             std::string & output)
@@ -2480,13 +2608,13 @@ private:
       }
     }
     if(components.components.empty()) throw std::logic_error("ABI function has no name components");
-
     const bool has_special = facts.special_terminal != ABI_SPECIAL_TERMINAL_NONE;
     const bool has_operator = facts.operator_terminal != ABI_OPERATOR_TERMINAL_NONE;
     if(has_special) {
       append_nested_name(components.components, facts.qualifiers,
                          special_terminal_code(facts.special_terminal), facts.tags,
-                         facts.template_argument_refs, output);
+                         facts.template_argument_refs, output,
+                         TEMPLATE_ARGUMENT_FUNCTION);
       return;
     }
     if(has_operator) {
@@ -2497,26 +2625,27 @@ private:
       append_nested_name(components.components, facts.qualifiers,
                          operator_code(facts.operator_terminal, member,
                                        facts.parameter_count, facts.literal_suffix),
-                         facts.tags, facts.template_argument_refs, output);
+                         facts.tags, facts.template_argument_refs, output,
+                         TEMPLATE_ARGUMENT_FUNCTION);
       return;
     }
     if(facts.has_conversion_type) {
       append_conversion_name(components.components, facts, output);
       return;
     }
-
     if(components.components.size() == 1 && facts.qualifiers.empty()) {
       output += source_name(components.components[0]);
       output += tag_suffix(facts.tags);
-      append_template_arguments(facts.template_argument_refs, output);
+      append_template_arguments(facts.template_argument_refs, output,
+                                TEMPLATE_ARGUMENT_FUNCTION);
       return;
     }
     std::vector<std::string> owner(components.components.begin(), components.components.end() - 1);
     append_nested_name(owner, facts.qualifiers,
                        source_name(components.components.back()), facts.tags,
-                       facts.template_argument_refs, output);
+                       facts.template_argument_refs, output,
+                       TEMPLATE_ARGUMENT_FUNCTION);
   }
-
   void append_namespace_lambda_function(const std::string & source,
                                         const std::vector<std::string> & namespaces,
                                         const FunctionFacts & facts,
@@ -2540,7 +2669,6 @@ private:
     output += tag_suffix(facts.tags);
     output.push_back('E');
   }
-
   void append_local_function_name(const AbiFunctionTarget & target,
                                   const FunctionFacts & facts,
                                   std::string & output)
@@ -2564,7 +2692,6 @@ private:
     output += tag_suffix(facts.tags);
     output.push_back('E');
   }
-
   void append_local_context_function_name(const AbiFunctionRecord & record,
                                           const FunctionFacts & facts,
                                           std::string & output)
@@ -2608,7 +2735,6 @@ private:
     output += tag_suffix(facts.tags);
     output.push_back('E');
   }
-
   void append_function_name(const AbiFunctionTarget & target,
                             const FunctionFacts & facts,
                             std::string & output)
@@ -2682,7 +2808,6 @@ private:
     }
     append_function_name_from_components(target.name, facts, output);
   }
-
   void append_function_parameters(const AbiFunctionTarget & target,
                                   const FunctionFacts & facts,
                                   std::string & output,
@@ -2723,7 +2848,6 @@ private:
     if(!has_parameter) output.push_back('v');
     if(facts.variadic) output.push_back('z');
   }
-
   void append_function_target_encoding(const AbiFunctionTarget & target,
                                        std::string & output)
   {
@@ -2735,17 +2859,15 @@ private:
     append_function_name(target, facts, output);
     append_function_parameters(target, facts, output, false);
   }
-
-  std::string encode_function(const AbiFunctionTarget & target)
+  std::string encode_function(const AbiFunctionTarget & target,
+                              bool include_case_records = true)
   {
     std::string result = "_Z";
     FunctionFacts facts;
-    collect_function_facts(target, facts);
+    collect_function_facts(target, facts, include_case_records);
     const bool final_name_template = !facts.name_records.empty() &&
       facts.name_records.back()->kind == ABI_FUNCTION_RECORD_NAME_TEMPLATE;
-    const bool saved_pending = substitution_state_.pending_function_prefix_candidate;
-    const StructuralId saved_identity =
-      substitution_state_.pending_function_prefix_identity;
+    PendingFunctionPrefixScope pending_scope(substitution_state_);
     substitution_state_.pending_function_prefix_candidate = facts.is_function_template &&
       !facts.template_argument_refs.empty() &&
       !(facts.function_template_prefix == NULL && final_name_template);
@@ -2754,12 +2876,9 @@ private:
         function_prefix_identity(target, facts);
     }
     append_function_name(target, facts, result);
-    append_function_parameters(target, facts, result);
-    substitution_state_.pending_function_prefix_candidate = saved_pending;
-    substitution_state_.pending_function_prefix_identity = saved_identity;
+    append_function_parameters(target, facts, result, include_case_records);
     return result;
   }
-
   void append_signed_offset(long long value, std::string & output) const
   {
     if(value < 0) {
@@ -2770,14 +2889,12 @@ private:
       output += number_string(static_cast<unsigned long long>(value));
     }
   }
-
   void append_nonvirtual_call_offset(long long value, std::string & output) const
   {
     output.push_back('h');
     append_signed_offset(value, output);
     output.push_back('_');
   }
-
   void append_virtual_call_offset(long long fixed,
                                   long long vcall,
                                   std::string & output) const
@@ -2788,7 +2905,6 @@ private:
     append_signed_offset(vcall, output);
     output.push_back('_');
   }
-
   std::string encode_thunk(const AbiTargetRecord & target)
   {
     std::string result = "_ZT";
@@ -2809,12 +2925,9 @@ private:
     return result;
   }
 };
-
 }  // namespace
-
 std::string mangle_abi_fact_case(const AbiFactCase & fact_case)
 {
   return FactEncoder(fact_case).encode();
 }
-
 }  // namespace abi_mangle

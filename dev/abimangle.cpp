@@ -77,6 +77,48 @@ abi_mangle::AbiStandardSubstitutionKind standard_substitution_kind(const string 
   throw logic_error("unknown ABI standard substitution '" + spelling + "'");
 }
 
+void validate_standard_substitution_name(
+  abi_mangle::AbiStandardSubstitutionKind kind,
+  const abi_mangle::AbiQualifiedName & name)
+{
+  if(name.components.size() != 2 || name.components[0] != "std") {
+    throw logic_error("standard substitution name is not in std namespace");
+  }
+  const string & component = name.components[1];
+  const bool valid =
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_ALLOCATOR &&
+     component == "allocator") ||
+    ((kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_BASIC_STRING ||
+      kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_STRING) &&
+     component == "basic_string") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_ISTREAM &&
+     component == "basic_istream") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_OSTREAM &&
+     component == "basic_ostream") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_IOSTREAM &&
+     component == "basic_iostream");
+  if(!valid) throw logic_error("standard substitution code and name disagree");
+}
+
+void validate_standard_substitution_component(
+  abi_mangle::AbiStandardSubstitutionKind kind,
+  const string & component)
+{
+  const bool valid =
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_ALLOCATOR &&
+     component == "allocator") ||
+    ((kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_BASIC_STRING ||
+      kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_STRING) &&
+     component == "basic_string") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_ISTREAM &&
+     component == "basic_istream") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_OSTREAM &&
+     component == "basic_ostream") ||
+    (kind == abi_mangle::ABI_STANDARD_SUBSTITUTION_IOSTREAM &&
+     component == "basic_iostream");
+  if(!valid) throw logic_error("standard substitution code and name disagree");
+}
+
 bool parse_boolean_word(const string & spelling, const string & field)
 {
   if(spelling == "yes" || spelling == "true") return true;
@@ -601,6 +643,9 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at,
       result.name = parse_qualified_name(words[at++]);
     }
     while(at < words.size()) result.argument_refs.push_back(interner.reference(words[at++]));
+    if(spelling == "std-template") {
+      validate_standard_substitution_name(result.standard_substitution_kind, result.name);
+    }
     return result;
   }
   if(spelling == "member") {
@@ -732,6 +777,11 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     }
     for(size_t i = argument_at; i < words.size(); ++i) {
       result.argument_refs.push_back(interner.reference(words[i]));
+    }
+    if(result.standard_substitution_kind !=
+       abi_mangle::ABI_STANDARD_SUBSTITUTION_NONE) {
+      validate_standard_substitution_component(result.standard_substitution_kind,
+                                               result.name);
     }
     return result;
   }
@@ -912,6 +962,10 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
         abi_mangle::ABI_TEMPLATE_ARGUMENT_MEMBER_EXTERNAL_ENTITY;
       if(at >= words.size()) throw logic_error("missing member external symbol");
       result.definition.template_argument.symbol = words[at++];
+      if(result.definition.template_argument.symbol.empty() ||
+         result.definition.template_argument.symbol == "-") {
+        throw logic_error("member external symbol is empty");
+      }
       result.definition.template_argument.owner_type = parse_type_words(words, at, interner);
       if(at >= words.size()) throw logic_error("missing member external name");
       result.definition.template_argument.name = parse_source_component(words[at++]);
@@ -932,6 +986,19 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
       while(at < words.size()) {
         result.definition.template_argument.parameter_types.push_back(
           parse_type_words(words, at, interner));
+      }
+      if(!result.definition.template_argument.member_is_function &&
+         (result.definition.template_argument.member_function_const ||
+          result.definition.template_argument.member_function_volatile ||
+          result.definition.template_argument.member_function_lvalue_ref ||
+          result.definition.template_argument.member_function_rvalue_ref ||
+          result.definition.template_argument.member_function_variadic ||
+          !result.definition.template_argument.parameter_types.empty())) {
+        throw logic_error("data member external address has function facts");
+      }
+      if(result.definition.template_argument.member_function_lvalue_ref &&
+         result.definition.template_argument.member_function_rvalue_ref) {
+        throw logic_error("member external function has conflicting ref qualifiers");
       }
     } else if(kind == "template-entity") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_TEMPLATE_ENTITY;
@@ -1004,6 +1071,7 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
     const string entity_kind = words[2];
     if(entity_kind == "symbol") {
       result.definition.entity.kind = abi_mangle::ABI_ENTITY_FACT_SYMBOL;
+      if(words[3] == "-") throw logic_error("external entity symbol is empty");
       result.definition.entity.name = parse_qualified_name(words[3]);
       require_end(words, 4);
     } else if(entity_kind == "variable" || entity_kind == "internal-variable") {
@@ -1208,10 +1276,14 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
       }
       for(size_t i = 4; i < words.size(); ++i) result.target.function.namespace_qualifiers.push_back(words[i]);
     } else if(words[1] == "local" || words[1] == "lambda") {
+      if(words.size() < 5) {
+        throw logic_error(words[1] == "lambda" ?
+                          "incomplete lambda function target" :
+                          "incomplete local function target");
+      }
       result.target.function.kind = words[1] == "local" ? ABI_FUNCTION_TARGET_LOCAL : ABI_FUNCTION_TARGET_LAMBDA;
       result.target.function.context_ref = interner.reference(words[2]);
       if(words[1] == "lambda") {
-        if(words.size() < 5) throw logic_error("incomplete lambda function target");
         result.target.function.discriminator = words[3];
         result.target.function.special_terminal = special_terminal_kind(words[4]);
         if(words[4] == "operator-call" || words[4] == "call") {
@@ -1227,7 +1299,6 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
           i = at - 1;
         }
       } else {
-        if(words.size() < 5) throw logic_error("incomplete local function target");
         result.target.function.source_name = parse_source_component(words[3]).components[0];
         result.target.function.special_terminal = special_terminal_kind(words[4]);
         if(words[4] == "operator-call" || words[4] == "call") {

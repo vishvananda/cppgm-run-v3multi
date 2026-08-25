@@ -322,7 +322,10 @@ struct AbiType
   AbiBuiltinKind builtin = ABI_BUILTIN_INVALID;
   AbiQualifiedName name;
   AbiDefinitionId definition_ref;
+  // Adapter observation only; substitution identity is structural and typed.
   std::string substitution;
+  // Adapter metadata only.  The reusable encoder never reads this spelling;
+  // the adapter validates it before the typed enum crosses the boundary.
   std::string standard_substitution;
   AbiStandardSubstitutionKind standard_substitution_kind =
     ABI_STANDARD_SUBSTITUTION_NONE;
@@ -351,8 +354,12 @@ struct AbiTemplateArgument
   AbiType value_type;
   AbiType owner_type;
   AbiQualifiedName name;
+  // Adapter metadata for an already-known member-template spelling.  It is
+  // never used as semantic identity by the reusable encoder.
   std::string substitution;
   AbiDefinitionId entity_ref;
+  // True external-symbol boundary; it is emitted verbatim and is not a
+  // qualified-name spelling to be decoded by the reusable encoder.
   std::string symbol;
   long long value = 0;
   std::size_t index = 0;
@@ -457,8 +464,12 @@ struct AbiFunctionRecord
 {
   AbiFunctionRecordKind kind = ABI_FUNCTION_RECORD_PARAMETER;
   std::string name;
+  // Adapter observations of rendered name substitutions; typed name records
+  // and argument references own reusable-encoder identity.
   std::string substitution;
   std::string complete_substitution;
+  // Adapter metadata only.  The reusable encoder never reads this spelling;
+  // the adapter validates it before the typed enum crosses the boundary.
   std::string standard_substitution;
   AbiStandardSubstitutionKind standard_substitution_kind =
     ABI_STANDARD_SUBSTITUTION_NONE;
