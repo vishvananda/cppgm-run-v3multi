@@ -343,7 +343,10 @@ struct AbiFactFile
 };
 
 AbiFactRecord parse_fact_record_words(const std::vector<std::string> & words);
+AbiFactFile parse_fact_text(const std::string & text);
 std::string serialize_fact_file(const AbiFactFile & file);
+std::string mangle_abi_fact_case(const AbiFactCase & fact_case);
+std::string mangle_fact_file(const AbiFactFile & file);
 std::string mangle_fact_files(const std::vector<std::string> & input_paths);
 
 }  // namespace abi_mangle
