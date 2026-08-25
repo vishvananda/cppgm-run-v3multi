@@ -52,16 +52,8 @@ class ActiveDefinitionScope
 public:
   ActiveDefinitionScope(std::vector<unsigned char> & state, std::size_t index)
     : state_(state), index_(index)
-  {
-    if(index_ >= state_.size() || state_[index_] != 0) {
-      throw std::logic_error("cyclic ABI type definition");
-    }
-    state_[index_] = 1;
-  }
-  ~ActiveDefinitionScope()
-  {
-    state_[index_] = 0;
-  }
+  { if(index_ >= state_.size() || state_[index_] != 0) throw std::logic_error("cyclic ABI type definition"); state_[index_] = 1; }
+  ~ActiveDefinitionScope() { state_[index_] = 0; }
 private:
   std::vector<unsigned char> & state_;
   std::size_t index_;
@@ -71,16 +63,8 @@ class ActiveIdentityScope
 public:
   ActiveIdentityScope(std::vector<unsigned char> & state, std::size_t index)
     : state_(state), index_(index)
-  {
-    if(index_ >= state_.size() || state_[index_] != 0) {
-      throw std::logic_error("cyclic ABI structural identity");
-    }
-    state_[index_] = 1;
-  }
-  ~ActiveIdentityScope()
-  {
-    state_[index_] = 0;
-  }
+  { if(index_ >= state_.size() || state_[index_] != 0) throw std::logic_error("cyclic ABI structural identity"); state_[index_] = 1; }
+  ~ActiveIdentityScope() { state_[index_] = 0; }
 private:
   std::vector<unsigned char> & state_;
   std::size_t index_;
@@ -203,12 +187,13 @@ private:
   {
     std::vector<NameTrieNode> substitution_trie;
     std::map<StructuralId, std::size_t> structural_substitution_indexes;
-    std::size_t next_substitution_index;
+    std::size_t next_substitution_index; std::size_t template_argument_depth;
     bool pending_function_prefix_candidate;
     StructuralId pending_function_prefix_identity;
     SubstitutionState()
       : substitution_trie(1),
         next_substitution_index(0),
+        template_argument_depth(0),
         pending_function_prefix_candidate(false),
         pending_function_prefix_identity(INVALID_STRUCTURAL_ID)
     {}
@@ -217,6 +202,7 @@ private:
       substitution_trie.swap(other.substitution_trie);
       structural_substitution_indexes.swap(other.structural_substitution_indexes);
       std::swap(next_substitution_index, other.next_substitution_index);
+      std::swap(template_argument_depth, other.template_argument_depth);
       std::swap(pending_function_prefix_candidate,
                 other.pending_function_prefix_candidate);
       std::swap(pending_function_prefix_identity,
@@ -228,15 +214,13 @@ private:
     SubstitutionState & state;
     const bool pending;
     const StructuralId identity;
-    explicit PendingFunctionPrefixScope(SubstitutionState & state)
-      : state(state), pending(state.pending_function_prefix_candidate),
-        identity(state.pending_function_prefix_identity)
-    {}
-    ~PendingFunctionPrefixScope()
-    {
-      state.pending_function_prefix_candidate = pending;
-      state.pending_function_prefix_identity = identity;
-    }
+    explicit PendingFunctionPrefixScope(SubstitutionState & state) : state(state), pending(state.pending_function_prefix_candidate), identity(state.pending_function_prefix_identity) {}
+    ~PendingFunctionPrefixScope() { state.pending_function_prefix_candidate = pending; state.pending_function_prefix_identity = identity; }
+  };
+  struct TemplateArgumentEmissionScope
+  {
+    SubstitutionState & state;
+    explicit TemplateArgumentEmissionScope(SubstitutionState & state) : state(state) { ++state.template_argument_depth; } ~TemplateArgumentEmissionScope() { --state.template_argument_depth; }
   };
   std::map<std::string, ComponentId> component_indexes_;
   std::vector<std::string> component_spellings_;
@@ -493,6 +477,7 @@ private:
   }
   StructuralId type_identity(const AbiType & original)
   {
+    if(!abi_template_parameter_reference_kind_is_valid(original.template_parameter_reference_kind)) throw std::logic_error("invalid ABI template parameter reference kind");
     if(original.kind == ABI_TYPE_NAME_OR_REFERENCE &&
        original.definition_ref.index != ABI_INVALID_DEFINITION_ID) {
       return type_definition_identity(original.definition_ref);
@@ -1363,6 +1348,7 @@ private:
       substitution_state_.pending_function_prefix_candidate = false;
     }
     output.push_back('I');
+    TemplateArgumentEmissionScope argument_scope(substitution_state_);
     for(std::vector<AbiDefinitionId>::const_iterator it = refs.begin();
         it != refs.end(); ++it) {
       output += encode_argument(argument_definition(*it));
@@ -1377,6 +1363,7 @@ private:
   }
   void append_type(const AbiType & original, std::string & output)
   {
+    if(!abi_template_parameter_reference_kind_is_valid(original.template_parameter_reference_kind)) throw std::logic_error("invalid ABI template parameter reference kind");
     const AbiType * type = &original;
     if(type->kind == ABI_TYPE_NAME_OR_REFERENCE &&
        type->definition_ref.index != ABI_INVALID_DEFINITION_ID) {
@@ -1386,11 +1373,12 @@ private:
       return;
     }
     if(type->kind == ABI_TYPE_TEMPLATE_PARAMETER) {
-      append_template_parameter(type->index, output);
+      append_template_parameter(type->index, output, type->template_parameter_reference_kind);
       return;
     }
     const bool substitutable = type->kind != ABI_TYPE_NAME_OR_REFERENCE &&
-      type->kind != ABI_TYPE_NAMED && type->kind != ABI_TYPE_BUILTIN;
+      type->kind != ABI_TYPE_NAMED && type->kind != ABI_TYPE_BUILTIN &&
+      type->kind != ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION;
     if(substitutable) {
       const StructuralId identity = type_identity(*type);
       std::size_t substitution = 0;
@@ -1416,7 +1404,7 @@ private:
       output += builtin_code(type->builtin);
       return;
     case ABI_TYPE_TEMPLATE_PARAMETER:
-      append_template_parameter(type->index, output);
+      append_template_parameter(type->index, output, type->template_parameter_reference_kind);
       return;
     case ABI_TYPE_POINTER:
       output.push_back('P');
@@ -1570,8 +1558,10 @@ private:
     }
     return "T" + number_string(index - 1) + "_";
   }
-  void append_template_parameter(std::size_t index, std::string & output)
+  void append_template_parameter(std::size_t index, std::string & output,
+                                 AbiTemplateParameterReferenceKind reference_kind = ABI_TEMPLATE_PARAMETER_REFERENCE_DIRECT)
   {
+    if(!abi_template_parameter_reference_kind_is_valid(reference_kind)) throw std::logic_error("invalid ABI template parameter reference kind");
     StructuralKey key;
     key.domain = STRUCTURAL_TYPE;
     key.kind = ABI_TYPE_TEMPLATE_PARAMETER;
@@ -1583,7 +1573,10 @@ private:
       return;
     }
     output += template_parameter(index);
-    register_structural_candidate(identity);
+    if(substitution_state_.template_argument_depth == 0 ||
+       reference_kind == ABI_TEMPLATE_PARAMETER_REFERENCE_SUBSTITUTION) {
+      register_structural_candidate(identity);
+    }
   }
   void append_member_owner_components(const AbiType & original,
                                      std::string & output)
@@ -1608,6 +1601,7 @@ private:
                                       std::string & output)
   {
     const AbiStandardSubstitutionKind standard = type.standard_substitution_kind;
+    if(type.kind == ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION && type.argument_refs.empty()) throw std::logic_error("template-template specialization has no arguments");
     if(type.kind == ABI_TYPE_STD_TEMPLATE_SPECIALIZATION &&
        standard == ABI_STANDARD_SUBSTITUTION_NONE) {
       throw std::logic_error("standard template specialization has no typed substitution identity");
@@ -1654,6 +1648,7 @@ private:
     if(standard != ABI_STANDARD_SUBSTITUTION_NONE &&
        type.standard_substitution_includes_arguments) return;
     output.push_back('I');
+    TemplateArgumentEmissionScope argument_scope(substitution_state_);
     for(std::vector<AbiDefinitionId>::const_iterator it = type.argument_refs.begin();
         it != type.argument_refs.end(); ++it) {
       output += encode_argument(argument_definition(*it));
@@ -1818,6 +1813,7 @@ private:
       if(standard == ABI_STANDARD_SUBSTITUTION_NONE ||
          !original.standard_substitution_includes_arguments) {
         output.push_back('I');
+        TemplateArgumentEmissionScope argument_scope(substitution_state_);
         for(std::vector<AbiDefinitionId>::const_iterator it =
               original.argument_refs.begin(); it != original.argument_refs.end(); ++it) {
           output += encode_argument(argument_definition(*it));
@@ -2022,10 +2018,8 @@ private:
     if(type.name.components.size() != 1) {
       throw std::logic_error("local type name is not a component");
     }
-    output.push_back('N');
     output += source_name(type.name.components[0]);
     output += local_entity_discriminator(type.discriminator);
-    output.push_back('E');
   }
   struct FunctionFacts
   {
@@ -2506,8 +2500,7 @@ private:
     register_structural_candidate(complete_identity);
     parent = complete_identity;
   }
-  void append_structured_function_name(const FunctionFacts & facts,
-                                       std::string & output)
+  void append_structured_function_name(const FunctionFacts & facts, std::string & output, bool all_components_are_owners = false)
   {
     struct NameComponent
     {
@@ -2549,7 +2542,7 @@ private:
     }
     const NameComponent & final_component = components.back();
     const bool final_has_template = final_component.is_template;
-    if(components.size() == 1 && facts.qualifiers.empty()) {
+    if(!all_components_are_owners && components.size() == 1 && facts.qualifiers.empty()) {
       if(final_has_template) {
         append_name_template_component(*final_component.record, facts.tags, output,
                                        NULL, NULL, INVALID_STRUCTURAL_ID, false,
@@ -2562,7 +2555,7 @@ private:
       }
       return;
     }
-    if(components.size() == 2 && !components[0].is_template &&
+    if(!all_components_are_owners && components.size() == 2 && !components[0].is_template &&
        components[0].source == "std" && facts.qualifiers.empty()) {
       output += "St";
       if(final_has_template) {
@@ -2579,7 +2572,8 @@ private:
     }
     output.push_back('N');
     append_function_qualifiers(facts.qualifiers, output);
-    const std::size_t owner_count = components.size() - 1;
+    const std::size_t owner_count = components.size() - (all_components_are_owners ? 0 : 1);
+    if(owner_count == 0) throw std::logic_error("structured ABI owner has no components");
     std::size_t plain_begin = 0;
     bool template_seen = false;
     StructuralId owner_identity = INVALID_STRUCTURAL_ID;
@@ -2649,6 +2643,10 @@ private:
                                        components[j].source, output);
         }
       }
+    }
+    if(all_components_are_owners) {
+      if(facts.special_terminal == ABI_SPECIAL_TERMINAL_NONE || facts.operator_terminal != ABI_OPERATOR_TERMINAL_NONE || facts.has_conversion_type) throw std::logic_error("structured ABI owner has no special terminal");
+      output += special_terminal_code(facts.special_terminal); output += tag_suffix(facts.tags); output.push_back('E'); return;
     }
     if(final_has_template) {
       append_name_template_component(*final_component.record, facts.tags, output,
@@ -2860,6 +2858,10 @@ private:
         append_namespace_lambda_function(record.source_name.components[0],
                                          record.namespace_qualifiers, facts, output);
         return;
+      }
+      const bool has_empty_terminal_name_source = !facts.name_records.empty() && facts.name_records.back()->kind == ABI_FUNCTION_RECORD_NAME_SOURCE && facts.name_records.back()->source_name.components.empty();
+      if(has_empty_terminal_name_source && facts.special_terminal != ABI_SPECIAL_TERMINAL_NONE && facts.operator_terminal == ABI_OPERATOR_TERMINAL_NONE && !facts.has_conversion_type) {
+        append_structured_function_name(facts, output, true); return;
       }
       if(!facts.name_records.empty() &&
          facts.operator_terminal == ABI_OPERATOR_TERMINAL_NONE &&

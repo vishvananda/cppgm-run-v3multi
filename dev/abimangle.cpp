@@ -760,7 +760,19 @@ abi_mangle::AbiType parse_type_words(const vector<string> & words, size_t & at,
     if(at >= words.size()) throw logic_error("missing template parameter index");
     abi_mangle::AbiType result;
     result.kind = abi_mangle::ABI_TYPE_TEMPLATE_PARAMETER;
+    result.template_parameter_reference_kind = spelling == "template-param-subst" ?
+      abi_mangle::ABI_TEMPLATE_PARAMETER_REFERENCE_SUBSTITUTION :
+      abi_mangle::ABI_TEMPLATE_PARAMETER_REFERENCE_DIRECT;
     result.index = parse_index(words[at++]);
+    return result;
+  }
+  if(spelling == "template-param-template") {
+    if(at >= words.size()) throw logic_error("missing template-template parameter index");
+    abi_mangle::AbiType result;
+    result.kind = abi_mangle::ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION;
+    result.index = parse_index(words[at++]);
+    if(at == words.size()) throw logic_error("template-template specialization has no arguments");
+    while(at < words.size()) result.argument_refs.push_back(interner.reference(words[at++]));
     return result;
   }
   if(spelling == "template" || spelling == "std-template") {
@@ -1809,6 +1821,10 @@ void append_type_words(const AbiFactCase & fact_case,
                        const AbiType & type,
                        vector<string> & words)
 {
+  if(!abi_template_parameter_reference_kind_is_valid(
+       type.template_parameter_reference_kind)) {
+    throw logic_error("invalid ABI template parameter reference kind");
+  }
   // `tagged` is a wrapper in the input grammar, while the typed model keeps
   // its tags on the underlying type.  Strip them only while serializing the
   // base so the result parses back to the same typed shape.
@@ -1837,7 +1853,9 @@ void append_type_words(const AbiFactCase & fact_case,
     }
     return;
   case ABI_TYPE_TEMPLATE_PARAMETER:
-    words.push_back("template-param");
+    words.push_back(type.template_parameter_reference_kind ==
+                    ABI_TEMPLATE_PARAMETER_REFERENCE_SUBSTITUTION ?
+                    "template-param-subst" : "template-param");
     value << type.index;
     words.push_back(value.str());
     return;
@@ -1917,7 +1935,17 @@ void append_type_words(const AbiFactCase & fact_case,
     }
     return;
   case ABI_TYPE_TEMPLATE_PARAMETER_SPECIALIZATION:
-    throw logic_error("template-parameter specialization serializer is outside PA14's touched boundary");
+    if(type.argument_refs.empty()) {
+      throw logic_error("template-parameter specialization has no arguments");
+    }
+    words.push_back("template-param-template");
+    value << type.index;
+    words.push_back(value.str());
+    for(vector<AbiDefinitionId>::const_iterator it = type.argument_refs.begin();
+        it != type.argument_refs.end(); ++it) {
+      words.push_back(definition_ref_spelling(fact_case, *it));
+    }
+    return;
   case ABI_TYPE_STD_TEMPLATE_SPECIALIZATION:
     if(type.standard_substitution_kind == ABI_STANDARD_SUBSTITUTION_NONE ||
        type.name.components.empty()) {

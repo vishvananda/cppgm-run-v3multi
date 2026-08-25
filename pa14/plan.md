@@ -2,232 +2,112 @@
 
 ## Stage Design
 
-`dev/abimangle.cpp` is the line-oriented adapter.  It validates the normalized
-fact vocabulary and constructs one typed `AbiFactCase`; it does not pass
-rendered ABI fragments to semantic code.  `dev/src/abi_mangle.h` is the shared
-typed fact boundary, and `dev/src/abi_mangle.cpp` is the sole append-based
-encoder.
+The line adapter in `dev/abimangle.cpp` parses normalized facts into the
+typed model in `dev/src/abi_mangle.h`; `dev/src/abi_mangle.cpp` is the shared
+append-based encoder. Structural substitution keys contain typed domains,
+components, scalars, and child identities. Rendered ABI text and adapter
+spellings are never semantic keys; name edges use the existing trie and
+structural candidates publish in ABI order.
 
-The encoder owns deterministic per-case substitution state.  A
-`StructuralKey` contains a typed domain/kind, scalar operands, interned source
-components, and canonical child identities.  Definition identities are cached
-once, recursive definitions are cycle-checked, and a map interns complete
-keys.  Qualified-name edges use an interned trie; each trie node stores the
-typed identity formed from its parent identity and one edge, so prefix
-registration never copies a growing component vector.  Tagged names use
-sorted typed tag IDs.  No rendered mangled spelling is used as a semantic key,
-and there is no opaque index reservation path
-(`add_opaque_substitution_candidate` is gone).
+The 600 boundary emits local names directly, tracks template-argument depth
+with one counter, and distinguishes direct `template-param` from explicit
+`template-param-subst` publication without changing identity. It represents
+`template-param-template <index> <arg-ref>...` as a typed specialization,
+does not register its complete dependent prefix-plus-arguments form as a
+type candidate, and handles an owner-template constructor terminal after the
+owner arguments. The public enum has an explicit validity predicate; the
+encoder and cold serializer reject invalid values. Empty template-template
+argument lists are rejected at both typed boundaries.
 
-The 300 boundary registers complete typed candidates for compound types,
-template IDs and prefixes, function-template prefixes, member-template
-entities, values, standard substitutions, and external entity addresses.  CV
-wrappers flatten adjacent const/volatile nodes for identity and emission;
-named definition references and direct named/reference spellings share the
-same structural identity.  Member-template candidates include their typed
-owner and member rather than an arbitrary unqualified component.  An
-owner-position name-template publishes its complete typed template-prefix
-before its operands and its complete specialization after them; the latter
-matches the corresponding typed class specialization for the one-owner mixed
-300 model.  Multiple template owners use a complete composed key rooted in
-the prior specialization, preserving earlier owner arguments without making
-a flattened cross-domain alias.  An ordinary template name, whether qualified
-or unqualified, uses one dedicated typed template-entity/prefix identity for
-the owner-position prefix and a template-entity argument; that identity is
-distinct from the generic name trie, so unrelated unqualified components do
-not become candidates.  Entity symbol encoding uses an isolated
-nested substitution state, so a member's internal `C::m` spelling cannot
-pollute the enclosing function's substitution order.
-Entity-symbol isolation swaps the trie/index state object with O(1)
-vector/map swaps and restores it on success or exception.  Ordinary path type,
-result, and variadic operands remain typed operands; only path template
-operands become function template arguments.  A result type is emitted only
-for an identified function-template encoding.
-
-The current dependent boundary extends that pipeline instead of adding a text
-fallback.  The adapter maps every checked-in `let-expr` form to typed operator,
-cast, access, source-name, type, expression-reference, and argument fields,
-with explicit arity, operator-shape, and vocabulary validation.
-Member-template records retain their owner, member source component, and
-argument range; decltype types retain the Dt/DT category.  For
-`ABI_TYPE_DECLTYPE_EXPRESSION`, `type_identity` owns the `AbiDecltypeKind` and
-child expression identity.  Expression identity includes its own typed fields
-and children, including literal type/value, trait source-name/type operands,
-member owner, access mode, and close-owner state.  Encoding is a direct prefix
-traversal;
-type operands share the case substitution state, while direct template
-parameter expression leaves do not create a symbol-table candidate.  Recursive
-expression and definition walks are cycle-checked, and no rendered expression
-fragment is used as identity.  The public fact serializer emits canonical,
-parseable typed forms for these 400/500 records, including expression
-definitions, expression template arguments, member/member-template owners,
-decltype category, and function-template records.
-
-Name/template operands are published in left-to-right ABI order: owner
-template-prefix, its operands, then complete specialization.  The pending
-function-template prefix is published only at the explicit function-template
-argument emission site, never while walking owner or nested argument lists;
-final function/operator names remain excluded from ordinary name candidates.
-Mixed plain/template owner components are walked as one ordered sequence; a
-plain suffix after a template owner is not sent through a disconnected scope
-prefix.  Standard-substitution enums own reusable-encoder identity and
-emission; raw `Sa`/`So`-style text is adapter-only validation metadata.  Empty
-argument-list restrictions were not added as fixture-driven policy.  The
-normal work is plausibly O(n log n) for ordinary distinct interned facts/edges
-(with O(q log q) tag canonicalization): every qualified edge is interned once,
-and each structural map operation is logarithmic.  Structural key comparison
-still carries the size of its typed operands, so this is not a claim for
-arbitrarily wide keys or later families.  Entity isolation adds O(1) state
-swaps per nested symbol.  There is no whole-case retry/rescan path or
-quadratic rendered/vector keys.
+The new state is O(1) per case. Existing `std::map` structural/trie lookups
+remain O(log n), with typed key comparison proportional to operand width; no
+retry, rescan, rendered key, or growing candidate-vector path was added.
 
 ## Failure Map
 
-The prior typed-300 checkpoint began at HEAD `12eaf37b`: all 111 tests were
-covered, with 57/111 passing and 54 failing.  Its authorized result was
-88/111, with 100=25/25, 200=25/25, 300=37/37, 400=1/4, 500=0/13, 600=0/7.
-The seven baseline 300 passes were construction-vtable,
-distinct-array-bound-substitution, minimum-signed-integral-value,
-std-allocator-substitution, std-initializer-list-member-parameter,
-std-initializer-list-parameter, and template-template-argument.
+Clean HEAD `bf99cd9c` started this checkpoint at 104/111: 100=25/25,
+200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7. The complete 600
+failure set was:
 
-At this checkpoint turn start, clean landed HEAD `3e333caa` had 104/111:
-100=25/25, 200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7.  The
-focused checked-in 400/500 command remains 17/17, and the 100–300 preservation
-command is 87/87.  The public serializer round-trip harness also passes all
-17 400/500 inputs with identical mangles, plus a `decltype-id` smoke case.
-The prior parent `623abbe4` is retained as the historical 88/111 pre-dependent
-baseline; this checkpoint does not claim any of the seven 600 cases.
-
-The complete pre-milestone failure set was:
-
-- 400: `dependent-alias-type-id`, `dependent-owner-member-template`,
-  `dependent-rebind-other`.
-- 500: `dependent-bitset-words`, `dependent-call-expression`,
-  `dependent-cast-expression`, `dependent-expression-type-substitution-order`,
-  `dependent-function-parameter-decltype-param`,
-  `dependent-object-member-expression`, `dependent-pack-expression`,
-  `dependent-sizeof-type-expression`, `dependent-type-trait-expression`,
-  `distinct-integral-decltype-substitution`,
-  `distinct-type-trait-expression-substitution`,
-  `equivalent-dependent-expr-substitution`,
-  `equivalent-integral-decltype-substitution`.
-- 600: `function-local-class-template-arg`, `function-template-local-class-arg`,
-  `function-template-local-lambda-arg`, `inline-namespace-basic-string-param`,
-  `nested-helper-owner`, `template-param-template-type-substitution`,
-  `template-parameter-pack-reference-constructor`.
-
-The final `make test-report-through-pa13` gate passed 947/947.  The final
-`make test-pa14` covered all 111 tests and passed 104/111 with exactly the
-seven 600 nonclaims below; `git diff --check` passed.  The final file audit
-passed with the four known nonfatal header `bad-division` warnings.
+1. `function-local-class-template-arg`: got `N2ns4WrapIZNS_4makeEvEN5LocalEEE`, expected `N2ns4WrapIZNS_4makeEvE5LocalEE`.
+2. `function-template-local-class-arg`: got `_Z1gIZ1fvEN1XEEiv`, expected `_Z1gIZ1fvE1XEiv`.
+3. `function-template-local-lambda-arg`: got `_Z5applyIZ4hostiEN3$_0EEiT_`, expected `_Z5applyIZ4hostiE3$_0EiT_`.
+4. `inline-namespace-basic-string-param`: got `_ZSt7getlineIT_ERNSt7__cxx1112basic_stringIS0_St11char_traitsIS0_ESt9allocatorIS0_EEE`, expected `_ZSt7getlineIT_ERNSt7__cxx1112basic_stringIT_St11char_traitsIT_ESt9allocatorIT_EEE`.
+5. `nested-helper-owner`: got `N2ns5OuterIT_NS_5AllocIS1_EEE12_Guard_allocE`, expected `N2ns5OuterIT_NS_5AllocIT_EEE12_Guard_allocE`.
+6. `template-param-template-type-substitution`: the adapter rejected `template-param-template` with `unexpected extra ABI fact fields`; expected `_ZN2ns3useERT0_IT_ES1_`.
+7. `template-parameter-pack-reference-constructor`: the encoder rejected `ABI function has no name components`; expected `_ZN5ownerIT_EC1EDpRKT_`.
 
 ## Active Checkpoint and Spec Alignment
 
-This checkpoint now actively owns the checked-in dependent 400/500 boundary:
-dependent aliases and member-template owners; typed dependent expressions;
-operator trees; casts and calls; type traits and sizeof(type); packs; object
-and unresolved-member forms; function-parameter references; decltype category;
-and equivalent-expression substitution.  The prior typed 300 family remains
-the preserved foundation.
+All seven 600 outputs now match their checked-in refs. The adapter/model/
+encoder boundary remains typed: local entities, template arguments,
+template-parameter specializations, owner terminals, and substitution modes
+are represented as fields and enums. Validation occurs before malformed facts
+can acquire ABI output, while the serializer preserves both
+`template-param-template` and `template-param-subst` spellings.
 
-The implementation follows spec.md §§1--4 and §7 by keeping one typed
-adapter/model/encoder pipeline, validating malformed fact combinations at the
-typed adapter and encoder boundaries, representing symbolic substitutions with
-complete typed keys, and encoding ABI structure directly in left-to-right
-order.  It follows
-Itanium Chapter 5.1 for dependent types and decltype, function-parameter
-references, template arguments, prefix expression traversal, unresolved names,
-and compression.  Direct expression leaves remain distinct from type
-operands: the latter publish candidates in grammar order, while expressions
-themselves are never string-keyed or substituted as rendered text.  The
-prior 300 substitutions and multi-owner identity remain preserved; the
-remaining 600 local/lambda, inline-namespace, and pack/template-parameter
-cases are explicit nonclaims and define the next bounded checkpoint.
+The implementation follows `spec.md` §§1--4 and §7 and Itanium Chapter 5.1
+for template arguments, local names, template parameters, compression, and
+left-to-right candidate publication. The enum mode is not part of structural
+identity. The complete dependent specialization is not a type candidate;
+its parameter prefix and argument references retain normal ordering.
 
-The seven 600 identities remain explicit nonclaims for this milestone:
-`function-local-class-template-arg`, `function-template-local-class-arg`,
-`function-template-local-lambda-arg`, `inline-namespace-basic-string-param`,
-`nested-helper-owner`, `template-param-template-type-substitution`, and
-`template-parameter-pack-reference-constructor`.  Member-external raw symbols
-remain a deliberate external-symbol boundary; this work does not reconstruct
-or cross-check them from typed owner/member facts.  No handout fixture/ref,
-generated artifact, or broad harness was changed; the new course-only
-regression sidecar is not a handout reference.  The 600 nonclaims are
-unchanged; no shared 400/500 fix is being claimed for them.
+Durable public coverage is in
+`cppgm.tests/course/pa14/400-public-typed-model-regression.{cpp,sh}`. It
+checks both happy-path mangles, exact parse/serialize/parse stability for
+`template-param-template` and `template-param-subst`, empty-argument
+rejection in the encoder and serializer, and invalid-enum rejection in both.
+
+Validation results:
+
+| command | result |
+|---|---|
+| `make -C pa14 check TEST='tests/abi/600-*.t'` | PASS (7/7) |
+| `make -C pa14 check TEST='../cppgm.tests/course/pa14/*.t'` | PASS (10/10) |
+| `CXX=${CXX:-g++} sh cppgm.tests/course/pa14/400-public-typed-model-regression.sh` | PASS |
+| `g++ -std=c++11 -Wall -Wextra -Werror -Idev/src -fsyntax-only dev/src/abi_mangle.cpp dev/abimangle.cpp` | PASS |
+| `make test-pa14` | PASS (111/111) |
+| `n=14; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi` | PASS (947/947) |
+| `make test-report-through-pa14` | PASS (1058/1058) |
+| `perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src` | PASS; 4 known nonfatal header warnings |
+| `git diff --check` | PASS |
+
+No handout test, reference, harness, or generated repository file changed.
 
 ## Performance Evidence
 
-Repaired-current dependent-expression evidence used one immutable mode-0555
-candidate at `/tmp/pa14-dependent-bench-final-PhdJGa/candidate`, 480128 bytes,
-SHA-256
-`96da172f6ceee052e453c81a93e20263d52262aa59ad5ababd249fee1b62314b`.
-Equivalent chain and shared-DAG inputs were run seven times interleaved in
-512/1024/256 order with `/usr/bin/time -f '%e %U %S %M'`; medians are:
+The immutable candidate was copied after the final source build to
+`/tmp/pa14-typed600-bench-final.CCFpU8/candidate`, mode 0555, size 484,664
+bytes, SHA-256
+`ae56d2130e54a63fca117b624230f309bcdeaaf097b9821a9775f91b63c800d0`.
 
-| workload | facts | expression nodes | input bytes | output bytes | wall | user | sys | max RSS |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| chain-256 | 259 | 257 | 7,028 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,392 KiB |
-| chain-512 | 515 | 513 | 14,196 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,832 KiB |
-| chain-1024 | 1,027 | 1,025 | 28,582 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,952 KiB |
-| shared-256 | 260 | 258 | 7,811 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,368 KiB |
-| shared-512 | 516 | 514 | 15,747 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,860 KiB |
-| shared-1024 | 1,028 | 1,026 | 31,669 | 4,111 | 0.02 s | 0.00 s | 0.01 s | 13,948 KiB |
+Inputs were generated at 1024, 2048, and 4096 scales with fixed-width
+components `Owner0000`/`Spec0000` and repeated direct `T_` references nested
+in each `I...E` template argument list. Each unique fixed-width owner
+specialization was passed by reference to `ns::use`, growing typed owner and
+specialization state without widening names. Seven samples per size were
+interleaved in 1024/2048/4096 order; each used
+`/usr/bin/time -f '%e %U %S %M'` around the immutable candidate. Medians:
 
-Each shared case has one leaf, 256/512/1024 unary nodes referencing it, and
-one call listing those nodes; repeated occurrences are intentionally
-output-sensitive.  Structural-map/trie inspection corroborates the bounded
-design.  Timer resolution limits fine conclusions at the smallest size; this
-is not an allocation proof, unlimited-recursion claim, or evidence for 600.
+| scale | fact lines | input bytes | output bytes | wall | user | sys | max RSS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1024 | 3,075 | 93,256 | 19,468 | 0.09 s | 0.05 s | 0.03 s | 24,724 KiB |
+| 2048 | 6,147 | 186,440 | 38,924 | 0.19 s | 0.11 s | 0.08 s | 45,648 KiB |
+| 4096 | 12,291 | 372,808 | 77,836 | 0.39 s | 0.21 s | 0.16 s | 87,500 KiB |
 
-The landed/pre-repair six-row record is preserved for comparison.  Its
-immutable candidate SHA-256 was
-`691ba38a34eafc26424b6512f3bd1da5cd8933b63d3d89e5e30df28763437e86`:
-
-| workload | facts | expression nodes | output bytes | wall | user | sys | max RSS |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| chain-256 | 259 | 257 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,364 KiB |
-| chain-512 | 515 | 513 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,828 KiB |
-| chain-1024 | 1,027 | 1,025 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,948 KiB |
-| shared-256 | 260 | 258 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,408 KiB |
-| shared-512 | 516 | 514 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,836 KiB |
-| shared-1024 | 1,028 | 1,026 | 4,111 | 0.02 s | 0.01 s | 0.01 s | 13,976 KiB |
-
-The historical rows are not the repaired-build claim; the shared rows were
-rerun against the repaired candidate above.
-
-Prior typed-300 checkpoint evidence used an immutable mode-0555 candidate
-copied before measurement; it was 405800 bytes with SHA-256
-`7bb13fa11ae1c0cac9d69a17e01df57552e84037873c6e971c852d6b3121299d`.
-Generated equivalent inputs used a 64-component common qualified prefix and
-one distinct `HolderN` template specialization per scale.  Each specialization
-contains the same nested entity-function address and is passed as one function
-parameter, so the run exercises deep prefix reuse, nested symbol isolation,
-and repeated entity-valued arguments without changing checked-in fixtures.
-Seven runs per size were interleaved in the order 512, 1024, 256 with
-`/usr/bin/time -f '%e %U %S %M'`; the table reports medians.
-
-| input | bytes / fact lines | median wall | median user | median sys | median max RSS | wall ratio vs previous |
-|---|---:|---:|---:|---:|---:|---:|
-| 256 | 273,040 / 1,792 | 0.14 s | 0.12 s | 0.01 s | 15,596 KiB | -- |
-| 512 | 546,960 / 3,584 | 0.28 s | 0.25 s | 0.03 s | 27,340 KiB | 2.00x |
-| 1024 | 1,094,992 / 7,168 | 0.55 s | 0.48 s | 0.06 s | 51,320 KiB | 1.96x |
-
-The generated cases contain 64 shared prefix edges plus 256/512/1024 leaf
-edges, and exactly 256/512/1024 encoded nested entity-valued arguments.  Source
-inspection confirms that `ensure_path_child` interns one `(parent identity,
-edge)` key, `append_mixed_plain_component` looks up a complete parent/component
-key, and `SubstitutionState::swap` uses container swaps rather than copying
-the outer tables.  Thus the near-doubling is consistent with the measured
-input growth and the O(n log n) map-bound implementation; the coarse 0.01 s
-timer resolution makes the 1024 wall ratio conservative.  This evidence is
-not a claim that the explicit 400--600 nonclaims are complete or that timing
-alone proves the asymptotic bound.
+Source inspection confirms the depth counter is a scalar in
+`SubstitutionState`, enum-mode handling is a constant comparison, and
+`StructuralKey`/name-trie child tables retain `std::map` O(log n) operations.
+This workload shows near-doubling with fixed-width inputs and outputs; it is
+not an allocation or general asymptotic proof beyond this workload.
 
 ## Checkpoint Ledger
 
-| checkpoint | starting result | measured result | status |
-|---|---|---|---|
-| PA14 typed 300 boundary audit | landed HEAD `490d1ec7` from `12eaf37b`, turn-start 88/111 with 23 failures | Final 100/200/300 focused behavior remains 25/25, 25/25, 37/37; nine hand-derived course test files pass (eight added in this audit); final through-PA13 gate is 947/947; final PA14 is 88/111 with exactly the same 23 failures and no regression; file audit passes with four nonfatal pre-existing header warnings; ordinary qualified and unqualified typed template-entity/prefix reuse, owner template-prefix/complete-specialization order, explicit function-prefix timing, composed multi-owner identity, typed CV/alias unsigned normalization, dependent-wide rejection, nested entity isolation, member-template owner identity, enum-only standard substitution, and RAII cleanup audited | checkpoint-audit changes committed; final worktree clean |
-| Remaining PA14 work | 600 family remains outside this dependent 400/500 boundary | Seven exact 600 nonclaims remain: local/lambda ownership, inline-namespace basic-string parameter, template-parameter template-type substitution, and pack-reference constructor | explicit nonclaim; next bounded checkpoint |
-| PA14 dependent-type/expression checkpoint | landed `3e333caa` from parent `623abbe4`; turn-start 104/111 with seven 600 failures | Focused 400/500 is 17/17; 100–300 preservation is 87/87; course fact regressions are 10/10 and the public typed-model wrapper is 1/1; parse→serialize→parse preserves all 17 mangles plus decltype-id; typed malformed/cycle/wide probes reject; final through-PA13 is 947/947; final PA14 is 104/111 with exactly the seven authorized 600 identities; file audit passes with four known warnings; diff check passes | checkpoint audit complete; approved bounded source/docs/course regressions recorded |
+| checkpoint | starting result | concise outcome |
+|---|---|---|
+| PA14 typed-300 boundary | 88/111 with 23 failures | 100/200/300 preserved at 25/25, 25/25, 37/37; through-PA13 947/947; audit and typed identity review recorded. |
+| PA14 dependent 400/500 boundary | 104/111 with seven 600 failures | 400/500 focused coverage 17/17; 100–300 preservation 87/87; serializer and public typed-model checks passed. |
+| PA14 typed 600 boundary | 104/111; exactly the seven failures above | 600=7/7, PA14=111/111, through-PA13=947/947, through-PA14=1058/1058; public boundary and benchmark evidence recorded. |
+
+Final handoff uses commit message `PA14: complete typed ABI name boundary`;
+the post-commit `git status --short` result is empty.

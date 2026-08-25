@@ -140,6 +140,27 @@ enum AbiDecltypeKind
   ABI_DECLTYPE_ID_OR_MEMBER
 };
 
+// The fact adapter distinguishes an ordinary template-parameter reference
+// from one normalized as an explicit substitution occurrence.  Both have the
+// same ABI parameter identity; the typed mode only controls whether a direct
+// reference may publish a candidate while it is nested in template arguments.
+enum AbiTemplateParameterReferenceKind
+{
+  ABI_TEMPLATE_PARAMETER_REFERENCE_DIRECT,
+  ABI_TEMPLATE_PARAMETER_REFERENCE_SUBSTITUTION
+};
+
+inline bool abi_template_parameter_reference_kind_is_valid(
+  AbiTemplateParameterReferenceKind kind)
+{
+  switch(kind) {
+  case ABI_TEMPLATE_PARAMETER_REFERENCE_DIRECT:
+  case ABI_TEMPLATE_PARAMETER_REFERENCE_SUBSTITUTION:
+    return true;
+  }
+  return false;
+}
+
 enum AbiTemplateArgumentKind
 {
   ABI_TEMPLATE_ARGUMENT_TYPE,
@@ -418,6 +439,8 @@ struct AbiType
   std::string discriminator;
   AbiArrayBound array_bound;
   std::size_t index = 0;
+  AbiTemplateParameterReferenceKind template_parameter_reference_kind =
+    ABI_TEMPLATE_PARAMETER_REFERENCE_DIRECT;
   bool is_const = false;
   bool is_volatile = false;
   bool variadic = false;
