@@ -58,8 +58,9 @@ other stage surfaces were modified.
 - Builtins, linkage, and special terminals are typed enums; array bounds are
   parsed to `size_t`. Supported integral values use the typed builtin and
   signed/unsigned normalization. Typed `int128` and `uint128` values are
-  rejected before canonicalization because the accepted value storage is
-  64-bit; they can no longer silently produce a wrong successful name.
+  rejected at the reusable encoder's typed-value emission boundary because
+  the accepted value storage is 64-bit; they can no longer silently produce a
+  wrong successful name.
 - The write-only substitution table and recursive `type_key` were removed.
   They had no lookup and emitted no substitution, so this checkpoint makes no
   substitution-support claim. Unary children are moved into parent nodes and

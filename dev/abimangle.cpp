@@ -192,25 +192,6 @@ long long parse_value(const string & spelling)
   return value;
 }
 
-bool is_unsupported_wide_integral_value_type(const abi_mangle::AbiType & original)
-{
-  const abi_mangle::AbiType * type = &original;
-  while(type->kind == abi_mangle::ABI_TYPE_CV) {
-    if(type->types.empty()) return false;
-    type = &type->types[0];
-  }
-  return type->kind == abi_mangle::ABI_TYPE_BUILTIN &&
-    (type->builtin == abi_mangle::ABI_BUILTIN_INT128 ||
-     type->builtin == abi_mangle::ABI_BUILTIN_UNSIGNED_INT128);
-}
-
-void reject_unsupported_wide_integral_value_type(const abi_mangle::AbiType & type)
-{
-  if(is_unsupported_wide_integral_value_type(type)) {
-    throw logic_error("128-bit integral ABI values are unsupported by the stored value representation");
-  }
-}
-
 bool is_single_colon(const string & value, size_t at)
 {
   return value[at] == ':' && (at == 0 || value[at - 1] != ':') &&
@@ -669,7 +650,6 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
     } else if(kind == "value") {
       result.definition.template_argument.kind = abi_mangle::ABI_TEMPLATE_ARGUMENT_VALUE;
       result.definition.template_argument.value_type = parse_type_words(words, at, interner);
-      reject_unsupported_wide_integral_value_type(result.definition.template_argument.value_type);
       result.definition.template_argument.has_value_type = true;
       if(at >= words.size()) throw logic_error("missing ABI template value");
       result.definition.template_argument.value = parse_value(words[at++]);
