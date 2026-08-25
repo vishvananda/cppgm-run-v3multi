@@ -165,6 +165,69 @@ abi_mangle::AbiFunctionSpecialTerminalKind special_terminal_kind(const string & 
   return abi_mangle::ABI_SPECIAL_TERMINAL_NONE;
 }
 
+abi_mangle::AbiOperatorTerminalKind operator_terminal_kind(const string & spelling)
+{
+  struct OperatorName {
+    const char * spelling;
+    abi_mangle::AbiOperatorTerminalKind kind;
+  };
+  static const OperatorName names[] = {
+    {"new", abi_mangle::ABI_OPERATOR_TERMINAL_NEW},
+    {"new-array", abi_mangle::ABI_OPERATOR_TERMINAL_NEW_ARRAY},
+    {"delete", abi_mangle::ABI_OPERATOR_TERMINAL_DELETE},
+    {"delete-array", abi_mangle::ABI_OPERATOR_TERMINAL_DELETE_ARRAY},
+    {"unary-plus", abi_mangle::ABI_OPERATOR_TERMINAL_UNARY_PLUS},
+    {"binary-plus", abi_mangle::ABI_OPERATOR_TERMINAL_BINARY_PLUS},
+    {"plus", abi_mangle::ABI_OPERATOR_TERMINAL_PLUS},
+    {"unary-minus", abi_mangle::ABI_OPERATOR_TERMINAL_UNARY_MINUS},
+    {"binary-minus", abi_mangle::ABI_OPERATOR_TERMINAL_BINARY_MINUS},
+    {"minus", abi_mangle::ABI_OPERATOR_TERMINAL_MINUS},
+    {"address-of", abi_mangle::ABI_OPERATOR_TERMINAL_ADDRESS_OF},
+    {"deref", abi_mangle::ABI_OPERATOR_TERMINAL_DEREF},
+    {"complement", abi_mangle::ABI_OPERATOR_TERMINAL_COMPLEMENT},
+    {"multiply", abi_mangle::ABI_OPERATOR_TERMINAL_MULTIPLY},
+    {"divide", abi_mangle::ABI_OPERATOR_TERMINAL_DIVIDE},
+    {"remainder", abi_mangle::ABI_OPERATOR_TERMINAL_REMAINDER},
+    {"bit-and", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_AND},
+    {"bit-or", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_OR},
+    {"bit-xor", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_XOR},
+    {"plus-assign", abi_mangle::ABI_OPERATOR_TERMINAL_PLUS_ASSIGN},
+    {"minus-assign", abi_mangle::ABI_OPERATOR_TERMINAL_MINUS_ASSIGN},
+    {"multiply-assign", abi_mangle::ABI_OPERATOR_TERMINAL_MULTIPLY_ASSIGN},
+    {"divide-assign", abi_mangle::ABI_OPERATOR_TERMINAL_DIVIDE_ASSIGN},
+    {"remainder-assign", abi_mangle::ABI_OPERATOR_TERMINAL_REMAINDER_ASSIGN},
+    {"bit-and-assign", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_AND_ASSIGN},
+    {"bit-or-assign", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_OR_ASSIGN},
+    {"bit-xor-assign", abi_mangle::ABI_OPERATOR_TERMINAL_BIT_XOR_ASSIGN},
+    {"left-shift", abi_mangle::ABI_OPERATOR_TERMINAL_LEFT_SHIFT},
+    {"right-shift", abi_mangle::ABI_OPERATOR_TERMINAL_RIGHT_SHIFT},
+    {"left-shift-assign", abi_mangle::ABI_OPERATOR_TERMINAL_LEFT_SHIFT_ASSIGN},
+    {"right-shift-assign", abi_mangle::ABI_OPERATOR_TERMINAL_RIGHT_SHIFT_ASSIGN},
+    {"equal", abi_mangle::ABI_OPERATOR_TERMINAL_EQUAL},
+    {"not-equal", abi_mangle::ABI_OPERATOR_TERMINAL_NOT_EQUAL},
+    {"less", abi_mangle::ABI_OPERATOR_TERMINAL_LESS},
+    {"greater", abi_mangle::ABI_OPERATOR_TERMINAL_GREATER},
+    {"less-equal", abi_mangle::ABI_OPERATOR_TERMINAL_LESS_EQUAL},
+    {"greater-equal", abi_mangle::ABI_OPERATOR_TERMINAL_GREATER_EQUAL},
+    {"logical-not", abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_NOT},
+    {"logical-and", abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_AND},
+    {"logical-or", abi_mangle::ABI_OPERATOR_TERMINAL_LOGICAL_OR},
+    {"increment", abi_mangle::ABI_OPERATOR_TERMINAL_INCREMENT},
+    {"decrement", abi_mangle::ABI_OPERATOR_TERMINAL_DECREMENT},
+    {"comma", abi_mangle::ABI_OPERATOR_TERMINAL_COMMA},
+    {"member-pointer", abi_mangle::ABI_OPERATOR_TERMINAL_MEMBER_POINTER},
+    {"arrow", abi_mangle::ABI_OPERATOR_TERMINAL_ARROW},
+    {"call", abi_mangle::ABI_OPERATOR_TERMINAL_CALL},
+    {"operator-call", abi_mangle::ABI_OPERATOR_TERMINAL_CALL},
+    {"index", abi_mangle::ABI_OPERATOR_TERMINAL_INDEX}
+  };
+  for(size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    if(spelling == names[i].spelling) return names[i].kind;
+  }
+  if(spelling == "literal") return abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL;
+  throw logic_error("unknown ABI operator terminal '" + spelling + "'");
+}
+
 size_t parse_index(const string & spelling)
 {
   if(spelling.empty() || spelling[0] == '-') {
@@ -555,15 +618,31 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     result.substitution = words[1];
     return result;
   }
-  if(words[0] == "local-context" || words[0] == "lambda-context" ||
-     words[0] == "namespace-lambda-context") {
+  if(words[0] == "local-context") {
     if(words.size() < 2) throw logic_error("incomplete ABI local context record");
-    result.kind = words[0] == "local-context" ? abi_mangle::ABI_FUNCTION_RECORD_LOCAL_CONTEXT :
-      (words[0] == "lambda-context" ? abi_mangle::ABI_FUNCTION_RECORD_LAMBDA_CONTEXT :
-       abi_mangle::ABI_FUNCTION_RECORD_NAMESPACE_LAMBDA_CONTEXT);
+    result.kind = abi_mangle::ABI_FUNCTION_RECORD_LOCAL_CONTEXT;
     result.context_ref = interner.reference(words[1]);
-    if(words.size() >= 3) result.source_name = parse_qualified_name(words[2]);
+    if(words.size() >= 3) result.source_name = parse_source_component(words[2]);
     if(words.size() >= 4) result.discriminator = words[3];
+    return result;
+  }
+  if(words[0] == "lambda-context") {
+    if(words.size() < 3) throw logic_error("incomplete ABI lambda context record");
+    result.kind = abi_mangle::ABI_FUNCTION_RECORD_LAMBDA_CONTEXT;
+    result.context_ref = interner.reference(words[1]);
+    result.discriminator = words[2];
+    for(size_t i = 3; i < words.size(); ++i) {
+      size_t at = i;
+      result.types.push_back(parse_type_words(words, at, interner));
+      i = at - 1;
+    }
+    return result;
+  }
+  if(words[0] == "namespace-lambda-context") {
+    if(words.size() < 2) throw logic_error("incomplete ABI namespace lambda context record");
+    result.kind = abi_mangle::ABI_FUNCTION_RECORD_NAMESPACE_LAMBDA_CONTEXT;
+    result.source_name = parse_source_component(words[1]);
+    for(size_t i = 2; i < words.size(); ++i) result.namespace_qualifiers.push_back(words[i]);
     return result;
   }
   if(words[0] == "terminal" || words[0] == "terminal-source") {
@@ -578,7 +657,12 @@ abi_mangle::AbiFunctionRecord parse_function_record(const vector<string> & words
     if(words.size() < 2 || words.size() > 3) throw logic_error("invalid operator terminal");
     result.kind = abi_mangle::ABI_FUNCTION_RECORD_OPERATOR_TERMINAL;
     result.terminal = words[1];
+    result.operator_terminal = operator_terminal_kind(words[1]);
     if(words.size() == 3) result.literal_suffix = words[2];
+    if(result.operator_terminal == abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL &&
+       result.literal_suffix.empty()) {
+      throw logic_error("literal operator terminal has no suffix");
+    }
     return result;
   }
   if(words[0] == "conversion-terminal") {
@@ -708,7 +792,9 @@ abi_mangle::AbiFactRecord parse_definition_record(const vector<string> & words,
       require_end(words, 4);
     } else if(context_kind == "function") {
       result.definition.context.kind = abi_mangle::ABI_CONTEXT_FUNCTION;
-      result.definition.context.function = parse_function_path(words, 3, false, interner);
+      size_t function_at = 3;
+      if(function_at < words.size() && words[function_at] == "path") ++function_at;
+      result.definition.context.function = parse_function_path(words, function_at, false, interner);
     } else {
       throw logic_error("unknown ABI context kind '" + context_kind + "'");
     }
@@ -862,6 +948,10 @@ void canonicalize_case(abi_mangle::AbiFactCase & fact_case,
           ref != it->function.argument_refs.end(); ++ref) {
         resolve_definition_ref(*ref, interner);
       }
+      for(vector<abi_mangle::AbiType>::iterator type = it->function.types.begin();
+          type != it->function.types.end(); ++type) {
+        canonicalize_type(*type, interner);
+      }
     }
   }
 }
@@ -909,20 +999,42 @@ AbiFactRecord parse_fact_record_words_with_context(const vector<string> & words,
     } else if(words[1] == "namespace-lambda") {
       if(words.size() < 4) throw logic_error("incomplete namespace lambda function target");
       result.target.function.kind = ABI_FUNCTION_TARGET_NAMESPACE_LAMBDA;
-      result.target.function.source_name = words[2];
+      result.target.function.source_name = parse_source_component(words[2]).components[0];
       result.target.function.terminal = words[3];
+      if(words[3] == "operator-call" || words[3] == "call") {
+        result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+      }
       for(size_t i = 4; i < words.size(); ++i) result.target.function.namespace_qualifiers.push_back(words[i]);
     } else if(words[1] == "local" || words[1] == "lambda") {
-      if(words.size() < 5) throw logic_error("incomplete local function target");
       result.target.function.kind = words[1] == "local" ? ABI_FUNCTION_TARGET_LOCAL : ABI_FUNCTION_TARGET_LAMBDA;
       result.target.function.context_ref = interner.reference(words[2]);
-      result.target.function.source_name = words[3];
-      result.target.function.terminal = words[4];
-      if(words.size() >= 6) result.target.function.discriminator = words[5];
-      for(size_t i = 6; i < words.size(); ++i) {
-        size_t at = i;
-        result.target.function.signature_parameter_types.push_back(parse_type_words(words, at, interner));
-        i = at - 1;
+      if(words[1] == "lambda") {
+        if(words.size() < 5) throw logic_error("incomplete lambda function target");
+        result.target.function.discriminator = words[3];
+        result.target.function.terminal = words[4];
+        result.target.function.special_terminal = special_terminal_kind(words[4]);
+        if(words[4] == "operator-call" || words[4] == "call") {
+          result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+        }
+        for(size_t i = 5; i < words.size(); ++i) {
+          size_t at = i;
+          result.target.function.signature_parameter_types.push_back(parse_type_words(words, at, interner));
+          i = at - 1;
+        }
+      } else {
+        if(words.size() < 5) throw logic_error("incomplete local function target");
+        result.target.function.source_name = parse_source_component(words[3]).components[0];
+        result.target.function.terminal = words[4];
+        result.target.function.special_terminal = special_terminal_kind(words[4]);
+        if(words[4] == "operator-call" || words[4] == "call") {
+          result.target.function.operator_terminal = ABI_OPERATOR_TERMINAL_CALL;
+        }
+        if(words.size() >= 6) result.target.function.discriminator = words[5];
+        for(size_t i = 6; i < words.size(); ++i) {
+          size_t at = i;
+          result.target.function.signature_parameter_types.push_back(parse_type_words(words, at, interner));
+          i = at - 1;
+        }
       }
     } else {
       result.target.function = parse_function_path(words, 1, false, interner);
