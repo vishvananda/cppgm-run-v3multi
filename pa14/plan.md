@@ -44,6 +44,22 @@ result, and variadic operands remain typed operands; only path template
 operands become function template arguments.  A result type is emitted only
 for an identified function-template encoding.
 
+The current dependent boundary extends that pipeline instead of adding a text
+fallback.  The adapter maps every checked-in `let-expr` form to typed operator,
+cast, access, source-name, type, expression-reference, and argument fields,
+with explicit arity, operator-shape, and vocabulary validation.  Member-template type records
+retain their owner, member source component, and argument range; decltype types
+retain the Dt/DT category.  Expression identity includes all such fields and
+typed children, including literal type/value, trait operands, member owner,
+access mode, and close-owner state.  Encoding is a direct prefix traversal;
+type operands share the case substitution state, while direct template
+parameter expression leaves do not create a symbol-table candidate.  Recursive
+expression and definition walks are cycle-checked, and no rendered expression
+fragment is used as identity.  The public fact serializer emits canonical,
+parseable typed forms for these 400/500 records, including expression
+definitions, expression template arguments, member/member-template owners,
+decltype category, and function-template records.
+
 Name/template operands are published in left-to-right ABI order: owner
 template-prefix, its operands, then complete specialization.  The pending
 function-template prefix is published only at the explicit function-template
@@ -64,21 +80,23 @@ rendered/vector keys.
 
 ## Failure Map
 
-The clean baseline was HEAD `12eaf37b`: all 111 tests were covered, with
-57/111 passing and 54 failing: 100=25/25, 200=25/25, 300=7/37, 400=0/4,
-500=0/13, 600=0/7.  The seven baseline 300 passes were construction-vtable,
+The prior typed-300 checkpoint began at HEAD `12eaf37b`: all 111 tests were
+covered, with 57/111 passing and 54 failing.  Its authorized result was
+88/111, with 100=25/25, 200=25/25, 300=37/37, 400=1/4, 500=0/13, 600=0/7.
+The seven baseline 300 passes were construction-vtable,
 distinct-array-bound-substitution, minimum-signed-integral-value,
 std-allocator-substitution, std-initializer-list-member-parameter,
 std-initializer-list-parameter, and template-template-argument.
 
-The final broad command `make test-pa14` after the bounded audit correction
-covered all 111 tests and reported 88/111: 100=25/25, 200=25/25, 300=37/37,
-400=1/4, 500=0/13, 600=0/7.  Thus all 30 baseline-failing 300 cases now
-pass, the seven baseline 300 passes remain green, and one 400 case also
-passes.  No turn-start passing test regressed; the final failure identities
-are exactly the 23 names below.
+At this turn start, clean HEAD `623abbe4` had that same 88/111 result and
+exactly 23 listed failures.  Final validation reports 104/111: 100=25/25,
+200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7.  The focused checked-in
+400/500 command is 17/17, so all three 400 and thirteen 500 turn-start
+failures are resolved without reducing coverage.  The public serializer
+round-trip harness also passes all 17 400/500 inputs with identical mangles,
+plus a `decltype-id` smoke case.
 
-The complete remaining failure set is:
+The complete pre-milestone failure set was:
 
 - 400: `dependent-alias-type-id`, `dependent-owner-member-template`,
   `dependent-rebind-other`.
@@ -96,58 +114,74 @@ The complete remaining failure set is:
   `nested-helper-owner`, `template-param-template-type-substitution`,
   `template-parameter-pack-reference-constructor`.
 
-The required final gates are complete: `make test-report-through-pa13` passed
-947/947, `make test-pa14` produced the 88/111 result above, and
-`perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src` passed with
-four nonfatal pre-existing `bad-division` header warnings.  The focused
-100/200/300 and nine focused course test files (eight added in this audit)
-also remain green.
+The final prior-stage gate is `make test-report-through-pa13` at 947/947.
+`make test-pa14` covers all 111 tests and reports the seven exact 600
+nonclaims below.  The PA14 file audit passes with the four known nonfatal
+header `bad-division` warnings; `git diff --check` also passes.
 
 ## Active Checkpoint and Spec Alignment
 
-This checkpoint owns the complete checked-in 300 family: typed function/class
-template arguments and prefixes; template IDs and standard substitutions;
-entity-valued, member, and entity-address arguments; member-template and
-template-template arguments; dependent integral values; canonical CV and
-named/reference identity; and host-compatible substitution identity/order.
+This checkpoint now actively owns the checked-in dependent 400/500 boundary:
+dependent aliases and member-template owners; typed dependent expressions;
+operator trees; casts and calls; type traits and sizeof(type); packs; object
+and unresolved-member forms; function-parameter references; decltype category;
+and equivalent-expression substitution.  The prior typed 300 family remains
+the preserved foundation.
 
 The implementation follows spec.md §§1--4 and §7 by keeping one typed
 adapter/model/encoder pipeline, validating malformed fact combinations at the
 adapter boundary, representing symbolic substitutions with complete typed
 keys, and encoding ABI structure directly in left-to-right order.  It follows
-Itanium Chapter 5.1 for nested/template prefixes, qualified template names,
-dependent values, address expressions, standard abbreviations, and
-substitution numbering.  Fixed standard substitutions are enum values, not
-blind output strings; the adapter validates retained spelling metadata before
-the enum crosses the boundary.  `name-template`,
-`function-template-prefix`, and member-template substitution metadata are
-typed declarations and are not semantic keys.  The Itanium compression rule
-is applied to the complete typed member owner/name, not to an arbitrary
-unqualified member component.  Ordinary qualified and unqualified
-template-entity arguments share one dedicated complete typed identity with
-their owner template-prefix; arbitrary source-name components remain in the
-generic name domain.  The
-multi-owner composed key is intentionally
-not claimed equivalent to a later-family flattened/nested type record that is
-not representable in this 300 model.
+Itanium Chapter 5.1 for dependent types and decltype, function-parameter
+references, template arguments, prefix expression traversal, unresolved names,
+and compression.  Direct expression leaves remain distinct from type
+operands: the latter publish candidates in grammar order, while expressions
+themselves are never string-keyed or substituted as rendered text.  The
+prior 300 substitutions and multi-owner identity remain preserved; the
+remaining 600 local/lambda, inline-namespace, and pack/template-parameter
+cases are explicit nonclaims.
 
-Explicit next checkpoint/nonclaims: 400--600 are not complete.  In particular, the remaining
-400 dependent-owner cases, 500 dependent expression/decltype/type-trait
-families, and 600 local-class/lambda, inline-namespace, and pack/template-
-parameter cases remain outside this checkpoint.  Member-external raw symbols
-remain a deliberate external-symbol boundary: this work does not reconstruct
-or cross-check them from typed owner/member facts.  No PA14 handout test,
-reference, generated artifact, or harness was changed.  The completed
-checkpoint changes are committed in the authorized normal checkpoint commit,
-and the final handoff verifies a clean worktree.  The four file-audit warnings
-are existing header-division warnings in `abi_mangle.h`,
-`cpp_semantic_core.h`, `lowir_model.h`, and `pa11_semantic_model.h`; there are
-no fatal audit findings.
+The seven 600 identities remain explicit nonclaims for this milestone:
+`function-local-class-template-arg`, `function-template-local-class-arg`,
+`function-template-local-lambda-arg`, `inline-namespace-basic-string-param`,
+`nested-helper-owner`, `template-param-template-type-substitution`, and
+`template-parameter-pack-reference-constructor`.  Member-external raw symbols
+remain a deliberate external-symbol boundary; this work does not reconstruct
+or cross-check them from typed owner/member facts.  No handout fixture,
+reference, generated artifact, or harness was changed.  The 600 nonclaims are
+unchanged; no shared 400/500 fix is being claimed for them.
 
 ## Performance Evidence
 
-The corrected post-repair candidate was copied to a temporary mode-0555 binary
-before measurement; it was 405800 bytes with SHA-256
+Final dependent-expression evidence used immutable candidate
+`/tmp/abimangle-pa14-candidate`, SHA-256
+`691ba38a34eafc26424b6512f3bd1da5cd8933b63d3d89e5e30df28763437e86`, with
+seven interleaved runs per row (`/usr/bin/time -f '%e %U %S %M'`) and median
+wall/user/sys/max-RSS results.  The chain has one final expression selected
+from a 256/512/1024-deep unary chain.  The shared DAG has one shared leaf,
+256/512/1024 unary nodes that each reference it, and one final call listing
+all nodes; its output is deliberately linear rather than an exponential
+recursive fan-out.
+
+| workload | facts | expression nodes | output bytes | median wall | median user | median sys | median max RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| chain-256 | 259 | 257 | 526 | 0.00 s | 0.00 s | 0.00 s | 6364 KiB |
+| chain-512 | 515 | 513 | 1038 | 0.01 s | 0.00 s | 0.00 s | 8828 KiB |
+| chain-1024 | 1027 | 1025 | 2062 | 0.02 s | 0.01 s | 0.01 s | 13948 KiB |
+| shared-256 | 260 | 258 | 1039 | 0.00 s | 0.00 s | 0.00 s | 6408 KiB |
+| shared-512 | 516 | 514 | 2063 | 0.01 s | 0.00 s | 0.00 s | 8836 KiB |
+| shared-1024 | 1028 | 1026 | 4111 | 0.02 s | 0.01 s | 0.01 s | 13976 KiB |
+
+The 1024-deep recursive walk is safe in this bounded check.  Structural
+definition/expression identities are memoized in typed maps, but encoded
+expression occurrences are intentionally re-emitted; the shared workload's
+larger output measures that unavoidable output-sensitive cost.  This is
+evidence for these representative linear inputs only, not a claim of
+arbitrary-DAG linearity or unlimited recursion depth.  The 0.01 s timer
+resolution limits fine-grained conclusions at 256 nodes.
+
+Prior typed-300 checkpoint evidence used an immutable mode-0555 candidate
+copied before measurement; it was 405800 bytes with SHA-256
 `7bb13fa11ae1c0cac9d69a17e01df57552e84037873c6e971c852d6b3121299d`.
 Generated equivalent inputs used a 64-component common qualified prefix and
 one distinct `HolderN` template specialization per scale.  Each specialization
@@ -180,3 +214,4 @@ alone proves the asymptotic bound.
 |---|---|---|---|
 | PA14 typed 300 boundary audit | landed HEAD `490d1ec7` from `12eaf37b`, turn-start 88/111 with 23 failures | Final 100/200/300 focused behavior remains 25/25, 25/25, 37/37; nine hand-derived course test files pass (eight added in this audit); final through-PA13 gate is 947/947; final PA14 is 88/111 with exactly the same 23 failures and no regression; file audit passes with four nonfatal pre-existing header warnings; ordinary qualified and unqualified typed template-entity/prefix reuse, owner template-prefix/complete-specialization order, explicit function-prefix timing, composed multi-owner identity, typed CV/alias unsigned normalization, dependent-wide rejection, nested entity isolation, member-template owner identity, enum-only standard substitution, and RAII cleanup audited | checkpoint-audit changes committed; final worktree clean |
 | Remaining PA14 work | 400--600 families were outside the 300 ownership boundary | 3 named 400 failures, 13 named 500 failures, 7 named 600 failures remain | explicit nonclaim; next checkpoint |
+| PA14 dependent-type/expression checkpoint | clean HEAD `623abbe4`, 88/111 and 23 listed failures | focused 400/500 is 17/17; parse→serialize→parse preserves all 17 mangles; final PA14 is 104/111 with 100/200/300/400/500 at 25/25, 25/25, 37/37, 4/4, 13/13 and the seven exact 600 nonclaims; through-PA13 is 947/947; audit passes with four known warnings; diff check passes | validated checkpoint increment |

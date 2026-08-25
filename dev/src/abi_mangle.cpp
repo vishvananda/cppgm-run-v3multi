@@ -108,6 +108,7 @@ public:
       definitions_[it->definition.id.index] = &it->definition;
     }
     active_types_.assign(definitions_.size(), 0);
+    active_expressions_.assign(definitions_.size(), 0);
     active_identity_definitions_.assign(definitions_.size(), 0);
   }
   std::string encode()
@@ -170,6 +171,7 @@ private:
   const AbiFactCase & fact_case_;
   std::vector<const AbiDefinitionRecord *> definitions_;
   std::vector<unsigned char> active_types_;
+  std::vector<unsigned char> active_expressions_;
   // Substitution identity is semantic name structure, not rendered ABI text.
   // A trie stores each qualified-name edge once, so registering every ABI
   // prefix does not copy an ever-growing vector for each prefix.
@@ -600,15 +602,18 @@ private:
       break;
     case ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION:
       key.kind = ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION;
+      if(original.types.size() != 1 || original.name.components.size() != 1) throw std::logic_error("member template type is incomplete");
       key.scalars.push_back(original.types.size());
       for(std::vector<AbiType>::const_iterator it = original.types.begin();
           it != original.types.end(); ++it) key.children.push_back(type_identity(*it));
+      key.scalars.push_back(original.name.components.size()); key.components.push_back(intern_component(original.name.components[0]));
       key.scalars.push_back(original.argument_refs.size());
       for(std::vector<AbiDefinitionId>::const_iterator it = original.argument_refs.begin();
           it != original.argument_refs.end(); ++it) key.children.push_back(argument_identity(*it));
       break;
     case ABI_TYPE_DECLTYPE_EXPRESSION:
       key.kind = ABI_TYPE_DECLTYPE_EXPRESSION;
+      key.scalars.push_back(original.decltype_kind);
       key.children.push_back(expression_identity(original.expression_ref));
       break;
     case ABI_TYPE_LAMBDA_CLOSURE:
@@ -754,6 +759,10 @@ private:
     // member template.  The owner and source member are the semantic identity.
     return intern_structural(key);
   }
+  bool has_type_shape(const AbiType & type) const
+  {
+    return type.kind != ABI_TYPE_NAME_OR_REFERENCE || type.builtin != ABI_BUILTIN_INVALID || type.definition_ref.index != ABI_INVALID_DEFINITION_ID || !type.name.components.empty() || !type.types.empty() || !type.argument_refs.empty() || !type.namespace_qualifiers.empty() || !type.abi_tags.empty() || !type.standard_substitution.empty() || type.standard_substitution_kind != ABI_STANDARD_SUBSTITUTION_NONE || type.expression_ref.index != ABI_INVALID_DEFINITION_ID || type.context_ref.index != ABI_INVALID_DEFINITION_ID || !type.discriminator.empty();
+  }
   StructuralId expression_identity(const AbiDefinitionId & id)
   {
     std::map<std::size_t, StructuralId>::const_iterator found =
@@ -772,25 +781,23 @@ private:
     StructuralKey key;
     key.domain = STRUCTURAL_EXPRESSION;
     key.kind = expression.kind;
+    key.scalars.push_back(expression.operator_kind);
+    key.scalars.push_back(expression.cast_kind);
+    key.scalars.push_back(expression.member_access_kind);
     key.scalars.push_back(static_cast<unsigned long long>(expression.value));
     key.scalars.push_back(expression.index);
-    key.scalars.push_back(expression.text.size());
-    if(!expression.text.empty()) key.components.push_back(intern_component(expression.text));
-    key.scalars.push_back(expression.op.size());
-    if(!expression.op.empty()) key.components.push_back(intern_component(expression.op));
-    if(expression.type.kind != ABI_TYPE_NAME_OR_REFERENCE ||
-       expression.type.definition_ref.index != ABI_INVALID_DEFINITION_ID ||
-       !expression.type.name.components.empty()) {
-      key.children.push_back(type_identity(expression.type));
-    }
-    if(expression.value_type.kind != ABI_TYPE_NAME_OR_REFERENCE ||
-       expression.value_type.definition_ref.index != ABI_INVALID_DEFINITION_ID ||
-       !expression.value_type.name.components.empty()) {
-      key.children.push_back(type_identity(expression.value_type));
-    }
-    if(expression.entity_ref.index != ABI_INVALID_DEFINITION_ID) {
-      key.children.push_back(entity_identity(expression.entity_ref));
-    }
+    key.scalars.push_back(expression.close_member_owner ? 1 : 0);
+    key.scalars.push_back(expression.address_of ? 1 : 0);
+    key.scalars.push_back(expression.name.components.size());
+    for(std::vector<std::string>::const_iterator it = expression.name.components.begin(); it != expression.name.components.end(); ++it) key.components.push_back(intern_component(*it));
+    key.scalars.push_back(expression.symbol.size());
+    if(!expression.symbol.empty()) key.components.push_back(intern_component(expression.symbol));
+    key.scalars.push_back(has_type_shape(expression.type) ? 1 : 0);
+    if(has_type_shape(expression.type)) key.children.push_back(type_identity(expression.type));
+    key.scalars.push_back(has_type_shape(expression.value_type) ? 1 : 0);
+    if(has_type_shape(expression.value_type)) key.children.push_back(type_identity(expression.value_type));
+    key.scalars.push_back(expression.entity_ref.index != ABI_INVALID_DEFINITION_ID ? 1 : 0);
+    if(expression.entity_ref.index != ABI_INVALID_DEFINITION_ID) key.children.push_back(entity_identity(expression.entity_ref));
     key.scalars.push_back(expression.expression_refs.size());
     for(std::vector<AbiDefinitionId>::const_iterator it = expression.expression_refs.begin();
         it != expression.expression_refs.end(); ++it) key.children.push_back(expression_identity(*it));
@@ -1469,10 +1476,10 @@ private:
       append_member_type(*type, output);
       return;
     case ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION:
-      append_template_specialization(*type, output);
+      append_member_template_specialization(*type, output);
       return;
     case ABI_TYPE_DECLTYPE_EXPRESSION:
-      output += "Dt";
+      output += type->decltype_kind == ABI_DECLTYPE_ID_OR_MEMBER ? "Dt" : "DT";
       output += encode_expression_reference(type->expression_ref);
       output.push_back('E');
       return;
@@ -1577,6 +1584,25 @@ private:
     }
     output += template_parameter(index);
     register_structural_candidate(identity);
+  }
+  void append_member_owner_components(const AbiType & original,
+                                     std::string & output)
+  {
+    if(original.kind == ABI_TYPE_NAME_OR_REFERENCE && original.definition_ref.index != ABI_INVALID_DEFINITION_ID) { const AbiType & definition_type = type_definition(original.definition_ref); ActiveDefinitionScope active(active_types_, original.definition_ref.index); append_member_owner_components(definition_type, output); return; }
+    if(original.kind == ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION) { append_member_template_components(original, output); return; }
+    append_member_template_prefix(original, output);
+  }
+  void append_member_template_components(const AbiType & original,
+                                         std::string & output)
+  {
+    if(original.kind == ABI_TYPE_NAME_OR_REFERENCE && original.definition_ref.index != ABI_INVALID_DEFINITION_ID) { const AbiType & definition_type = type_definition(original.definition_ref); ActiveDefinitionScope active(active_types_, original.definition_ref.index); append_member_template_components(definition_type, output); return; }
+    if(original.kind != ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION || original.types.size() != 1 || original.name.components.size() != 1) throw std::logic_error("member template type is incomplete");
+    append_member_owner_components(original.types[0], output); output += source_name(original.name.components[0]); append_template_arguments(original.argument_refs, output);
+  }
+  void append_member_template_specialization(const AbiType & original,
+                                             std::string & output)
+  {
+    output.push_back('N'); append_member_template_components(original, output); output.push_back('E');
   }
   void append_template_specialization(const AbiType & type,
                                       std::string & output)
@@ -1754,6 +1780,10 @@ private:
       append_member_template_prefix(definition_type, output);
       return;
     }
+    if(original.kind == ABI_TYPE_MEMBER_TEMPLATE_SPECIALIZATION) {
+      append_member_template_components(original, output);
+      return;
+    }
     const AbiStandardSubstitutionKind standard =
       original.standard_substitution_kind;
     if(original.kind == ABI_TYPE_TEMPLATE_SPECIALIZATION ||
@@ -1858,32 +1888,68 @@ private:
     }
     return result;
   }
+  std::string expression_operator_code(AbiExpressionOperatorKind kind) const
+  {
+    static const char * const codes[] = {
+      "", "nw", "na", "dl", "da", "aw", "ps", "ng", "ad", "de", "co", "pl", "mi", "ml", "dv", "rm", "an", "or", "eo", "aS", "pL", "mI", "mL", "dV", "rM", "aN", "oR", "eO", "ls", "rs", "lS", "rS", "eq", "ne", "lt", "gt", "le", "ge", "ss", "nt", "aa", "oo", "pp", "mm", "cm", "pm", "pt", "cl", "ix", "qu"
+    };
+    const std::size_t index = static_cast<std::size_t>(kind);
+    if(index == 0 || index >= sizeof(codes) / sizeof(codes[0])) { throw std::logic_error("missing ABI expression operator"); } return codes[index];
+  }
+  std::string expression_cast_code(AbiExpressionCastKind kind) const
+  {
+    static const char * const codes[] = { "", "dc", "sc", "cc", "rc" };
+    const std::size_t index = static_cast<std::size_t>(kind);
+    if(index == 0 || index >= sizeof(codes) / sizeof(codes[0])) { throw std::logic_error("missing ABI expression cast kind"); } return codes[index];
+  }
+  void append_function_parameter_expression(std::size_t index, std::string & output) { output += "fp"; if(index != 0) output += number_string(index - 1); output.push_back('_'); }
+  void append_direct_template_parameter_expression(std::size_t index, std::string & output) const { output += template_parameter(index); }
+  void append_expression(const AbiDependentExpression & expression,
+                         std::string & output)
+  {
+    switch(expression.kind) {
+    case ABI_EXPRESSION_TEMPLATE_PARAMETER: append_direct_template_parameter_expression(expression.index, output); return;
+    case ABI_EXPRESSION_FUNCTION_PARAMETER: append_function_parameter_expression(expression.index, output); return;
+    case ABI_EXPRESSION_LITERAL: case ABI_EXPRESSION_INTEGRAL_VALUE: if(!has_type_shape(expression.value_type)) { throw std::logic_error("literal ABI expression has no value type"); } output += encode_value_literal(expression.value_type, expression.value); return;
+    case ABI_EXPRESSION_UNARY:
+      if(expression.expression_refs.size() != 1) { throw std::logic_error("unary ABI expression has the wrong arity"); } output += expression_operator_code(expression.operator_kind); if(expression.operator_kind == ABI_EXPRESSION_OPERATOR_INCREMENT || expression.operator_kind == ABI_EXPRESSION_OPERATOR_DECREMENT) output.push_back('_'); output += encode_expression_reference(expression.expression_refs[0]); return;
+    case ABI_EXPRESSION_BINARY:
+      if(expression.expression_refs.size() != 2) { throw std::logic_error("binary ABI expression has the wrong arity"); } output += expression_operator_code(expression.operator_kind); output += encode_expression_reference(expression.expression_refs[0]); output += encode_expression_reference(expression.expression_refs[1]); return;
+    case ABI_EXPRESSION_CONDITIONAL:
+      if(expression.expression_refs.size() != 3) { throw std::logic_error("conditional ABI expression has the wrong arity"); } output += "qu"; for(std::vector<AbiDefinitionId>::const_iterator it = expression.expression_refs.begin(); it != expression.expression_refs.end(); ++it) output += encode_expression_reference(*it); return;
+    case ABI_EXPRESSION_PACK_EXPANSION:
+      if(expression.expression_refs.size() != 1) { throw std::logic_error("pack ABI expression has the wrong arity"); } output += "sp"; output += encode_expression_reference(expression.expression_refs[0]); return;
+    case ABI_EXPRESSION_CALL:
+      if(expression.expression_refs.empty()) { throw std::logic_error("call ABI expression has no callee"); } output += "cl"; for(std::vector<AbiDefinitionId>::const_iterator it = expression.expression_refs.begin(); it != expression.expression_refs.end(); ++it) output += encode_expression_reference(*it); output.push_back('E'); return;
+    case ABI_EXPRESSION_CONVERSION:
+      if(expression.expression_refs.size() != 1 || !has_type_shape(expression.type)) { throw std::logic_error("conversion ABI expression is incomplete"); } output += "cv"; append_type(expression.type, output); output += encode_expression_reference(expression.expression_refs[0]); return;
+    case ABI_EXPRESSION_CAST:
+      if(expression.expression_refs.size() != 1 || !has_type_shape(expression.type)) { throw std::logic_error("cast ABI expression is incomplete"); } output += expression_cast_code(expression.cast_kind); append_type(expression.type, output); output += encode_expression_reference(expression.expression_refs[0]); return;
+    case ABI_EXPRESSION_TEMPLATE_ID:
+      if(expression.name.components.size() != 1) { throw std::logic_error("template-id ABI expression has no source name"); } output += source_name(expression.name.components[0]); if(expression.argument_refs.empty()) { throw std::logic_error("template-id ABI expression has no arguments"); } append_template_arguments(expression.argument_refs, output); return;
+    case ABI_EXPRESSION_TYPE_TRAIT:
+      if(expression.name.components.size() != 1 || expression.type_arguments.empty()) { throw std::logic_error("type-trait ABI expression is incomplete"); } output.push_back('u'); output += source_name(expression.name.components[0]); for(std::vector<AbiType>::const_iterator it = expression.type_arguments.begin(); it != expression.type_arguments.end(); ++it) append_type(*it, output); output.push_back('E'); return;
+    case ABI_EXPRESSION_SIZEOF_TYPE:
+      if(!has_type_shape(expression.type)) { throw std::logic_error("sizeof-type ABI expression has no type"); } output += "st"; append_type(expression.type, output); return;
+    case ABI_EXPRESSION_MEMBER:
+      if(!has_type_shape(expression.type) || expression.name.components.size() != 1) { throw std::logic_error("member ABI expression is incomplete"); } output += "sr"; append_type(expression.type, output); if(expression.close_member_owner) output.push_back('E'); output += source_name(expression.name.components[0]); return;
+    case ABI_EXPRESSION_OBJECT_MEMBER: if(expression.expression_refs.size() != 1 || expression.name.components.size() != 1) { throw std::logic_error("object-member ABI expression is incomplete"); } if(expression.member_access_kind == ABI_EXPRESSION_MEMBER_ACCESS_DOT) output += "dt"; else if(expression.member_access_kind == ABI_EXPRESSION_MEMBER_ACCESS_ARROW) output += "pt"; else throw std::logic_error("object-member ABI expression has no access operator"); output += encode_expression_reference(expression.expression_refs[0]); output += source_name(expression.name.components[0]); append_template_arguments(expression.argument_refs, output); return;
+    case ABI_EXPRESSION_EXTERNAL_ENTITY: if(expression.symbol.empty()) { throw std::logic_error("external entity expression has no symbol"); } output += "L" + expression.symbol + "E"; return;
+    case ABI_EXPRESSION_ENTITY: if(expression.entity_ref.index == ABI_INVALID_DEFINITION_ID) { throw std::logic_error("entity expression has no entity reference"); } { const std::string symbol = encode_entity_symbol(definition(expression.entity_ref).entity); output += "L" + symbol + "E"; return; }
+    }
+    throw std::logic_error("unknown ABI expression kind");
+  }
   std::string encode_expression_reference(const AbiDefinitionId & id)
   {
     const AbiDefinitionRecord & record = definition(id);
-    if(record.kind != ABI_DEFINITION_EXPRESSION) {
-      throw std::logic_error("ABI definition is not an expression");
-    }
-    if(record.expression.kind == ABI_EXPRESSION_LITERAL ||
-       record.expression.kind == ABI_EXPRESSION_INTEGRAL_VALUE) {
-      return number_string(static_cast<unsigned long long>(record.expression.value));
-    }
-    if(record.expression.kind == ABI_EXPRESSION_ENTITY) {
-      const std::string symbol = encode_entity_symbol(
-        definition(record.expression.entity_ref).entity);
-      return "L" + symbol + "E";
-    }
-    return record.expression.text;
+    if(record.kind != ABI_DEFINITION_EXPRESSION) throw std::logic_error("ABI definition is not an expression");
+    ActiveDefinitionScope active(active_expressions_, id.index);
+    std::string result; append_expression(record.expression, result); return result;
   }
   void append_member_type(const AbiType & type, std::string & output)
   {
-    if(type.types.empty() || type.name.components.size() != 1) {
-      throw std::logic_error("member ABI type is incomplete");
-    }
-    output.push_back('N');
-    append_type(type.types[0], output);
-    output += source_name(type.name.components[0]);
-    output.push_back('E');
+    if(type.types.empty() || type.name.components.size() != 1) throw std::logic_error("member ABI type is incomplete");
+    output.push_back('N'); append_member_owner_components(type.types[0], output); output += source_name(type.name.components[0]); output.push_back('E');
   }
   unsigned long long decimal_discriminator(const std::string & spelling) const
   {
