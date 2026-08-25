@@ -1,177 +1,141 @@
-# PA12 functional-cast/type-name checkpoint
+# PA12 residual checkpoint
 
 ## Stage Design
 
-`PA11SemanticModel` remains the sole semantic owner in the forward PA10 ->
-PA11 -> PA12 pipeline. `TypeKey`/`TypeId` is the only semantic type identity;
-canonical type construction stays in `pa11_semantic_types.cpp`, and
-target-directed selection stays in `pa12_semantic_resolution.cpp`. There is no
-parallel parser/type model, rendered-string recovery, or cold-renderer input.
+The production flow remains `PA10Parser -> PA10Ast -> PA11SemanticModel ->
+PA12 facts/dump`. `PA11SemanticModel` is the sole semantic owner: canonical
+`TypeKey`/`TypeId`, `BindingId`, `ScopeId`, `NamedRecordId`,
+`TemplateFunctionId`, `TemplateSpecializationId`, `SemanticFactId`, and
+`ConversionFactId` cross the boundary. PA10 owns syntax and indexed lookahead;
+PA11 owns declaration/type/scope identity; PA12 owns expression resolution,
+conversion, lifetime actions, and the final cold renderer. There is no parallel
+parser/model, rendered-name recovery, reference-tool shell-out, or whole-program
+retry.
 
-The retained member-pointer work uses typed `TypeKey.named` ownership,
-function cv flags, sparse static-member sidecars, reverse suffix binding, and
-recursive array qualification. Its prior structural/declarator evidence and
-ledger are retained below; this checkpoint is the functional-cast/type-name
-increment.
-
-PA10 preserves the call-shaped boundary. The bounded
-`classify_function_style_cast` result in `pa10_parser_support.cpp` owns
-None/legacy/typed classification, the contiguous builtin/cv scan, indexed
-`decltype` close lookup, and exact `charged_work`; `PA10Parser` charges that
-result once and consumes it. A single-token built-in cast keeps its legacy
-identifier form. A contiguous multi-keyword fundamental type or
-`decltype(expr)` target remains a typed `TypeId` child. In PA12,
-`pa12_semantic_resolution.cpp` owns functional target resolution, support
-validation, and source-to-target cast construction through `builtin_cast_target`,
-`type_from_type_id`, or relevant-scope typed lookup. Value lookup precedes alias
-lookup, so ordinary calls and hiding remain intact.
+The declaration route uses one bounded support classification for a leading
+global-qualified type, charges its reported work once, and leaves consumption to
+the normal parser. PA11 keeps a one-pass unnamed abstract-declarator
+prefix/suffix split and canonical array/function parameter adjustment. A typed
+`NamedRecordId` display sidecar is populated only after the occurrence path is
+proved equal to the record's canonical owner/name path. Template
+specializations use a typed `(TemplateFunctionId, vector<TypeId>)` key index;
+each indexed fact records `NotStarted`, `InProgress`, `Complete`, or `Failed`.
+Semantic facts retain the selected `BindingId`; specialization presentation is
+recovered from that binding's sparse sidecar at cold render time.
 
 ## Spec Alignment
 
-- Root spec §1: PA10's call-shaped `PA10Ast` feeds the sole PA11 semantic model;
-  PA12 extends that path without a parser, type model, or renderer-input
-  duplicate.
-- Root spec §§2-3: canonical `TypeId`/`TypeKey`, typed `NamePath` lookup,
-  `SemanticFactId`, and owner-attached `ConversionFact` values carry the
-  classified facts. Rendering is cold and one-way; value lookup still precedes
-  type-alias lookup.
-- Root spec §4: delimiter indexes are built once, cast-prefix work is charged
-  once per parser classification, and functional-cast work is bounded by the
-  contiguous specifier prefix plus one operand walk. The increment adds no
-  persistent hot record fields or retry loop.
-- Root spec §7: focused outputs are deterministic and the retained immutable,
-  interleaved cast-family measurements below are reported as bounded
-  observations, not asymptotic claims.
+- §§1-2: one forward model and typed fact continuity; display strings are
+  rendered only at the requested PA12/PA11 dump boundary.
+- §3: template candidates are indexed by typed `NameId`; explicit arguments,
+  direct `T` deduction, specialization keys, and selected bindings remain
+  typed. Every complete specialization key has explicit not-started,
+  in-progress, complete, and failed states; failed keys are retained and do
+  not repeat substitution. The narrow bridge covers only the demanded
+  `hello<stream>` target and `take(T)` call; no general template-aware overload
+  machinery is added.
+- §4: parser work is indexed and charged once; candidate work is limited to
+  the relevant same-name template list and visible scopes; specialization reuse
+  performs one typed flat-index lookup on the function ID plus exact `TypeId`
+  argument vector, rather than scanning prior facts.
+- §7: focused exact-output checks, deterministic alias-order probes, broad
+  stage totals, file audit, and diff/path checks are recorded below. Timing and
+  work statements are bounded observations, not unsupported asymptotic claims.
 
 ## Failure Map
 
-The fresh final checkpoint result covers all 166 paths and passes `163/166`.
-Its exact residuals are:
+Turn-start baseline: `make test-pa12` exited 2 with `163/166` paths passing and
+all 166 covered. Exact residuals were local extern declaration parsing,
+reference-binding pointee-const-pointer lifetime output, and static-cast
+overloaded function-template target selection.
 
-1. `pa12/tests/general/300-local-extern-function-declaration.t`
-2. `pa12/tests/general/300-reference-binding-pointee-const-pointer.t`
-3. `pa12/tests/general/300-static-cast-overloaded-function-template-argument.t`
-
-The earlier `155/166` baseline and its five fixed member-pointer/array paths,
-followed by the landed functional-cast `160/166` baseline, remain historical
-evidence. The retained audit history is `90/166`, `103/166`, `113/166`,
-`120/166`, `142/166`, `146/166`, `149/166`, `155/166`, `160/166`, then the
-fresh final `163/166` result.
-
-The landed increment removes the three functional-cast/type-name residuals;
-the current exact residual set is the unchanged local-extern,
-reference-binding, and overloaded-function-template set above. Fresh
-through-PA12 is `848/851` with that same set; fresh
-prior-through-PA11 is `685/685`. No additional failure is permitted,
-and additional passes do not compensate for a new failure.
+Current focused decision gate: exact residual trio `3/3`. The reviewed parser
+and declarator increment preserves the local-extern decrement. The lifetime
+fix emits an action and synthetic default constructor only for a defined,
+empty, local block-scope non-union class object; it does not perform constructor
+overload resolution. The template fix selects only typed explicit type-argument
+function-template targets and direct type-parameter calls; ordinary lookup and
+non-template preference remain first.
 
 ## Active Checkpoint
 
-- Commit `115aff98b17774925ae64e53c1ec3260a0b1e6ca` is the reviewed landed
-  increment; the audit found no direct regression requiring a source repair.
-- `decltype(expr)(arg)`, multi-keyword fundamental casts such as
-  `unsigned long(e)`, visible aliases, and supported scalar zero-initialization
-  share one call-shaped AST boundary and one typed semantic target path. PA10's
-  bounded classifier is owned by `pa10_parser_support.cpp`; PA12's typed cast
-  target/validator and conversion builder are owned by
-  `pa12_semantic_resolution.cpp`.
-- Supported one-argument casts reuse explicit-cast validation, including the
-  scoped-enum-to-integral case. `semantic_cast_to_target` records the selected
-  source-to-target `ConversionFact` on the resulting `CastExpression` for both
-  explicit and functional casts.
-- When a later context asks for the exact type of an already-created cast
-  prvalue, `record_builtin_conversion` performs no additional identity
-  conversion. This preserves the cast owner’s contiguous conversion range; it
-  does not drop the selected cast conversion. The sibling functional/explicit
-  cast probe is `/tmp/pa12-sibling-cast-range.cpp` and succeeds.
-- Zero-argument supported scalar targets produce typed prvalue zero literals;
-  unsupported class construction is rejected. Existing ordinary calls,
-  invalid arity, name hiding, cast-to-void, and static-cast behavior remain
-  covered by focused checks.
+The display-path concern is closed by `canonical_type_display_path`: a typedef
+or namespace-alias spelling cannot populate or overwrite the record sidecar.
+Alias-first probes produce `struct S` and `struct n::S`, matching canonical-use
+probes in both encounter orders. Anonymous/generated records do not receive
+this path.
+
+The retained implementation additions are: PA10 qualified-declaration routing;
+PA11 source-type side storage needed to preserve earlier PA11 array/function
+parameter dumps while bindings use adjusted canonical types; typed template
+facts, four-state specialization selection, and its exact-key index; the PA12
+address-of template-id target path; and the narrow local
+implicit-default-constructor lifetime fact. The hot `SemanticFact` no longer
+duplicates the specialization ID; cold rendering follows its selected binding
+sidecar.
+
+The PA12 README labels general template functions out of scope. The current
+fixture requires this deliberately narrow exception; general template
+semantics, template-template arguments, non-type arguments, dependent lookup,
+and template-aware overload ranking remain out of scope.
 
 ## Performance Evidence
 
-Retained member-pointer structural measurements are: `TypeKey 80`, `Scope
-440`, `DeclaratorOp 40`, `FunctionFact 48`, `BindingSidecar 32`, and `SpecFact
-32` bytes. The functional-cast increment adds no persistent record fields.
+Parser risk is bounded by the existing token indexes, one contiguous qualified
+component scan, one indexed parenthesized-group check, and one charged work
+account. The unnamed declarator split is one child pass. The display sidecar
+walk is bounded by canonical owner qualification depth and is written once.
 
-The retained declarator-depth measurement used five interleaved rounds over
-200 typedef declarations; every run exited `0`:
+Lifetime risk is one block/class-kind/empty-scope check and at most one typed
+synthetic constructor fact per record; no overload candidate scan is introduced.
+Template risk is limited to the indexed same-name list, visible-scope checks,
+function-type traversal for direct `T`, and one exact-key flat-index lookup per
+demand. No unrelated scope or source-text scan or linear global specialization
+scan is performed.
 
-| depth | wall samples (ms) | median wall (ms) | median user (ms) | median sys (ms) | median max RSS (KiB) |
-|---:|---|---:|---:|---:|---:|
-| 32 | 10, 10, 10, 10, 10 | 10 | 0 | 0 | 10464 |
-| 128 | 60, 50, 50, 50, 60 | 50 | 20 | 30 | 26892 |
-| 512 | 230, 220, 230, 220, 220 | 220 | 120 | 100 | 91860 |
-
-Retained cast-family evidence used an immutable copy of the newly built
-compiler and five interleaved rounds over equivalent generated inputs
-containing 128, 512, and 2048 functions; each function included
-`unsigned long(x)`, `decltype(x)(1)`, and zero-argument `size_t()`. Medians
-were:
-
-| functions | median wall | median max RSS |
-|---:|---:|---:|
-| 128 | 0.02 s | 11520 KiB |
-| 512 | 0.09 s | 34312 KiB |
-| 2048 | 0.41 s | 124884 KiB |
-
-Repeated hashes matched at every size: 128=`03c34dd8c84bf3bdbd3d1e83d29f3b8a05cd71349f51da2c0c395eb4e424e93f`,
-512=`c940bc38dc8c51c8bc094df6c332539d29f8e5080b3d74b1f4dfc0f9e48723fb`,
-and 2048=`40c86b4490f5e3a50fc9fd92849c0c5a640bd28dc52a53e1eb0dc9bd0ca02137`.
-These are bounded observations, not a broader timing coefficient or
-asymptotic claim. The parser risk itself is bounded by the contiguous O(k)
-specifier scan, indexed `decltype` close lookup, relevant-scope lookup, and
-one operand semantic walk. A fresh focused six-case repeat produced six
-status `0/0` pairs and six `cmp` exits `0`; that is determinism evidence, not a
-new performance claim.
+Representative focused evidence is: exact residuals `3/3`, six nearby
+PA12 controls `6/6`, and three alias/canonical rendering probes with matching
+canonical paths. Before/after sizes are `SemanticFact 144 -> 136`,
+`TemplateSpecializationFact 40 -> 48`, and unchanged sparse `BindingSidecar
+48`; the typed lookup key is 32 bytes. An immutable built compiler was run on
+equivalent generated inputs with 4/8/16/32 distinct types and 8/16/32/64
+specialization demands. Each scale emitted exactly the demand count, with
+three identical output hashes per scale: `c67642f7b400d36b809f75dd327f9f3a29a4fd0f7f53336b1dc5b9d2a09f6fb7`,
+`b6f7d363f10191c9fad9d0680dd1f4f1a968c0480a8415dab249360e085b65d2`,
+`9891c0451a0aceb90ebb336b7379fcfed79c63aebc30706030d59a311b8fb587`,
+and `4964386a9dc043005b73951f4486988283c801acd3f2c35bc0e6f9741de0897`.
+Thus the direct structural count is `2n` exact-key lookups and `2n` retained
+facts, with no global-vector scan; no timing/asymptotic claim is made.
 
 ## Checkpoint Ledger
 
-| checkpoint | retained evidence | outcome |
+| checkpoint | evidence | outcome |
 |---|---|---|
-| PA12 canonical declarator/member-target | landed `4f890322`; focused PA12 `20/20`; PA10 `4/4`; 12 probes; two rendering assertions; broad PA12 `160/166`; through-PA11 `685/685` | complete; exact six residuals remained for the next family |
-| PA12 functional-cast/type-name | focused PA12 `11/11`; PA10 `5/5`; sibling-cast probe success; broad PA12 `163/166` with 166 covered; through-PA11 `685/685`; through-PA12 `848/851`; final audit exit `0` with two retained header-division warnings; diff check clean | complete for the owned family; residuals 2, 3, and 5 remain outside scope |
-| PA12 `checkpointAudit` for `115aff98` | Complete ownership trace; no source repair; focused PA12 `3/3 + 8/8`, PA10 `4/4`, six deterministic repeated dumps; fresh PA12 `163/166` with all 166 covered, fresh through-PA11 `685/685`, fresh through-PA12 `848/851`, fresh file audit with 2 retained warnings, and clean diff/path checks | complete audit record; exact three residuals remain outside scope |
+| PA12 start | `163/166`, all 166 covered; PA1-PA11 `685/685` | three exact residuals |
+| declaration boundary | local extern fixed; abstract prefix/suffix and parameter adjustment; display owner constrained | retained |
+| lifetime/template residuals | reference-binding and static-cast template residuals fixed; exact trio `3/3`; nearby controls `6/6` | retained after scope review |
+| architecture correction | four-state facts; typed exact-key index; `SemanticFact` 144 -> 136; immutable 4/8/16/32 scale outputs with exact `2n` counts and stable hashes | focused correction pass |
+| final validation | PA12 `166/166`; through-PA11 `685/685`; through-PA12 `851/851`; audit green with 2 retained warnings; path/diff checks clean | complete |
 
 ## Validation Status
 
-Focused evidence: `make -C pa12 -j2` exit `0`; the
-three active PA12 cases passed `3/3`, eight PA12 call/cast/static-cast controls
-passed `8/8`, and four PA10 call-shaped parser controls passed `4/4`. Six
-repeated direct dumps had tool statuses `0/0` and `cmp` exit `0` for every
-pair. The three residual checks reproduce only the final residual set and
-remain intentionally excluded.
-
-Fresh final stage evidence:
-
-- `make test-pa12`: exit `2`, `163/166`, all 166 covered, exactly the three
-  residuals in the Failure Map.
-- Exact command `n=12; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: exit `0`, `685/685`.
-- `make test-report-through-pa12`: exit `2`, `848/851`, exactly the same three
-  PA12 residuals and no earlier regression.
-- `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src`: exit `0`,
-  with the two retained header-division warnings
-  for `dev/src/cpp_semantic_core.h` and `dev/src/pa11_semantic_model.h`; no
-  fatal findings.
-- `git diff --check`: exit `0`.
-- Exact authorized-path audit: pass; changed paths are exactly
-  `pa12/audit.md` and `pa12/plan.md`, with no tests/refs/harnesses/grammar/
-  scripts changed.
+The architecture correction focused check passes `6/6`, including the exact
+residual trio. The generated untracked PA10 check artifacts created during
+diagnosis were removed explicitly; no checked-in tests, refs, harnesses,
+grammar, or scripts were modified. Final `make test-pa12` passed `166/166`,
+the exact through-PA11 command passed `685/685`, and
+`make test-report-through-pa12` passed `851/851`. File audit passed with the
+two retained header-division warnings; `git diff --check` and the commit-level
+changed-path audit passed, and the 3000-line PA10 AST limit remains satisfied.
 
 ## Next Checkpoint
 
-The first remaining residual family is
-`pa12/tests/general/300-local-extern-function-declaration.t`. A future
-checkpoint may investigate that local-extern declaration path with separate
-authorization. The pointee-const-pointer reference-binding residual and the
-overloaded function-template selection residual remain separately out of this
-checkpoint; no work on either is implied here.
+No further PA12 implementation expansion is planned. This corrected PA12
+checkpoint is amended and the worktree is clean.
 
 ## Remaining Scope
 
-The final residuals are `300-local-extern-function-declaration.t`,
-`300-reference-binding-pointee-const-pointer.t`, and
-`300-static-cast-overloaded-function-template-argument.t`. They remain outside
-this checkpoint. No general class-aware calls, class construction, or template
-semantics were added.
+No current PA12 test residual remains. Future work may generalize template and
+class lifetime semantics only under their later assignment boundaries.
+
+Final commit: corrected PA12 residual checkpoint; ID is reported in the handoff.

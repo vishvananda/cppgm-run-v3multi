@@ -116,6 +116,82 @@ struct NamePath
 	}
 };
 
+struct TemplateFunctionFact
+{
+	ScopeId visible_scope;
+	BindingId binding;
+	NameId name;
+	std::vector<NamedRecordId> parameters;
+
+	TemplateFunctionFact(ScopeId visible_scope = ScopeId(),
+		BindingId binding = BindingId(), NameId name = NameId())
+		: visible_scope(visible_scope), binding(binding), name(name), parameters()
+	{}
+};
+
+struct TemplateFunctionList
+{
+	std::vector<TemplateFunctionId> entries;
+};
+
+enum class TemplateSpecializationState
+{
+	NotStarted,
+	InProgress,
+	Complete,
+	Failed
+};
+
+struct TemplateSpecializationKey
+{
+	TemplateFunctionId function;
+	std::vector<TypeId> arguments;
+
+	TemplateSpecializationKey(TemplateFunctionId function =
+		TemplateFunctionId(), const std::vector<TypeId>& arguments =
+		std::vector<TypeId>())
+		: function(function), arguments(arguments)
+	{}
+
+	bool operator==(const TemplateSpecializationKey& other) const
+	{
+		return function == other.function && arguments == other.arguments;
+	}
+};
+
+struct TemplateSpecializationKeyHash
+{
+	static std::size_t combine(std::size_t seed, std::size_t value)
+	{
+		value += static_cast<std::size_t>(0x9e3779b9U) +
+			(seed << 6) + (seed >> 2);
+		return seed ^ value;
+	}
+
+	std::size_t operator()(const TemplateSpecializationKey& key) const
+	{
+		std::size_t result = key.function.value;
+		result = combine(result, key.arguments.size());
+		for (std::size_t i = 0; i < key.arguments.size(); ++i)
+			result = combine(result, key.arguments[i].value);
+		return result;
+	}
+};
+
+struct TemplateSpecializationFact
+{
+	TemplateFunctionId function;
+	BindingId binding;
+	std::vector<TypeId> arguments;
+	TemplateSpecializationState state;
+
+	TemplateSpecializationFact(TemplateFunctionId function =
+		TemplateFunctionId(), BindingId binding = BindingId())
+		: function(function), binding(binding), arguments(),
+		  state(TemplateSpecializationState::NotStarted)
+	{}
+};
+
 // Source positions are semantic declaration-point facts, not rendered names.
 // An invalid point means that the relation is not subject to a namespace
 // declaration-point filter (for example, a local block relation formed by
@@ -169,12 +245,15 @@ struct BindingSidecar
 	NamedRecordId constructor_record;
 	NamedRecordId generated_name_record;
 	bool static_member;
+	TemplateSpecializationId template_specialization;
+	TypeId unadjusted_type;
 
 	BindingSidecar(BindingId backing_storage = BindingId(),
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record),
-		  generated_name_record(generated_name_record), static_member(false)
+		  generated_name_record(generated_name_record), static_member(false),
+		  template_specialization(), unadjusted_type()
 	{}
 };
 
@@ -416,12 +495,15 @@ struct NamedRecordSidecar
 	bool local_object_name;
 	BindingId backing_storage;
 	BindingId constructor_binding;
+	bool has_display_path;
+	NamePath display_path;
 
 	NamedRecordSidecar(bool local_object_name = false,
 		BindingId backing_storage = BindingId(),
 		BindingId constructor_binding = BindingId())
 		: local_object_name(local_object_name), backing_storage(backing_storage),
-		  constructor_binding(constructor_binding)
+		  constructor_binding(constructor_binding), has_display_path(false),
+		  display_path()
 	{}
 };
 
@@ -851,6 +933,12 @@ private:
 	std::vector<NamedRecord> named_;
 	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
 		named_record_sidecars_;
+	std::vector<TemplateFunctionFact> template_function_facts_;
+	FlatIndex<NameId, TemplateFunctionList, IdentityHash<NameId> >
+		template_function_index_;
+	std::vector<TemplateSpecializationFact> template_specialization_facts_;
+	FlatIndex<TemplateSpecializationKey, TemplateSpecializationId,
+		TemplateSpecializationKeyHash> template_specialization_index_;
 	std::vector<Scope> scopes_;
 	FlatIndex<ScopeId, ScopeId, IdentityHash<ScopeId> >
 		unnamed_namespace_index_;
@@ -1076,6 +1164,12 @@ private:
 	void set_named_record_sidecar(NamedRecordId id,
 		const NamedRecordSidecar& sidecar)
 	;
+	void remember_type_display_path(TypeId type, const NamePath& path)
+	;
+	bool canonical_type_display_path(TypeId type, const NamePath& path) const
+	;
+	const NamePath* type_display_path(TypeId type) const
+	;
 	void add_dump_binding_view(ScopeId scope, BindingId binding)
 	;
 	const Binding& binding(BindingId id) const
@@ -1103,6 +1197,10 @@ private:
 	;
 	void inject_anonymous_union(TypeId type, ScopeId owner,
 		bool create_storage = false, const PA10AstNode* origin = NULL)
+	;
+	bool implicit_default_constructor_supported(NamedRecordId record) const
+	;
+	BindingId ensure_implicit_default_constructor(NamedRecordId record)
 	;
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
 	;
@@ -1149,6 +1247,8 @@ private:
 		SourcePoint declaration_point = SourcePoint())
 	;
 	TypeId normalize_parameter_type(TypeId type)
+	;
+	TypeId normalize_embedded_function_types(TypeId type)
 	;
 	TypeId normalize_function_type(TypeId type)
 	;
@@ -1211,6 +1311,9 @@ private:
 	NameId template_parameter_name(const PA10AstNode& node)
 	;
 	void process_template_parameter(const PA10AstNode& node, ScopeId scope)
+	;
+	void record_template_function(const PA10AstNode& node, ScopeId visible_scope,
+		ScopeId parameter_scope)
 	;
 	void process_template_declaration(const PA10AstNode& node, ScopeId parent)
 	;
@@ -1353,6 +1456,39 @@ private:
 	const std::vector<SemanticFactId>& children)
 	;
 	void set_semantic_name(SemanticFactId fact, const NamePath& path)
+	;
+	bool has_template_id(const PA10AstNode& node) const
+	;
+	NamePath template_name_path(const PA10AstNode& node)
+	;
+	std::string render_template_specialization(
+		TemplateSpecializationId id) const
+	;
+	std::string render_template_argument_type(TypeId type) const
+	;
+	const TemplateFunctionList* template_functions(const NamePath& path,
+		ScopeId scope) const
+	;
+	bool template_argument_types(const PA10AstNode& node, ScopeId scope,
+		std::vector<TypeId>* arguments)
+	;
+	TypeId substitute_template_type(TypeId type,
+		const TemplateFunctionFact& function,
+		const std::vector<TypeId>& arguments)
+	;
+	bool deduce_template_type(TypeId pattern, TypeId actual,
+		const TemplateFunctionFact& function,
+		std::vector<TypeId>* arguments) const
+	;
+	TemplateSpecializationId specialize_template_function(
+		TemplateFunctionId function, const std::vector<TypeId>& arguments)
+	;
+	FunctionIdResolution resolve_template_function_id_target(
+		const PA10AstNode& node, ScopeId scope, TypeId target)
+	;
+	ExprInfo semantic_template_call(const PA10AstNode& node, ScopeId scope,
+		const TemplateFunctionList& candidates,
+		const PA10AstNode& argument_node)
 	;
 	ConversionFactId add_conversion(TypeId source, TypeId target,
 	ConversionKind kind, unsigned int rank)
@@ -1513,6 +1649,9 @@ private:
 	;
 	void dump_pa12_synthetic_function(std::ostream& output,
 		const SyntheticFunctionFact& function, std::size_t depth) const
+	;
+	void dump_pa12_template_specialization(std::ostream& output,
+		const TemplateSpecializationFact& specialization, std::size_t depth) const
 	;
 	void dump_pa12_top_node(std::ostream& output, const PA10AstNode& node,
 	ScopeId scope, std::size_t depth) const

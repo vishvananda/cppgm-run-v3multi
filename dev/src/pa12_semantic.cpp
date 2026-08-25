@@ -499,6 +499,14 @@ void PA11SemanticModel::dump_pa12(std::ostream& output) const
 	output << "translation-unit\n";
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		dump_pa12_top_node(output, ast_.root.children[i], global_, 1);
+	for (std::size_t i = 0; i < template_specialization_facts_.size(); ++i)
+	{
+		if (template_specialization_facts_[i].state !=
+			TemplateSpecializationState::Complete)
+			continue;
+		dump_pa12_template_specialization(output,
+			template_specialization_facts_[i], 1);
+	}
 	for (std::size_t i = 0; i < class_function_facts_.size(); ++i)
 	{
 		const FunctionFactId id = class_function_facts_[i];
@@ -512,13 +520,24 @@ void PA11SemanticModel::dump_pa12(std::ostream& output) const
 	for (std::size_t i = 0; i < synthetic_function_facts_.size(); ++i)
 		dump_pa12_synthetic_function(output, synthetic_function_facts_[i], 1);
 }
-BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
-	NamedRecordId record_id)
+bool PA11SemanticModel::implicit_default_constructor_supported(
+	NamedRecordId record_id) const
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class ||
-		named_[record_id.value].class_tag != ClassTag::Union)
-		throw std::runtime_error("invalid anonymous union constructor record");
+		named_[record_id.value].class_tag == ClassTag::Union ||
+		!named_[record_id.value].defined ||
+		!named_[record_id.value].scope.valid() ||
+		named_[record_id.value].scope.value >= scopes_.size())
+		return false;
+	return scopes_[named_[record_id.value].scope.value].bindings.empty();
+}
+BindingId PA11SemanticModel::ensure_implicit_default_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		throw std::runtime_error("invalid implicit constructor record");
 	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
 	if (existing != NULL && existing->constructor_binding.valid())
 		return existing->constructor_binding;
@@ -540,6 +559,15 @@ BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
 	synthetic_function_facts_.push_back(
 		SyntheticFunctionFact(record_id, binding_id));
 	return binding_id;
+}
+BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag != ClassTag::Union)
+		throw std::runtime_error("invalid anonymous union constructor record");
+	return ensure_implicit_default_constructor(record_id);
 }
 const AnonymousUnionFact* PA11SemanticModel::anonymous_union_fact(
 	const PA10AstNode& node) const
@@ -642,9 +670,11 @@ SemanticFactId PA11SemanticModel::semantic_constructor_action(
 	const Binding& storage_binding = binding(storage);
 	const NamedRecordId record = named_record_for_type(storage_binding.type);
 	if (!record.valid() || record.value >= named_.size() ||
-		named_[record.value].class_tag != ClassTag::Union)
-		throw std::runtime_error("PA12 constructor action needs a union object");
-	const BindingId constructor = ensure_anonymous_union_constructor(record);
+		named_[record.value].kind != NamedKind::Class)
+		throw std::runtime_error("PA12 constructor action needs a class object");
+	const BindingId constructor = named_[record.value].class_tag == ClassTag::Union ?
+		ensure_anonymous_union_constructor(record) :
+		ensure_implicit_default_constructor(record);
 	const ExprInfo object = semantic_storage_id(storage, &source);
 	const TypeId pointer = make_pointer(object.type);
 	SemanticFact unary(SemanticFactKind::UnaryExpression, pointer,
@@ -896,7 +926,12 @@ std::string PA11SemanticModel::semantic_name(const SemanticFact& fact) const
 	for (std::size_t i = 0; i < fact.name_count; ++i)
 		path.components.push_back(semantic_name_components_[
 			fact.name_begin + i]);
-	return render_name_path(path);
+	std::string result = render_name_path(path);
+	const BindingSidecar* sidecar = fact.binding.valid() ?
+		binding_sidecar(fact.binding) : NULL;
+	if (sidecar != NULL && sidecar->template_specialization.valid())
+		result += render_template_specialization(sidecar->template_specialization);
+	return result;
 }
 std::string PA11SemanticModel::qualified_binding_name(ScopeId owner, NameId name) const
 {
@@ -1287,6 +1322,8 @@ SemanticFactId PA11SemanticModel::semantic_literal(const PA10AstNode& node)
 }
 ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 {
+	if (has_template_id(node))
+		throw std::runtime_error("PA12 template-id requires a target");
 	const NamePath path = name_path(node);
 	const std::vector<ValueRef> values = lookup_value_path(path, scope);
 	if (values.empty())
@@ -1747,7 +1784,45 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(
 	if (node.children.size() < 2)
 		throw std::runtime_error("PA12 invalid cast expression");
 	const TypeId target = type_from_type_id(node.children.front(), scope);
-	const ExprInfo operand = semantic_expression(node.children.back(), scope);
+	const PA10AstNode& operand_node = node.children.back();
+	ExprInfo operand;
+	// A template-id has no standalone overload-set expression type.  When the
+	// cast supplies a function-pointer target, select the typed specialization
+	// before forming the address-of fact.  This is deliberately limited to the
+	// explicit function-template target shape; ordinary unary expressions keep
+	// their existing semantic path.
+	if (operand_node.kind == PA10NodeKind::UnaryExpression &&
+		operand_node.has_token && operand_node.token == SimpleTokenType::OP_AMP &&
+		operand_node.children.size() == 1 &&
+		has_template_id(operand_node.children.front()))
+	{
+		const TypeId target_object = strip_cv_type(expression_object_type(target));
+		if (type_kind(target_object) == TypeKind::Pointer)
+		{
+			const TypeId function_target = strip_cv_type(
+				types_[target_object.value].child);
+			if (type_kind(function_target) == TypeKind::Function)
+			{
+				const ExprInfo selected = semantic_expression_for_target(
+					operand_node.children.front(), scope, function_target);
+				const TypeId pointer = make_pointer(selected.type);
+				SemanticFact unary(SemanticFactKind::UnaryExpression, pointer,
+					SemanticValueCategory::Prvalue, &operand_node);
+				unary.token = SimpleTokenType::OP_AMP;
+				const SemanticFactId unary_id = make_semantic_fact(unary);
+				set_semantic_children(unary_id,
+					std::vector<SemanticFactId>(1, selected.fact));
+				operand = ExprInfo(unary_id, pointer,
+					SemanticValueCategory::Prvalue, false);
+			}
+			else
+				operand = semantic_expression(operand_node, scope);
+		}
+		else
+			operand = semantic_expression(operand_node, scope);
+	}
+	else
+		operand = semantic_expression(operand_node, scope);
 	return semantic_cast_to_target(node, target, operand);
 }
 ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, ScopeId scope)
@@ -1770,6 +1845,18 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (functional_cast_target(callee_node, scope, &functional_target))
 		return semantic_functional_cast(node, scope, functional_target,
 			argument_node);
+	if (callee_node.kind == PA10NodeKind::IdExpression &&
+		!has_template_id(callee_node))
+	{
+		const NamePath path = name_path(callee_node);
+		if (lookup_value_path(path, scope).empty())
+		{
+			const TemplateFunctionList* templates = template_functions(path, scope);
+			if (templates != NULL && !templates->entries.empty())
+				return semantic_template_call(node, scope, *templates,
+					argument_node);
+		}
+	}
 
 	std::vector<ValueRef> candidates;
 	bool direct = false;
@@ -2150,6 +2237,12 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			named_[record.value].kind == NamedKind::Class &&
 			named_[record.value].class_tag == ClassTag::Union &&
 			record_sidecar != NULL && record_sidecar->local_object_name;
+		const bool local_object_scope = declaration->scope.valid() &&
+			declaration->scope.value < scopes_.size() &&
+			scopes_[declaration->scope.value].kind == ScopeKind::Block;
+		const bool implicit_default_object = init.children.size() == 1 &&
+			local_object_scope && record.valid() &&
+			implicit_default_constructor_supported(record);
 		const PA10AstNode* direct_operand = NULL;
 		if (direct_initializer_operand(init, declaration->scope, &direct_operand))
 		{
@@ -2179,7 +2272,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
 		}
-		else if (anonymous_union_object)
+		else if (anonymous_union_object || implicit_default_object)
 		{
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1,

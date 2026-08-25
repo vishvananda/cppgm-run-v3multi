@@ -214,6 +214,10 @@ TypeId PA11SemanticModel::normalize_parameter_type(TypeId type)
 {
 	while (type_kind(type) == TypeKind::Cv)
 		type = types_[type.value].child;
+	if (type_kind(type) == TypeKind::Array)
+		return make_pointer(types_[type.value].child);
+	if (type_kind(type) == TypeKind::Function)
+		return make_pointer(type);
 	if ((type_kind(type) == TypeKind::Pointer ||
 		type_kind(type) == TypeKind::MemberPointer) &&
 		types_[type.value].cv != 0)
@@ -313,6 +317,50 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(
 	}
 	return result;
 }
+TypeId PA11SemanticModel::normalize_embedded_function_types(TypeId type)
+{
+	if (!type.valid() || type.value >= types_.size())
+		return type;
+	const TypeKey& key = types_[type.value];
+	switch (key.kind)
+	{
+	case TypeKind::Cv:
+	{
+		const TypeId child = normalize_embedded_function_types(key.child);
+		return child == key.child ? type : make_cv(child, key.cv);
+	}
+	case TypeKind::Pointer:
+	{
+		const TypeId child = normalize_embedded_function_types(key.child);
+		return child == key.child ? type : make_pointer(child, key.cv);
+	}
+	case TypeKind::MemberPointer:
+	{
+		const TypeId child = normalize_embedded_function_types(key.child);
+		return child == key.child ? type : make_member_pointer(key.named, child,
+			key.cv);
+	}
+	case TypeKind::LvalueReference:
+	case TypeKind::RvalueReference:
+	{
+		const TypeId child = normalize_embedded_function_types(key.child);
+		return child == key.child ? type : make_reference(child,
+			key.kind == TypeKind::RvalueReference);
+	}
+	case TypeKind::Array:
+	{
+		const TypeId child = normalize_embedded_function_types(key.child);
+		return child == key.child ? type : make_array(child, key.unknown_bound,
+			key.bound);
+	}
+	case TypeKind::Function:
+		return normalize_function_type(type);
+	case TypeKind::Fundamental:
+	case TypeKind::Named:
+		return type;
+	}
+	return type;
+}
 TypeId PA11SemanticModel::apply_prefix(const std::vector<DeclaratorOp>& ops,
 	TypeId base)
 {
@@ -379,14 +427,30 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			break;
 		}
 	}
+	std::size_t prefix_end = direct;
+	std::size_t suffix_begin = direct < node.children.size() ? direct + 1 :
+		node.children.size();
+	if (direct == node.children.size())
+	{
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+		{
+			if (node.children[i].kind == PA10NodeKind::ArraySuffix ||
+				node.children[i].kind == PA10NodeKind::ParameterClause)
+			{
+				prefix_end = i;
+				suffix_begin = i;
+				break;
+			}
+		}
+	}
 	std::vector<DeclaratorOp> prefix;
-	for (std::size_t i = 0; i < direct; ++i)
+	for (std::size_t i = 0; i < prefix_end; ++i)
 	{
 		if (node.children[i].kind == PA10NodeKind::PtrOperator)
 		{
 			DeclaratorOp op = pointer_op(node.children[i], scope);
 			std::size_t at = i + 1;
-			while (at < direct && is_cv_node(node.children[at]))
+			while (at < prefix_end && is_cv_node(node.children[at]))
 			{
 				op.cv |= cv_bit(node.children[at]);
 				++at;
@@ -399,9 +463,9 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			throw std::runtime_error("invalid PA11 declarator prefix");
 	}
 	std::vector<DeclaratorOp> suffix;
-	if (direct < node.children.size())
+	if (suffix_begin < node.children.size())
 	{
-		for (std::size_t i = direct + 1; i < node.children.size(); ++i)
+		for (std::size_t i = suffix_begin; i < node.children.size(); ++i)
 		{
 			const PA10AstNode& child = node.children[i];
 			if (child.kind == PA10NodeKind::ArraySuffix)

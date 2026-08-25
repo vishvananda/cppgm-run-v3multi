@@ -5,6 +5,397 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+bool PA11SemanticModel::has_template_id(const PA10AstNode& node) const
+{
+	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
+		if (node.name_parts[i].has_template_id)
+			return true;
+	return false;
+}
+NamePath PA11SemanticModel::template_name_path(const PA10AstNode& node)
+{
+	if (node.name_prefix_count != 0)
+		throw std::runtime_error("template-id decltype qualifier unsupported");
+	NamePath result;
+	result.global = node.global_name;
+	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
+		result.components.push_back(name_from_spelling(node.name_parts[i].spelling));
+	if (result.components.empty() && node.producer_spelling != 0)
+		result.components.push_back(name_from_spelling(node.producer_spelling));
+	if (result.components.empty())
+		throw std::runtime_error("template-id has no semantic component");
+	return result;
+}
+const TemplateFunctionList* PA11SemanticModel::template_functions(
+	const NamePath& path, ScopeId scope) const
+{
+	(void)scope;
+	if (path.components.size() != 1)
+		return NULL;
+	return template_function_index_.find(path.last());
+}
+bool PA11SemanticModel::template_argument_types(const PA10AstNode& node,
+	ScopeId scope, std::vector<TypeId>* arguments)
+{
+	if (arguments == NULL || node.name_parts.empty())
+		return false;
+	const PA10NameComponent* component = NULL;
+	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
+	{
+		if (!node.name_parts[i].has_template_id)
+			continue;
+		if (component != NULL || i + 1 != node.name_parts.size())
+			return false;
+		component = &node.name_parts[i];
+	}
+	if (component == NULL || component->template_argument_begin >
+		ast_.template_arguments.size() || component->template_argument_count >
+		ast_.template_arguments.size() - component->template_argument_begin)
+		return false;
+	arguments->clear();
+	for (std::size_t i = 0; i < component->template_argument_count; ++i)
+	{
+		const PA10TemplateArgument& argument = ast_.template_arguments[
+			component->template_argument_begin + i];
+		TypeId type;
+		if (argument.kind == PA10TemplateArgumentKind::TypeId)
+			type = type_from_type_id(argument.syntax, scope);
+		else if (argument.syntax.kind == PA10NodeKind::IdExpression &&
+			!has_template_id(argument.syntax))
+			type = lookup_type_path(name_path(argument.syntax), scope);
+		else
+			return false;
+		if (!type.valid())
+			return false;
+		arguments->push_back(type);
+	}
+	return true;
+}
+TypeId PA11SemanticModel::substitute_template_type(TypeId type,
+	const TemplateFunctionFact& function, const std::vector<TypeId>& arguments)
+{
+	if (!type.valid() || type.value >= types_.size())
+		return TypeId();
+	const TypeKey& key = types_[type.value];
+	if (key.kind == TypeKind::Named)
+	{
+		for (std::size_t i = 0; i < function.parameters.size(); ++i)
+			if (key.named == function.parameters[i])
+				return i < arguments.size() ? arguments[i] : TypeId();
+		return type;
+	}
+	if (key.kind == TypeKind::Function)
+	{
+		std::vector<TypeId> parameters;
+		parameters.reserve(key.parameters.size());
+		for (std::size_t i = 0; i < key.parameters.size(); ++i)
+			parameters.push_back(substitute_template_type(key.parameters[i],
+				function, arguments));
+		return make_function(parameters, key.variadic,
+			substitute_template_type(key.result, function, arguments), key.cv);
+	}
+	if (key.kind == TypeKind::Fundamental)
+		return type;
+	return TypeId();
+}
+bool PA11SemanticModel::deduce_template_type(TypeId pattern, TypeId actual,
+	const TemplateFunctionFact& function, std::vector<TypeId>* arguments) const
+{
+	if (arguments == NULL || !pattern.valid() || !actual.valid() ||
+		pattern.value >= types_.size() || actual.value >= types_.size())
+		return false;
+	const TypeKey& pattern_key = types_[pattern.value];
+	if (pattern_key.kind == TypeKind::Named)
+	{
+		for (std::size_t i = 0; i < function.parameters.size(); ++i)
+		{
+			if (pattern_key.named != function.parameters[i])
+				continue;
+			if (i >= arguments->size())
+				return false;
+			if ((*arguments)[i].valid())
+				return (*arguments)[i] == actual;
+			(*arguments)[i] = actual;
+			return true;
+		}
+	}
+	return pattern == actual;
+}
+TemplateSpecializationId PA11SemanticModel::specialize_template_function(
+	TemplateFunctionId function_id, const std::vector<TypeId>& arguments)
+{
+	if (!function_id.valid() || function_id.value >= template_function_facts_.size())
+		return TemplateSpecializationId();
+	const TemplateFunctionFact& function = template_function_facts_[
+		function_id.value];
+	const TemplateSpecializationKey key(function_id, arguments);
+	TemplateSpecializationId specialization;
+	TemplateSpecializationId* indexed = template_specialization_index_.find(key);
+	if (indexed != NULL)
+	{
+		specialization = *indexed;
+		if (!specialization.valid() || specialization.value >=
+			template_specialization_facts_.size())
+			return TemplateSpecializationId();
+		TemplateSpecializationFact& existing =
+			template_specialization_facts_[specialization.value];
+		if (existing.state == TemplateSpecializationState::Complete)
+			return specialization;
+		if (existing.state == TemplateSpecializationState::InProgress ||
+			existing.state == TemplateSpecializationState::Failed)
+			return TemplateSpecializationId();
+	}
+	else
+	{
+		specialization = TemplateSpecializationId(
+			template_specialization_facts_.size());
+		TemplateSpecializationFact fact(function_id, BindingId());
+		fact.arguments = arguments;
+		template_specialization_facts_.push_back(fact);
+		template_specialization_index_.set(key, specialization);
+	}
+	TemplateSpecializationFact& fact =
+		template_specialization_facts_[specialization.value];
+	if (fact.state != TemplateSpecializationState::NotStarted)
+		return TemplateSpecializationId();
+	fact.state = TemplateSpecializationState::InProgress;
+	if (arguments.size() != function.parameters.size())
+	{
+		fact.state = TemplateSpecializationState::Failed;
+		return TemplateSpecializationId();
+	}
+	const Binding& source = binding(function.binding);
+	const TypeId specialized_type = substitute_template_type(source.type,
+		function, arguments);
+	if (!specialized_type.valid())
+	{
+		fact.state = TemplateSpecializationState::Failed;
+		return TemplateSpecializationId();
+	}
+	const BindingId binding_id(bindings_.size());
+	bindings_.push_back(Binding(BindingKind::Function, source.name,
+		specialized_type));
+	fact.binding = binding_id;
+	BindingSidecar sidecar;
+	sidecar.template_specialization = specialization;
+	set_binding_sidecar(binding_id, sidecar);
+	fact.state = TemplateSpecializationState::Complete;
+	return specialization;
+}
+FunctionIdResolution PA11SemanticModel::resolve_template_function_id_target(
+	const PA10AstNode& node, ScopeId scope, TypeId target)
+{
+	if (!has_template_id(node))
+		return FunctionIdResolution();
+	const NamePath path = template_name_path(node);
+	const TemplateFunctionList* list = template_functions(path, scope);
+	if (list == NULL)
+		return FunctionIdResolution();
+	std::vector<TypeId> arguments;
+	if (!template_argument_types(node, scope, &arguments))
+		return FunctionIdResolution();
+	bool have_selected = false;
+	bool ambiguous = false;
+	TemplateFunctionId selected_function;
+	std::vector<TypeId> selected_arguments;
+	ConversionChoice selected_conversion;
+	for (std::size_t i = 0; i < list->entries.size(); ++i)
+	{
+		const TemplateFunctionId id = list->entries[i];
+		if (!id.valid() || id.value >= template_function_facts_.size())
+			continue;
+		const TemplateFunctionFact& function = template_function_facts_[id.value];
+		ScopeId cursor = scope;
+		bool visible = false;
+		while (cursor.valid())
+		{
+			if (cursor == function.visible_scope)
+			{
+				visible = true;
+				break;
+			}
+			if (cursor.value >= scopes_.size())
+				break;
+			cursor = scopes_[cursor.value].parent;
+		}
+		if (!visible || arguments.size() != function.parameters.size())
+			continue;
+		const TypeId specialized_type = substitute_template_type(
+			binding(function.binding).type, function, arguments);
+		if (!specialized_type.valid())
+			continue;
+		const ConversionChoice conversion = conversion_for(specialized_type,
+			SemanticValueCategory::Lvalue, target, &node);
+		if (!conversion.valid)
+			continue;
+		if (!have_selected || conversion.rank < selected_conversion.rank)
+		{
+			have_selected = true;
+			ambiguous = false;
+			selected_function = id;
+			selected_arguments = arguments;
+			selected_conversion = conversion;
+		}
+		else if (conversion.rank == selected_conversion.rank)
+			ambiguous = true;
+	}
+	if (!have_selected || ambiguous)
+		return FunctionIdResolution();
+	const TemplateSpecializationId specialization = specialize_template_function(
+		selected_function, selected_arguments);
+	if (!specialization.valid() || specialization.value >=
+		template_specialization_facts_.size() ||
+		template_specialization_facts_[specialization.value].state !=
+			TemplateSpecializationState::Complete)
+		return FunctionIdResolution();
+	const TemplateSpecializationFact& fact =
+		template_specialization_facts_[specialization.value];
+	return FunctionIdResolution(true,
+		ValueRef(template_function_facts_[selected_function.value].visible_scope,
+			fact.binding), selected_conversion);
+}
+ExprInfo PA11SemanticModel::semantic_template_call(
+	const PA10AstNode& node, ScopeId scope,
+	const TemplateFunctionList& candidates,
+	const PA10AstNode& argument_node)
+{
+	if (argument_node.kind != PA10NodeKind::ArgumentList &&
+		argument_node.kind != PA10NodeKind::ParenArgumentList)
+		throw std::runtime_error("PA12 invalid template argument list");
+	std::vector<ExprInfo> arguments;
+	for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+		arguments.push_back(semantic_expression(argument_node.children[i], scope));
+	struct Candidate
+	{
+		TemplateFunctionId function;
+		std::vector<TypeId> arguments;
+		TypeId type;
+		std::vector<unsigned int> ranks;
+		Candidate() : function(), arguments(), type(), ranks() {}
+	};
+	std::vector<Candidate> viable;
+	for (std::size_t i = 0; i < candidates.entries.size(); ++i)
+	{
+		const TemplateFunctionId id = candidates.entries[i];
+		if (!id.valid() || id.value >= template_function_facts_.size())
+			continue;
+		const TemplateFunctionFact& function = template_function_facts_[id.value];
+		ScopeId cursor = scope;
+		bool visible = false;
+		while (cursor.valid())
+		{
+			if (cursor == function.visible_scope)
+			{
+				visible = true;
+				break;
+			}
+			if (cursor.value >= scopes_.size())
+				break;
+			cursor = scopes_[cursor.value].parent;
+		}
+		if (!visible || function.binding.value >= bindings_.size())
+			continue;
+		const TypeId source_type = binding(function.binding).type;
+		if (type_kind(source_type) != TypeKind::Function)
+			continue;
+		const TypeKey& source_function = types_[source_type.value];
+		if (arguments.size() != source_function.parameters.size())
+			continue;
+		std::vector<TypeId> template_arguments(function.parameters.size());
+		bool deduced = true;
+		for (std::size_t arg = 0; arg < source_function.parameters.size(); ++arg)
+		{
+			if (!deduce_template_type(source_function.parameters[arg],
+				expression_object_type(arguments[arg].type), function,
+				&template_arguments))
+			{
+				deduced = false;
+				break;
+			}
+		}
+		for (std::size_t arg = 0; deduced && arg < template_arguments.size(); ++arg)
+			if (!template_arguments[arg].valid())
+				deduced = false;
+		if (!deduced)
+			continue;
+		const TypeId specialized_type = substitute_template_type(source_type,
+			function, template_arguments);
+		if (!specialized_type.valid() || type_kind(specialized_type) !=
+			TypeKind::Function)
+			continue;
+		const TypeKey& specialized_function = types_[specialized_type.value];
+		Candidate candidate;
+		candidate.function = id;
+		candidate.arguments = template_arguments;
+		candidate.type = specialized_type;
+		candidate.ranks.reserve(arguments.size());
+		for (std::size_t arg = 0; arg < arguments.size(); ++arg)
+		{
+			const ConversionChoice conversion = conversion_for(arguments[arg].type,
+				arguments[arg].category, specialized_function.parameters[arg],
+				semantic_facts_[arguments[arg].fact.value].source,
+				arguments[arg].integer_zero);
+			if (!conversion.valid)
+			{
+				candidate.ranks.clear();
+				break;
+			}
+			candidate.ranks.push_back(conversion.rank);
+		}
+		if (candidate.ranks.size() == arguments.size())
+			viable.push_back(candidate);
+	}
+	if (viable.empty())
+		throw std::runtime_error("PA12 no viable function template");
+	const auto better = [](const Candidate& left, const Candidate& right) -> bool
+	{
+		bool strict = false;
+		for (std::size_t i = 0; i < left.ranks.size(); ++i)
+		{
+			if (left.ranks[i] > right.ranks[i])
+				return false;
+			if (left.ranks[i] < right.ranks[i])
+				strict = true;
+		}
+		return strict;
+	};
+	std::size_t best = 0;
+	for (std::size_t i = 1; i < viable.size(); ++i)
+		if (better(viable[i], viable[best]))
+			best = i;
+	for (std::size_t i = 0; i < viable.size(); ++i)
+		if (i != best && !better(viable[best], viable[i]))
+			throw std::runtime_error("PA12 ambiguous function template call");
+	const Candidate& selected = viable[best];
+	const TemplateSpecializationId specialization = specialize_template_function(
+		selected.function, selected.arguments);
+	if (!specialization.valid() || specialization.value >=
+		template_specialization_facts_.size() ||
+		template_specialization_facts_[specialization.value].state !=
+			TemplateSpecializationState::Complete)
+		throw std::runtime_error("PA12 template specialization failed");
+	const TemplateSpecializationFact& specialization_fact =
+		template_specialization_facts_[specialization.value];
+	const TypeKey& selected_function = types_[selected.type.value];
+	for (std::size_t i = 0; i < selected_function.parameters.size(); ++i)
+		arguments[i] = apply_context_conversion(arguments[i],
+			selected_function.parameters[i],
+			semantic_facts_[arguments[i].fact.value].source);
+	std::vector<SemanticFactId> children;
+	for (std::size_t i = 0; i < arguments.size(); ++i)
+		children.push_back(arguments[i].fact);
+	SemanticFact call(SemanticFactKind::CallExpression,
+		function_result_type(selected.type), SemanticValueCategory::Prvalue,
+		&node);
+	call.has_callee = true;
+	call.selected_binding = specialization_fact.binding;
+	call.selected_scope = template_function_facts_[selected.function.value].visible_scope;
+	const SemanticFactId call_id = make_semantic_fact(call);
+	set_semantic_children(call_id, children);
+	return ExprInfo(call_id, function_result_type(selected.type),
+		SemanticValueCategory::Prvalue, false);
+}
+
 TypeId PA11SemanticModel::member_function_expression_type(TypeId type,
 	ScopeId member_scope, BindingId binding_id)
 {
@@ -35,6 +426,8 @@ const PA10AstNode* PA11SemanticModel::target_function_id(
 		!(node.kind == PA10NodeKind::DeclSpecifier &&
 			node.identifier_declspecifier))
 		return NULL;
+	if (has_template_id(node))
+		return &node;
 	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
 	if (values.size() <= 1)
 		return NULL;
@@ -54,6 +447,8 @@ FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
 		!(node.kind == PA10NodeKind::DeclSpecifier &&
 			node.identifier_declspecifier))
 		return FunctionIdResolution();
+	if (has_template_id(node))
+		return resolve_template_function_id_target(node, scope, target);
 	const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
 	ValueRef selected;
 	ConversionChoice selected_conversion;
@@ -137,7 +532,8 @@ ExprInfo PA11SemanticModel::semantic_id_expression_selected(
 		SemanticValueCategory::Lvalue, &node);
 	fact.binding = resolution.selected.binding;
 	const SemanticFactId result = make_semantic_fact(fact);
-	set_semantic_name(result, name_path(node));
+	set_semantic_name(result, has_template_id(node) ? template_name_path(node) :
+		name_path(node));
 	return ExprInfo(result, expression_type, SemanticValueCategory::Lvalue, false);
 }
 ExprInfo PA11SemanticModel::semantic_expression_for_target(

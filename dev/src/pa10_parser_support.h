@@ -95,6 +95,14 @@ enum class PA10ParenthesizedGroupKind : unsigned char
 	NamedDeclarator
 };
 
+// Classify a global-qualified declaration prefix using the parser's indexed
+// delimiter facts.  The parser charges the published bounded lookahead once.
+bool qualified_declaration_start(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind,
+	std::size_t position, std::size_t* charged_work);
+
 // These indexed new-expression facts are pure token-shape predicates.  The
 // parser owns consumption; the support module owns only the bounded routing
 // facts and the one charged placement probe.

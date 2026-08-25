@@ -502,19 +502,20 @@ private:
 	}
 	bool declaration_start()
 	{
-		if (fixed(SimpleTokenType::KW_NAMESPACE) ||
-			fixed(SimpleTokenType::KW_USING) ||
-			fixed(SimpleTokenType::KW_STATIC_ASSERT) ||
-			fixed(SimpleTokenType::KW_TEMPLATE) ||
-			fixed(SimpleTokenType::KW_CLASS) ||
-			fixed(SimpleTokenType::KW_STRUCT) ||
-			fixed(SimpleTokenType::KW_UNION) ||
-			fixed(SimpleTokenType::KW_ENUM) ||
-			fixed(SimpleTokenType::OP_SEMICOLON))
+		if (fixed(SimpleTokenType::KW_NAMESPACE) || fixed(SimpleTokenType::KW_USING) || fixed(SimpleTokenType::KW_STATIC_ASSERT) || fixed(SimpleTokenType::KW_TEMPLATE) ||
+			fixed(SimpleTokenType::KW_CLASS) || fixed(SimpleTokenType::KW_STRUCT) || fixed(SimpleTokenType::KW_UNION) ||
+			fixed(SimpleTokenType::KW_ENUM) || fixed(SimpleTokenType::OP_SEMICOLON))
 			return true;
 		if (look().kind == PA10TokenKind::Fixed &&
 			PA10ParserSupport::is_decl_specifier(look().fixed))
 			return true;
+		if (fixed(SimpleTokenType::OP_COLON2))
+		{
+			std::size_t work = 0;
+			const bool qualified = PA10ParserSupport::qualified_declaration_start(tokens_, delimiter_close_index_, parenthesized_group_kind_, position_, &work);
+			while (work-- != 0) charge();
+			if (qualified) return true;
+		}
 		if (identifier())
 		{
 			if (token_identifier_at(position_, 1))

@@ -1016,6 +1016,61 @@ bool declaration_follow_is_valid(const std::vector<PA10Token>& tokens,
 		follower == SimpleTokenType::OP_LSQUARE;
 }
 
+bool qualified_declaration_start(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind,
+	std::size_t position, std::size_t* charged_work)
+{
+	std::size_t work = 0;
+	const auto finish = [&work, charged_work](bool result) {
+		if (charged_work != NULL)
+			*charged_work = work;
+		return result;
+	};
+	if (!token_fixed_at(tokens, position, 0, SimpleTokenType::OP_COLON2) ||
+		token_fixed_at(tokens, position, 1, SimpleTokenType::KW_NEW) ||
+		token_fixed_at(tokens, position, 1, SimpleTokenType::KW_DELETE))
+		return finish(false);
+	std::size_t type_end = position + 1;
+	while (token_identifier_at(tokens, type_end) &&
+		token_fixed_at(tokens, type_end, 1, SimpleTokenType::OP_COLON2) &&
+		token_identifier_at(tokens, type_end, 2))
+	{
+		++work;
+		type_end += 2;
+	}
+	if (type_end >= tokens.size())
+		return finish(false);
+	const std::size_t after_type = type_end + 1;
+	++work;
+	if (token_identifier_at(tokens, after_type) ||
+		token_fixed_at(tokens, after_type, 0, SimpleTokenType::OP_STAR) ||
+		token_fixed_at(tokens, after_type, 0, SimpleTokenType::OP_AMP) ||
+		token_fixed_at(tokens, after_type, 0, SimpleTokenType::OP_LAND))
+		return finish(true);
+	if (!token_fixed_at(tokens, after_type, 0, SimpleTokenType::OP_LPAREN) ||
+		after_type >= delimiter_close_index.size())
+		return finish(false);
+	const std::size_t close = delimiter_close_index[after_type];
+	if (close >= tokens.size())
+		return finish(false);
+	const bool single_identifier = close == after_type + 2 &&
+		token_identifier_at(tokens, after_type, 1);
+	const bool pointer_shape = after_type < parenthesized_group_kind.size() &&
+		(parenthesized_group_kind[after_type] ==
+			PA10ParenthesizedGroupKind::AbstractDeclarator ||
+		 parenthesized_group_kind[after_type] ==
+			PA10ParenthesizedGroupKind::NamedDeclarator);
+	if ((single_identifier || pointer_shape) &&
+		declaration_follow_is_valid(tokens, close))
+	{
+		++work;
+		return finish(true);
+	}
+	return finish(false);
+}
+
 bool virt_specifier_start(const std::vector<PA10Token>& tokens,
 	std::size_t position)
 {

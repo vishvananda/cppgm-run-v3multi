@@ -126,8 +126,13 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 			result += fundamental_type_name(key.fundamental);
 			break;
 		case TypeKind::Named:
-			result += render_named(task.type, ClassTag::Struct, false);
+		{
+			const NamePath* display = pa12_render_mode_ ?
+				type_display_path(task.type) : NULL;
+			result += render_named_record(named_record_for_type(task.type),
+				ClassTag::Struct, false, display);
 			break;
+		}
 		case TypeKind::Cv:
 			if ((key.cv & 1u) != 0)
 				result += "const ";
@@ -251,6 +256,47 @@ std::string PA11SemanticModel::render_binding_type(const Binding& binding) const
 		return render_named(binding.type, binding.class_tag, true);
 	return render_type(binding.type);
 }
+std::string PA11SemanticModel::render_template_specialization(
+	TemplateSpecializationId id) const
+{
+	if (!id.valid() || id.value >= template_specialization_facts_.size())
+		throw std::runtime_error("invalid PA12 template specialization");
+	const TemplateSpecializationFact& specialization =
+		template_specialization_facts_[id.value];
+	if (specialization.state != TemplateSpecializationState::Complete)
+		throw std::runtime_error("incomplete PA12 template specialization");
+	std::ostringstream result;
+	result << '<';
+	for (std::size_t i = 0; i < specialization.arguments.size(); ++i)
+	{
+		if (i != 0)
+			result << ", ";
+		result << render_template_argument_type(specialization.arguments[i]);
+	}
+	result << '>';
+	return result.str();
+}
+std::string PA11SemanticModel::render_template_argument_type(TypeId type) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		throw std::runtime_error("invalid PA12 template argument type");
+	const TypeKey& key = types_[type.value];
+	if (key.kind == TypeKind::Named && key.named.valid() &&
+		key.named.value < named_.size() && named_[key.named.value].name.valid())
+		return qualified_binding_name(named_[key.named.value].owner,
+			named_[key.named.value].name);
+	if (key.kind == TypeKind::Cv)
+	{
+		std::string result;
+		if ((key.cv & 1u) != 0)
+			result += "const ";
+		if ((key.cv & 2u) != 0)
+			result += "volatile ";
+		result += render_template_argument_type(key.child);
+		return result;
+	}
+	return render_type(type);
+}
 std::string PA11SemanticModel::binding_display_name(BindingId binding_id) const
 {
 	const Binding& value = binding(binding_id);
@@ -309,6 +355,7 @@ void PA11SemanticModel::dump_binding(std::ostream& output, BindingId binding_id,
 	std::size_t depth, const NamePath* display_path ) const
 {
 	const Binding& value = binding(binding_id);
+	const BindingSidecar* sidecar = binding_sidecar(binding_id);
 	const std::size_t tag_count = value.kind == BindingKind::Type &&
 		display_path == NULL && !value.declaration_tags.empty() ?
 		value.declaration_tags.size() : 1;
@@ -327,6 +374,9 @@ void PA11SemanticModel::dump_binding(std::ostream& output, BindingId binding_id,
 			!value.declaration_tags.empty())
 			output << render_named(value.type,
 				value.declaration_tags[tag_index], true);
+		else if (!pa12_render_mode_ && sidecar != NULL &&
+			sidecar->unadjusted_type.valid())
+			output << render_type(sidecar->unadjusted_type);
 		else
 			output << render_binding_type(value);
 		if (value.kind == BindingKind::Enumerator && value.has_value)
@@ -1201,6 +1251,33 @@ void PA11SemanticModel::dump_pa12_synthetic_function(
 	for (std::size_t indent = 0; indent < depth + 1; ++indent)
 		output << "  ";
 	output << "compound-statement\n";
+}
+void PA11SemanticModel::dump_pa12_template_specialization(
+	std::ostream& output, const TemplateSpecializationFact& specialization,
+	std::size_t depth) const
+{
+	if (specialization.state != TemplateSpecializationState::Complete ||
+		!specialization.function.valid() || specialization.function.value >=
+		template_function_facts_.size() || !specialization.binding.valid() ||
+		specialization.binding.value >= bindings_.size() ||
+		type_kind(binding(specialization.binding).type) != TypeKind::Function)
+		throw std::runtime_error("PA12 template specialization fact is missing");
+	const TemplateFunctionFact& function =
+		template_function_facts_[specialization.function.value];
+	const Binding& value = binding(specialization.binding);
+	for (std::size_t indent = 0; indent < depth; ++indent)
+		output << "  ";
+	output << "function-declaration " << qualified_binding_name(
+		function.visible_scope, specialization.binding) << ' ' <<
+		render_binding_type(value) << '\n';
+	const TypeKey& function_type = types_[value.type.value];
+	for (std::size_t i = 0; i < function_type.parameters.size(); ++i)
+	{
+		for (std::size_t indent = 0; indent < depth + 1; ++indent)
+			output << "  ";
+		output << "parameter  " << render_type(function_type.parameters[i]) <<
+			'\n';
+	}
 }
 void PA11SemanticModel::dump_pa12_top_node(std::ostream& output,
 	const PA10AstNode& node, ScopeId scope, std::size_t depth) const

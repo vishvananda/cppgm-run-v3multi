@@ -14,7 +14,10 @@ bool append_lookup_candidate(std::vector<Identity>* candidates,
 }
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  named_record_sidecars_(), scopes_(), unnamed_namespace_index_(),
+	  named_record_sidecars_(), template_function_facts_(),
+	  template_function_index_(), template_specialization_facts_(),
+	  template_specialization_index_(), scopes_(),
+	  unnamed_namespace_index_(),
 	  namespace_alias_declaration_points_(),
 	  type_declaration_points_(), inline_namespace_declaration_points_(),
 	  scope_declaration_points_(), function_definition_points_(),
@@ -1029,6 +1032,65 @@ const NamedRecordSidecar* PA11SemanticModel::named_record_sidecar(
 {
 	return id.valid() ? named_record_sidecars_.find(id) : NULL;
 }
+void PA11SemanticModel::remember_type_display_path(TypeId type,
+	const NamePath& path)
+{
+	if (!type.valid() || path.components.empty())
+		return;
+	if (!canonical_type_display_path(type, path))
+		return;
+	const NamedRecordId record = named_record_for_type(type);
+	if (!record.valid())
+		return;
+	NamedRecordSidecar sidecar;
+	const NamedRecordSidecar* existing = named_record_sidecar(record);
+	if (existing != NULL)
+		sidecar = *existing;
+	if (sidecar.has_display_path)
+		return;
+	sidecar.has_display_path = true;
+	sidecar.display_path = path;
+	set_named_record_sidecar(record, sidecar);
+}
+bool PA11SemanticModel::canonical_type_display_path(TypeId type,
+	const NamePath& path) const
+{
+	const NamedRecordId record_id = named_record_for_type(type);
+	if (!record_id.valid() || record_id.value >= named_.size())
+		return false;
+	const NamedRecord& record = named_[record_id.value];
+	if ((record.kind != NamedKind::Class && record.kind != NamedKind::Enum) ||
+		!record.name.valid() || !record.owner.valid())
+		return false;
+	std::vector<NameId> reverse;
+	ScopeId cursor = record.owner;
+	while (cursor.valid() && cursor != global_)
+	{
+		if (cursor.value >= scopes_.size())
+			return false;
+		const Scope& scope = scopes_[cursor.value];
+		if ((scope.kind != ScopeKind::Namespace &&
+			scope.kind != ScopeKind::Class) || !scope.name.valid())
+			return false;
+		reverse.push_back(scope.name);
+		cursor = scope.parent;
+	}
+	if (cursor != global_ || path.components.size() != reverse.size() + 1)
+		return false;
+	for (std::size_t i = 0; i < reverse.size(); ++i)
+		if (path.components[i] != reverse[reverse.size() - i - 1])
+			return false;
+	return path.components.back() == record.name;
+}
+const NamePath* PA11SemanticModel::type_display_path(TypeId type) const
+{
+	if (!type.valid())
+		return NULL;
+	const NamedRecordId record = named_record_for_type(type);
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record);
+	return sidecar != NULL && sidecar->has_display_path ?
+		&sidecar->display_path : NULL;
+}
 void PA11SemanticModel::set_named_record_sidecar(NamedRecordId id,
 	const NamedRecordSidecar& sidecar)
 {
@@ -1930,8 +1992,9 @@ TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 	bool changed = false;
 	for (std::size_t i = 0; i < normalized.parameters.size(); ++i)
 	{
-		const TypeId parameter = normalize_parameter_type(
+		const TypeId embedded = normalize_embedded_function_types(
 			normalized.parameters[i]);
+		const TypeId parameter = normalize_parameter_type(embedded);
 		if (parameter != normalized.parameters[i])
 		{
 			normalized.parameters[i] = parameter;
@@ -1950,8 +2013,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	const TypeId* type_found = current.types.find(name);
 	if (type_found != NULL && type_kind(*type_found) != TypeKind::Named)
 		throw std::runtime_error("value conflicts with type alias");
-	if (function)
-		type = normalize_function_type(type);
+	const TypeId unadjusted_type = type;
+	type = normalize_embedded_function_types(type);
 	const ValueList* existing_values = current.values.find(name);
 	if (existing_values != NULL)
 	{
@@ -1981,7 +2044,14 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
 	value.has_definition = function && definition;
 	const BindingId binding_id = store_binding(scope, value);
-	if (backing_storage.valid()) { BindingSidecar sidecar; sidecar.backing_storage = backing_storage; set_binding_sidecar(binding_id, sidecar); }
+	if (backing_storage.valid() || unadjusted_type != type)
+	{
+		BindingSidecar sidecar;
+		sidecar.backing_storage = backing_storage;
+		if (unadjusted_type != type)
+			sidecar.unadjusted_type = unadjusted_type;
+		set_binding_sidecar(binding_id, sidecar);
+	}
 	append_value_index(scope, name, binding_id, ScopeId(), declaration_point);
 	return binding_id;
 }
@@ -2097,6 +2167,12 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			const TypeId type = lookup_type_path(name, scope);
 			if (!type.valid())
 				throw std::runtime_error("unknown PA11 type name");
+			if (name.global)
+			{
+				NamePath display = name;
+				display.global = false;
+				remember_type_display_path(type, display);
+			}
 			result.base = type;
 			result.has_base = true;
 			continue;
@@ -2484,6 +2560,46 @@ void PA11SemanticModel::process_template_parameter(const PA10AstNode& node, Scop
 	// separate scope owned by the template argument grammar.  Its names are
 	// deliberately not visible in the surrounding declaration.
 }
+void PA11SemanticModel::record_template_function(const PA10AstNode& node,
+	ScopeId visible_scope, ScopeId parameter_scope)
+{
+	const DeclarationFact* declaration = declaration_fact(node);
+	if (declaration == NULL || declaration->binding_count != 1 ||
+		declaration->binding_begin == InvalidIdentityValue)
+		return;
+	const BindingId binding_id = declaration_bindings_[
+		declaration->binding_begin];
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		binding(binding_id).kind != BindingKind::Function)
+		return;
+	const Binding& value = binding(binding_id);
+	TemplateFunctionFact function(visible_scope, binding_id, value.name);
+	if (!parameter_scope.valid() || parameter_scope.value >= scopes_.size())
+		return;
+	const Scope& parameters = scopes_[parameter_scope.value];
+	for (std::size_t i = 0; i < parameters.bindings.size(); ++i)
+	{
+		const Binding& parameter = binding(parameters.bindings[i]);
+		if (parameter.kind != BindingKind::Type)
+			continue;
+		const NamedRecordId record = named_record_for_type(parameter.type);
+		if (!record.valid() || record.value >= named_.size() ||
+			named_[record.value].kind != NamedKind::TemplateParameter)
+			return;
+		function.parameters.push_back(record);
+	}
+	if (function.parameters.empty())
+		return;
+	const TemplateFunctionId id(template_function_facts_.size());
+	template_function_facts_.push_back(function);
+	TemplateFunctionList* list = template_function_index_.find(function.name);
+	if (list == NULL)
+	{
+		template_function_index_.set(function.name, TemplateFunctionList());
+		list = template_function_index_.find(function.name);
+	}
+	list->entries.push_back(id);
+}
 void PA11SemanticModel::process_template_declaration(const PA10AstNode& node, ScopeId parent)
 {
 	if (node.children.size() != 2 ||
@@ -2500,6 +2616,7 @@ void PA11SemanticModel::process_template_declaration(const PA10AstNode& node, Sc
 			process_template_parameter(clause.children[i].children[j], parameters);
 	}
 	process_declaration(node.children[1], parameters);
+	record_template_function(node.children[1], parent, parameters);
 }
 bool PA11SemanticModel::ambiguous_assignment_statement(const PA10AstNode& node,
 	ScopeId scope, NamePath* callee, const PA10AstNode** argument,
