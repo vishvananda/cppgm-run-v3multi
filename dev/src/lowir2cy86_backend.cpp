@@ -42,232 +42,16 @@ using lowir_model::Parameter;
 using lowir_model::ParameterMetadata;
 using lowir_model::Program;
 using lowir_model::SymbolMetadata;
+using lowir_model::BinaryOperator;
+using lowir_model::AtomicOrder;
+using lowir_model::ComparePredicate;
+using lowir_model::ConversionOperator;
+using lowir_model::UnaryOperator;
 
 class LowirError : public std::runtime_error {
 public:
   explicit LowirError(const std::string &message) : std::runtime_error(message) {}
 };
-
-struct Token {
-  std::string text;
-  std::size_t line;
-};
-
-class Lexer {
-public:
-  explicit Lexer(const std::string &text) { tokenize(text); }
-
-  const std::vector<Token> &tokens() const { return tokens_; }
-
-private:
-  void tokenize(const std::string &text) {
-    std::size_t i = 0;
-    std::size_t line = 1;
-    while (i < text.size()) {
-      const char c = text[i];
-      if (c == '\n') {
-        ++line;
-        ++i;
-      } else if (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v') {
-        ++i;
-      } else if (c == '#') {
-        while (i < text.size() && text[i] != '\n') {
-          ++i;
-        }
-      } else if (c == '-' && i + 1 < text.size() && text[i + 1] == '>') {
-        Token token;
-        token.text = "->";
-        token.line = line;
-        tokens_.push_back(token);
-        i += 2;
-      } else if (is_punctuation(c)) {
-        Token token;
-        token.text.assign(1, c);
-        token.line = line;
-        tokens_.push_back(token);
-        ++i;
-      } else {
-        const std::size_t begin = i;
-        while (i < text.size() && !is_space(text[i]) && !is_punctuation(text[i]) && text[i] != '#') {
-          ++i;
-        }
-        if (begin == i) {
-          throw LowirError("invalid LowIR character");
-        }
-        Token token;
-        token.text = text.substr(begin, i - begin);
-        token.line = line;
-        tokens_.push_back(token);
-      }
-    }
-  }
-
-  static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
-
-  static bool is_punctuation(char c) {
-    switch (c) {
-    case '(':
-    case ')':
-    case '{':
-    case '}':
-    case '[':
-    case ']':
-    case ':':
-    case ',':
-    case '=':
-    case '+':
-    case '-':
-    case '!':
-      return true;
-    default:
-      return false;
-    }
-  }
-
-  std::vector<Token> tokens_;
-};
-
-bool starts_with(const std::string &value, const std::string &prefix) { return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0; }
-
-bool is_integer_text(const std::string &text) {
-  if (text.empty()) {
-    return false;
-  }
-  std::size_t i = 0;
-  if (text[i] == '+' || text[i] == '-') {
-    ++i;
-  }
-  if (i == text.size()) {
-    return false;
-  }
-  if (i + 2 <= text.size() && text[i] == '0' && (text[i + 1] == 'x' || text[i + 1] == 'X')) {
-    i += 2;
-    if (i == text.size()) {
-      return false;
-    }
-    for (; i < text.size(); ++i) {
-      if (!std::isxdigit(static_cast<unsigned char>(text[i]))) {
-        return false;
-      }
-    }
-    return true;
-  }
-  for (; i < text.size(); ++i) {
-    if (!std::isdigit(static_cast<unsigned char>(text[i]))) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool is_float_text(const std::string &text) {
-  if (text.empty()) {
-    return false;
-  }
-  return text.find('.') != std::string::npos || text.find('e') != std::string::npos || text.find('E') != std::string::npos || text[text.size() - 1] == 'f' ||
-         text[text.size() - 1] == 'F' || text[text.size() - 1] == 'L' || text[text.size() - 1] == 'l';
-}
-
-long long parse_integer(const std::string &text) {
-  errno = 0;
-  char *end = 0;
-  const long long value = std::strtoll(text.c_str(), &end, 0);
-  if (errno == ERANGE || end == text.c_str() || *end != '\0') {
-    throw LowirError("invalid integer literal");
-  }
-  return value;
-}
-
-long double parse_float(const std::string &text) {
-  std::string normalized = text;
-  if (!normalized.empty() && (normalized[normalized.size() - 1] == 'f' || normalized[normalized.size() - 1] == 'F' ||
-                              normalized[normalized.size() - 1] == 'l' || normalized[normalized.size() - 1] == 'L')) {
-    normalized.erase(normalized.size() - 1);
-  }
-  errno = 0;
-  char *end = 0;
-  const long double value = std::strtold(normalized.c_str(), &end);
-  if (errno == ERANGE || end == normalized.c_str() || *end != '\0') {
-    throw LowirError("invalid floating literal");
-  }
-  return value;
-}
-
-std::string signed_literal_text(const std::string &first, const std::string &second) { return first == "-" ? "-" + second : second; }
-
-bool is_name_kind(const std::string &text, char prefix) { return text.size() > 1 && text[0] == prefix; }
-
-int integer_width(const std::string &text) {
-  if (text == "i1") return 1;
-  if (text == "i8" || text == "u8") return 8;
-  if (text == "i16" || text == "u16") return 16;
-  if (text == "i32" || text == "u32") return 32;
-  if (text == "i64" || text == "u64") return 64;
-  return 0;
-}
-
-bool is_float_type(const std::string &text) { return text == "f32" || text == "f64" || text == "f80"; }
-
-bool is_integer_type(const std::string &text) { return integer_width(text) != 0; }
-
-bool is_scalar_type(const std::string &text) { return is_integer_type(text) || is_float_type(text) || text == "ptr"; }
-
-bool is_void_type(const std::string &text) { return text == "void"; }
-
-bool parse_object_type(const std::string &text, std::size_t *bytes, std::size_t *alignment) {
-  if (!starts_with(text, "obj<") || text.size() < 7 || text[text.size() - 1] != '>') {
-    return false;
-  }
-  const std::size_t x = text.find('x', 4);
-  if (x == std::string::npos || x + 1 >= text.size() - 1) {
-    return false;
-  }
-  const std::string byte_text = text.substr(4, x - 4);
-  const std::string align_text = text.substr(x + 1, text.size() - x - 2);
-  if (!is_integer_text(byte_text) || !is_integer_text(align_text)) {
-    return false;
-  }
-  const long long b = parse_integer(byte_text);
-  const long long a = parse_integer(align_text);
-  if (b <= 0 || a <= 0 || (a & (a - 1)) != 0) {
-    return false;
-  }
-  *bytes = static_cast<std::size_t>(b);
-  *alignment = static_cast<std::size_t>(a);
-  return true;
-}
-
-bool is_valid_type(const std::string &text) {
-  if (is_scalar_type(text) || is_void_type(text)) {
-    return true;
-  }
-  std::size_t bytes = 0;
-  std::size_t alignment = 0;
-  return parse_object_type(text, &bytes, &alignment);
-}
-
-std::size_t type_storage_size(const std::string &text) {
-  if (text == "f80") return 16;
-  std::size_t bytes = 0;
-  std::size_t alignment = 0;
-  if (parse_object_type(text, &bytes, &alignment)) {
-    return bytes;
-  }
-  const int width = integer_width(text);
-  if (width != 0) return width <= 8 ? 1 : width <= 16 ? 2 : width <= 32 ? 4 : 8;
-  if (text == "f32") return 4;
-  if (text == "f64" || text == "ptr") return 8;
-  return 0;
-}
-
-std::size_t type_storage_alignment(const std::string &text) {
-  if (text == "f80") return 8;
-  std::size_t bytes = 0;
-  std::size_t alignment = 0;
-  if (parse_object_type(text, &bytes, &alignment)) return alignment;
-  const std::size_t size = type_storage_size(text);
-  return size >= 8 ? 8 : size;
-}
 
 std::string without_prefix(const std::string &text) { return text.size() > 0 ? text.substr(1) : text; }
 
@@ -275,853 +59,85 @@ std::string cy_function(const std::string &name) { return "fn__" + without_prefi
 
 std::string cy_global(const std::string &name) { return "g__" + without_prefix(name); }
 
-std::string cy_block(const std::string &function, const std::string &block) { return cy_function(function) + "__" + without_prefix(block); }
+std::string cy_block_label(const std::string &function_label, const std::string &block_label) {
+  return function_label + "__" + without_prefix(block_label);
+}
 
 bool is_terminator(Instruction::Kind kind) {
   return kind == Instruction::IK_JUMP || kind == Instruction::IK_BRANCH || kind == Instruction::IK_SWITCH || kind == Instruction::IK_RETURN ||
          kind == Instruction::IK_THROW || kind == Instruction::IK_RESUME;
 }
 
+int integer_width(const LowType &type) {
+  return type.integer_width();
+}
+
+bool is_float_type(const LowType &type) {
+  return type.is_float();
+}
+
+bool is_integer_type(const LowType &type) {
+  return type.is_integer();
+}
+
+std::size_t type_storage_size(const LowType &type) {
+  return type.storage_size();
+}
+
+std::size_t type_storage_alignment(const LowType &type) {
+  return type.storage_alignment();
+}
+
+LowType i64_type() {
+  LowType type;
+  type.kind = LowType::TYPE_INTEGER;
+  type.integer_kind = LowType::INTEGER_I64;
+  return type;
+}
+
+LowType pointer_type() {
+  LowType type;
+  type.kind = LowType::TYPE_POINTER;
+  return type;
+}
+
 } // namespace
-
-class Parser {
-public:
-  explicit Parser(const std::string &text) : tokens_(Lexer(text).tokens()), position_(0) {}
-
-  Program parse() {
-    Program program;
-    while (!at_end()) {
-      if (accept("declare")) {
-        parse_declaration(program);
-      } else if (accept("global")) {
-        program.globals.push_back(parse_global_definition());
-      } else if (accept("function")) {
-        program.functions.push_back(parse_function_definition());
-      } else if (accept("alias")) {
-        program.object_aliases.push_back(parse_object_alias());
-      } else {
-        fail("expected top-level LowIR item");
-      }
-    }
-    return program;
-  }
-
-private:
-  const Token &peek() const {
-    if (at_end()) {
-      throw LowirError("unexpected end of LowIR input");
-    }
-    return tokens_[position_];
-  }
-
-  bool at_end() const { return position_ >= tokens_.size(); }
-
-  bool next_is(const std::string &text) const { return !at_end() && tokens_[position_].text == text; }
-
-  bool accept(const std::string &text) {
-    if (next_is(text)) {
-      ++position_;
-      return true;
-    }
-    return false;
-  }
-
-  std::string take(const std::string &what) {
-    if (at_end()) {
-      fail("expected " + what);
-    }
-    return tokens_[position_++].text;
-  }
-
-  void expect(const std::string &text) {
-    if (!accept(text)) {
-      fail("expected '" + text + "'");
-    }
-  }
-
-  void fail(const std::string &message) const {
-    if (at_end()) {
-      throw LowirError(message + " at end of input");
-    }
-    std::ostringstream out;
-    out << message << " near '" << tokens_[position_].text << "'";
-    throw LowirError(out.str());
-  }
-
-  std::string parse_name(char prefix, const std::string &what) {
-    const std::string name = take(what);
-    if (!is_name_kind(name, prefix)) {
-      fail("expected " + what);
-    }
-    return name;
-  }
-
-  LowType parse_type() {
-    LowType type;
-    type.text = take("type");
-    if (!is_valid_type(type.text)) {
-      fail("invalid LowIR type");
-    }
-    return type;
-  }
-
-  std::string parse_scalar_text() {
-    if (accept("-")) {
-      return signed_literal_text("-", take("literal"));
-    }
-    const std::string value = take("literal");
-    if (!is_integer_text(value) && !is_float_text(value) && value != "nullptr") {
-      fail("expected scalar literal");
-    }
-    return value;
-  }
-
-  long long parse_integer_literal() {
-    const std::string value = parse_scalar_text();
-    if (!is_integer_text(value)) {
-      fail("expected integer literal");
-    }
-    return parse_integer(value);
-  }
-
-  Operand parse_operand() {
-    std::string value;
-    if (accept("-"))
-      value = signed_literal_text("-", take("literal"));
-    else
-      value = take("value");
-    Operand operand;
-    operand.text = value;
-    if (is_name_kind(value, '%')) {
-      operand.kind = Operand::OP_TEMP;
-    } else if (is_name_kind(value, '$')) {
-      operand.kind = Operand::OP_SLOT;
-    } else if (is_name_kind(value, '@')) {
-      operand.kind = Operand::OP_GLOBAL;
-    } else if (is_name_kind(value, '^')) {
-      operand.kind = Operand::OP_LABEL;
-    } else if (value == "nullptr" || is_integer_text(value)) {
-      operand.kind = Operand::OP_INTEGER;
-      operand.int_value = value == "nullptr" ? 0 : parse_integer(value);
-      operand.literal_type.text = "i64";
-    } else if (is_float_text(value)) {
-      operand.kind = Operand::OP_FLOAT;
-      operand.float_value = parse_float(value);
-      operand.literal_type.text = "f64";
-    } else {
-      fail("invalid LowIR operand");
-    }
-    return operand;
-  }
-
-  std::vector<std::pair<std::string, std::string>> parse_metadata_items() {
-    std::vector<std::pair<std::string, std::string>> items;
-    expect("[");
-    if (!next_is("]")) {
-      while (true) {
-        const std::string key = take("metadata key");
-        expect("=");
-        const std::string value = take("metadata value");
-        for (std::size_t i = 0; i < items.size(); ++i) {
-          if (items[i].first == key) {
-            fail("duplicate metadata key");
-          }
-        }
-        items.push_back(std::make_pair(key, value));
-        if (!accept(",")) {
-          break;
-        }
-      }
-    }
-    expect("]");
-    return items;
-  }
-
-  static void require_value(const std::string &value, const std::string &expected, const std::string &key) {
-    if (value != expected) {
-      throw LowirError("invalid " + key + " metadata value");
-    }
-  }
-
-  void apply_symbol_metadata(SymbolMetadata *metadata, const std::vector<std::pair<std::string, std::string>> &items, bool global_context) {
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      const std::string &key = items[i].first;
-      const std::string &value = items[i].second;
-      if (key == "role") {
-        if (value == "entry")
-          metadata->role = lowir_model::SR_ENTRY;
-        else if (value == "init")
-          metadata->role = lowir_model::SR_INIT;
-        else if (value == "fini")
-          metadata->role = lowir_model::SR_FINI;
-        else if (value == "eh_top")
-          metadata->role = lowir_model::SR_EH_TOP;
-        else if (value == "eh_value")
-          metadata->role = lowir_model::SR_EH_VALUE;
-        else if (value == "eh_type")
-          metadata->role = lowir_model::SR_EH_TYPE;
-        else if (value == "eh_unhandled")
-          metadata->role = lowir_model::SR_EH_UNHANDLED;
-        else if (value == "eh_allocate_exception")
-          metadata->role = lowir_model::SR_EH_ALLOCATE_EXCEPTION;
-        else if (value == "eh_begin_catch")
-          metadata->role = lowir_model::SR_EH_BEGIN_CATCH;
-        else if (value == "eh_call_unexpected")
-          metadata->role = lowir_model::SR_EH_CALL_UNEXPECTED;
-        else if (value == "eh_current_exception_type")
-          metadata->role = lowir_model::SR_EH_CURRENT_EXCEPTION_TYPE;
-        else if (value == "eh_end_catch")
-          metadata->role = lowir_model::SR_EH_END_CATCH;
-        else if (value == "eh_rethrow")
-          metadata->role = lowir_model::SR_EH_RETHROW;
-        else if (value == "eh_throw")
-          metadata->role = lowir_model::SR_EH_THROW;
-        else if (value == "eh_personality")
-          metadata->role = lowir_model::SR_EH_PERSONALITY;
-        else if (value == "eh_resume")
-          metadata->role = lowir_model::SR_EH_RESUME;
-        else
-          fail("unknown role metadata");
-      } else if (key == "linkage") {
-        if (value == "c")
-          metadata->linkage = lowir_model::LLM_C;
-        else if (value == "cpp")
-          metadata->linkage = lowir_model::LLM_CPP;
-        else
-          fail("unknown linkage metadata");
-      } else if (key == "binding") {
-        if (value == "internal")
-          metadata->binding = lowir_model::SBM_INTERNAL;
-        else if (value == "strong")
-          metadata->binding = lowir_model::SBM_STRONG;
-        else if (value == "weak")
-          metadata->binding = lowir_model::SBM_WEAK;
-        else
-          fail("unknown binding metadata");
-      } else if (key == "object") {
-        metadata->object_symbol = value;
-      } else if (key == "tls_for") {
-        if (global_context) fail("tls_for is not global metadata");
-        if (!is_name_kind(value, '@')) fail("invalid tls_for metadata");
-        metadata->tls_for_symbol = value;
-      } else if (key == "keep_alias") {
-        if (value != "yes" && value != "no") fail("invalid keep_alias metadata value");
-        metadata->keep_internal_alias = value == "yes";
-      } else if (key == "prefer_local") {
-        if (value != "yes" && value != "no") fail("invalid prefer_local metadata value");
-        metadata->prefer_local_object_binding = value == "yes";
-      } else if (key == "trivial_lifecycle") {
-        if (global_context) fail("invalid global metadata key");
-        if (value != "yes" && value != "no") fail("invalid trivial_lifecycle metadata value");
-        metadata->object_trivial_lifecycle = value == "yes";
-      } else if (key == "force_inline") {
-        if (global_context) fail("invalid global metadata key");
-        if (value != "yes" && value != "no") fail("invalid force_inline metadata value");
-        metadata->force_inline = value == "yes";
-      } else if (key == "storage") {
-        if (!global_context) fail("storage is not function metadata");
-        // Storage is applied by the global parser, where it has a dedicated
-        // enum.  Reaching this branch is a caller error.
-        fail("internal storage metadata placement error");
-      } else {
-        fail("unknown symbol metadata key");
-      }
-    }
-  }
-
-  void apply_global_metadata(GlobalStorageMode *storage, SymbolMetadata *metadata, const std::vector<std::pair<std::string, std::string>> &items) {
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      if (items[i].first == "storage") {
-        if (items[i].second == "readonly")
-          *storage = lowir_model::GSM_READONLY;
-        else if (items[i].second == "thread_local")
-          *storage = lowir_model::GSM_THREAD_LOCAL;
-        else
-          fail("unknown global storage metadata");
-      } else {
-        std::vector<std::pair<std::string, std::string>> one(1, items[i]);
-        apply_symbol_metadata(metadata, one, true);
-      }
-    }
-  }
-
-  void apply_function_metadata(FunctionBoundaryMetadata *boundary, SymbolMetadata *metadata, const std::vector<std::pair<std::string, std::string>> &items,
-                               bool call_signature) {
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      const std::string &key = items[i].first;
-      const std::string &value = items[i].second;
-      if (key == "arity") {
-        if (value == "fixed")
-          boundary->arity = lowir_model::CAM_FIXED;
-        else if (value == "variadic")
-          boundary->arity = lowir_model::CAM_VARIADIC;
-        else if (value == "prototype_relaxed")
-          boundary->arity = lowir_model::CAM_PROTOTYPE_RELAXED;
-        else
-          fail("unknown function arity metadata");
-      } else if (key == "effects") {
-        if (value == "readnone")
-          boundary->effects = lowir_model::CFXM_READNONE;
-        else if (value == "readonly")
-          boundary->effects = lowir_model::CFXM_READONLY;
-        else if (value == "readwrite")
-          boundary->effects = lowir_model::CFXM_READWRITE;
-        else
-          fail("unknown function effect metadata");
-      } else if (key == "unwind") {
-        if (value == "may")
-          boundary->unwind = lowir_model::CUM_MAY;
-        else if (value == "no")
-          boundary->unwind = lowir_model::CUM_NO;
-        else
-          fail("unknown function unwind metadata");
-      } else if (key == "return") {
-        if (value == "returns")
-          boundary->returns = lowir_model::CRM_RETURNS;
-        else if (value == "noreturn")
-          boundary->returns = lowir_model::CRM_NORETURN;
-        else
-          fail("unknown function return metadata");
-      } else {
-        if (call_signature) {
-          fail("symbol metadata is not legal on a call signature");
-        }
-        std::vector<std::pair<std::string, std::string>> one(1, items[i]);
-        apply_symbol_metadata(metadata, one, false);
-      }
-    }
-  }
-
-  void apply_parameter_metadata(ParameterMetadata *metadata, const std::vector<std::pair<std::string, std::string>> &items) {
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      const std::string &key = items[i].first;
-      const std::string &value = items[i].second;
-      if (key == "pass") {
-        if (value == "direct")
-          metadata->passing = lowir_model::PPM_DIRECT;
-        else if (value == "indirect_result")
-          metadata->passing = lowir_model::PPM_INDIRECT_RESULT;
-        else if (value == "by_address")
-          metadata->passing = lowir_model::PPM_BY_ADDRESS;
-        else if (value == "reference")
-          metadata->passing = lowir_model::PPM_REFERENCE;
-        else if (value == "decay")
-          metadata->passing = lowir_model::PPM_DECAY;
-        else
-          fail("unknown parameter pass metadata");
-      } else if (key == "capture") {
-        if (value == "nocapture")
-          metadata->capture = lowir_model::PCM_NOCAPTURE;
-        else if (value == "maycapture")
-          metadata->capture = lowir_model::PCM_MAYCAPTURE;
-        else
-          fail("unknown parameter capture metadata");
-      } else if (key == "access") {
-        if (value == "none")
-          metadata->access = lowir_model::PAM_NONE;
-        else if (value == "read")
-          metadata->access = lowir_model::PAM_READ;
-        else if (value == "write")
-          metadata->access = lowir_model::PAM_WRITE;
-        else if (value == "readwrite")
-          metadata->access = lowir_model::PAM_READWRITE;
-        else
-          fail("unknown parameter access metadata");
-      } else if (key == "alias") {
-        if (value != "noalias") fail("unknown parameter alias metadata");
-        metadata->alias = lowir_model::PALM_NOALIAS;
-      } else {
-        fail("unknown parameter metadata key");
-      }
-    }
-  }
-
-  Parameter parse_parameter() {
-    Parameter parameter;
-    parameter.name = parse_name('%', "parameter name");
-    expect(":");
-    parameter.type = parse_type();
-    if (next_is("[")) {
-      apply_parameter_metadata(&parameter.metadata, parse_metadata_items());
-    }
-    return parameter;
-  }
-
-  std::vector<Parameter> parse_parameters() {
-    std::vector<Parameter> parameters;
-    expect("(");
-    if (!next_is(")")) {
-      while (true) {
-        parameters.push_back(parse_parameter());
-        if (!accept(",")) break;
-      }
-    }
-    expect(")");
-    return parameters;
-  }
-
-  InstructionDebugLocation parse_debug_location() {
-    InstructionDebugLocation location;
-    expect("!");
-    expect("dbg");
-    expect("(");
-    location.file = take("debug file");
-    expect(",");
-    const long long line = parse_integer_literal();
-    expect(",");
-    const long long column = parse_integer_literal();
-    expect(")");
-    if (line <= 0 || column <= 0) {
-      fail("debug line and column must be positive");
-    }
-    location.line = static_cast<std::size_t>(line);
-    location.column = static_cast<std::size_t>(column);
-    return location;
-  }
-
-  void parse_optional_debug(Instruction *instruction) {
-    if (next_is("!")) {
-      instruction->debug_location = parse_debug_location();
-    }
-  }
-
-  GlobalDefinition parse_global_definition() {
-    GlobalDefinition global;
-    global.name = parse_name('@', "global name");
-    bool readonly_keyword = accept("readonly");
-    bool thread_local_keyword = accept("thread_local");
-    if (next_is("[")) {
-      apply_global_metadata(&global.storage, &global.metadata, parse_metadata_items());
-    }
-    if (next_is("=")) {
-      global.structured = true;
-      if (readonly_keyword) global.storage = lowir_model::GSM_READONLY;
-      if (thread_local_keyword) global.storage = lowir_model::GSM_THREAD_LOCAL;
-      expect("=");
-      expect("{");
-      if (next_is("}")) fail("structured global requires data");
-      while (!next_is("}")) {
-        GlobalDefinition::DataItem item;
-        if (accept("ptr")) {
-          expect("addr");
-          item.kind = GlobalDefinition::DataItem::ITEM_ADDR;
-          item.type.text = "ptr";
-          item.symbol = take("address symbol");
-          if (!is_name_kind(item.symbol, '@')) fail("invalid global address initializer");
-          if (accept("+"))
-            item.addr_addend = parse_integer_literal();
-          else if (accept("-"))
-            item.addr_addend = -parse_integer_literal();
-        } else if (accept("zero")) {
-          item.kind = GlobalDefinition::DataItem::ITEM_ZERO;
-          item.zero_bytes = static_cast<std::size_t>(parse_integer_literal());
-        } else {
-          item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
-          item.type = parse_type();
-          item.literal_operand = parse_operand();
-          if (item.literal_operand.kind != Operand::OP_INTEGER && item.literal_operand.kind != Operand::OP_FLOAT) {
-            fail("structured global item requires scalar literal");
-          }
-        }
-        global.data_items.push_back(item);
-      }
-      expect("}");
-      return global;
-    }
-
-    expect(":");
-    global.type = parse_type();
-    if (next_is("[")) {
-      apply_global_metadata(&global.storage, &global.metadata, parse_metadata_items());
-    }
-    if (readonly_keyword) global.storage = lowir_model::GSM_READONLY;
-    if (thread_local_keyword) global.storage = lowir_model::GSM_THREAD_LOCAL;
-    expect("=");
-    if (accept("zero")) {
-      global.init_kind = GlobalDefinition::INIT_ZERO;
-    } else if (accept("addr")) {
-      global.init_kind = GlobalDefinition::INIT_ADDR;
-      global.init_operand = parse_operand();
-      if (global.init_operand.kind != Operand::OP_GLOBAL) {
-        fail("global address initializer requires a symbol");
-      }
-      if (accept("+"))
-        global.addr_addend = parse_integer_literal();
-      else if (accept("-"))
-        global.addr_addend = -parse_integer_literal();
-    } else {
-      global.init_kind = GlobalDefinition::INIT_INTEGER;
-      global.init_operand = parse_operand();
-      if (global.init_operand.kind != Operand::OP_INTEGER && global.init_operand.kind != Operand::OP_FLOAT) {
-        fail("global initializer requires scalar literal");
-      }
-    }
-    return global;
-  }
-
-  GlobalDeclaration parse_global_declaration() {
-    GlobalDeclaration declaration;
-    declaration.name = parse_name('@', "global name");
-    if (accept("readonly")) declaration.storage = lowir_model::GSM_READONLY;
-    if (accept("thread_local")) declaration.storage = lowir_model::GSM_THREAD_LOCAL;
-    if (accept(":")) {
-      declaration.has_type = true;
-      declaration.type = parse_type();
-    }
-    if (next_is("[")) {
-      apply_global_metadata(&declaration.storage, &declaration.metadata, parse_metadata_items());
-    }
-    return declaration;
-  }
-
-  void parse_declaration(Program &program) {
-    if (accept("global")) {
-      program.global_declarations.push_back(parse_global_declaration());
-    } else if (accept("function")) {
-      FunctionDeclaration declaration;
-      declaration.name = parse_name('@', "function name");
-      declaration.params = parse_parameters();
-      expect("->");
-      declaration.return_type = parse_type();
-      if (next_is("[")) {
-        apply_function_metadata(&declaration.boundary, &declaration.metadata, parse_metadata_items(), false);
-      }
-      if (next_is("!")) {
-        // Function declarations do not use debug locations in the PA13
-        // grammar; consuming one here would make malformed input look valid.
-        fail("debug location is only valid on a function definition");
-      }
-      program.function_declarations.push_back(declaration);
-    } else {
-      fail("expected global or function after declare");
-    }
-  }
-
-  ObjectAlias parse_object_alias() {
-    ObjectAlias alias;
-    expect("object");
-    alias.object_symbol = take("object alias symbol");
-    if (alias.object_symbol.empty() || alias.object_symbol[0] == '@' || alias.object_symbol[0] == '%' || alias.object_symbol[0] == '$') {
-      fail("invalid object alias symbol");
-    }
-    expect("=");
-    alias.target = take("object alias target");
-    if (!is_name_kind(alias.target, '@')) fail("invalid object alias target");
-    return alias;
-  }
-
-  Function parse_function_definition() {
-    Function function;
-    function.name = parse_name('@', "function name");
-    function.params = parse_parameters();
-    expect("->");
-    function.return_type = parse_type();
-    if (next_is("[")) {
-      apply_function_metadata(&function.boundary, &function.metadata, parse_metadata_items(), false);
-    }
-    if (next_is("!")) {
-      function.debug_location = parse_debug_location();
-    }
-    expect("{");
-    Block *current = 0;
-    while (!next_is("}")) {
-      if (at_end()) fail("unterminated function definition");
-      if (accept("slot")) {
-        const std::string name = parse_name('$', "slot name");
-        expect(":");
-        function.slots.push_back(std::make_pair(name, parse_type()));
-      } else if (accept("block")) {
-        Block block;
-        block.label = parse_name('^', "block name");
-        expect(":");
-        function.blocks.push_back(block);
-        current = &function.blocks.back();
-      } else {
-        if (current == 0) fail("instruction appears before a block");
-        current->instructions.push_back(parse_instruction());
-      }
-    }
-    expect("}");
-    return function;
-  }
-
-  Instruction parse_assignment() {
-    Instruction instruction;
-    instruction.dest = parse_name('%', "temporary destination");
-    expect("=");
-    const std::string opcode = take("instruction");
-    if (opcode == "const") {
-      instruction.kind = Instruction::IK_CONST;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-    } else if (opcode == "copy") {
-      instruction.kind = Instruction::IK_COPY;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-    } else if (opcode == "addr") {
-      instruction.kind = Instruction::IK_ADDR;
-      instruction.type.text = "ptr";
-      instruction.first = parse_operand();
-    } else if (opcode == "load" || opcode == "atomic_load") {
-      instruction.kind = opcode == "load" ? Instruction::IK_LOAD : Instruction::IK_ATOMIC_LOAD;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      if (instruction.kind == Instruction::IK_ATOMIC_LOAD) {
-        expect(",");
-        instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-      }
-    } else if (opcode == "index") {
-      instruction.kind = Instruction::IK_INDEX;
-      instruction.type = parse_type();
-      if (next_is("[")) {
-        const std::vector<std::pair<std::string, std::string>> items = parse_metadata_items();
-        if (items.size() != 1 || items[0].first != "projection") {
-          fail("invalid index metadata");
-        }
-        const std::string &value = items[0].second;
-        if (value == "array_element")
-          instruction.index_projection = lowir_model::IPK_ARRAY_ELEMENT;
-        else if (value == "field")
-          instruction.index_projection = lowir_model::IPK_FIELD;
-        else if (value == "base_subobject")
-          instruction.index_projection = lowir_model::IPK_BASE_SUBOBJECT;
-        else if (value == "reference_field")
-          instruction.index_projection = lowir_model::IPK_REFERENCE_FIELD;
-        else
-          fail("unknown index projection metadata");
-      }
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-    } else if (opcode == "unary") {
-      instruction.kind = Instruction::IK_UNARY;
-      instruction.op = take("unary operator");
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-    } else if (opcode == "binary" || opcode == "cmp") {
-      instruction.kind = opcode == "binary" ? Instruction::IK_BINARY : Instruction::IK_CMP;
-      instruction.op = take(opcode == "binary" ? "binary operator" : "comparison predicate");
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-    } else if (opcode == "convert") {
-      instruction.kind = Instruction::IK_CONVERT;
-      instruction.op = take("conversion operator");
-      instruction.type = parse_type();
-      instruction.source_type = parse_type();
-      instruction.first = parse_operand();
-    } else if (opcode == "atomic_add_fetch") {
-      instruction.kind = Instruction::IK_ATOMIC_ADD_FETCH;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      expect(",");
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-    } else if (opcode == "atomic_exchange") {
-      instruction.kind = Instruction::IK_ATOMIC_EXCHANGE;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      expect(",");
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-    } else if (opcode == "atomic_compare_exchange") {
-      instruction.kind = Instruction::IK_ATOMIC_COMPARE_EXCHANGE;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      expect(",");
-      instruction.third = parse_operand();
-      expect(",");
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-      expect(",");
-      instruction.eh_selector = parse_integer_literal();
-    } else if (opcode == "call") {
-      instruction.kind = Instruction::IK_CALL;
-      instruction.call_return_type = parse_type();
-      instruction.first = parse_operand();
-      instruction.args = parse_argument_list();
-      parse_call_signature(&instruction);
-    } else if (opcode == "exception" || opcode == "exception_selector") {
-      instruction.kind = opcode == "exception" ? Instruction::IK_EXCEPTION : Instruction::IK_EXCEPTION_SELECTOR;
-      instruction.type = parse_type();
-    } else {
-      fail("unknown assignment instruction");
-    }
-    parse_optional_debug(&instruction);
-    return instruction;
-  }
-
-  std::vector<Operand> parse_argument_list() {
-    std::vector<Operand> arguments;
-    expect("(");
-    if (!next_is(")")) {
-      while (true) {
-        arguments.push_back(parse_operand());
-        if (!accept(",")) break;
-      }
-    }
-    expect(")");
-    return arguments;
-  }
-
-  void parse_call_signature(Instruction *instruction) {
-    if (!accept("as")) return;
-    instruction->has_call_signature = true;
-    instruction->call_params = parse_parameters();
-    expect("->");
-    instruction->call_return_type = parse_type();
-    if (next_is("[")) {
-      SymbolMetadata no_symbol_metadata;
-      apply_function_metadata(&instruction->call_boundary, &no_symbol_metadata, parse_metadata_items(), true);
-    }
-  }
-
-  Instruction parse_instruction() {
-    if (next_is("%")) {
-      // '%' is not emitted as a separate token by the lexer. This branch is
-      // retained only to make malformed punctuation diagnostics explicit.
-      fail("invalid temporary spelling");
-    }
-    if (!at_end() && starts_with(peek().text, "%")) {
-      return parse_assignment();
-    }
-
-    Instruction instruction;
-    const std::string opcode = take("instruction");
-    if (opcode == "store" || opcode == "atomic_store") {
-      instruction.kind = opcode == "store" ? Instruction::IK_STORE : Instruction::IK_ATOMIC_STORE;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      if (instruction.kind == Instruction::IK_ATOMIC_STORE) {
-        expect(",");
-        instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-      }
-    } else if (opcode == "atomic_thread_fence" || opcode == "atomic_signal_fence") {
-      instruction.kind = opcode == "atomic_thread_fence" ? Instruction::IK_ATOMIC_THREAD_FENCE : Instruction::IK_ATOMIC_SIGNAL_FENCE;
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer_literal());
-    } else if (opcode == "call") {
-      instruction.kind = Instruction::IK_CALL;
-      if (accept("void")) {
-        instruction.call_returns_void = true;
-        instruction.call_return_type.text = "void";
-      } else {
-        instruction.call_return_type = parse_type();
-      }
-      instruction.first = parse_operand();
-      instruction.args = parse_argument_list();
-      parse_call_signature(&instruction);
-    } else if (opcode == "copyobj") {
-      instruction.kind = Instruction::IK_COPYOBJ;
-      const std::string span = take("object size and alignment");
-      const std::size_t x = span.find('x');
-      if (x == std::string::npos || !is_integer_text(span.substr(0, x)) || !is_integer_text(span.substr(x + 1))) {
-        fail("invalid object size and alignment");
-      }
-      instruction.byte_count = static_cast<std::size_t>(parse_integer(span.substr(0, x)));
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer(span.substr(x + 1)));
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-    } else if (opcode == "zeroinit") {
-      instruction.kind = Instruction::IK_ZEROINIT;
-      const std::string span = take("object size and alignment");
-      const std::size_t x = span.find('x');
-      if (x == std::string::npos || !is_integer_text(span.substr(0, x)) || !is_integer_text(span.substr(x + 1))) {
-        fail("invalid object size and alignment");
-      }
-      instruction.byte_count = static_cast<std::size_t>(parse_integer(span.substr(0, x)));
-      instruction.byte_alignment = static_cast<std::size_t>(parse_integer(span.substr(x + 1)));
-      instruction.first = parse_operand();
-    } else if (opcode == "eh_try" || opcode == "eh_cleanup") {
-      instruction.kind = opcode == "eh_try" ? Instruction::IK_EH_TRY : Instruction::IK_EH_CLEANUP;
-      instruction.first = parse_operand();
-    } else if (opcode == "eh_catch") {
-      instruction.kind = Instruction::IK_EH_CATCH;
-      instruction.first = parse_operand();
-    } else if (opcode == "eh_filter") {
-      instruction.kind = Instruction::IK_EH_FILTER;
-      if (!next_is("!")) {
-        instruction.args.push_back(parse_operand());
-        while (accept(",")) instruction.args.push_back(parse_operand());
-      }
-    } else if (opcode == "eh_catch_all")
-      instruction.kind = Instruction::IK_EH_CATCH_ALL;
-    else if (opcode == "eh_end")
-      instruction.kind = Instruction::IK_EH_END;
-    else if (opcode == "throw") {
-      instruction.kind = Instruction::IK_THROW;
-      instruction.type = parse_type();
-      instruction.first = parse_operand();
-    } else if (opcode == "resume")
-      instruction.kind = Instruction::IK_RESUME;
-    else if (opcode == "jump") {
-      instruction.kind = Instruction::IK_JUMP;
-      instruction.first = parse_operand();
-    } else if (opcode == "branch") {
-      instruction.kind = Instruction::IK_BRANCH;
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      expect(",");
-      instruction.third = parse_operand();
-    } else if (opcode == "switch") {
-      instruction.kind = Instruction::IK_SWITCH;
-      instruction.first = parse_operand();
-      expect(",");
-      instruction.second = parse_operand();
-      while (accept(",")) {
-        instruction.args.push_back(parse_operand());
-        expect(":");
-        instruction.args.push_back(parse_operand());
-      }
-    } else if (opcode == "return") {
-      instruction.kind = Instruction::IK_RETURN;
-      instruction.type = parse_type();
-      if (instruction.type.text != "void") instruction.first = parse_operand();
-    } else {
-      fail("unknown LowIR instruction");
-    }
-    parse_optional_debug(&instruction);
-    return instruction;
-  }
-
-  std::vector<Token> tokens_;
-  std::size_t position_;
-};
 
 class Validator {
 private:
   enum SymbolKind { SYMBOL_GLOBAL, SYMBOL_FUNCTION };
 
   struct Symbol {
+    lowir_model::SymbolId id;
     SymbolKind kind;
-    std::string type;
-    bool declaration;
-    GlobalStorageMode storage;
+    lowir_model::SpellingId output_name_id;
+    SymbolMetadata *metadata;
+    const GlobalDeclaration *global_declaration;
+    const GlobalDefinition *global_definition;
     const Function *function;
     const FunctionDeclaration *function_declaration;
+
+    Symbol()
+        : kind(SYMBOL_GLOBAL), metadata(0), global_declaration(0), global_definition(0), function(0),
+          function_declaration(0) {}
   };
 
   struct Value {
-    std::string type;
+    LowType type;
     bool known;
     Value() : known(false) {}
-    explicit Value(const std::string &t) : type(t), known(true) {}
+    explicit Value(const LowType &t) : type(t), known(t.valid()) {}
   };
 
 public:
-  explicit Validator(const Program &program) : program_(program) {}
+  explicit Validator(Program &program) : program_(program), entry_id_(), init_id_(), fini_id_() {}
 
   void validate() {
     collect_symbols();
+    resolve_top_level_references();
     validate_aliases();
     validate_roles_and_tls();
+    select_runtime_functions();
     for (std::size_t i = 0; i < program_.global_declarations.size(); ++i) {
       validate_global_declaration(program_.global_declarations[i]);
     }
@@ -1129,159 +145,216 @@ public:
       validate_global(program_.globals[i]);
     }
     for (std::size_t i = 0; i < program_.function_declarations.size(); ++i) {
-      validate_function_header(program_.function_declarations[i].params, program_.function_declarations[i].return_type.text, 0);
+      validate_function_header(program_.function_declarations[i].params, program_.function_declarations[i].return_type);
     }
     for (std::size_t i = 0; i < program_.functions.size(); ++i) {
       validate_function(program_.functions[i]);
     }
-    if (entry_function() == 0) {
+    if (!entry_id_.valid()) {
       throw LowirError("program has no entry function");
     }
   }
 
-  const Function *entry_function() const {
-    const Function *selected = 0;
-    for (std::size_t i = 0; i < program_.functions.size(); ++i) {
-      const Function &function = program_.functions[i];
-      const bool legacy = function.name == "@main";
-      if (function.metadata.role == lowir_model::SR_ENTRY || (function.metadata.role == lowir_model::SR_NONE && legacy)) {
-        if (selected != 0) throw LowirError("multiple entry functions");
-        selected = &function;
-      }
-    }
-    return selected;
+  const Function *entry_function() const { return function_for(entry_id_); }
+
+  const Function *init_function() const { return function_for(init_id_); }
+
+  const Function *fini_function() const { return function_for(fini_id_); }
+
+  const Function *function_for(lowir_model::SymbolId id) const {
+    if (!id.valid() || id.index >= symbols_.size()) return 0;
+    return symbols_[id.index].function;
   }
 
-  const Function *init_function() const { return find_hook(lowir_model::SR_INIT, "@__cppgm_init"); }
+  const FunctionDeclaration *function_declaration_for(lowir_model::SymbolId id) const {
+    if (!id.valid() || id.index >= symbols_.size()) return 0;
+    return symbols_[id.index].function_declaration;
+  }
 
-  const Function *fini_function() const { return find_hook(lowir_model::SR_FINI, "@__cppgm_fini"); }
+  bool is_function_symbol(lowir_model::SymbolId id) const {
+    return id.valid() && id.index < symbols_.size() && symbols_[id.index].kind == SYMBOL_FUNCTION;
+  }
+
+  const std::string &presentation(lowir_model::SpellingId id) const {
+    if (!id.valid() || id.index >= program_.presentation.size()) throw LowirError("invalid presentation identity");
+    return program_.presentation[id.index];
+  }
+
+  const std::string &symbol_label(lowir_model::SymbolId id) const { return presentation(symbol_record(id).output_name_id); }
+
+  const std::string &block_label(lowir_model::BlockId id) const {
+    if (!id.valid() || id.index >= block_owners_.size()) throw LowirError("invalid resolved block identity");
+    return presentation(block_owners_[id.index]->label_id);
+  }
+
+  LowType value_type(lowir_model::ValueId id) const {
+    if (!id.valid() || id.index >= program_.values.size()) throw LowirError("invalid resolved value identity");
+    const lowir_model::ValueRecord &record = program_.values[id.index];
+    if (record.parameter != 0) return record.parameter->type;
+    if (record.instruction != 0) return record.instruction->result_type;
+    throw LowirError("value has no typed owner");
+  }
+
+  LowType slot_type(lowir_model::SlotId id) const {
+    if (!id.valid() || id.index >= slot_owners_.size()) throw LowirError("invalid resolved slot identity");
+    return slot_owners_[id.index]->type;
+  }
 
 private:
-  const Function *find_hook(lowir_model::SymbolRole role, const std::string &legacy) const {
-    const Function *selected = 0;
-    for (std::size_t i = 0; i < program_.functions.size(); ++i) {
-      const Function &function = program_.functions[i];
-      if (function.metadata.role == role || (function.metadata.role == lowir_model::SR_NONE && function.name == legacy)) {
-        if (selected != 0) throw LowirError("multiple runtime hook functions");
-        selected = &function;
-      }
-    }
-    return selected;
+  const Symbol &symbol_record(lowir_model::SymbolId id) const {
+    if (!id.valid() || id.index >= symbols_.size()) throw LowirError("invalid resolved symbol identity");
+    return symbols_[id.index];
+  }
+
+  LowType symbol_type(const Symbol &symbol) const {
+    if (symbol.global_declaration != 0) return symbol.global_declaration->has_type ? symbol.global_declaration->type : LowType();
+    if (symbol.global_definition != 0) return symbol.global_definition->structured ? LowType() : symbol.global_definition->type;
+    if (symbol.function != 0) return symbol.function->return_type;
+    if (symbol.function_declaration != 0) return symbol.function_declaration->return_type;
+    return LowType();
+  }
+
+  GlobalStorageMode symbol_storage(const Symbol &symbol) const {
+    if (symbol.global_declaration != 0) return symbol.global_declaration->storage;
+    if (symbol.global_definition != 0) return symbol.global_definition->storage;
+    return lowir_model::GSM_DEFAULT;
+  }
+
+  lowir_model::SymbolId lookup_symbol(const std::string &name) const {
+    std::map<std::string, lowir_model::SymbolId>::const_iterator it = symbol_names_.find(name);
+    if (it == symbol_names_.end()) throw LowirError("use of undefined global or function");
+    return it->second;
+  }
+
+  lowir_model::SymbolId add_symbol(lowir_model::SpellingId name_id, Symbol symbol) {
+    const std::string name = presentation(name_id);
+    if (symbol_names_.find(name) != symbol_names_.end()) throw LowirError("duplicate top-level symbol");
+    const lowir_model::SymbolId id(symbols_.size());
+    symbol.id = id;
+    const std::string output_name = symbol.kind == SYMBOL_FUNCTION ? cy_function(name) : cy_global(name);
+    symbol.output_name_id = lowir_model::SpellingId(program_.presentation.size());
+    program_.presentation.push_back(output_name);
+    symbol_names_[name] = id;
+    symbols_.push_back(symbol);
+    return id;
   }
 
   void collect_symbols() {
     for (std::size_t i = 0; i < program_.global_declarations.size(); ++i) {
-      add_global(program_.global_declarations[i].name, program_.global_declarations[i].has_type ? program_.global_declarations[i].type.text : std::string(),
-                 true, program_.global_declarations[i].storage, 0);
+      GlobalDeclaration &global = program_.global_declarations[i];
+      Symbol symbol;
+      symbol.kind = SYMBOL_GLOBAL;
+      symbol.metadata = &global.metadata;
+      symbol.global_declaration = &global;
+      global.symbol_id = add_symbol(global.name_id, symbol);
     }
     for (std::size_t i = 0; i < program_.globals.size(); ++i) {
-      const GlobalDefinition &global = program_.globals[i];
-      add_global(global.name, global.structured ? std::string() : global.type.text, false, global.storage, 0);
+      GlobalDefinition &global = program_.globals[i];
+      Symbol symbol;
+      symbol.kind = SYMBOL_GLOBAL;
+      symbol.metadata = &global.metadata;
+      symbol.global_definition = &global;
+      global.symbol_id = add_symbol(global.name_id, symbol);
     }
     for (std::size_t i = 0; i < program_.function_declarations.size(); ++i) {
+      FunctionDeclaration &function = program_.function_declarations[i];
       Symbol symbol;
       symbol.kind = SYMBOL_FUNCTION;
-      symbol.type = program_.function_declarations[i].return_type.text;
-      symbol.declaration = true;
-      symbol.storage = lowir_model::GSM_DEFAULT;
+      symbol.metadata = &function.metadata;
       symbol.function = 0;
-      symbol.function_declaration = &program_.function_declarations[i];
-      add_symbol(program_.function_declarations[i].name, symbol);
+      symbol.function_declaration = &function;
+      function.symbol_id = add_symbol(function.name_id, symbol);
     }
     for (std::size_t i = 0; i < program_.functions.size(); ++i) {
+      Function &function = program_.functions[i];
       Symbol symbol;
       symbol.kind = SYMBOL_FUNCTION;
-      symbol.type = program_.functions[i].return_type.text;
-      symbol.declaration = false;
-      symbol.storage = lowir_model::GSM_DEFAULT;
-      symbol.function = &program_.functions[i];
+      symbol.metadata = &function.metadata;
+      symbol.function = &function;
       symbol.function_declaration = 0;
-      add_symbol(program_.functions[i].name, symbol);
+      function.symbol_id = add_symbol(function.name_id, symbol);
     }
   }
 
-  void add_global(const std::string &name, const std::string &type, bool declaration, GlobalStorageMode storage, const Function *unused) {
-    (void)unused;
-    Symbol symbol;
-    symbol.kind = SYMBOL_GLOBAL;
-    symbol.type = type;
-    symbol.declaration = declaration;
-    symbol.storage = storage;
-    symbol.function = 0;
-    symbol.function_declaration = 0;
-    add_symbol(name, symbol);
-  }
-
-  void add_symbol(const std::string &name, const Symbol &symbol) {
-    if (symbols_.find(name) != symbols_.end()) {
-      throw LowirError("duplicate top-level symbol");
+  void resolve_top_level_references() {
+    for (std::size_t i = 0; i < program_.globals.size(); ++i) {
+      GlobalDefinition &global = program_.globals[i];
+      if (global.structured) {
+        for (std::size_t j = 0; j < global.data_items.size(); ++j) {
+          if (global.data_items[j].kind == GlobalDefinition::DataItem::ITEM_ADDR)
+            global.data_items[j].symbol_id = lookup_symbol(presentation(global.data_items[j].symbol_name_id));
+        }
+      } else if (global.init_kind == GlobalDefinition::INIT_ADDR) {
+        global.init_operand.symbol_id = lookup_symbol(presentation(global.init_operand.presentation_id));
+      }
     }
-    symbols_[name] = symbol;
   }
 
-  void validate_aliases() const {
-    std::set<std::string> aliases;
+  void validate_aliases() {
+    std::set<lowir_model::SpellingId> aliases;
     for (std::size_t i = 0; i < program_.object_aliases.size(); ++i) {
-      const ObjectAlias &alias = program_.object_aliases[i];
-      if (!aliases.insert(alias.object_symbol).second) {
+      ObjectAlias &alias = program_.object_aliases[i];
+      if (!aliases.insert(alias.object_name_id).second) {
         throw LowirError("duplicate object alias");
       }
-      if (symbols_.find(alias.target) == symbols_.end()) {
-        throw LowirError("undefined object alias target");
-      }
+      alias.target_id = lookup_symbol(presentation(alias.target_name_id));
     }
   }
 
-  void validate_roles_and_tls() const {
+  void validate_roles_and_tls() {
     std::set<int> singleton_roles;
-    for (std::map<std::string, Symbol>::const_iterator it = symbols_.begin(); it != symbols_.end(); ++it) {
-      const std::string &name = it->first;
-      const Symbol &symbol = it->second;
-      const SymbolMetadata *metadata = 0;
+    for (std::size_t i = 0; i < symbols_.size(); ++i) {
+      Symbol &symbol = symbols_[i];
+      SymbolMetadata *metadata = symbol.metadata;
+      if (metadata == 0) continue;
       if (symbol.kind == SYMBOL_GLOBAL) {
-        for (std::size_t i = 0; i < program_.global_declarations.size(); ++i)
-          if (program_.global_declarations[i].name == name) metadata = &program_.global_declarations[i].metadata;
-        for (std::size_t i = 0; i < program_.globals.size(); ++i)
-          if (program_.globals[i].name == name) metadata = &program_.globals[i].metadata;
-        if (metadata != 0) {
-          if (metadata->role != lowir_model::SR_NONE && metadata->role != lowir_model::SR_EH_TOP && metadata->role != lowir_model::SR_EH_VALUE &&
-              metadata->role != lowir_model::SR_EH_TYPE) {
-            throw LowirError("function role attached to global");
-          }
-          if (metadata->role != lowir_model::SR_NONE && !singleton_roles.insert(static_cast<int>(metadata->role)).second) {
-            throw LowirError("duplicate singleton role");
-          }
-        }
+        if (metadata->role != lowir_model::SR_NONE && metadata->role != lowir_model::SR_EH_TOP && metadata->role != lowir_model::SR_EH_VALUE &&
+            metadata->role != lowir_model::SR_EH_TYPE)
+          throw LowirError("function role attached to global");
       } else {
-        const SymbolMetadata *function_metadata = 0;
-        if (symbol.function != 0)
-          function_metadata = &symbol.function->metadata;
-        else if (symbol.function_declaration != 0)
-          function_metadata = &symbol.function_declaration->metadata;
-        if (function_metadata != 0) {
-          if (function_metadata->role == lowir_model::SR_EH_TOP || function_metadata->role == lowir_model::SR_EH_VALUE ||
-              function_metadata->role == lowir_model::SR_EH_TYPE) {
-            throw LowirError("global role attached to function");
-          }
-          if (function_metadata->role != lowir_model::SR_NONE && !singleton_roles.insert(static_cast<int>(function_metadata->role)).second) {
-            throw LowirError("duplicate singleton role");
-          }
-          if (!function_metadata->tls_for_symbol.empty()) {
-            std::map<std::string, Symbol>::const_iterator target = symbols_.find(function_metadata->tls_for_symbol);
-            if (target == symbols_.end() || target->second.kind != SYMBOL_GLOBAL || target->second.storage != lowir_model::GSM_THREAD_LOCAL) {
-              throw LowirError("tls_for target is not thread local");
-            }
-            if (!tls_wrappers_.insert(function_metadata->tls_for_symbol).second) {
-              throw LowirError("duplicate tls wrapper");
-            }
-          }
+        if (metadata->role == lowir_model::SR_EH_TOP || metadata->role == lowir_model::SR_EH_VALUE || metadata->role == lowir_model::SR_EH_TYPE)
+          throw LowirError("global role attached to function");
+        if (metadata->tls_for_name_id.valid()) {
+          const lowir_model::SymbolId target_id = lookup_symbol(presentation(metadata->tls_for_name_id));
+          const Symbol &target = symbol_record(target_id);
+          if (target.kind != SYMBOL_GLOBAL || symbol_storage(target) != lowir_model::GSM_THREAD_LOCAL)
+            throw LowirError("tls_for target is not thread local");
+          metadata->tls_for_id = target_id;
+          if (!tls_wrappers_.insert(target_id).second) throw LowirError("duplicate tls wrapper");
         }
+      }
+      if (metadata->role != lowir_model::SR_NONE && !singleton_roles.insert(static_cast<int>(metadata->role)).second)
+        throw LowirError("duplicate singleton role");
+    }
+  }
+
+  void select_runtime_functions() {
+    const std::map<std::string, lowir_model::SymbolId>::const_iterator legacy_entry = symbol_names_.find("@main");
+    const std::map<std::string, lowir_model::SymbolId>::const_iterator legacy_init = symbol_names_.find("@__cppgm_init");
+    const std::map<std::string, lowir_model::SymbolId>::const_iterator legacy_fini = symbol_names_.find("@__cppgm_fini");
+    for (std::size_t i = 0; i < program_.functions.size(); ++i) {
+      Function &function = program_.functions[i];
+      const lowir_model::SymbolRole role = function.metadata.role;
+      if (role == lowir_model::SR_ENTRY ||
+          (role == lowir_model::SR_NONE && legacy_entry != symbol_names_.end() && function.symbol_id == legacy_entry->second)) {
+        if (entry_id_.valid()) throw LowirError("multiple entry functions");
+        entry_id_ = function.symbol_id;
+      }
+      if (role == lowir_model::SR_INIT ||
+          (role == lowir_model::SR_NONE && legacy_init != symbol_names_.end() && function.symbol_id == legacy_init->second)) {
+        if (init_id_.valid()) throw LowirError("multiple runtime hook functions");
+        init_id_ = function.symbol_id;
+      }
+      if (role == lowir_model::SR_FINI ||
+          (role == lowir_model::SR_NONE && legacy_fini != symbol_names_.end() && function.symbol_id == legacy_fini->second)) {
+        if (fini_id_.valid()) throw LowirError("multiple runtime hook functions");
+        fini_id_ = function.symbol_id;
       }
     }
   }
 
   void validate_global_declaration(const GlobalDeclaration &global) const {
-    if (global.has_type && !is_valid_type(global.type.text)) {
+    if (global.has_type && !global.type.valid()) {
       throw LowirError("invalid global declaration type");
     }
   }
@@ -1294,314 +367,435 @@ private:
         if (item.kind == GlobalDefinition::DataItem::ITEM_ZERO) {
           if (item.zero_bytes == 0) throw LowirError("zero data item has no size");
         } else if (item.kind == GlobalDefinition::DataItem::ITEM_INTEGER) {
-          if (!is_scalar_type(item.type.text) || item.type.text == "void") throw LowirError("invalid structured global item type");
+          if (!item.type.is_scalar()) throw LowirError("invalid structured global item type");
           if (item.literal_operand.kind != Operand::OP_INTEGER && item.literal_operand.kind != Operand::OP_FLOAT)
             throw LowirError("invalid structured global literal");
-        } else if (symbols_.find(item.symbol) == symbols_.end()) {
+          if (!operand_matches(item.literal_operand, item.type)) throw LowirError("structured global literal type mismatch");
+        } else if (!item.symbol_id.valid()) {
           throw LowirError("undefined structured global address");
         }
       }
     } else if (global.init_kind == GlobalDefinition::INIT_ADDR) {
-      if (global.type.text != "ptr") throw LowirError("address global must have ptr type");
-      if (symbols_.find(global.init_operand.text) == symbols_.end()) throw LowirError("undefined global address initializer");
+      if (!global.type.is_pointer()) throw LowirError("address global must have ptr type");
+      if (!global.init_operand.symbol_id.valid()) throw LowirError("undefined global address initializer");
     } else {
-      if (!is_scalar_type(global.type.text) || global.type.text == "void") throw LowirError("invalid scalar global type");
+      if (!global.type.is_scalar()) throw LowirError("invalid scalar global type");
       if (global.init_operand.kind != Operand::OP_INTEGER && global.init_operand.kind != Operand::OP_FLOAT)
         throw LowirError("invalid scalar global initializer");
+      if (!operand_matches(global.init_operand, global.type)) throw LowirError("scalar global initializer type mismatch");
     }
   }
 
-  void validate_function_header(const std::vector<Parameter> &parameters, const std::string &return_type, const Function *function) const {
-    if (!is_valid_type(return_type)) {
-      // void is a valid return type; the function argument is only used to
-      // keep this check readable for declaration callers.
-      if (!is_valid_type(return_type)) throw LowirError("invalid function return type");
-    }
+  void validate_function_header(const std::vector<Parameter> &parameters, const LowType &return_type) const {
+    if (!return_type.valid()) throw LowirError("invalid function return type");
     std::set<std::string> names;
     bool saw_indirect_result = false;
     for (std::size_t i = 0; i < parameters.size(); ++i) {
       const Parameter &parameter = parameters[i];
-      if (!names.insert(parameter.name).second) throw LowirError("duplicate parameter");
-      if (!is_valid_type(parameter.type.text) || parameter.type.text == "void") throw LowirError("invalid parameter type");
+      if (!names.insert(presentation(parameter.name_id)).second) throw LowirError("duplicate parameter");
+      if (!parameter.type.valid() || parameter.type.is_void()) throw LowirError("invalid parameter type");
       const ParameterMetadata &metadata = parameter.metadata;
       const bool pointer_metadata = metadata.passing != lowir_model::PPM_DIRECT || metadata.capture != lowir_model::PCM_DEFAULT ||
                                     metadata.access != lowir_model::PAM_DEFAULT || metadata.alias != lowir_model::PALM_DEFAULT;
-      if (pointer_metadata && parameter.type.text != "ptr") throw LowirError("pointer parameter metadata on non-pointer");
+      if (pointer_metadata && !parameter.type.is_pointer()) throw LowirError("pointer parameter metadata on non-pointer");
       if (metadata.passing == lowir_model::PPM_INDIRECT_RESULT) {
         if (i != 0) throw LowirError("indirect result is not first parameter");
         saw_indirect_result = true;
       }
     }
-    if (saw_indirect_result && return_type != "void") throw LowirError("indirect result on non-void function");
+    if (saw_indirect_result && !return_type.is_void()) throw LowirError("indirect result on non-void function");
   }
 
-  Value operand_value(const Operand &operand, const std::map<std::string, std::string> &values, const std::map<std::string, std::string> &slots) const {
+  Value operand_value(const Operand &operand) const {
     if (operand.kind == Operand::OP_TEMP) {
-      std::map<std::string, std::string>::const_iterator it = values.find(operand.text);
-      if (it == values.end()) throw LowirError("use of undefined temporary");
-      return Value(it->second);
+      return Value(value_type(operand.value_id));
     }
     if (operand.kind == Operand::OP_SLOT) {
-      std::map<std::string, std::string>::const_iterator it = slots.find(operand.text);
-      if (it == slots.end()) throw LowirError("use of undefined slot");
-      return Value(it->second);
+      if (!operand.slot_id.valid() || operand.slot_id.index >= slot_owners_.size()) throw LowirError("use of undefined slot");
+      return Value(slot_owners_[operand.slot_id.index]->type);
     }
     if (operand.kind == Operand::OP_GLOBAL) {
-      std::map<std::string, Symbol>::const_iterator it = symbols_.find(operand.text);
-      if (it == symbols_.end()) throw LowirError("use of undefined global or function");
-      return Value(it->second.kind == SYMBOL_FUNCTION ? "ptr" : it->second.type);
+      const Symbol &symbol = symbol_record(operand.symbol_id);
+      return Value(symbol.kind == SYMBOL_FUNCTION ? pointer_type() : symbol_type(symbol));
     }
-    if (operand.kind == Operand::OP_INTEGER) return Value("i64");
-    if (operand.kind == Operand::OP_FLOAT) return Value("f64");
+    if (operand.kind == Operand::OP_INTEGER || operand.kind == Operand::OP_FLOAT) return Value(operand.literal_type);
     return Value();
   }
 
-  void require_value(const Operand &operand, const std::map<std::string, std::string> &values, const std::map<std::string, std::string> &slots) const {
-    (void)operand_value(operand, values, slots);
+  void require_value(const Operand &operand) const { (void)operand_value(operand); }
+
+  bool operand_matches(const Operand &operand, const LowType &expected) const {
+    if (!expected.valid() || expected.is_void()) return false;
+    const Value actual = operand_value(operand);
+    if (!actual.known) return false;
+    if (operand.kind == Operand::OP_INTEGER) {
+      if (expected.is_integer()) return true;
+      return expected.is_pointer() && operand.int_value == 0;
+    }
+    if (operand.kind == Operand::OP_FLOAT) return expected.is_float();
+    return actual.type == expected;
   }
 
-  bool types_compatible(const std::string &expected, const Value &actual) const {
-    if (!actual.known || expected.empty() || actual.type.empty()) return true;
-    if (expected == actual.type) return true;
-    if ((is_integer_type(expected) && is_integer_type(actual.type)) || (is_float_type(expected) && is_float_type(actual.type))) return true;
-    if (expected == "ptr" && starts_with(actual.type, "obj<")) return true;
+  void require_operand_type(const Operand &operand, const LowType &expected, const std::string &what) const {
+    if (!operand_matches(operand, expected)) throw LowirError(what + " type mismatch");
+  }
+
+  bool is_memory_operand(const Operand &operand) const {
+    if (operand.kind == Operand::OP_SLOT) return true;
+    if (operand.kind == Operand::OP_GLOBAL) return !is_function_symbol(operand.symbol_id);
+    if (operand.kind == Operand::OP_TEMP) {
+      const LowType type = operand_value(operand).type;
+      return type.is_pointer() || type.is_object();
+    }
     return false;
   }
 
-  void validate_function(const Function &function) const {
-    validate_function_header(function.params, function.return_type.text, &function);
+  void require_memory_operand(const Operand &operand, const std::string &what) const {
+    if (!is_memory_operand(operand)) throw LowirError(what + " is not addressable storage");
+  }
+
+  void require_pointer_operand(const Operand &operand, const std::string &what) const {
+    if (!operand_matches(operand, pointer_type())) throw LowirError(what + " is not a pointer");
+  }
+
+  lowir_model::ValueId allocate_value(Parameter *parameter) {
+    const lowir_model::ValueId id(program_.values.size());
+    lowir_model::ValueRecord record;
+    record.id = id;
+    record.parameter = parameter;
+    program_.values.push_back(record);
+    return id;
+  }
+
+  lowir_model::ValueId allocate_value(Instruction *instruction) {
+    const lowir_model::ValueId id(program_.values.size());
+    lowir_model::ValueRecord record;
+    record.id = id;
+    record.instruction = instruction;
+    program_.values.push_back(record);
+    return id;
+  }
+
+  lowir_model::SlotId allocate_slot(Function::Slot *slot) {
+    const lowir_model::SlotId id(slot_owners_.size());
+    slot_owners_.push_back(slot);
+    return id;
+  }
+
+  lowir_model::BlockId allocate_block(Block *block) {
+    const lowir_model::BlockId id(block_owners_.size());
+    block_owners_.push_back(block);
+    return id;
+  }
+
+  void resolve_operand(Operand *operand, const std::map<std::string, lowir_model::ValueId> &values,
+                      const std::map<std::string, lowir_model::SlotId> &slots, const std::map<std::string, lowir_model::BlockId> &blocks) {
+    if (operand->kind == Operand::OP_TEMP) {
+      const std::string &name = presentation(operand->presentation_id);
+      std::map<std::string, lowir_model::ValueId>::const_iterator it = values.find(name);
+      if (it == values.end()) throw LowirError("use of undefined temporary");
+      operand->value_id = it->second;
+    } else if (operand->kind == Operand::OP_SLOT) {
+      const std::string &name = presentation(operand->presentation_id);
+      std::map<std::string, lowir_model::SlotId>::const_iterator it = slots.find(name);
+      if (it == slots.end()) throw LowirError("use of undefined slot");
+      operand->slot_id = it->second;
+    } else if (operand->kind == Operand::OP_GLOBAL) {
+      operand->symbol_id = lookup_symbol(presentation(operand->presentation_id));
+    } else if (operand->kind == Operand::OP_LABEL) {
+      const std::string &name = presentation(operand->presentation_id);
+      std::map<std::string, lowir_model::BlockId>::const_iterator it = blocks.find(name);
+      if (it == blocks.end()) throw LowirError("undefined block target");
+      operand->block_id = it->second;
+    }
+  }
+
+  void resolve_instruction_operands(Instruction *instruction, const std::map<std::string, lowir_model::ValueId> &values,
+                                    const std::map<std::string, lowir_model::SlotId> &slots,
+                                    const std::map<std::string, lowir_model::BlockId> &blocks) {
+    resolve_operand(&instruction->first, values, slots, blocks);
+    resolve_operand(&instruction->second, values, slots, blocks);
+    resolve_operand(&instruction->third, values, slots, blocks);
+    for (std::size_t i = 0; i < instruction->args.size(); ++i) resolve_operand(&instruction->args[i], values, slots, blocks);
+    instruction->direct_callee_id = lowir_model::SymbolId();
+    if (instruction->kind == Instruction::IK_CALL && instruction->first.kind == Operand::OP_GLOBAL && is_function_symbol(instruction->first.symbol_id))
+      instruction->direct_callee_id = instruction->first.symbol_id;
+  }
+
+  void validate_function(Function &function) {
+    validate_function_header(function.params, function.return_type);
     if (function.blocks.empty()) throw LowirError("function has no blocks");
-    std::map<std::string, std::string> slots;
+    function.value_begin = lowir_model::ValueId(program_.values.size());
+    function.slot_begin = lowir_model::SlotId(slot_owners_.size());
+    std::map<std::string, lowir_model::SlotId> slots;
     for (std::size_t i = 0; i < function.slots.size(); ++i) {
-      if (!slots.insert(std::make_pair(function.slots[i].first, function.slots[i].second.text)).second) throw LowirError("duplicate slot");
-      if (!is_valid_type(function.slots[i].second.text) || function.slots[i].second.text == "void") throw LowirError("invalid slot type");
+      Function::Slot &slot = function.slots[i];
+      if (!slot.type.valid() || slot.type.is_void()) throw LowirError("invalid slot type");
+      const lowir_model::SlotId id = allocate_slot(&slot);
+      if (!slots.insert(std::make_pair(presentation(slot.name_id), id)).second) throw LowirError("duplicate slot");
+      slot.slot_id = id;
     }
-    std::set<std::string> blocks;
+    std::map<std::string, lowir_model::BlockId> blocks;
     for (std::size_t i = 0; i < function.blocks.size(); ++i) {
-      if (!blocks.insert(function.blocks[i].label).second) throw LowirError("duplicate block");
+      const lowir_model::BlockId id = allocate_block(&function.blocks[i]);
+      if (!blocks.insert(std::make_pair(presentation(function.blocks[i].label_id), id)).second) throw LowirError("duplicate block");
+      function.blocks[i].block_id = id;
     }
-    std::map<std::string, std::string> values;
-    for (std::size_t i = 0; i < function.params.size(); ++i) values[function.params[i].name] = function.params[i].type.text;
+    std::map<std::string, lowir_model::ValueId> values;
+    for (std::size_t i = 0; i < function.params.size(); ++i) {
+      const lowir_model::ValueId id = allocate_value(&function.params[i]);
+      if (!values.insert(std::make_pair(presentation(function.params[i].name_id), id)).second) throw LowirError("duplicate parameter");
+      function.params[i].value_id = id;
+    }
     for (std::size_t b = 0; b < function.blocks.size(); ++b) {
-      const Block &block = function.blocks[b];
+      Block &block = function.blocks[b];
       if (block.instructions.empty()) throw LowirError("block has no terminator");
       bool terminated = false;
       for (std::size_t i = 0; i < block.instructions.size(); ++i) {
-        const Instruction &instruction = block.instructions[i];
+        Instruction &instruction = block.instructions[i];
         if (terminated) throw LowirError("instruction after terminator");
+        resolve_instruction_operands(&instruction, values, slots, blocks);
         validate_instruction(function, instruction, blocks, values, slots);
         if (is_terminator(instruction.kind)) terminated = true;
       }
       if (!terminated) throw LowirError("block has no terminator");
     }
+    function.value_count = program_.values.size() - function.value_begin.index;
+    function.slot_count = slot_owners_.size() - function.slot_begin.index;
   }
 
-  void require_block(const Operand &operand, const std::set<std::string> &blocks) const {
-    if (operand.kind != Operand::OP_LABEL || blocks.find(operand.text) == blocks.end()) throw LowirError("undefined block target");
+  void require_block(const Operand &operand, const std::map<std::string, lowir_model::BlockId> &blocks) const {
+    (void)blocks;
+    if (operand.kind != Operand::OP_LABEL || !operand.block_id.valid()) throw LowirError("undefined block target");
   }
 
-  const Symbol *find_function_symbol(const std::string &name) const {
-    std::map<std::string, Symbol>::const_iterator it = symbols_.find(name);
-    if (it == symbols_.end() || it->second.kind != SYMBOL_FUNCTION) return 0;
-    return &it->second;
-  }
-
-  void validate_call(const Function &function, const Instruction &instruction, const std::map<std::string, std::string> &values,
-                     const std::map<std::string, std::string> &slots) const {
-    const Value callee = operand_value(instruction.first, values, slots);
-    (void)callee;
-    const Function *target = 0;
-    const FunctionDeclaration *target_declaration = 0;
-    if (instruction.first.kind == Operand::OP_GLOBAL) {
-      const Symbol *symbol = find_function_symbol(instruction.first.text);
-      if (symbol != 0) {
-        target = symbol->function;
-        target_declaration = symbol->function_declaration;
-      }
-    }
-    const bool direct = target != 0 || target_declaration != 0;
-    if (!direct && !instruction.has_call_signature) throw LowirError("indirect call is missing signature");
-    const std::vector<Parameter> *parameters = 0;
+  struct CallTarget {
+    const std::vector<Parameter> *parameters;
     FunctionBoundaryMetadata boundary;
-    std::string return_type;
-    if (direct) {
-      if (target != 0) {
-        parameters = &target->params;
-        boundary = target->boundary;
-        return_type = target->return_type.text;
-      } else {
-        parameters = &target_declaration->params;
-        boundary = target_declaration->boundary;
-        return_type = target_declaration->return_type.text;
-      }
-      if (instruction.has_call_signature) {
-        // A signature on a direct call is not needed, but if present it is
-        // still a boundary declaration and must agree with the result type.
-        if (instruction.call_return_type.text != return_type) throw LowirError("direct call signature return mismatch");
+    LowType return_type;
+    bool direct;
+    CallTarget() : parameters(0), direct(false) {}
+  };
+
+  CallTarget call_target(const Instruction &instruction) const {
+    CallTarget result;
+    if (instruction.direct_callee_id.valid()) {
+      result.direct = true;
+      const Function *function = function_for(instruction.direct_callee_id);
+      const FunctionDeclaration *declaration = function_declaration_for(instruction.direct_callee_id);
+      if (function != 0) {
+        result.parameters = &function->params;
+        result.boundary = function->boundary;
+        result.return_type = function->return_type;
+      } else if (declaration != 0) {
+        result.parameters = &declaration->params;
+        result.boundary = declaration->boundary;
+        result.return_type = declaration->return_type;
       }
     } else {
-      parameters = &instruction.call_params;
-      boundary = instruction.call_boundary;
-      return_type = instruction.call_return_type.text;
+      result.parameters = &instruction.call_params;
+      result.boundary = instruction.call_boundary;
+      result.return_type = instruction.call_return_type;
     }
-    const std::size_t required = parameters->size();
-    if (boundary.arity == lowir_model::CAM_FIXED && instruction.args.size() != required) throw LowirError("fixed call arity mismatch");
-    if (boundary.arity != lowir_model::CAM_FIXED && instruction.args.size() < required) throw LowirError("call has too few arguments");
+    return result;
+  }
+
+  void validate_call(const Instruction &instruction) const {
+    const Value callee_value = operand_value(instruction.first);
+    if (!callee_value.known) throw LowirError("call has invalid callee");
+    if (instruction.first.kind == Operand::OP_GLOBAL && !is_function_symbol(instruction.first.symbol_id))
+      throw LowirError("direct call target is not a function");
+    if (instruction.first.kind != Operand::OP_GLOBAL && !callee_value.type.is_pointer())
+      throw LowirError("indirect call target is not a pointer");
+    const CallTarget target = call_target(instruction);
+    if (!target.direct && !instruction.has_call_signature) throw LowirError("indirect call is missing signature");
+    if (instruction.has_call_signature) validate_function_header(instruction.call_params, instruction.call_return_type);
+    const std::size_t required = target.parameters->size();
+    if (target.boundary.arity == lowir_model::CAM_FIXED && instruction.args.size() != required) throw LowirError("fixed call arity mismatch");
+    if (target.boundary.arity != lowir_model::CAM_FIXED && instruction.args.size() < required) throw LowirError("call has too few arguments");
     for (std::size_t i = 0; i < required && i < instruction.args.size(); ++i) {
-      const Value actual = operand_value(instruction.args[i], values, slots);
-      const bool addressable_slot = (*parameters)[i].type.text == "ptr" && instruction.args[i].kind == Operand::OP_SLOT &&
-                                    slots.find(instruction.args[i].text) != slots.end() && slots.find(instruction.args[i].text)->second != "ptr";
-      if (!addressable_slot && !types_compatible((*parameters)[i].type.text, actual)) throw LowirError("call argument type mismatch");
+      const bool addressable_slot = (*target.parameters)[i].type.is_pointer() && instruction.args[i].kind == Operand::OP_SLOT &&
+                                    !slot_owners_[instruction.args[i].slot_id.index]->type.is_pointer();
+      if (!addressable_slot && !operand_matches(instruction.args[i], (*target.parameters)[i].type)) throw LowirError("call argument type mismatch");
     }
+    if (target.direct && !instruction.call_returns_void && instruction.call_return_type != target.return_type)
+      throw LowirError("direct call result type mismatch");
     if (instruction.call_returns_void) {
-      if (return_type != "void") throw LowirError("void call has non-void target");
-    } else if (instruction.dest.empty()) {
+      if (!target.return_type.is_void()) throw LowirError("void call has non-void target");
+    } else if (target.return_type.is_void()) {
+      throw LowirError("value call has void target");
+    } else if (!instruction.destination_name_id.valid()) {
       // Calls returning a value always have a destination in the grammar.
       throw LowirError("missing call destination");
     }
-    (void)function;
   }
 
-  void define_value(const Instruction &instruction, const std::string &type, std::map<std::string, std::string> *values) const {
-    if (instruction.dest.empty()) return;
-    if (!values->insert(std::make_pair(instruction.dest, type)).second) throw LowirError("duplicate temporary definition");
+  void define_value(Instruction *instruction, const LowType &type, std::map<std::string, lowir_model::ValueId> *values) {
+    if (!instruction->destination_name_id.valid()) return;
+    const std::string &name = presentation(instruction->destination_name_id);
+    if (values->find(name) != values->end()) throw LowirError("duplicate temporary definition");
+    instruction->result_type = type;
+    const lowir_model::ValueId id = allocate_value(instruction);
+    (*values)[name] = id;
+    instruction->dest_id = id;
   }
 
-  void validate_instruction(const Function &function, const Instruction &instruction, const std::set<std::string> &blocks,
-                            std::map<std::string, std::string> &values, const std::map<std::string, std::string> &slots) const {
-    const auto require = [&](const Operand &operand) { require_value(operand, values, slots); };
+  void validate_instruction(Function &function, Instruction &instruction, const std::map<std::string, lowir_model::BlockId> &blocks,
+                            std::map<std::string, lowir_model::ValueId> &values, const std::map<std::string, lowir_model::SlotId> &slots) {
+    const auto require = [&](const Operand &operand) { require_value(operand); };
     switch (instruction.kind) {
     case Instruction::IK_CONST:
-      if (instruction.type.text == "void") throw LowirError("void constant");
+      if (instruction.type.is_void()) throw LowirError("void constant");
       if (instruction.first.kind != Operand::OP_INTEGER && instruction.first.kind != Operand::OP_FLOAT) throw LowirError("constant is not scalar");
-      define_value(instruction, instruction.type.text, &values);
+      if (!operand_matches(instruction.first, instruction.type)) throw LowirError("constant type mismatch");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_COPY:
       require(instruction.first);
-      define_value(instruction, instruction.type.text, &values);
+      require_operand_type(instruction.first, instruction.type, "copy source");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_ADDR:
       if (instruction.first.kind != Operand::OP_SLOT && instruction.first.kind != Operand::OP_GLOBAL) throw LowirError("addr requires addressable operand");
-      if (instruction.first.kind == Operand::OP_GLOBAL && symbols_.find(instruction.first.text) == symbols_.end()) throw LowirError("addr of undefined symbol");
-      define_value(instruction, "ptr", &values);
+      if (instruction.first.kind == Operand::OP_GLOBAL && !instruction.first.symbol_id.valid()) throw LowirError("addr of undefined symbol");
+      define_value(&instruction, pointer_type(), &values);
       break;
     case Instruction::IK_LOAD:
     case Instruction::IK_ATOMIC_LOAD:
-      require(instruction.first);
-      if (instruction.first.kind == Operand::OP_TEMP && values[instruction.first.text] != "ptr" && !starts_with(values[instruction.first.text], "obj<"))
-        throw LowirError("load source is not pointer");
-      if (instruction.kind == Instruction::IK_ATOMIC_LOAD && instruction.byte_alignment > 5) throw LowirError("invalid atomic order");
-      define_value(instruction, instruction.type.text, &values);
+      if (!instruction.type.valid() || instruction.type.is_void()) throw LowirError("invalid load type");
+      require_memory_operand(instruction.first, "load source");
+      if (instruction.kind == Instruction::IK_ATOMIC_LOAD && instruction.atomic_order == lowir_model::AO_INVALID) throw LowirError("invalid atomic order");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_STORE:
     case Instruction::IK_ATOMIC_STORE:
       require(instruction.first);
-      require(instruction.second);
-      if (instruction.second.kind == Operand::OP_TEMP && values[instruction.second.text] != "ptr") throw LowirError("store destination is not pointer");
-      if (instruction.kind == Instruction::IK_ATOMIC_STORE && instruction.byte_alignment > 5) throw LowirError("invalid atomic order");
+      require_operand_type(instruction.first, instruction.type, "store value");
+      require_memory_operand(instruction.second, "store destination");
+      if (instruction.kind == Instruction::IK_ATOMIC_STORE && instruction.atomic_order == lowir_model::AO_INVALID) throw LowirError("invalid atomic order");
       break;
     case Instruction::IK_INDEX:
-      require(instruction.first);
-      require(instruction.second);
-      if (instruction.first.kind == Operand::OP_TEMP && values[instruction.first.text] != "ptr" && !starts_with(values[instruction.first.text], "obj<"))
-        throw LowirError("index base is not addressable");
-      define_value(instruction, "ptr", &values);
+      require_memory_operand(instruction.first, "index base");
+      if (!operand_value(instruction.second).known || !operand_value(instruction.second).type.is_integer())
+        throw LowirError("index offset is not integer");
+      if (!instruction.type.valid() || instruction.type.is_void()) throw LowirError("invalid index element type");
+      define_value(&instruction, pointer_type(), &values);
       break;
     case Instruction::IK_UNARY:
-      require(instruction.first);
-      if (instruction.op == "decay" && instruction.type.text != "ptr") throw LowirError("decay requires ptr type");
-      if (instruction.op == "bswap" && (instruction.type.text != "i16" && instruction.type.text != "i32" && instruction.type.text != "i64"))
+      if (instruction.unary_operator == lowir_model::UOP_INVALID) throw LowirError("unknown unary operator");
+      require_operand_type(instruction.first, instruction.type, "unary operand");
+      if (instruction.unary_operator == lowir_model::UOP_DECAY && !instruction.type.is_pointer()) throw LowirError("decay requires ptr type");
+      if (instruction.unary_operator == lowir_model::UOP_NEG && !instruction.type.is_integer() && !instruction.type.is_float())
+        throw LowirError("invalid negation type");
+      if ((instruction.unary_operator == lowir_model::UOP_NOT || instruction.unary_operator == lowir_model::UOP_BITNOT) && !instruction.type.is_integer())
+        throw LowirError("invalid integer unary type");
+      if (instruction.unary_operator == lowir_model::UOP_BSWAP &&
+          (instruction.type.integer_kind != LowType::INTEGER_I16 && instruction.type.integer_kind != LowType::INTEGER_I32 &&
+           instruction.type.integer_kind != LowType::INTEGER_I64))
         throw LowirError("invalid bswap type");
-      if (instruction.op != "neg" && instruction.op != "not" && instruction.op != "bitnot" && instruction.op != "decay" && instruction.op != "bswap")
-        throw LowirError("unknown unary operator");
-      define_value(instruction, instruction.type.text, &values);
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_BINARY:
-      require(instruction.first);
-      require(instruction.second);
-      if (is_float_type(instruction.type.text)) {
-        if (instruction.op != "add" && instruction.op != "sub" && instruction.op != "mul" && instruction.op != "div")
+      if (instruction.binary_operator == lowir_model::BOP_INVALID) throw LowirError("unknown binary operator");
+      require_operand_type(instruction.first, instruction.type, "left binary operand");
+      require_operand_type(instruction.second, instruction.type, "right binary operand");
+      if (!instruction.type.is_integer() && !instruction.type.is_float()) throw LowirError("invalid binary type");
+      if (is_float_type(instruction.type)) {
+        if (instruction.binary_operator != lowir_model::BOP_ADD && instruction.binary_operator != lowir_model::BOP_SUB &&
+            instruction.binary_operator != lowir_model::BOP_MUL && instruction.binary_operator != lowir_model::BOP_DIV)
           throw LowirError("invalid floating binary operator");
-      } else if (instruction.op != "add" && instruction.op != "sub" && instruction.op != "mul" && instruction.op != "div" && instruction.op != "mod" &&
-                 instruction.op != "udiv" && instruction.op != "umod" && instruction.op != "and" && instruction.op != "or" && instruction.op != "xor" &&
-                 instruction.op != "shl" && instruction.op != "shr" && instruction.op != "ushr")
-        throw LowirError("unknown binary operator");
-      define_value(instruction, instruction.type.text, &values);
+      }
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_CMP:
-      require(instruction.first);
-      require(instruction.second);
-      define_value(instruction, "i64", &values);
+      if (instruction.compare_predicate == lowir_model::CPP_INVALID) throw LowirError("unknown comparison predicate");
+      require_operand_type(instruction.first, instruction.type, "left comparison operand");
+      require_operand_type(instruction.second, instruction.type, "right comparison operand");
+      if (!instruction.type.is_integer() && !instruction.type.is_float() && !instruction.type.is_pointer()) throw LowirError("invalid comparison type");
+      define_value(&instruction, i64_type(), &values);
       break;
     case Instruction::IK_CONVERT: {
-      require(instruction.first);
-      const int dst_width = integer_width(instruction.type.text);
-      const int src_width = integer_width(instruction.source_type.text);
-      if ((instruction.op == "sext" || instruction.op == "zext") && (dst_width == 0 || src_width == 0 || dst_width <= src_width))
+      require_operand_type(instruction.first, instruction.source_type, "conversion operand");
+      const int dst_width = integer_width(instruction.type);
+      const int src_width = integer_width(instruction.source_type);
+      if (instruction.conversion_operator == lowir_model::COP_INVALID) throw LowirError("unknown conversion operator");
+      if ((instruction.conversion_operator == lowir_model::COP_SEXT || instruction.conversion_operator == lowir_model::COP_ZEXT) &&
+          (dst_width == 0 || src_width == 0 || dst_width <= src_width))
         throw LowirError("invalid integer widening conversion");
-      if (instruction.op == "trunc" && (dst_width == 0 || src_width == 0 || dst_width >= src_width)) throw LowirError("invalid integer truncation conversion");
-      if ((instruction.op == "sitofp" || instruction.op == "uitofp") &&
-          (!is_integer_type(instruction.source_type.text) || !is_float_type(instruction.type.text)))
+      if (instruction.conversion_operator == lowir_model::COP_TRUNC && (dst_width == 0 || src_width == 0 || dst_width >= src_width))
+        throw LowirError("invalid integer truncation conversion");
+      if ((instruction.conversion_operator == lowir_model::COP_SITOFP || instruction.conversion_operator == lowir_model::COP_UITOFP) &&
+          (!is_integer_type(instruction.source_type) || !is_float_type(instruction.type)))
         throw LowirError("invalid integer to float conversion");
-      if ((instruction.op == "fptosi" || instruction.op == "fptoui") &&
-          (!is_float_type(instruction.source_type.text) || !is_integer_type(instruction.type.text)))
+      if ((instruction.conversion_operator == lowir_model::COP_FPTOSI || instruction.conversion_operator == lowir_model::COP_FPTOUI) &&
+          (!is_float_type(instruction.source_type) || !is_integer_type(instruction.type)))
         throw LowirError("invalid float to integer conversion");
-      if ((instruction.op == "fpext" || instruction.op == "fptrunc") && (!is_float_type(instruction.source_type.text) || !is_float_type(instruction.type.text)))
+      if ((instruction.conversion_operator == lowir_model::COP_FPEXT || instruction.conversion_operator == lowir_model::COP_FPTRUNC) &&
+          (!is_float_type(instruction.source_type) || !is_float_type(instruction.type)))
         throw LowirError("invalid floating conversion");
-      define_value(instruction, instruction.type.text, &values);
+      if (instruction.conversion_operator == lowir_model::COP_FPEXT && instruction.type.float_kind <= instruction.source_type.float_kind)
+        throw LowirError("fpext does not widen floating type");
+      if (instruction.conversion_operator == lowir_model::COP_FPTRUNC && instruction.type.float_kind >= instruction.source_type.float_kind)
+        throw LowirError("fptrunc does not narrow floating type");
+      define_value(&instruction, instruction.type, &values);
       break;
     }
     case Instruction::IK_ATOMIC_ADD_FETCH:
-      require(instruction.first);
-      require(instruction.second);
-      if (instruction.byte_alignment > 5) throw LowirError("invalid atomic order");
-      define_value(instruction, instruction.type.text, &values);
+      require_pointer_operand(instruction.first, "atomic add pointer");
+      require_operand_type(instruction.second, instruction.type, "atomic add value");
+      if (instruction.atomic_order == lowir_model::AO_INVALID) throw LowirError("invalid atomic order");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_ATOMIC_EXCHANGE:
-      require(instruction.first);
-      require(instruction.second);
-      if (instruction.byte_alignment > 5) throw LowirError("invalid atomic order");
-      define_value(instruction, instruction.type.text, &values);
+      require_pointer_operand(instruction.first, "atomic exchange pointer");
+      require_operand_type(instruction.second, instruction.type, "atomic exchange value");
+      if (instruction.atomic_order == lowir_model::AO_INVALID) throw LowirError("invalid atomic order");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_ATOMIC_COMPARE_EXCHANGE:
-      require(instruction.first);
-      require(instruction.second);
-      require(instruction.third);
-      if (instruction.byte_alignment > 5 || instruction.eh_selector > 5) throw LowirError("invalid atomic order");
-      define_value(instruction, "i64", &values);
+      require_pointer_operand(instruction.first, "atomic compare pointer");
+      require_pointer_operand(instruction.second, "atomic expected pointer");
+      require_operand_type(instruction.third, instruction.type, "atomic desired value");
+      if (instruction.atomic_order == lowir_model::AO_INVALID || instruction.atomic_failure_order == lowir_model::AO_INVALID)
+        throw LowirError("invalid atomic order");
+      define_value(&instruction, i64_type(), &values);
       break;
     case Instruction::IK_ATOMIC_THREAD_FENCE:
     case Instruction::IK_ATOMIC_SIGNAL_FENCE:
-      if (instruction.byte_alignment > 5) throw LowirError("invalid atomic order");
+      if (instruction.atomic_order == lowir_model::AO_INVALID) throw LowirError("invalid atomic order");
       break;
     case Instruction::IK_CALL:
-      validate_call(function, instruction, values, slots);
-      if (!instruction.call_returns_void) define_value(instruction, instruction.call_return_type.text, &values);
+      validate_call(instruction);
+      if (!instruction.call_returns_void) define_value(&instruction, instruction.call_return_type, &values);
       break;
-    case Instruction::IK_COPYOBJ:
+    case Instruction::IK_COPYOBJ: {
       if (instruction.byte_count == 0 || instruction.byte_alignment == 0 || (instruction.byte_alignment & (instruction.byte_alignment - 1)) != 0)
         throw LowirError("invalid storage operation alignment");
       require(instruction.first);
-      require(instruction.second);
-      if (instruction.second.kind == Operand::OP_TEMP && values[instruction.second.text] != "ptr") throw LowirError("copy destination is not pointer");
+      if (!is_memory_operand(instruction.second)) throw LowirError("copy destination is not pointer");
+      const Value source = operand_value(instruction.first);
+      if (!source.known || (!source.type.is_pointer() && !source.type.is_object())) throw LowirError("copy source is not pointer or object");
+      if (source.type.is_object() && (source.type.storage_size() != instruction.byte_count || source.type.storage_alignment() != instruction.byte_alignment))
+        throw LowirError("copy object shape mismatch");
       break;
+    }
     case Instruction::IK_ZEROINIT:
       if (instruction.byte_count == 0 || instruction.byte_alignment == 0 || (instruction.byte_alignment & (instruction.byte_alignment - 1)) != 0)
         throw LowirError("invalid storage operation alignment");
       require(instruction.first);
-      if (instruction.first.kind == Operand::OP_TEMP && values[instruction.first.text] != "ptr") throw LowirError("zero destination is not pointer");
+      if (!is_memory_operand(instruction.first)) throw LowirError("zero destination is not pointer");
       break;
     case Instruction::IK_EH_TRY:
     case Instruction::IK_EH_CLEANUP:
       require_block(instruction.first, blocks);
       break;
     case Instruction::IK_EH_CATCH:
-      if (instruction.first.kind != Operand::OP_GLOBAL || symbols_.find(instruction.first.text) == symbols_.end())
+      if (instruction.first.kind != Operand::OP_GLOBAL || !instruction.first.symbol_id.valid())
         throw LowirError("invalid exception catch symbol");
       break;
     case Instruction::IK_EH_FILTER:
       for (std::size_t i = 0; i < instruction.args.size(); ++i)
-        if (instruction.args[i].kind != Operand::OP_GLOBAL || symbols_.find(instruction.args[i].text) == symbols_.end())
+        if (instruction.args[i].kind != Operand::OP_GLOBAL || !instruction.args[i].symbol_id.valid())
           throw LowirError("invalid exception filter symbol");
       break;
     case Instruction::IK_EH_CATCH_ALL:
@@ -1611,11 +805,11 @@ private:
       require(instruction.first);
       break;
     case Instruction::IK_EXCEPTION:
-      if (instruction.type.text == "void") throw LowirError("void exception value");
-      define_value(instruction, instruction.type.text, &values);
+      if (instruction.type.is_void()) throw LowirError("void exception value");
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_EXCEPTION_SELECTOR:
-      define_value(instruction, instruction.type.text, &values);
+      define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_RESUME:
       break;
@@ -1637,126 +831,166 @@ private:
       }
       break;
     case Instruction::IK_RETURN:
-      if (instruction.type.text != function.return_type.text) throw LowirError("return type mismatch");
-      if (instruction.type.text != "void") require(instruction.first);
+      if (instruction.type != function.return_type) throw LowirError("return type mismatch");
+      if (!instruction.type.is_void()) require_operand_type(instruction.first, function.return_type, "return value");
       break;
     default:
       throw LowirError("unsupported instruction");
     }
   }
 
-  const Program &program_;
-  std::map<std::string, Symbol> symbols_;
-  mutable std::set<std::string> tls_wrappers_;
+  Program &program_;
+  std::map<std::string, lowir_model::SymbolId> symbol_names_;
+  std::vector<Symbol> symbols_;
+  std::vector<const Function::Slot *> slot_owners_;
+  std::vector<const Block *> block_owners_;
+  std::set<lowir_model::SymbolId> tls_wrappers_;
+  lowir_model::SymbolId entry_id_;
+  lowir_model::SymbolId init_id_;
+  lowir_model::SymbolId fini_id_;
 };
 
 struct Location {
-  std::string type;
   std::size_t offset;
   bool valid;
   Location() : offset(0), valid(false) {}
-  Location(const std::string &t, std::size_t o) : type(t), offset(o), valid(true) {}
+  explicit Location(std::size_t o) : offset(o), valid(true) {}
 };
 
 class FunctionLayout {
 public:
-  explicit FunctionLayout(const Function &function) : function_(function), frame_size_(0), f80_scratch_offset_(0), has_f80_(false) { build(); }
-
-  const Location &find(const std::string &name) const {
-    std::map<std::string, Location>::const_iterator it = locations_.find(name);
-    if (it == locations_.end()) throw LowirError("missing emitted value location");
-    return it->second;
+  FunctionLayout(const Function &function, const Validator &validator)
+      : function_(function), validator_(validator), frame_size_(0), f80_scratch_offset_(0), has_f80_(false),
+        value_locations_(function.value_count), slot_locations_(function.slot_count) {
+    build();
   }
 
-  bool has(const std::string &name) const { return locations_.find(name) != locations_.end(); }
+  const Location &find(const lowir_model::ValueId id) const {
+    if (!id.valid() || !function_.value_begin.valid() || id.index < function_.value_begin.index ||
+        id.index >= function_.value_begin.index + function_.value_count)
+      throw LowirError("value identity is outside function range");
+    const Location &location = value_locations_[id.index - function_.value_begin.index];
+    if (!location.valid) throw LowirError("missing emitted value location");
+    return location;
+  }
+
+  const Location &find(const lowir_model::SlotId id) const {
+    if (!id.valid() || !function_.slot_begin.valid() || id.index < function_.slot_begin.index ||
+        id.index >= function_.slot_begin.index + function_.slot_count)
+      throw LowirError("slot identity is outside function range");
+    const Location &location = slot_locations_[id.index - function_.slot_begin.index];
+    if (!location.valid) throw LowirError("missing emitted slot location");
+    return location;
+  }
+
+  const Location &find(const Operand &operand) const {
+    if (operand.kind == Operand::OP_TEMP) return find(operand.value_id);
+    if (operand.kind == Operand::OP_SLOT) return find(operand.slot_id);
+    throw LowirError("missing emitted local location");
+  }
+
+  LowType type(const Operand &operand) const {
+    if (operand.kind == Operand::OP_TEMP) return validator_.value_type(operand.value_id);
+    if (operand.kind == Operand::OP_SLOT) return validator_.slot_type(operand.slot_id);
+    throw LowirError("missing emitted local type");
+  }
 
   std::size_t frame_size() const { return frame_size_; }
 
   bool has_f80() const { return has_f80_; }
 
   std::size_t f80_scratch_offset() const {
-    if (!has_f80_) throw LowirError("f80 scratch requested without f80 value");
+    if (f80_scratch_offset_ == 0) throw LowirError("f80 scratch requested without scratch storage");
     return f80_scratch_offset_;
   }
 
 private:
-  void allocate(const std::string &name, const std::string &type) {
-    if (locations_.find(name) != locations_.end()) {
-      throw LowirError("duplicate emitted location");
-    }
-    const std::size_t size = type == "f80" ? 16 : (starts_with(type, "obj<") ? type_storage_size(type) : 8);
-    const std::size_t alignment = type == "f80" ? 8 : (starts_with(type, "obj<") ? type_storage_alignment(type) : 8);
+  Location allocate_frame(const LowType &type) {
+    const std::size_t size = type.is_float() && type.float_kind == LowType::FLOAT_F80 ? 16 : (type.is_object() ? type_storage_size(type) : 8);
+    const std::size_t alignment = type.is_float() && type.float_kind == LowType::FLOAT_F80 ? 8 : (type.is_object() ? type_storage_alignment(type) : 8);
     if (alignment > 1) {
       const std::size_t remainder = frame_size_ % alignment;
       if (remainder != 0) frame_size_ += alignment - remainder;
     }
     frame_size_ += size;
-    locations_[name] = Location(type, frame_size_);
+    return Location(frame_size_);
   }
 
-  static std::string definition_type(const Instruction &instruction) {
-    switch (instruction.kind) {
-    case Instruction::IK_CMP:
-    case Instruction::IK_ATOMIC_COMPARE_EXCHANGE:
-      return "i64";
-    case Instruction::IK_ADDR:
-    case Instruction::IK_INDEX:
-      return "ptr";
-    case Instruction::IK_CALL:
-      return instruction.call_returns_void ? std::string() : instruction.call_return_type.text;
-    default:
-      return instruction.type.text;
-    }
+  void allocate(const lowir_model::ValueId id, const LowType &type) {
+    if (!id.valid() || id.index < function_.value_begin.index || id.index >= function_.value_begin.index + function_.value_count)
+      throw LowirError("value identity is outside function range");
+    Location &location = value_locations_[id.index - function_.value_begin.index];
+    if (location.valid) throw LowirError("duplicate emitted location");
+    location = allocate_frame(type);
+  }
+
+  void allocate(const lowir_model::SlotId id, const LowType &type) {
+    if (!id.valid() || id.index < function_.slot_begin.index || id.index >= function_.slot_begin.index + function_.slot_count)
+      throw LowirError("slot identity is outside function range");
+    Location &location = slot_locations_[id.index - function_.slot_begin.index];
+    if (location.valid) throw LowirError("duplicate emitted location");
+    location = allocate_frame(type);
   }
 
   void build() {
-    const bool hidden_return = starts_with(function_.return_type.text, "obj<") || function_.return_type.text == "f80";
+    const bool hidden_return = function_.return_type.is_object() || (function_.return_type.is_float() && function_.return_type.float_kind == LowType::FLOAT_F80);
     if (hidden_return) frame_size_ += 8;
-    for (std::size_t i = 0; i < function_.params.size(); ++i) allocate(function_.params[i].name, function_.params[i].type.text);
-    for (std::size_t i = 0; i < function_.slots.size(); ++i) allocate(function_.slots[i].first, function_.slots[i].second.text);
+    for (std::size_t i = 0; i < function_.params.size(); ++i) allocate(function_.params[i].value_id, function_.params[i].type);
+    for (std::size_t i = 0; i < function_.slots.size(); ++i) allocate(function_.slots[i].slot_id, function_.slots[i].type);
+    bool needs_scratch = false;
     for (std::size_t b = 0; b < function_.blocks.size(); ++b) {
       for (std::size_t i = 0; i < function_.blocks[b].instructions.size(); ++i) {
         const Instruction &instruction = function_.blocks[b].instructions[i];
-        if (!instruction.dest.empty()) {
-          const std::string type = definition_type(instruction);
-          if (!type.empty()) allocate(instruction.dest, type);
+        if (instruction.dest_id.valid()) {
+          const LowType type = validator_.value_type(instruction.dest_id);
+          if (type.valid()) allocate(instruction.dest_id, type);
+        }
+        if (instruction.kind == Instruction::IK_CONVERT) needs_scratch = true;
+        if ((instruction.type.is_float() && instruction.type.float_kind == LowType::FLOAT_F80) ||
+            (instruction.source_type.is_float() && instruction.source_type.float_kind == LowType::FLOAT_F80) ||
+            (instruction.call_return_type.is_float() && instruction.call_return_type.float_kind == LowType::FLOAT_F80))
+          has_f80_ = true;
+        if (instruction.kind == Instruction::IK_CALL) {
+          const std::vector<Parameter> *parameters = &instruction.call_params;
+          if (instruction.direct_callee_id.valid()) {
+            const Function *target = validator_.function_for(instruction.direct_callee_id);
+            const FunctionDeclaration *declaration = validator_.function_declaration_for(instruction.direct_callee_id);
+            if (target != 0) parameters = &target->params;
+            else if (declaration != 0) parameters = &declaration->params;
+          }
+          for (std::size_t p = 0; p < parameters->size(); ++p)
+            if ((*parameters)[p].type.is_float() && (*parameters)[p].type.float_kind == LowType::FLOAT_F80) has_f80_ = true;
         }
       }
     }
-    bool needs_scratch = false;
     for (std::size_t i = 0; i < function_.params.size(); ++i)
-      if (function_.params[i].type.text == "f80") has_f80_ = true;
-    if (function_.return_type.text == "f80") has_f80_ = true;
+      if (function_.params[i].type.is_float() && function_.params[i].type.float_kind == LowType::FLOAT_F80) has_f80_ = true;
+    if (function_.return_type.is_float() && function_.return_type.float_kind == LowType::FLOAT_F80) has_f80_ = true;
     for (std::size_t i = 0; i < function_.slots.size(); ++i)
-      if (function_.slots[i].second.text == "f80") has_f80_ = true;
-    for (std::size_t b = 0; b < function_.blocks.size(); ++b) {
-      for (std::size_t i = 0; i < function_.blocks[b].instructions.size(); ++i) {
-        const Instruction &instruction = function_.blocks[b].instructions[i];
-        if (instruction.kind == Instruction::IK_CONVERT) needs_scratch = true;
-        if (instruction.type.text == "f80" || instruction.source_type.text == "f80" || instruction.call_return_type.text == "f80") has_f80_ = true;
-      }
-    }
+      if (function_.slots[i].type.is_float() && function_.slots[i].type.float_kind == LowType::FLOAT_F80) has_f80_ = true;
     if (has_f80_ || needs_scratch) {
-      if (has_f80_) f80_scratch_offset_ = frame_size_ + 16;
+      f80_scratch_offset_ = frame_size_ + 16;
       frame_size_ += 64;
     }
   }
 
   const Function &function_;
+  const Validator &validator_;
   std::size_t frame_size_;
   std::size_t f80_scratch_offset_;
   bool has_f80_;
-  std::map<std::string, Location> locations_;
+  std::vector<Location> value_locations_;
+  std::vector<Location> slot_locations_;
 };
 
 class Emitter {
 public:
-  explicit Emitter(const Program &program) : program_(program), validator_(program), out_() {}
+  Emitter(const Program &program, const Validator &validator) : program_(program), validator_(validator), out_() {}
 
   std::string emit() {
     const Function *entry = validator_.entry_function();
     if (entry == 0) throw LowirError("missing entry function");
-    collect_output_symbols();
+    collect_emission_facts();
     emit_start(entry);
     for (std::size_t i = 0; i < program_.functions.size(); ++i) {
       emit_function(program_.functions[i]);
@@ -1783,10 +1017,10 @@ private:
 
   void blank() { out_ << '\n'; }
 
-  static std::string width_name(const std::string &type) {
-    if (type == "f32") return "32";
-    if (type == "f64") return "64";
-    if (type == "f80") return "80";
+  static std::string width_name(const LowType &type) {
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F32) return "32";
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F64) return "64";
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) return "80";
     const int width = integer_width(type);
     if (width == 0) return "64";
     std::ostringstream result;
@@ -1802,14 +1036,6 @@ private:
     if (reg == "t8" || reg == "t16" || reg == "t32" || reg == "t64") return "t64";
     return reg;
   }
-
-  struct OutputSymbol {
-    enum Kind { OS_GLOBAL, OS_FUNCTION, OS_FUNCTION_DECLARATION } kind;
-    const Function *function;
-    const FunctionDeclaration *declaration;
-
-    OutputSymbol() : kind(OS_GLOBAL), function(0), declaration(0) {}
-  };
 
   static std::string address_at(std::size_t offset) {
     std::ostringstream result;
@@ -1831,35 +1057,13 @@ private:
     return result.str();
   }
 
-  void collect_output_symbols() {
-    symbols_.clear();
-    output_symbols_.clear();
-    functions_.clear();
-    function_declarations_.clear();
+  void collect_emission_facts() {
     has_eh_ = false;
-    for (std::size_t i = 0; i < program_.globals.size(); ++i) add_output_global(program_.globals[i].name, cy_global(program_.globals[i].name));
-    for (std::size_t i = 0; i < program_.global_declarations.size(); ++i)
-      add_output_global(program_.global_declarations[i].name, cy_global(program_.global_declarations[i].name));
-    for (std::size_t i = 0; i < program_.function_declarations.size(); ++i) {
-      const FunctionDeclaration *declaration = &program_.function_declarations[i];
-      symbols_[declaration->name] = cy_function(declaration->name);
-      OutputSymbol symbol;
-      symbol.kind = OutputSymbol::OS_FUNCTION_DECLARATION;
-      symbol.declaration = declaration;
-      output_symbols_[declaration->name] = symbol;
-      function_declarations_[declaration->name] = declaration;
-    }
     for (std::size_t i = 0; i < program_.functions.size(); ++i) {
-      const Function *function = &program_.functions[i];
-      symbols_[function->name] = cy_function(function->name);
-      OutputSymbol symbol;
-      symbol.kind = OutputSymbol::OS_FUNCTION;
-      symbol.function = function;
-      output_symbols_[function->name] = symbol;
-      functions_[function->name] = function;
-      for (std::size_t b = 0; b < function->blocks.size(); ++b) {
-        for (std::size_t j = 0; j < function->blocks[b].instructions.size(); ++j) {
-          const Instruction::Kind kind = function->blocks[b].instructions[j].kind;
+      const Function &function = program_.functions[i];
+      for (std::size_t b = 0; b < function.blocks.size(); ++b) {
+        for (std::size_t j = 0; j < function.blocks[b].instructions.size(); ++j) {
+          const Instruction::Kind kind = function.blocks[b].instructions[j].kind;
           if (kind == Instruction::IK_EH_TRY || kind == Instruction::IK_EH_CLEANUP || kind == Instruction::IK_EH_END || kind == Instruction::IK_THROW ||
               kind == Instruction::IK_EXCEPTION || kind == Instruction::IK_RESUME) {
             has_eh_ = true;
@@ -1869,36 +1073,19 @@ private:
     }
   }
 
-  void add_output_global(const std::string &name, const std::string &label) {
-    symbols_[name] = label;
-    OutputSymbol symbol;
-    symbol.kind = OutputSymbol::OS_GLOBAL;
-    output_symbols_[name] = symbol;
-  }
-
-  const OutputSymbol *output_symbol(const std::string &name) const {
-    std::map<std::string, OutputSymbol>::const_iterator it = output_symbols_.find(name);
-    return it == output_symbols_.end() ? 0 : &it->second;
-  }
-
-  bool is_function_symbol(const std::string &name) const {
-    const OutputSymbol *symbol = output_symbol(name);
-    return symbol != 0 && symbol->kind != OutputSymbol::OS_GLOBAL;
-  }
-
   void emit_start(const Function *entry) {
     line("start:");
     line("\tmove64 bp sp;");
     const Function *init = validator_.init_function();
     const Function *fini = validator_.fini_function();
     if (init != 0) {
-      line("\tcall " + cy_function(init->name) + ";");
+      line("\tcall " + validator_.symbol_label(init->symbol_id) + ";");
     }
-    line("\tcall " + cy_function(entry->name) + ";");
+    line("\tcall " + validator_.symbol_label(entry->symbol_id) + ";");
     if (fini != 0) {
       line("\tisub64 sp sp 8;");
       line("\tmove64 [sp] x64;");
-      line("\tcall " + cy_function(fini->name) + ";");
+      line("\tcall " + validator_.symbol_label(fini->symbol_id) + ";");
       line("\tmove64 x64 [sp];");
       line("\tiadd64 sp sp 8;");
     }
@@ -1909,10 +1096,10 @@ private:
   std::string stack_operand(const Location &location) const { return address_at(location.offset); }
 
   void emit_function(const Function &function) {
-    FunctionLayout layout(function);
+    FunctionLayout layout(function, validator_);
     current_function_ = &function;
     current_layout_ = &layout;
-    line(cy_function(function.name) + ":");
+    line(validator_.symbol_label(function.symbol_id) + ":");
     line("\tisub64 sp sp 8;");
     line("\tmove64 [sp] bp;");
     line("\tmove64 bp sp;");
@@ -1923,7 +1110,7 @@ private:
     for (std::size_t b = 0; b < function.blocks.size(); ++b) {
       emit_block(function, function.blocks[b]);
     }
-    line(cy_function(function.name) + "__epilogue:");
+    line(validator_.symbol_label(function.symbol_id) + "__epilogue:");
     line("\tmove64 sp bp;");
     line("\tmove64 bp [sp];");
     line("\tiadd64 sp sp 8;");
@@ -1939,14 +1126,14 @@ private:
   }
 
   void emit_parameter_spills(const Function &function) {
-    const std::size_t hidden = starts_with(function.return_type.text, "obj<") || function.return_type.text == "f80" ? 1 : 0;
+    const std::size_t hidden = function.return_type.is_object() || (function.return_type.is_float() && function.return_type.float_kind == LowType::FLOAT_F80) ? 1 : 0;
     if (hidden) line("\tmove64 [bp-8] x64;");
     for (std::size_t i = 0; i < function.params.size(); ++i) {
       const Parameter &parameter = function.params[i];
-      const Location &location = current_layout_->find(parameter.name);
+      const Location &location = current_layout_->find(parameter.value_id);
       const std::size_t register_index = i + hidden;
       const std::string reg = parameter_register(register_index);
-      if (parameter.type.text == "f80") {
+      if (parameter.type.is_float() && parameter.type.float_kind == LowType::FLOAT_F80) {
         if (register_index < 4)
           line("\tmove64 x64 " + reg + "64;");
         else
@@ -1957,12 +1144,12 @@ private:
         line("\tmove64 " + address_at(location.offset - 8) + " z64;");
         continue;
       }
-      if (starts_with(parameter.type.text, "obj<")) {
+      if (parameter.type.is_object()) {
         if (register_index < 4)
           line("\tmove64 x64 " + reg + "64;");
         else
           line("\tmove64 x64 [bp+" + immediate_signed(16 + (register_index - 4) * 8) + "];");
-        const std::size_t bytes = type_storage_size(parameter.type.text);
+        const std::size_t bytes = type_storage_size(parameter.type);
         std::size_t copied = 0;
         while (copied + 8 <= bytes) {
           line("\tmove64 z64 [x64" + (copied == 0 ? std::string() : "+" + immediate_signed(copied)) + "];");
@@ -1979,45 +1166,45 @@ private:
         continue;
       }
       if (register_index < 4) {
-        emit_store_register_to_location(location, reg + width_name(parameter.type.text));
+        emit_store_register_to_location(location, parameter.type, reg + width_name(parameter.type));
       } else {
-        emit_load_memory_to_register("[bp+" + immediate_signed(16 + (register_index - 4) * 8) + "]", "x", parameter.type.text);
-        emit_store_register_to_location(location, "x" + width_name(parameter.type.text));
+        emit_load_memory_to_register("[bp+" + immediate_signed(16 + (register_index - 4) * 8) + "]", "x", parameter.type);
+        emit_store_register_to_location(location, parameter.type, "x" + width_name(parameter.type));
       }
     }
   }
 
-  void emit_store_register_to_location(const Location &location, const std::string &source_register) {
-    const std::string width = width_name(location.type);
+  void emit_store_register_to_location(const Location &location, const LowType &type, const std::string &source_register) {
+    const std::string width = width_name(type);
     const std::string source = source_register == "x" + width ? source_register : source_register;
-    if (location.type == "f32")
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
       line("\tmove32 " + stack_operand(location) + " " + source + ";");
-    else if (location.type == "f64" || location.type == "ptr" || is_integer_type(location.type))
+    else if ((type.is_float() && type.float_kind == LowType::FLOAT_F64) || type.is_pointer() || is_integer_type(type))
       line("\tmove" + width + " " + stack_operand(location) + " " + source + ";");
-    else if (location.type == "f80") {
+    else if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       line("\tmove64 " + stack_operand(location) + " " + source + ";");
     }
   }
 
-  void emit_load_memory_to_register(const std::string &memory, const std::string &register_name, const std::string &type) {
-    if (type == "f32")
+  void emit_load_memory_to_register(const std::string &memory, const std::string &register_name, const LowType &type) {
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
       line("\tmove32 " + register_name + "32 " + memory + ";");
-    else if (type == "f64" || type == "ptr" || is_integer_type(type))
+    else if ((type.is_float() && type.float_kind == LowType::FLOAT_F64) || type.is_pointer() || is_integer_type(type))
       line("\tmove" + width_name(type) + " " + register_name + width_name(type) + " " + memory + ";");
   }
 
   void emit_block(const Function &function, const Block &block) {
-    line(cy_block(function.name, block.label) + ":");
+    line(cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(block.block_id)) + ":");
     for (std::size_t i = 0; i < block.instructions.size(); ++i) emit_instruction(function, block.instructions[i]);
   }
 
-  void emit_zero_extend_register(const std::string &base, const std::string &type) {
+  void emit_zero_extend_register(const std::string &base, const LowType &type) {
     const int width = integer_width(type);
     if (width != 0 && width < 32) line("\tmove64 " + reg64(base) + " 0;");
   }
 
-  void emit_load_value(const Operand &operand, const std::string &type, const std::string &base_register) {
-    if (type == "f80") throw LowirError("f80 value requires memory lowering");
+  void emit_load_value(const Operand &operand, const LowType &type, const std::string &base_register) {
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) throw LowirError("f80 value requires memory lowering");
     const std::string full_register = reg64(base_register);
     const std::string register_name = is_float_type(type) ? base_register + width_name(type) : base_register + width_name(type);
     if (operand.kind == Operand::OP_INTEGER) {
@@ -2026,29 +1213,24 @@ private:
       return;
     }
     if (operand.kind == Operand::OP_FLOAT) {
-      std::string literal = operand.text;
-      if (type == "f32" && literal[literal.size() - 1] != 'f' && literal[literal.size() - 1] != 'F') literal += "f";
+      std::string literal = validator_.presentation(operand.presentation_id);
+      if (type.is_float() && type.float_kind == LowType::FLOAT_F32 && literal[literal.size() - 1] != 'f' && literal[literal.size() - 1] != 'F') literal += "f";
       line("\tmove" + width_name(type) + " " + register_name + " " + literal + ";");
       return;
     }
-    if (operand.text == "nullptr") {
-      line("\tmove64 " + full_register + " 0;");
-      return;
-    }
     if (operand.kind == Operand::OP_GLOBAL) {
-      std::map<std::string, std::string>::const_iterator it = symbols_.find(operand.text);
-      if (it == symbols_.end()) throw LowirError("unknown output symbol");
-      if (is_function_symbol(operand.text))
-        line("\tmove64 " + full_register + " " + it->second + ";");
-      else if (type == "f32")
-        line("\tmove32 " + register_name + " [" + it->second + "];");
+      const std::string &label = validator_.symbol_label(operand.symbol_id);
+      if (validator_.is_function_symbol(operand.symbol_id))
+        line("\tmove64 " + full_register + " " + label + ";");
+      else if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
+        line("\tmove32 " + register_name + " [" + label + "];");
       else
-        line("\tmove" + width_name(type) + " " + register_name + " [" + it->second + "];");
+        line("\tmove" + width_name(type) + " " + register_name + " [" + label + "];");
       return;
     }
-    const Location &location = current_layout_->find(operand.text);
+    const Location &location = current_layout_->find(operand);
     emit_zero_extend_register(base_register, type);
-    if (type == "f32")
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
       line("\tmove32 " + register_name + " " + stack_operand(location) + ";");
     else
       line("\tmove" + width_name(type) + " " + register_name + " " + stack_operand(location) + ";");
@@ -2073,7 +1255,7 @@ private:
   }
 
   void emit_f80_literal(const Operand &operand, std::size_t scratch) {
-    const std::string literal = operand.text.empty() ? "0.0L" : operand.text;
+    const std::string literal = operand.presentation_id.valid() ? validator_.presentation(operand.presentation_id) : "0.0L";
     line("\tmove80 " + f80_scratch_low(scratch) + " " + literal + ";");
     emit_f80_padding(scratch);
   }
@@ -2086,11 +1268,11 @@ private:
     std::string source_low;
     std::string source_high;
     if (operand.kind == Operand::OP_GLOBAL) {
-      line("\tmove64 x64 " + cy_global(operand.text) + ";");
+      line("\tmove64 x64 " + validator_.symbol_label(operand.symbol_id) + ";");
       source_low = "[x64]";
       source_high = "[x64+8]";
     } else if (operand.kind == Operand::OP_TEMP || operand.kind == Operand::OP_SLOT) {
-      const Location &location = current_layout_->find(operand.text);
+      const Location &location = current_layout_->find(operand);
       emit_address_of_location(location, "x64");
       source_low = "[x64]";
       source_high = "[x64+8]";
@@ -2100,16 +1282,16 @@ private:
     emit_f80_copy(source_low, source_high, f80_scratch_low(scratch), f80_scratch_high(scratch));
   }
 
-  void emit_f80_result_from_scratch(const std::string &destination, std::size_t scratch) {
+  void emit_f80_result_from_scratch(const lowir_model::ValueId destination, std::size_t scratch) {
     const Location &location = current_layout_->find(destination);
     emit_f80_copy(f80_scratch_low(scratch), f80_scratch_high(scratch), stack_operand(location), address_at(location.offset - 8));
   }
 
   void emit_f80_storage_address(const Operand &storage, const std::string &reg) {
     if (storage.kind == Operand::OP_GLOBAL) {
-      line("\tmove64 " + reg + " " + cy_global(storage.text) + ";");
+      line("\tmove64 " + reg + " " + validator_.symbol_label(storage.symbol_id) + ";");
     } else if (storage.kind == Operand::OP_SLOT) {
-      emit_address_of_location(current_layout_->find(storage.text), reg);
+      emit_address_of_location(current_layout_->find(storage), reg);
     } else {
       emit_load_pointer(storage, reg == "x64" ? "x" : "y");
     }
@@ -2118,7 +1300,7 @@ private:
   void emit_f80_load_instruction(const Instruction &instruction) {
     emit_f80_storage_address(instruction.first, "x64");
     emit_f80_copy("[x64]", "[x64+8]", f80_scratch_low(0), f80_scratch_high(0));
-    emit_f80_result_from_scratch(instruction.dest, 0);
+    emit_f80_result_from_scratch(instruction.dest_id, 0);
   }
 
   void emit_f80_store_instruction(const Instruction &instruction) {
@@ -2129,22 +1311,19 @@ private:
 
   void emit_load_pointer(const Operand &operand, const std::string &base_register) {
     if (operand.kind == Operand::OP_GLOBAL) {
-      if (is_function_symbol(operand.text))
-        line("\tmove64 " + reg64(base_register) + " " + cy_function(operand.text) + ";");
+      if (validator_.is_function_symbol(operand.symbol_id))
+        line("\tmove64 " + reg64(base_register) + " " + validator_.symbol_label(operand.symbol_id) + ";");
       else
-        line("\tmove64 " + reg64(base_register) + " [" + cy_global(operand.text) + "];");
+        line("\tmove64 " + reg64(base_register) + " [" + validator_.symbol_label(operand.symbol_id) + "];");
       return;
     }
     if (operand.kind == Operand::OP_INTEGER) {
       line("\tmove64 " + reg64(base_register) + " " + immediate_signed(operand.int_value) + ";");
       return;
     }
-    if (operand.text == "nullptr") {
-      line("\tmove64 " + reg64(base_register) + " 0;");
-      return;
-    }
-    const Location &location = current_layout_->find(operand.text);
-    if (operand.kind == Operand::OP_SLOT && location.type != "ptr" && !starts_with(location.type, "obj<")) {
+    const Location &location = current_layout_->find(operand);
+    if (operand.kind == Operand::OP_SLOT && !current_layout_->type(operand).is_pointer() &&
+        !current_layout_->type(operand).is_object()) {
       emit_address_of_location(location, reg64(base_register));
     } else {
       line("\tmove64 " + reg64(base_register) + " " + stack_operand(location) + ";");
@@ -2155,66 +1334,67 @@ private:
     line("\tisub64 " + reg + " bp " + immediate_signed(static_cast<long long>(location.offset)) + ";");
   }
 
-  void emit_result(const std::string &destination, const std::string &type, const std::string &base_register) {
+  void emit_result(const lowir_model::ValueId destination, const std::string &base_register) {
     const Location &location = current_layout_->find(destination);
+    const LowType type = validator_.value_type(destination);
     const std::string width = width_name(type);
     const std::string reg = base_register + width;
-    if (type == "f32")
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
       line("\tmove32 " + stack_operand(location) + " " + reg + ";");
-    else if (type == "f80")
+    else if (type.is_float() && type.float_kind == LowType::FLOAT_F80)
       throw LowirError("f80 result requires memory lowering");
     else
       line("\tmove" + width + " " + stack_operand(location) + " " + reg + ";");
   }
 
-  void emit_address_result(const std::string &destination, const std::string &source) { emit_result(destination, "ptr", source); }
+  void emit_address_result(const lowir_model::ValueId destination, const std::string &source) { emit_result(destination, source); }
 
   void emit_addr_instruction(const Instruction &instruction) {
     if (instruction.first.kind == Operand::OP_SLOT) {
-      emit_address_of_location(current_layout_->find(instruction.first.text), "x64");
+      emit_address_of_location(current_layout_->find(instruction.first), "x64");
     } else if (instruction.first.kind == Operand::OP_GLOBAL) {
-      line("\tmove64 x64 " + (is_function_symbol(instruction.first.text) ? cy_function(instruction.first.text) : cy_global(instruction.first.text)) + ";");
+      line("\tmove64 x64 " + validator_.symbol_label(instruction.first.symbol_id) + ";");
     } else {
       throw LowirError("invalid addr operand");
     }
-    emit_address_result(instruction.dest, "x");
+    emit_address_result(instruction.dest_id, "x");
   }
 
   bool is_direct_storage(const Operand &operand) const { return operand.kind == Operand::OP_SLOT || operand.kind == Operand::OP_GLOBAL; }
 
   void emit_load_instruction(const Instruction &instruction) {
-    const std::string type = instruction.type.text;
-    if (type == "f80") {
+    const LowType &type = instruction.type;
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       emit_f80_load_instruction(instruction);
       return;
     }
     const bool atomic = instruction.kind == Instruction::IK_ATOMIC_LOAD;
     if (is_direct_storage(instruction.first)) {
       if (instruction.first.kind == Operand::OP_SLOT) {
-        emit_load_memory_to_register(stack_operand(current_layout_->find(instruction.first.text)), "x", type);
+        emit_load_memory_to_register(stack_operand(current_layout_->find(instruction.first)), "x", type);
       } else {
-        emit_load_memory_to_register("[" + cy_global(instruction.first.text) + "]", "x", type);
+        emit_load_memory_to_register("[" + validator_.symbol_label(instruction.first.symbol_id) + "]", "x", type);
       }
     } else {
       emit_load_pointer(instruction.first, atomic ? "y" : "x");
-      if (type == "f32")
+      if (type.is_float() && type.float_kind == LowType::FLOAT_F32)
         line("\tmove32 x32 [x64];");
       else if (atomic)
         line("\tmove" + width_name(type) + " x" + width_name(type) + " [y64];");
       else
         line("\tmove" + width_name(type) + " x" + width_name(type) + " [x64];");
     }
-    if (!is_direct_storage(instruction.first) && type == "i32") {
+    if (!is_direct_storage(instruction.first) && type.is_integer() && type.integer_kind == LowType::INTEGER_I32) {
       line("\tmove8 t8 32;");
       line("\tlshift64 x64 x64 t8;");
       line("\tsrshift64 x64 x64 t8;");
     }
-    emit_result(instruction.dest, type, "x");
+    emit_result(instruction.dest_id, "x");
   }
 
   void emit_store_instruction(const Instruction &instruction) {
-    const std::string type = instruction.type.text;
-    if (type == "f80") {
+    const LowType &type = instruction.type;
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       emit_f80_store_instruction(instruction);
       return;
     }
@@ -2226,8 +1406,8 @@ private:
     }
     emit_load_value(instruction.first, type, "x");
     if (is_direct_storage(instruction.second)) {
-      const std::string destination = instruction.second.kind == Operand::OP_SLOT ? stack_operand(current_layout_->find(instruction.second.text))
-                                                                                  : "[" + cy_global(instruction.second.text) + "]";
+      const std::string destination = instruction.second.kind == Operand::OP_SLOT ? stack_operand(current_layout_->find(instruction.second))
+                                                                                  : "[" + validator_.symbol_label(instruction.second.symbol_id) + "]";
       line("\tmove" + width_name(type) + " " + destination + " x" + width_name(type) + ";");
     } else {
       emit_load_pointer(instruction.second, "y");
@@ -2236,203 +1416,263 @@ private:
   }
 
   void emit_index_instruction(const Instruction &instruction) {
-    if (instruction.first.kind == Operand::OP_TEMP && current_layout_->find(instruction.first.text).type.find("obj<") == 0) {
-      emit_load_value(instruction.first, "ptr", "y");
+    if (instruction.first.kind == Operand::OP_TEMP && current_layout_->type(instruction.first).is_object()) {
+      emit_load_value(instruction.first, pointer_type(), "y");
     } else {
       emit_load_pointer(instruction.first, "y");
     }
-    emit_load_value(instruction.second, "i64", "x");
-    const std::size_t scale = type_storage_size(instruction.type.text);
+    emit_load_value(instruction.second, i64_type(), "x");
+    const std::size_t scale = type_storage_size(instruction.type);
     if (scale != 1) {
       line("\tmove64 z64 " + immediate_signed(static_cast<long long>(scale)) + ";");
       line("\tsmul64 x64 x64 z64;");
     }
     line("\tiadd64 x64 y64 x64;");
-    emit_address_result(instruction.dest, "x");
+    emit_address_result(instruction.dest_id, "x");
+  }
+
+  static std::string unary_spelling(UnaryOperator op) {
+    switch (op) {
+    case lowir_model::UOP_NEG: return "neg";
+    case lowir_model::UOP_NOT: return "not";
+    case lowir_model::UOP_BITNOT: return "bitnot";
+    case lowir_model::UOP_DECAY: return "decay";
+    case lowir_model::UOP_BSWAP: return "bswap";
+    default: throw LowirError("unsupported unary operator");
+    }
+  }
+
+  static std::string binary_spelling(BinaryOperator op) {
+    switch (op) {
+    case lowir_model::BOP_ADD: return "add";
+    case lowir_model::BOP_SUB: return "sub";
+    case lowir_model::BOP_MUL: return "mul";
+    case lowir_model::BOP_DIV: return "div";
+    case lowir_model::BOP_MOD: return "mod";
+    case lowir_model::BOP_UDIV: return "udiv";
+    case lowir_model::BOP_UMOD: return "umod";
+    case lowir_model::BOP_AND: return "and";
+    case lowir_model::BOP_OR: return "or";
+    case lowir_model::BOP_XOR: return "xor";
+    case lowir_model::BOP_SHL: return "shl";
+    case lowir_model::BOP_SHR: return "shr";
+    case lowir_model::BOP_USHR: return "ushr";
+    default: throw LowirError("unsupported binary operator");
+    }
+  }
+
+  static std::string compare_spelling(ComparePredicate predicate) {
+    switch (predicate) {
+    case lowir_model::CPP_EQ: return "eq";
+    case lowir_model::CPP_NE: return "ne";
+    case lowir_model::CPP_LT: return "lt";
+    case lowir_model::CPP_LE: return "le";
+    case lowir_model::CPP_GT: return "gt";
+    case lowir_model::CPP_GE: return "ge";
+    case lowir_model::CPP_ULT: return "ult";
+    case lowir_model::CPP_ULE: return "ule";
+    case lowir_model::CPP_UGT: return "ugt";
+    case lowir_model::CPP_UGE: return "uge";
+    default: throw LowirError("unsupported comparison predicate");
+    }
   }
 
   void emit_unary_instruction(const Instruction &instruction) {
-    const std::string type = instruction.type.text;
-    if (type == "f80") {
-      if (instruction.op != "neg") throw LowirError("unsupported f80 unary operator");
+    const LowType &type = instruction.type;
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
+      if (instruction.unary_operator != lowir_model::UOP_NEG) throw LowirError("unsupported f80 unary operator");
       emit_f80_operand_to_scratch(instruction.first, 0);
       Operand zero;
       zero.kind = Operand::OP_FLOAT;
-      zero.text = "0.0L";
+      zero.float_value = 0.0L;
       emit_f80_literal(zero, 1);
       line("\tfsub80 " + f80_scratch_low(2) + " " + f80_scratch_low(1) + " " + f80_scratch_low(0) + ";");
       emit_f80_padding(2);
-      emit_f80_result_from_scratch(instruction.dest, 2);
+      emit_f80_result_from_scratch(instruction.dest_id, 2);
       return;
     }
-    if (instruction.op == "decay") {
+    if (instruction.unary_operator == lowir_model::UOP_DECAY) {
       emit_load_value(instruction.first, type, "x");
-      emit_result(instruction.dest, type, "x");
+      emit_result(instruction.dest_id, "x");
       return;
     }
-    if (instruction.op == "not") {
+    if (instruction.unary_operator == lowir_model::UOP_NOT) {
       emit_load_value(instruction.first, type, "x");
       line("\tieq" + width_name(type) + " z8 x" + width_name(type) + " 0;");
-      emit_boolean_result(instruction.dest);
+      emit_boolean_result(instruction.dest_id);
       return;
     }
     emit_load_value(instruction.first, type, "x");
-    if (instruction.op == "neg") {
+    if (instruction.unary_operator == lowir_model::UOP_NEG) {
       line("\tmove64 y64 0;");
       line("\tisub" + width_name(type) + " x" + width_name(type) + " y" + width_name(type) + " x" + width_name(type) + ";");
-    } else if (instruction.op == "bitnot") {
+    } else if (instruction.unary_operator == lowir_model::UOP_BITNOT) {
       line("\tnot" + width_name(type) + " x" + width_name(type) + " x" + width_name(type) + ";");
-    } else if (instruction.op == "bswap") {
+    } else if (instruction.unary_operator == lowir_model::UOP_BSWAP) {
       line("\tbswap" + width_name(type) + " x" + width_name(type) + " x" + width_name(type) + ";");
     } else {
       throw LowirError("unsupported unary operator");
     }
-    emit_result(instruction.dest, type, "x");
+    emit_result(instruction.dest_id, "x");
   }
 
-  std::string integer_binary_opcode(const std::string &op, const std::string &type) const {
+  std::string integer_binary_opcode(BinaryOperator op, const LowType &type) const {
     const std::string width = width_name(type);
-    if (op == "add") return "iadd" + width;
-    if (op == "sub") return "isub" + width;
-    if (op == "mul") return (type.size() > 0 && type[0] == 'u' ? "umul" : "smul") + width;
-    if (op == "div") return "sdiv" + width;
-    if (op == "mod") return "smod" + width;
-    if (op == "udiv") return "udiv" + width;
-    if (op == "umod") return "umod" + width;
-    if (op == "and") return "and" + width;
-    if (op == "or") return "or" + width;
-    if (op == "xor") return "xor" + width;
-    if (op == "shl") return "lshift" + width;
-    if (op == "shr") return "srshift" + width;
-    if (op == "ushr") return "urshift" + width;
-    throw LowirError("unsupported integer binary operator");
+    switch (op) {
+    case lowir_model::BOP_ADD: return "iadd" + width;
+    case lowir_model::BOP_SUB: return "isub" + width;
+    case lowir_model::BOP_MUL:
+      return (type.integer_kind == LowType::INTEGER_U8 || type.integer_kind == LowType::INTEGER_U16 || type.integer_kind == LowType::INTEGER_U32 ||
+                      type.integer_kind == LowType::INTEGER_U64
+                  ? "umul"
+                  : "smul") +
+             width;
+    case lowir_model::BOP_DIV: return "sdiv" + width;
+    case lowir_model::BOP_MOD: return "smod" + width;
+    case lowir_model::BOP_UDIV: return "udiv" + width;
+    case lowir_model::BOP_UMOD: return "umod" + width;
+    case lowir_model::BOP_AND: return "and" + width;
+    case lowir_model::BOP_OR: return "or" + width;
+    case lowir_model::BOP_XOR: return "xor" + width;
+    case lowir_model::BOP_SHL: return "lshift" + width;
+    case lowir_model::BOP_SHR: return "srshift" + width;
+    case lowir_model::BOP_USHR: return "urshift" + width;
+    default: throw LowirError("unsupported integer binary operator");
+    }
   }
 
   void emit_binary_instruction(const Instruction &instruction) {
-    const std::string type = instruction.type.text;
-    if (type == "f80") {
+    const LowType &type = instruction.type;
+    const std::string op = binary_spelling(instruction.binary_operator);
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       emit_f80_operand_to_scratch(instruction.first, 0);
       emit_f80_operand_to_scratch(instruction.second, 1);
-      if (instruction.op != "add" && instruction.op != "sub" && instruction.op != "mul" && instruction.op != "div")
+      if (instruction.binary_operator != lowir_model::BOP_ADD && instruction.binary_operator != lowir_model::BOP_SUB &&
+          instruction.binary_operator != lowir_model::BOP_MUL && instruction.binary_operator != lowir_model::BOP_DIV)
         throw LowirError("unsupported f80 binary operator");
-      line("\tf" + instruction.op + "80 " + f80_scratch_low(2) + " " + f80_scratch_low(0) + " " + f80_scratch_low(1) + ";");
+      line("\tf" + op + "80 " + f80_scratch_low(2) + " " + f80_scratch_low(0) + " " + f80_scratch_low(1) + ";");
       emit_f80_padding(2);
-      emit_f80_result_from_scratch(instruction.dest, 2);
+      emit_f80_result_from_scratch(instruction.dest_id, 2);
       return;
     }
     emit_load_value(instruction.first, type, "y");
     emit_load_value(instruction.second, type, "x");
     if (is_float_type(type)) {
-      line("\tf" + instruction.op + width_name(type) + " x" + width_name(type) + " y" + width_name(type) + " x" + width_name(type) + ";");
+      line("\tf" + op + width_name(type) + " x" + width_name(type) + " y" + width_name(type) + " x" + width_name(type) + ";");
     } else {
       const std::string width = width_name(type);
-      if (instruction.op == "shl" || instruction.op == "shr" || instruction.op == "ushr") {
+      if (instruction.binary_operator == lowir_model::BOP_SHL || instruction.binary_operator == lowir_model::BOP_SHR ||
+          instruction.binary_operator == lowir_model::BOP_USHR) {
         line("\tmove64 z64 x64;");
         line("\tmove8 x8 z8;");
-        line("\t" + integer_binary_opcode(instruction.op, type) + " x" + width + " y" + width + " x8;");
+        line("\t" + integer_binary_opcode(instruction.binary_operator, type) + " x" + width + " y" + width + " x8;");
       } else {
-        line("\t" + integer_binary_opcode(instruction.op, type) + " x" + width + " y" + width + " x" + width + ";");
+        line("\t" + integer_binary_opcode(instruction.binary_operator, type) + " x" + width + " y" + width + " x" + width + ";");
       }
     }
-    emit_result(instruction.dest, type, "x");
+    emit_result(instruction.dest_id, "x");
   }
 
-  std::string compare_opcode(const std::string &predicate, const std::string &type) const {
+  std::string compare_opcode(ComparePredicate predicate, const LowType &type) const {
     const std::string width = width_name(type);
-    if (is_float_type(type)) return "f" + predicate + width;
-    if (predicate == "eq" || predicate == "ne") return "i" + predicate + width;
-    if (predicate == "lt" || predicate == "le" || predicate == "gt" || predicate == "ge") return "s" + predicate + width;
-    if (predicate == "ult" || predicate == "ule" || predicate == "ugt" || predicate == "uge") return "u" + predicate.substr(1) + width;
+    const std::string name = compare_spelling(predicate);
+    if (is_float_type(type)) return "f" + name + width;
+    if (predicate == lowir_model::CPP_EQ || predicate == lowir_model::CPP_NE) return "i" + name + width;
+    if (predicate == lowir_model::CPP_LT || predicate == lowir_model::CPP_LE || predicate == lowir_model::CPP_GT || predicate == lowir_model::CPP_GE)
+      return "s" + name + width;
+    if (predicate == lowir_model::CPP_ULT || predicate == lowir_model::CPP_ULE || predicate == lowir_model::CPP_UGT || predicate == lowir_model::CPP_UGE)
+      return "u" + name.substr(1) + width;
     throw LowirError("unsupported comparison predicate");
   }
 
-  void emit_boolean_result(const std::string &destination) {
+  void emit_boolean_result(const lowir_model::ValueId destination) {
     line("\tmove64 x64 0;");
     line("\tmove8 x8 z8;");
-    emit_result(destination, "i64", "x");
+    emit_result(destination, "x");
   }
 
   void emit_cmp_instruction(const Instruction &instruction) {
-    const std::string type = instruction.type.text;
-    if (type == "f80") {
+    const LowType &type = instruction.type;
+    if (type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       emit_f80_operand_to_scratch(instruction.first, 0);
       emit_f80_operand_to_scratch(instruction.second, 1);
-      line("\tf" + instruction.op + "80 z8 " + f80_scratch_low(0) + " " + f80_scratch_low(1) + ";");
-      emit_boolean_result(instruction.dest);
+      line("\tf" + compare_spelling(instruction.compare_predicate) + "80 z8 " + f80_scratch_low(0) + " " + f80_scratch_low(1) + ";");
+      emit_boolean_result(instruction.dest_id);
       return;
     }
     emit_load_value(instruction.first, type, "y");
     emit_load_value(instruction.second, type, "x");
-    line("\t" + compare_opcode(instruction.op, type) + " z8 y" + width_name(type) + " x" + width_name(type) + ";");
-    emit_boolean_result(instruction.dest);
+    line("\t" + compare_opcode(instruction.compare_predicate, type) + " z8 y" + width_name(type) + " x" + width_name(type) + ";");
+    emit_boolean_result(instruction.dest_id);
   }
 
   void emit_integer_conversion(const Instruction &instruction) {
-    const std::string dst = instruction.type.text;
-    const std::string src = instruction.source_type.text;
+    const LowType &dst = instruction.type;
+    const LowType &src = instruction.source_type;
     emit_load_value(instruction.first, src, "x");
     const int dst_width = integer_width(dst);
     const int src_width = integer_width(src);
-    if ((instruction.op == "sext" || instruction.op == "zext") && dst_width > src_width &&
-        (instruction.op == "sext" || instruction.first.kind != Operand::OP_INTEGER)) {
+    if ((instruction.conversion_operator == lowir_model::COP_SEXT || instruction.conversion_operator == lowir_model::COP_ZEXT) && dst_width > src_width &&
+        (instruction.conversion_operator == lowir_model::COP_SEXT || instruction.first.kind != Operand::OP_INTEGER)) {
       const int shift = dst_width - src_width;
       line("\tmove8 t8 " + immediate_signed(shift) + ";");
       line("\tlshift" + width_name(dst) + " x" + width_name(dst) + " x" + width_name(dst) + " t8;");
-      line("\t" + std::string(instruction.op == "sext" ? "srshift" : "urshift") + width_name(dst) + " x" + width_name(dst) + " x" + width_name(dst) + " t8;");
+      line("\t" + std::string(instruction.conversion_operator == lowir_model::COP_SEXT ? "srshift" : "urshift") + width_name(dst) + " x" + width_name(dst) +
+           " x" + width_name(dst) + " t8;");
     }
-    emit_result(instruction.dest, dst, "x");
+    emit_result(instruction.dest_id, "x");
   }
 
   void emit_convert_instruction(const Instruction &instruction) {
-    const std::string dst = instruction.type.text;
-    const std::string src = instruction.source_type.text;
+    const LowType &dst = instruction.type;
+    const LowType &src = instruction.source_type;
     if (is_integer_type(dst) && is_integer_type(src)) {
       emit_integer_conversion(instruction);
       return;
     }
-    const bool dst_f80 = dst == "f80";
-    const bool src_f80 = src == "f80";
+    const bool dst_f80 = dst.is_float() && dst.float_kind == LowType::FLOAT_F80;
+    const bool src_f80 = src.is_float() && src.float_kind == LowType::FLOAT_F80;
     if (dst_f80) {
-      emit_load_or_convert_to_f80(instruction.first, src, instruction.op, 0);
-      emit_f80_result_from_scratch(instruction.dest, 0);
+      emit_load_or_convert_to_f80(instruction.first, src, instruction.conversion_operator, 0);
+      emit_f80_result_from_scratch(instruction.dest_id, 0);
       return;
     }
     if (src_f80) {
       emit_f80_operand_to_scratch(instruction.first, 0);
-      const Location &destination = current_layout_->find(instruction.dest);
+      const Location &destination = current_layout_->find(instruction.dest_id);
       if (is_float_type(dst)) {
         line("\tf80convf" + width_name(dst) + " " + stack_operand(destination) + " " + f80_scratch_low(0) + ";");
       } else if (is_integer_type(dst)) {
-        line("\tf80conv" + std::string(instruction.op == "fptoui" ? "u" : "s") + width_name(dst) + " " + stack_operand(destination) + " " + f80_scratch_low(0) +
-             ";");
+        line("\tf80conv" + std::string(instruction.conversion_operator == lowir_model::COP_FPTOUI ? "u" : "s") + width_name(dst) + " " +
+             stack_operand(destination) + " " + f80_scratch_low(0) + ";");
       } else
         throw LowirError("unsupported f80 conversion destination");
       return;
     }
     if (is_float_type(src) && is_float_type(dst)) {
-      emit_load_or_convert_to_f80(instruction.first, src, instruction.op, 0);
-      const Location &destination = current_layout_->find(instruction.dest);
+      emit_load_or_convert_to_f80(instruction.first, src, instruction.conversion_operator, 0);
+      const Location &destination = current_layout_->find(instruction.dest_id);
       line("\tf80convf" + width_name(dst) + " " + stack_operand(destination) + " " + f80_scratch_low(0) + ";");
       return;
     }
     if (is_integer_type(src) && is_float_type(dst)) {
-      emit_load_or_convert_to_f80(instruction.first, src, instruction.op, 0);
-      const Location &destination = current_layout_->find(instruction.dest);
+      emit_load_or_convert_to_f80(instruction.first, src, instruction.conversion_operator, 0);
+      const Location &destination = current_layout_->find(instruction.dest_id);
       line("\tf80convf" + width_name(dst) + " " + stack_operand(destination) + " " + f80_scratch_low(0) + ";");
       return;
     }
     if (is_float_type(src) && is_integer_type(dst)) {
-      emit_load_or_convert_to_f80(instruction.first, src, instruction.op, 0);
-      const Location &destination = current_layout_->find(instruction.dest);
-      line("\tf80conv" + std::string(instruction.op == "fptoui" ? "u" : "s") + width_name(dst) + " " + stack_operand(destination) + " " + f80_scratch_low(0) +
-           ";");
+      emit_load_or_convert_to_f80(instruction.first, src, instruction.conversion_operator, 0);
+      const Location &destination = current_layout_->find(instruction.dest_id);
+      line("\tf80conv" + std::string(instruction.conversion_operator == lowir_model::COP_FPTOUI ? "u" : "s") + width_name(dst) + " " +
+           stack_operand(destination) + " " + f80_scratch_low(0) + ";");
       return;
     }
     throw LowirError("unsupported floating conversion");
   }
 
-  void emit_load_or_convert_to_f80(const Operand &operand, const std::string &source_type, const std::string &conversion, std::size_t scratch) {
-    if (source_type == "f80") {
+  void emit_load_or_convert_to_f80(const Operand &operand, const LowType &source_type, ConversionOperator conversion, std::size_t scratch) {
+    if (source_type.is_float() && source_type.float_kind == LowType::FLOAT_F80) {
       emit_f80_operand_to_scratch(operand, scratch);
       return;
     }
@@ -2440,47 +1680,49 @@ private:
     if (is_float_type(source_type)) {
       line("\tf" + width_name(source_type) + "convf80 " + f80_scratch_low(scratch) + " x" + width_name(source_type) + ";");
     } else if (is_integer_type(source_type)) {
-      const std::string prefix = conversion == "uitofp" ? "u" : "s";
+      const std::string prefix = conversion == lowir_model::COP_UITOFP ? "u" : "s";
       line("\t" + prefix + width_name(source_type) + "convf80 " + f80_scratch_low(scratch) + " x" + width_name(source_type) + ";");
     } else
       throw LowirError("unsupported conversion source");
     emit_f80_padding(scratch);
   }
 
-  const Function *find_function(const std::string &name) const {
-    std::map<std::string, const Function *>::const_iterator it = functions_.find(name);
-    return it == functions_.end() ? 0 : it->second;
-  }
+  struct CallView {
+    const std::vector<Parameter> *parameters;
+    LowType return_type;
+    lowir_model::SymbolId target_id;
+    bool direct;
+    CallView() : parameters(0), direct(false) {}
+  };
 
-  const FunctionDeclaration *find_function_declaration(const std::string &name) const {
-    std::map<std::string, const FunctionDeclaration *>::const_iterator it = function_declarations_.find(name);
-    return it == function_declarations_.end() ? 0 : it->second;
-  }
-
-  std::vector<Parameter> call_parameters(const Instruction &instruction, const Function **function_target, std::string *return_type) const {
-    *function_target = 0;
-    if (instruction.first.kind == Operand::OP_GLOBAL) {
-      const Function *function = find_function(instruction.first.text);
+  CallView call_view(const Instruction &instruction) const {
+    CallView result;
+    result.target_id = instruction.direct_callee_id;
+    if (instruction.direct_callee_id.valid()) {
+      result.direct = true;
+      const Function *function = validator_.function_for(instruction.direct_callee_id);
+      const FunctionDeclaration *declaration = validator_.function_declaration_for(instruction.direct_callee_id);
       if (function != 0) {
-        *function_target = function;
-        *return_type = function->return_type.text;
-        return function->params;
+        result.parameters = &function->params;
+        result.return_type = function->return_type;
+      } else if (declaration != 0) {
+        result.parameters = &declaration->params;
+        result.return_type = declaration->return_type;
+      } else {
+        throw LowirError("missing direct call target");
       }
-      const FunctionDeclaration *declaration = find_function_declaration(instruction.first.text);
-      if (declaration != 0) {
-        *return_type = declaration->return_type.text;
-        return declaration->params;
-      }
+    } else {
+      result.parameters = &instruction.call_params;
+      result.return_type = instruction.call_return_type;
     }
-    *return_type = instruction.call_return_type.text;
-    return instruction.call_params;
+    return result;
   }
 
   void emit_object_address(const Operand &operand, const std::string &reg) {
     if (operand.kind == Operand::OP_SLOT || operand.kind == Operand::OP_TEMP) {
-      emit_address_of_location(current_layout_->find(operand.text), reg);
+      emit_address_of_location(current_layout_->find(operand), reg);
     } else if (operand.kind == Operand::OP_GLOBAL) {
-      line("\tmove64 " + reg + " " + cy_global(operand.text) + ";");
+      line("\tmove64 " + reg + " " + validator_.symbol_label(operand.symbol_id) + ";");
     } else {
       throw LowirError("object argument is not addressable");
     }
@@ -2488,23 +1730,23 @@ private:
 
   void emit_call_argument(const Operand &argument, const Parameter *parameter, std::size_t index) {
     const std::string reg = parameter_register(index);
-    const std::string type = parameter == 0 ? "i64" : parameter->type.text;
-    if (parameter != 0 && type == "f80") {
+    const LowType type = parameter == 0 ? i64_type() : parameter->type;
+    if (parameter != 0 && type.is_float() && type.float_kind == LowType::FLOAT_F80) {
       if (argument.kind == Operand::OP_TEMP || argument.kind == Operand::OP_SLOT) {
         emit_object_address(argument, "x64");
       } else {
         emit_f80_operand_to_scratch(argument, 3);
-        emit_address_of_location(Location("f80", current_layout_->f80_scratch_offset() + 3 * 16), "x64");
+        emit_address_of_location(Location(current_layout_->f80_scratch_offset() + 3 * 16), "x64");
       }
       line("\tmove64 " + reg + "64 x64;");
       return;
     }
-    if (parameter != 0 && starts_with(type, "obj<")) {
+    if (parameter != 0 && type.is_object()) {
       emit_object_address(argument, "x64");
       line("\tmove64 " + reg + "64 x64;");
       return;
     }
-    if (parameter != 0 && type == "ptr" && argument.kind == Operand::OP_SLOT && current_layout_->find(argument.text).type != "ptr") {
+    if (parameter != 0 && type.is_pointer() && argument.kind == Operand::OP_SLOT && !current_layout_->type(argument).is_pointer()) {
       emit_object_address(argument, "x64");
       line("\tmove64 " + reg + "64 x64;");
       return;
@@ -2512,31 +1754,28 @@ private:
     emit_load_value(argument, type, reg);
   }
 
-  void emit_indirect_callee(const Operand &callee) {
-    emit_load_pointer(callee, "x");
-    line("\tisub64 sp sp 8;");
-    line("\tmove64 [sp] x64;");
-  }
-
   void emit_call_instruction(const Instruction &instruction) {
-    const Function *target = 0;
-    std::string return_type;
-    const std::vector<Parameter> parameters = call_parameters(instruction, &target, &return_type);
-    const bool direct = target != 0 || find_function_declaration(instruction.first.text) != 0;
-    if (!direct) emit_indirect_callee(instruction.first);
-    const bool hidden_return = direct && !instruction.call_returns_void && (starts_with(return_type, "obj<") || return_type == "f80");
-    if (hidden_return) {
-      emit_object_address(OperandForDestination(instruction.dest), "x64");
-      line("\tmove64 x64 x64;");
+    const CallView target = call_view(instruction);
+    const bool direct = target.direct;
+    if (!direct) {
+      emit_load_pointer(instruction.first, "x");
+      line("\tisub64 sp sp 8;");
+      line("\tmove64 [sp] x64;");
     }
+    const bool hidden_return = direct && !instruction.call_returns_void &&
+                               (target.return_type.is_object() || (target.return_type.is_float() && target.return_type.float_kind == LowType::FLOAT_F80));
     const std::size_t hidden = hidden_return ? 1 : 0;
     const std::size_t register_arguments = 4 - hidden;
     const std::size_t stack_arguments = instruction.args.size() > register_arguments ? instruction.args.size() - register_arguments : 0;
+    if (hidden_return) {
+      emit_object_address(OperandForDestination(instruction.dest_id), "x64");
+      line("\tmove64 x64 x64;");
+    }
     if (stack_arguments != 0) {
       line("\tisub64 sp sp " + immediate_signed(static_cast<long long>(stack_arguments * 8)) + ";");
     }
     for (std::size_t i = 0; i < instruction.args.size(); ++i) {
-      const Parameter *parameter = i < parameters.size() ? &parameters[i] : 0;
+      const Parameter *parameter = target.parameters != 0 && i < target.parameters->size() ? &(*target.parameters)[i] : 0;
       const std::size_t register_index = i + hidden;
       emit_call_argument(instruction.args[i], parameter, register_index);
       if (register_index >= 4) {
@@ -2545,7 +1784,7 @@ private:
       }
     }
     if (direct)
-      line("\tcall " + cy_function(instruction.first.text) + ";");
+      line("\tcall " + validator_.symbol_label(target.target_id) + ";");
     else {
       line("\tcall [sp];");
       line("\tiadd64 sp sp 8;");
@@ -2553,24 +1792,24 @@ private:
     if (direct && stack_arguments != 0) {
       line("\tiadd64 sp sp " + immediate_signed(static_cast<long long>(stack_arguments * 8)) + ";");
     }
-    if (!instruction.call_returns_void && !starts_with(return_type, "obj<") && return_type != "f80") {
-      emit_result(instruction.dest, return_type, "x");
+    if (!instruction.call_returns_void && !target.return_type.is_object() && !(target.return_type.is_float() && target.return_type.float_kind == LowType::FLOAT_F80)) {
+      emit_result(instruction.dest_id, "x");
     }
   }
 
-  Operand OperandForDestination(const std::string &destination) const {
+  Operand OperandForDestination(const lowir_model::ValueId destination) const {
     Operand operand;
     operand.kind = Operand::OP_TEMP;
-    operand.text = destination;
+    operand.value_id = destination;
     return operand;
   }
 
   void emit_copy_bytes(const Operand &source, const Operand &destination, std::size_t bytes) {
-    if (destination.kind == Operand::OP_TEMP && starts_with(current_layout_->find(destination.text).type, "obj<"))
+    if (destination.kind == Operand::OP_TEMP && current_layout_->type(destination).is_object())
       emit_object_address(destination, "x64");
     else
       emit_load_pointer(destination, "x");
-    if (source.kind == Operand::OP_TEMP && starts_with(current_layout_->find(source.text).type, "obj<"))
+    if (source.kind == Operand::OP_TEMP && current_layout_->type(source).is_object())
       emit_object_address(source, "y64");
     else
       emit_load_pointer(source, "y");
@@ -2617,25 +1856,25 @@ private:
 
   void emit_atomic_exchange(const Instruction &instruction) {
     emit_load_pointer(instruction.first, "y");
-    emit_load_value(instruction.second, instruction.type.text, "x");
-    line("\tmove" + width_name(instruction.type.text) + " t" + width_name(instruction.type.text) + " [y64];");
-    line("\tmove" + width_name(instruction.type.text) + " [y64] x" + width_name(instruction.type.text) + ";");
+    emit_load_value(instruction.second, instruction.type, "x");
+    line("\tmove" + width_name(instruction.type) + " t" + width_name(instruction.type) + " [y64];");
+    line("\tmove" + width_name(instruction.type) + " [y64] x" + width_name(instruction.type) + ";");
     line("\tmove64 x64 0;");
-    if (width_name(instruction.type.text) == "64")
+    if (width_name(instruction.type) == "64")
       line("\tmove64 x64 t64;");
     else
-      line("\tmove" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " t" + width_name(instruction.type.text) + ";");
-    emit_result(instruction.dest, instruction.type.text, "x");
+      line("\tmove" + width_name(instruction.type) + " x" + width_name(instruction.type) + " t" + width_name(instruction.type) + ";");
+    emit_result(instruction.dest_id, "x");
   }
 
   void emit_atomic_add_fetch(const Instruction &instruction) {
     emit_load_pointer(instruction.first, "y");
-    line("\tmove" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " [y64];");
-    emit_load_value(instruction.second, instruction.type.text, "z");
-    line("\tiadd" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " z" +
-         width_name(instruction.type.text) + ";");
-    line("\tmove" + width_name(instruction.type.text) + " [y64] x" + width_name(instruction.type.text) + ";");
-    emit_result(instruction.dest, instruction.type.text, "x");
+    line("\tmove" + width_name(instruction.type) + " x" + width_name(instruction.type) + " [y64];");
+    emit_load_value(instruction.second, instruction.type, "z");
+    line("\tiadd" + width_name(instruction.type) + " x" + width_name(instruction.type) + " x" + width_name(instruction.type) + " z" +
+         width_name(instruction.type) + ";");
+    line("\tmove" + width_name(instruction.type) + " [y64] x" + width_name(instruction.type) + ";");
+    emit_result(instruction.dest_id, "x");
   }
 
   void emit_atomic_compare_exchange(const Instruction &instruction) {
@@ -2643,44 +1882,44 @@ private:
     const std::string end = "__atomic_cmpxchg_end__" + immediate_signed(atomic_label_counter_++);
     emit_load_pointer(instruction.first, "y");
     emit_load_pointer(instruction.second, "z");
-    line("\tmove" + width_name(instruction.type.text) + " t" + width_name(instruction.type.text) + " [y64];");
-    line("\tmove" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " [z64];");
-    line("\tieq" + width_name(instruction.type.text) + " x8 t" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + ";");
+    line("\tmove" + width_name(instruction.type) + " t" + width_name(instruction.type) + " [y64];");
+    line("\tmove" + width_name(instruction.type) + " x" + width_name(instruction.type) + " [z64];");
+    line("\tieq" + width_name(instruction.type) + " x8 t" + width_name(instruction.type) + " x" + width_name(instruction.type) + ";");
     line("\tjumpif x8 " + success + ";");
-    line("\tmove" + width_name(instruction.type.text) + " [z64] t" + width_name(instruction.type.text) + ";");
+    line("\tmove" + width_name(instruction.type) + " [z64] t" + width_name(instruction.type) + ";");
     line("\tmove64 x64 0;");
-    emit_result(instruction.dest, "i64", "x");
+    emit_result(instruction.dest_id, "x");
     line("\tjump " + end + ";");
     line(success + ":");
-    emit_load_value(instruction.third, instruction.type.text, "x");
-    line("\tmove" + width_name(instruction.type.text) + " [y64] x" + width_name(instruction.type.text) + ";");
+    emit_load_value(instruction.third, instruction.type, "x");
+    line("\tmove" + width_name(instruction.type) + " [y64] x" + width_name(instruction.type) + ";");
     line("\tmove64 x64 1;");
-    emit_result(instruction.dest, "i64", "x");
+    emit_result(instruction.dest_id, "x");
     line(end + ":");
   }
 
   void emit_branch(const Function &function, const Instruction &instruction) {
-    emit_load_value(instruction.first, "i64", "x");
+    emit_load_value(instruction.first, i64_type(), "x");
     line("\tieq64 z8 x64 0;");
-    line("\tjumpif z8 " + cy_block(function.name, instruction.third.text) + ";");
-    line("\tjump " + cy_block(function.name, instruction.second.text) + ";");
+    line("\tjumpif z8 " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(instruction.third.block_id)) + ";");
+    line("\tjump " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(instruction.second.block_id)) + ";");
   }
 
   void emit_switch(const Function &function, const Instruction &instruction) {
-    emit_load_value(instruction.first, "i64", "x");
+    emit_load_value(instruction.first, i64_type(), "x");
     for (std::size_t i = 0; i < instruction.args.size(); i += 2) {
-      emit_load_value(instruction.args[i], "i64", "t");
+      emit_load_value(instruction.args[i], i64_type(), "t");
       line("\tieq64 z8 x64 t64;");
-      line("\tjumpif z8 " + cy_block(function.name, instruction.args[i + 1].text) + ";");
+      line("\tjumpif z8 " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(instruction.args[i + 1].block_id)) + ";");
     }
-    line("\tjump " + cy_block(function.name, instruction.second.text) + ";");
+    line("\tjump " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(instruction.second.block_id)) + ";");
   }
 
   void emit_eh_push(const Function &function, const Operand &target) {
     line("\tisub64 sp sp 32;");
     line("\tmove64 z64 [g____cppgm_eh_top];");
     line("\tmove64 [sp] z64;");
-    line("\tmove64 z64 " + cy_block(function.name, target.text) + ";");
+    line("\tmove64 z64 " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(target.block_id)) + ";");
     line("\tmove64 [sp+8] z64;");
     line("\tmove64 [sp+16] bp;");
     line("\tmove64 z64 sp;");
@@ -2719,11 +1958,11 @@ private:
   }
 
   void emit_eh_exception(const Instruction &instruction) {
-    if (instruction.type.text == "f32")
+    if (instruction.type.is_float() && instruction.type.float_kind == LowType::FLOAT_F32)
       line("\tmove32 x32 [g____cppgm_eh_value];");
     else
-      line("\tmove" + width_name(instruction.type.text) + " x" + width_name(instruction.type.text) + " [g____cppgm_eh_value];");
-    emit_result(instruction.dest, instruction.type.text, "x");
+      line("\tmove" + width_name(instruction.type) + " x" + width_name(instruction.type) + " [g____cppgm_eh_value];");
+    emit_result(instruction.dest_id, "x");
   }
 
   void emit_eh_unhandled_function() {
@@ -2737,14 +1976,14 @@ private:
   }
 
   void emit_return(const Function &function, const Instruction &instruction) {
-    if (instruction.type.text == "void") {
-      line("\tjump " + cy_function(function.name) + "__epilogue;");
+    if (instruction.type.is_void()) {
+      line("\tjump " + validator_.symbol_label(function.symbol_id) + "__epilogue;");
       return;
     }
-    if (starts_with(instruction.type.text, "obj<")) {
+    if (instruction.type.is_object()) {
       emit_object_address(instruction.first, "x64");
       line("\tmove64 y64 [bp-8];");
-      const std::size_t bytes = type_storage_size(instruction.type.text);
+      const std::size_t bytes = type_storage_size(instruction.type);
       std::size_t copied = 0;
       while (copied + 8 <= bytes) {
         line("\tmove64 z64 [x64" + (copied == 0 ? std::string() : "+" + immediate_signed(copied)) + "];");
@@ -2759,38 +1998,38 @@ private:
              immediate_signed(width * 8) + ";");
         copied += width;
       }
-      line("\tjump " + cy_function(function.name) + "__epilogue;");
+      line("\tjump " + validator_.symbol_label(function.symbol_id) + "__epilogue;");
       return;
     }
-    if (instruction.type.text == "f80") {
+    if (instruction.type.is_float() && instruction.type.float_kind == LowType::FLOAT_F80) {
       emit_f80_operand_to_scratch(instruction.first, 0);
       line("\tmove64 x64 [bp-8];");
       emit_f80_copy(f80_scratch_low(0), f80_scratch_high(0), "[x64]", "[x64+8]");
-      line("\tjump " + cy_function(function.name) + "__epilogue;");
+      line("\tjump " + validator_.symbol_label(function.symbol_id) + "__epilogue;");
       return;
     }
-    emit_load_value(instruction.first, instruction.type.text, "x");
-    line("\tjump " + cy_function(function.name) + "__epilogue;");
+    emit_load_value(instruction.first, instruction.type, "x");
+    line("\tjump " + validator_.symbol_label(function.symbol_id) + "__epilogue;");
   }
 
   void emit_instruction(const Function &function, const Instruction &instruction) {
     switch (instruction.kind) {
     case Instruction::IK_CONST:
-      if (instruction.type.text == "f80") {
+      if (instruction.type.is_float() && instruction.type.float_kind == LowType::FLOAT_F80) {
         emit_f80_operand_to_scratch(instruction.first, 0);
-        emit_f80_result_from_scratch(instruction.dest, 0);
+        emit_f80_result_from_scratch(instruction.dest_id, 0);
       } else {
-        emit_load_value(instruction.first, instruction.type.text, "x");
-        emit_result(instruction.dest, instruction.type.text, "x");
+        emit_load_value(instruction.first, instruction.type, "x");
+        emit_result(instruction.dest_id, "x");
       }
       break;
     case Instruction::IK_COPY:
-      if (instruction.type.text == "f80") {
+      if (instruction.type.is_float() && instruction.type.float_kind == LowType::FLOAT_F80) {
         emit_f80_operand_to_scratch(instruction.first, 0);
-        emit_f80_result_from_scratch(instruction.dest, 0);
+        emit_f80_result_from_scratch(instruction.dest_id, 0);
       } else {
-        emit_load_value(instruction.first, instruction.type.text, "x");
-        emit_result(instruction.dest, instruction.type.text, "x");
+        emit_load_value(instruction.first, instruction.type, "x");
+        emit_result(instruction.dest_id, "x");
       }
       break;
     case Instruction::IK_ADDR:
@@ -2841,7 +2080,7 @@ private:
       emit_zero_bytes(instruction.first, instruction.byte_count);
       break;
     case Instruction::IK_JUMP:
-      line("\tjump " + cy_block(function.name, instruction.first.text) + ";");
+      line("\tjump " + cy_block_label(validator_.symbol_label(function.symbol_id), validator_.block_label(instruction.first.block_id)) + ";");
       break;
     case Instruction::IK_BRANCH:
       emit_branch(function, instruction);
@@ -2860,7 +2099,7 @@ private:
       emit_eh_end();
       break;
     case Instruction::IK_THROW:
-      emit_load_value(instruction.first, instruction.type.text, "x");
+      emit_load_value(instruction.first, instruction.type, "x");
       line("\tmove64 [g____cppgm_eh_value] x64;");
       emit_eh_unwind();
       break;
@@ -2881,14 +2120,17 @@ private:
     }
   }
 
-  static std::string data_literal(const Operand &operand) { return operand.text.empty() || operand.text == "nullptr" ? "0" : operand.text; }
+  std::string data_literal(const Operand &operand) const {
+    if (operand.kind == Operand::OP_INTEGER) return immediate_signed(operand.int_value);
+    if (operand.kind == Operand::OP_FLOAT) return validator_.presentation(operand.presentation_id);
+    return "0";
+  }
 
   void emit_zero_data(std::size_t count) {
     for (std::size_t i = 0; i < count; ++i) line("\tdata8 0;");
   }
 
-  void emit_f80_data(const std::string &literal) {
-    const long double value = parse_float(literal);
+  void emit_f80_data(const long double value) {
     unsigned char bytes[16];
     std::memset(bytes, 0, sizeof(bytes));
     std::memcpy(bytes, &value, sizeof(long double) < 16 ? sizeof(long double) : 16);
@@ -2907,58 +2149,53 @@ private:
       *offset += item.zero_bytes;
       return;
     }
-    const std::size_t alignment = type_storage_alignment(item.type.text);
+    const std::size_t alignment = type_storage_alignment(item.type);
     while (alignment > 1 && *offset % alignment != 0) {
       line("\tdata8 0;");
       ++*offset;
     }
     if (item.kind == GlobalDefinition::DataItem::ITEM_ADDR) {
-      std::string target = symbols_[item.symbol];
-      if (target.empty()) target = item.symbol;
+      const std::string &target = validator_.symbol_label(item.symbol_id);
       if (item.addr_addend == 0)
         line("\tdata64 " + target + ";");
       else
         line("\tdata64 (" + target + (item.addr_addend > 0 ? " + " : " - ") + immediate_signed(std::llabs(item.addr_addend)) + ");");
-    } else if (item.type.text == "f80") {
-      emit_f80_data(item.literal_operand.text);
+    } else if (item.type.is_float() && item.type.float_kind == LowType::FLOAT_F80) {
+      emit_f80_data(item.literal_operand.float_value);
     } else {
-      const std::string width = width_name(item.type.text);
+      const std::string width = width_name(item.type);
       line("\tdata" + width + " " + data_literal(item.literal_operand) + ";");
     }
-    *offset += item.kind == GlobalDefinition::DataItem::ITEM_ADDR ? 8 : type_storage_size(item.type.text);
+    *offset += item.kind == GlobalDefinition::DataItem::ITEM_ADDR ? 8 : type_storage_size(item.type);
   }
 
   void emit_global(const GlobalDefinition &global) {
-    line(cy_global(global.name) + ":");
+    line(validator_.symbol_label(global.symbol_id) + ":");
     if (global.structured) {
       std::size_t offset = 0;
       for (std::size_t i = 0; i < global.data_items.size(); ++i) emit_global_item(global.data_items[i], &offset);
     } else if (global.init_kind == GlobalDefinition::INIT_ADDR) {
-      const std::string target = symbols_[global.init_operand.text];
+      const std::string &target = validator_.symbol_label(global.init_operand.symbol_id);
       if (global.addr_addend == 0)
         line("\tdata64 " + target + ";");
       else
         line("\tdata64 (" + target + (global.addr_addend > 0 ? " + " : " - ") + immediate_signed(std::llabs(global.addr_addend)) + ");");
     } else if (global.init_kind == GlobalDefinition::INIT_ZERO) {
-      if (global.type.text == "f80")
-        emit_f80_data("0.0L");
+      if (global.type.is_float() && global.type.float_kind == LowType::FLOAT_F80)
+        emit_f80_data(0.0L);
       else
-        line("\tdata" + width_name(global.type.text) + " 0;");
-    } else if (global.type.text == "f80") {
-      emit_f80_data(global.init_operand.text);
+        line("\tdata" + width_name(global.type) + " 0;");
+    } else if (global.type.is_float() && global.type.float_kind == LowType::FLOAT_F80) {
+      emit_f80_data(global.init_operand.float_value);
     } else {
-      line("\tdata" + width_name(global.type.text) + " " + data_literal(global.init_operand) + ";");
+      line("\tdata" + width_name(global.type) + " " + data_literal(global.init_operand) + ";");
     }
     if (&global != &program_.globals.back()) blank();
   }
 
   const Program &program_;
-  Validator validator_;
+  const Validator &validator_;
   std::ostringstream out_;
-  std::map<std::string, std::string> symbols_;
-  std::map<std::string, OutputSymbol> output_symbols_;
-  std::map<std::string, const Function *> functions_;
-  std::map<std::string, const FunctionDeclaration *> function_declarations_;
   const Function *current_function_;
   const FunctionLayout *current_layout_;
   std::size_t atomic_label_counter_ = 0;
@@ -2968,20 +2205,10 @@ private:
 
 void compile(const std::vector<std::string> &source_files, const std::string &output_file) {
   if (source_files.empty()) throw LowirError("no LowIR source files");
-  std::string text;
-  for (std::size_t i = 0; i < source_files.size(); ++i) {
-    std::ifstream input(source_files[i].c_str());
-    if (!input) throw LowirError("unable to open LowIR source file");
-    std::ostringstream contents;
-    contents << input.rdbuf();
-    text += contents.str();
-    text += "\n";
-  }
-  Parser parser(text);
-  const Program program = parser.parse();
+  Program program = lowir_model::parse_lowir_program_files(source_files);
   Validator validator(program);
   validator.validate();
-  Emitter emitter(program);
+  Emitter emitter(program, validator);
   const std::string output = emitter.emit();
   std::ofstream file(output_file.c_str(), std::ios::out | std::ios::trunc);
   if (!file) throw LowirError("unable to open CY86 output file");

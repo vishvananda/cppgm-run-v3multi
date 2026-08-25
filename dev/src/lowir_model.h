@@ -1,20 +1,48 @@
 #pragma once
 
-// Optional typed LowIR model scaffold.
+// Typed LowIR model for the PA13 text adapter.
 //
-// LowIR text is the durable compiler boundary introduced in PA13. This header
-// gives one possible in-memory shape for that text. You may use it directly,
-// adapt it, or replace it with your own equivalent model, but backend-visible
-// facts must still serialize to and parse back from LowIR text.
+// LowIR text is the durable compiler boundary introduced in PA13. This model
+// owns the backend-visible facts recovered from that text; source spellings
+// remain presentation sidecars and are never semantic lookup keys after
+// validation.
 
 #include <stdexcept>
+#include <cstddef>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "ir_symbol_model.h"
-
 namespace lowir_model {
+
+static const std::size_t INVALID_ID = std::numeric_limits<std::size_t>::max();
+
+template <typename Tag>
+struct Identity
+{
+  std::size_t index;
+
+  Identity() : index(INVALID_ID) {}
+  explicit Identity(std::size_t value) : index(value) {}
+
+  bool valid() const { return index != INVALID_ID; }
+  bool operator==(const Identity & other) const { return index == other.index; }
+  bool operator!=(const Identity & other) const { return !(*this == other); }
+  bool operator<(const Identity & other) const { return index < other.index; }
+};
+
+struct SymbolIdentityTag;
+struct ValueIdentityTag;
+struct SlotIdentityTag;
+struct BlockIdentityTag;
+struct SpellingIdentityTag;
+
+typedef Identity<SymbolIdentityTag> SymbolId;
+typedef Identity<ValueIdentityTag> ValueId;
+typedef Identity<SlotIdentityTag> SlotId;
+typedef Identity<BlockIdentityTag> BlockId;
+typedef Identity<SpellingIdentityTag> SpellingId;
 
 struct ParseError : std::runtime_error
 {
@@ -25,8 +53,55 @@ struct ParseError : std::runtime_error
 
 struct LowType
 {
-  std::string text;
+  enum Kind
+  {
+    TYPE_INVALID,
+    TYPE_VOID,
+    TYPE_INTEGER,
+    TYPE_FLOAT,
+    TYPE_POINTER,
+    TYPE_OBJECT
+  } kind = TYPE_INVALID;
+
+  enum IntegerKind
+  {
+    INTEGER_NONE,
+    INTEGER_I1,
+    INTEGER_I8,
+    INTEGER_U8,
+    INTEGER_I16,
+    INTEGER_U16,
+    INTEGER_I32,
+    INTEGER_U32,
+    INTEGER_I64,
+    INTEGER_U64
+  } integer_kind = INTEGER_NONE;
+
+  enum FloatKind
+  {
+    FLOAT_NONE,
+    FLOAT_F32,
+    FLOAT_F64,
+    FLOAT_F80
+  } float_kind = FLOAT_NONE;
+
+  std::size_t object_bytes = 0;
+  std::size_t object_alignment = 0;
+
+  bool valid() const { return kind != TYPE_INVALID; }
+  bool is_void() const { return kind == TYPE_VOID; }
+  bool is_integer() const { return kind == TYPE_INTEGER; }
+  bool is_float() const { return kind == TYPE_FLOAT; }
+  bool is_pointer() const { return kind == TYPE_POINTER; }
+  bool is_object() const { return kind == TYPE_OBJECT; }
+  bool is_scalar() const { return is_integer() || is_float() || is_pointer(); }
+  int integer_width() const;
+  std::size_t storage_size() const;
+  std::size_t storage_alignment() const;
 };
+
+bool operator==(const LowType & left, const LowType & right);
+bool operator!=(const LowType & left, const LowType & right);
 
 struct Operand
 {
@@ -40,7 +115,13 @@ struct Operand
     OP_FLOAT
   } kind = OP_INTEGER;
 
-  std::string text;
+  // Boundary text is centralized in Program::presentation. Validation fills
+  // exactly one typed identity for each named operand.
+  SpellingId presentation_id;
+  SymbolId symbol_id;
+  ValueId value_id;
+  SlotId slot_id;
+  BlockId block_id;
   long long int_value = 0;
   long double float_value = 0.0L;
   LowType literal_type;
@@ -159,15 +240,84 @@ enum IndexProjectionKind
   IPK_REFERENCE_FIELD
 };
 
+enum UnaryOperator
+{
+  UOP_INVALID,
+  UOP_NEG,
+  UOP_NOT,
+  UOP_BITNOT,
+  UOP_DECAY,
+  UOP_BSWAP
+};
+
+enum BinaryOperator
+{
+  BOP_INVALID,
+  BOP_ADD,
+  BOP_SUB,
+  BOP_MUL,
+  BOP_DIV,
+  BOP_MOD,
+  BOP_UDIV,
+  BOP_UMOD,
+  BOP_AND,
+  BOP_OR,
+  BOP_XOR,
+  BOP_SHL,
+  BOP_SHR,
+  BOP_USHR
+};
+
+enum ComparePredicate
+{
+  CPP_INVALID,
+  CPP_EQ,
+  CPP_NE,
+  CPP_LT,
+  CPP_LE,
+  CPP_GT,
+  CPP_GE,
+  CPP_ULT,
+  CPP_ULE,
+  CPP_UGT,
+  CPP_UGE
+};
+
+enum ConversionOperator
+{
+  COP_INVALID,
+  COP_SEXT,
+  COP_ZEXT,
+  COP_TRUNC,
+  COP_SITOFP,
+  COP_UITOFP,
+  COP_FPTOSI,
+  COP_FPTOUI,
+  COP_FPEXT,
+  COP_FPTRUNC
+};
+
+enum AtomicOrder
+{
+  AO_RELAXED = 0,
+  AO_CONSUME = 1,
+  AO_ACQUIRE = 2,
+  AO_RELEASE = 3,
+  AO_ACQ_REL = 4,
+  AO_SEQ_CST = 5,
+  AO_INVALID = 6
+};
+
 struct SymbolMetadata
 {
   SymbolRole role = SR_NONE;
   LanguageLinkageMode linkage = LLM_DEFAULT;
   SymbolBindingMode binding = SBM_DEFAULT;
-  std::string object_symbol;
-  std::string tls_for_symbol;
-  std::string section_segment;
-  std::string section_name;
+  SpellingId object_symbol_id;
+  SpellingId tls_for_name_id;
+  SymbolId tls_for_id;
+  SpellingId section_segment_id;
+  SpellingId section_name_id;
   bool keep_internal_alias = false;
   bool prefer_local_object_binding = false;
   bool object_output_root = false;
@@ -193,26 +343,28 @@ struct ParameterMetadata
 
 struct Parameter
 {
-  std::string name;
+  ValueId value_id;
+  SpellingId name_id;
   LowType type;
   ParameterMetadata metadata;
 };
 
 struct InstructionDebugLocation
 {
-  std::string file;
+  SpellingId file_id;
   std::size_t line = 0;
   std::size_t column = 0;
 
   bool present() const
   {
-    return !file.empty() && line != 0 && column != 0;
+    return file_id.valid() && line != 0 && column != 0;
   }
 };
 
 struct GlobalDeclaration
 {
-  std::string name;
+  SymbolId symbol_id;
+  SpellingId name_id;
   bool has_type = false;
   LowType type;
   GlobalStorageMode storage = GSM_DEFAULT;
@@ -232,12 +384,14 @@ struct GlobalDefinition
 
     LowType type;
     Operand literal_operand;
-    std::string symbol;
+    SpellingId symbol_name_id;
+    SymbolId symbol_id;
     long long addr_addend = 0;
     std::size_t zero_bytes = 0;
   };
 
-  std::string name;
+  SymbolId symbol_id;
+  SpellingId name_id;
   bool structured = false;
   GlobalStorageMode storage = GSM_DEFAULT;
   LowType type;
@@ -297,14 +451,21 @@ struct Instruction
     IK_RETURN
   } kind = IK_CONST;
 
-  std::string dest;
+  SpellingId destination_name_id;
+  ValueId dest_id;
   LowType type;
+  // Validation assigns the canonical type owned by dest_id. This avoids
+  // reconstructing result types from the instruction kind in later passes.
+  LowType result_type;
   LowType source_type;
-  std::string op;
+  AtomicOrder atomic_order = AO_INVALID;
+  AtomicOrder atomic_failure_order = AO_INVALID;
+  UnaryOperator unary_operator = UOP_INVALID;
+  BinaryOperator binary_operator = BOP_INVALID;
+  ComparePredicate compare_predicate = CPP_INVALID;
+  ConversionOperator conversion_operator = COP_INVALID;
   std::size_t byte_count = 0;
   std::size_t byte_alignment = 1;
-  bool has_eh_selector = false;
-  long long eh_selector = 0;
   IndexProjectionKind index_projection = IPK_NONE;
   Operand first;
   Operand second;
@@ -312,6 +473,7 @@ struct Instruction
   std::vector<Operand> args;
   bool call_returns_void = false;
   bool has_call_signature = false;
+  SymbolId direct_callee_id;
   std::vector<Parameter> call_params;
   LowType call_return_type;
   FunctionBoundaryMetadata call_boundary;
@@ -320,17 +482,29 @@ struct Instruction
 
 struct Block
 {
-  std::string label;
+  BlockId block_id;
+  SpellingId label_id;
   std::vector<Instruction> instructions;
 };
 
 struct Function
 {
-  std::string name;
+  SymbolId symbol_id;
+  SpellingId name_id;
   std::vector<Parameter> params;
   LowType return_type;
-  std::vector<std::pair<std::string, LowType> > slots;
+  struct Slot
+  {
+    SlotId slot_id;
+    SpellingId name_id;
+    LowType type;
+  };
+  std::vector<Slot> slots;
   std::vector<Block> blocks;
+  ValueId value_begin;
+  std::size_t value_count = 0;
+  SlotId slot_begin;
+  std::size_t slot_count = 0;
   InstructionDebugLocation debug_location;
   FunctionBoundaryMetadata boundary;
   SymbolMetadata metadata;
@@ -338,7 +512,8 @@ struct Function
 
 struct FunctionDeclaration
 {
-  std::string name;
+  SymbolId symbol_id;
+  SpellingId name_id;
   std::vector<Parameter> params;
   LowType return_type;
   FunctionBoundaryMetadata boundary;
@@ -347,18 +522,29 @@ struct FunctionDeclaration
 
 struct ObjectAlias
 {
-  std::string object_symbol;
-  std::string target;
+  SpellingId object_name_id;
+  SpellingId target_name_id;
+  SymbolId target_id;
+};
+
+struct ValueRecord
+{
+  ValueId id;
+  const Parameter *parameter = 0;
+  const Instruction *instruction = 0;
 };
 
 struct Program
 {
+  // One cold table owns all source, literal, external and debug spellings.
+  // Hot records carry only SpellingId values into this table.
+  std::vector<std::string> presentation;
   std::vector<GlobalDeclaration> global_declarations;
   std::vector<GlobalDefinition> globals;
   std::vector<FunctionDeclaration> function_declarations;
   std::vector<Function> functions;
   std::vector<ObjectAlias> object_aliases;
-  std::vector<ir_model::ExportedSymbol> exported_symbols;
+  std::vector<ValueRecord> values;
 };
 
 using LowirType = LowType;
