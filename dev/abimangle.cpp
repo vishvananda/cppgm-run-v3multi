@@ -1226,6 +1226,9 @@ abi_mangle::AbiDependentExpression parse_dependent_expression(
     } else {
       throw logic_error("invalid member ABI owner-close flag");
     }
+    if(at >= words.size()) {
+      throw logic_error("member ABI expression has no member name");
+    }
     result.name = parse_source_component(words[at++]);
     require_end(words, at);
     return result;

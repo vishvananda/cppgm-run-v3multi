@@ -2,6 +2,183 @@
 
 ## Current Checkpoint Review
 
+This review audits landed commit `3e333caaba630695b2d278ae74797ca4033f49eb`
+(`PA14: type dependent expressions and serializer`) from parent
+`623abbe4`, with approved bounded audit repairs to the same dependent 400/500
+surface.  Ownership is the complete checked-in `400-*` and `500-*` families
+and preservation of the earlier `100-*`, `200-*`, and `300-*` families:
+
+```text
+fact-file line -> typed adapter AbiFactCase/definitions
+                 -> structural identity/substitution state
+                 -> direct Itanium encoder -> ABI spelling
+```
+
+The turn-start clean tree covered all 111 PA14 tests and passed 104/111:
+`100=25/25`, `200=25/25`, `300=37/37`, `400=4/4`, `500=13/13`, and
+`600=0/7`.  The exact seven 600 failures were unchanged by this audit:
+
+```text
+600-function-local-class-template-arg
+600-function-template-local-class-arg
+600-function-template-local-lambda-arg
+600-inline-namespace-basic-string-param
+600-nested-helper-owner
+600-template-param-template-type-substitution
+600-template-parameter-pack-reference-constructor
+```
+
+### Dependent ownership and encoding traces
+
+- The adapter maps dependent aliases, member-template types, owners, member
+  components, argument ranges, and definition references into typed records.
+  The encoder's type identity retains the kind, owner, member, ordered typed
+  arguments, and canonical definition identity.  Type operands are emitted in
+  grammar order and may publish substitutions; a rendered type or expression
+  spelling is never the semantic key.
+- `let-expr` definitions are decoded once into typed operator, cast, access,
+  source-name, type, literal, pack, and reference fields.  Unary and binary
+  expression nodes validate their typed vocabulary and arity before direct
+  prefix emission.  The same path covers operator arity, literal type/value,
+  casts and conversions, calls, type traits, `sizeof(type)`, packs,
+  member/object-member forms, function-parameter references, and direct
+  template-parameter expressions.
+- Decltype records retain the typed `Dt` versus `DT` category.  For
+  `ABI_TYPE_DECLTYPE_EXPRESSION`, `type_identity` includes the
+  `AbiDecltypeKind` and the child expression identity; expression identity
+  itself includes all typed children, access/owner data, and literal
+  value/type fields.  Equivalent expression definitions therefore reuse the
+  same structural key while distinct operators, operands, literal
+  types/values, or decltype categories remain distinct.
+- Entity and nested-symbol boundaries are explicit.  Nested target facts are
+  collected separately, and nested substitution state is swapped and restored
+  around direct entity encoding.  Member and object-member owner data cannot
+  pollute the enclosing function's parameter, name, or template records.
+  Recursive type/definition and expression walks have active-cycle checks;
+  malformed typed models are rejected rather than rendered opportunistically.
+- There is one production typed adapter/model/`FactEncoder` path.  No second
+  production model, retry/rescan loop, reference/host compiler shortcut, or
+  hardcoded fixture answer exists.  Fixed operator, cast, access, decltype,
+  and standard-substitution vocabularies are typed.  Type-trait expressions
+  use the typed expression kind plus a source-name operand and typed type
+  operands; the trait spelling is not a closed trait enum.  Raw spelling is
+  retained only as cold metadata or at the explicit external-symbol boundary;
+  it is not used as a semantic identity or substitution key.
+
+The public serializer round-trips each checked-in 400/500 case through
+parse -> serialize -> parse with the same mangle, including expression
+definitions, expression template arguments, member owners, decltype
+categories, and function-template records.  A separate decltype-id smoke
+case also round-trips.  The source-level checks show structural identities
+memoized in typed maps/trie nodes, ordered candidate publication, and O(1)
+substitution-state swaps; no rendered-expression key or growing rendered
+vector key is present.  This supports the bounded performance evidence below,
+not an unrestricted asymptotic claim for arbitrarily wide keys or later 600
+contexts.
+
+### Bounded repairs and validation evidence
+
+The audit found two shared safety defects in malformed typed-model handling.
+The encoder previously accepted a unary node with a binary operator (and the
+reverse), and the adapter indexed a missing member name after a valid member
+owner.  The bounded repairs add typed unary/binary vocabulary-and-arity
+validation in `dev/src/abi_mangle.cpp`, reject an empty/placeholder external
+symbol at that same typed boundary, and add a missing-member-name guard in
+`dev/abimangle.cpp`; no handout fixture/ref or reference behavior was changed.
+
+Focused and final evidence:
+
+```text
+make -B -C dev abimangle                                  PASS
+g++ -std=c++11 -Wall -Wextra -Werror -Idev/src -fsyntax-only  PASS
+  dev/src/abi_mangle.cpp dev/abimangle.cpp
+make -C pa14 check TEST='tests/abi/400-*.t tests/abi/500-*.t' PASS 17/17
+make -C pa14 check TEST='tests/abi/100-*.t tests/abi/200-*.t tests/abi/300-*.t' PASS 87/87
+course PA14 fact regressions                               PASS 10/10
+public typed-model regression wrapper                      PASS 1/1
+public 400/500 parse/serialize/parse harness               PASS 17/17 + decltype-id
+typed malformed/cycle/wide probes                          PASS (all rejected)
+make -C pa14 check TEST='tests/abi/600-*.t'               FAIL 0/7;
+                                                             exact seven above
+```
+
+The typed probes covered mismatched unary/binary shape, binary arity,
+cyclic type and expression definitions, unsupported wide values, and a
+malformed member expression.  The final gates were:
+
+```text
+n=14; ... make test-report-through-pa13                       PASS 947/947
+make test-pa14                                                EXIT 2;
+                                                               104/111,
+                                                               exact seven 600 failures
+perl scripts/cppgm_file_audit.pl --stage pa14 --paths dev/src  PASS;
+                                                               four known nonfatal warnings
+git diff --check                                               PASS
+```
+
+The full-stage run covered all 111 tests; no turn-start passing test newly
+failed, and the focused preservation/course/API checks remained green.
+
+### Representative performance evidence
+
+The final repaired executable was built once, copied to an immutable mode-0555
+candidate at `/tmp/pa14-dependent-bench-final-PhdJGa/candidate`
+(`480128` bytes, SHA-256
+`96da172f6ceee052e453c81a93e20263d52262aa59ad5ababd249fee1b62314b`), and
+used for seven interleaved runs in the same environment.  Equivalent chain
+and shared-DAG inputs were run in 512/1024/256 order; `/usr/bin/time`
+medians are:
+
+| workload | fact lines | expression nodes | input bytes | output bytes | wall | user | sys | max RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| chain-256 | 259 | 257 | 7,028 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,392 KiB |
+| chain-512 | 515 | 513 | 14,196 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,832 KiB |
+| chain-1024 | 1,027 | 1,025 | 28,582 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,952 KiB |
+| shared-256 | 260 | 258 | 7,811 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,368 KiB |
+| shared-512 | 516 | 514 | 15,747 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,860 KiB |
+| shared-1024 | 1,028 | 1,026 | 31,669 | 4,111 | 0.02 s | 0.00 s | 0.01 s | 13,948 KiB |
+
+Each shared case has one template-parameter leaf, 256/512/1024 unary nodes
+that all reference that leaf, and one call listing the unary nodes.  The
+encoder therefore re-emits shared expression occurrences; the larger shared
+outputs are intentional output-sensitive work, not an exponential recursive
+fan-out.  The current input/output growth and source inspection of typed
+structural maps, trie edges, and direct traversal are consistent with the
+bounded design.  The timer is coarse at the smallest size; this is not an
+allocation proof, an unlimited-recursion claim, or evidence for the excluded
+600 contexts.
+
+The landed/pre-repair record is preserved for comparison.  Its immutable
+candidate was SHA-256
+`691ba38a34eafc26424b6512f3bd1da5cd8933b63d3d89e5e30df28763437e86`; seven
+interleaved runs used the same chain/shared-DAG shapes:
+
+| workload | facts | expression nodes | output bytes | median wall | median user | median sys | median max RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| chain-256 | 259 | 257 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,364 KiB |
+| chain-512 | 515 | 513 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,828 KiB |
+| chain-1024 | 1,027 | 1,025 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,948 KiB |
+| shared-256 | 260 | 258 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,408 KiB |
+| shared-512 | 516 | 514 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,836 KiB |
+| shared-1024 | 1,028 | 1,026 | 4,111 | 0.02 s | 0.01 s | 0.01 s | 13,976 KiB |
+
+The pre-repair table is historical evidence, not the repaired-build claim;
+the shared-DAG rows were rerun above against the repaired candidate.
+
+### Uncertainties and nonclaims
+
+The seven 600 identities above remain outside this checkpoint.  The audit
+does not claim local/lambda entity ownership, inline-namespace basic-string
+parameters, template-parameter template-type substitution, or the
+pack-reference constructor case.  The explicit external-symbol boundary
+still emits its producer-supplied raw symbol and does not reconstruct or
+cross-check it from owner/member facts.  The reduced course layer now covers
+the adapter missing-member guard (10/10 fact regressions), and the public typed
+API wrapper covers malformed operator shape and placeholder external symbols
+(1/1).  No handout test/ref or broad build surface was changed.
+
+## Prior Checkpoint Review (historical): typed 300 family
+
 This review audits landed commit `490d1ec79877424ca537b522d81885eca049e81f`
 (`pa14: complete typed 300 ABI boundary`) from parent
 `12eaf37b894f60474c190542736e220ee87e93b4`.  The bounded ownership is the
@@ -525,3 +702,4 @@ label is available.
 | Prior PA14 typed-foundation checkpoint | `a95729060db60598a9e1f490346d093db7e99c3e` | Numeric canonical IDs, one append type path, dense cycle state, typed terminal/linkage/builtin ownership, explicit 128-bit rejection, focused and broad validation complete | Broad validation complete; bounded five-path repair finalized |
 | Current PA14 complete typed 200-family checkpoint audit | `16d775c44d9daf7b1b852e0d14f6c672595ec186` → landed `0c6543189f0c505f6dea9ecb64ec23631b12d8d6` | Complete 100/200 focused behavior preserved; typed ABI tags, qualifiers, terminals, contexts, TLS/thunks, and qualified-prefix substitutions traced; four bounded semantic repairs plus typed-continuity cleanup made; durable course regression added; full-stage, through-PA13, file-audit, diff-check, compile, and exact failure-set preservation validated | Checkpoint-audit changes committed; worktree clean |
 | Current PA14 typed-300 checkpoint audit | `12eaf37b894f60474c190542736e220ee87e93b4` → landed `490d1ec79877424ca537b522d81885eca049e81f` | Complete 300 focused behavior preserved; typed substitution keys, CV/alias value normalization, dependent-wide rejection, enum-only standard continuity, complete member-template identity, ordinary qualified and unqualified typed template-entity/prefix identity, owner template-prefix/complete-specialization order, explicit function-prefix timing, composed multi-owner identity, mixed qualified-owner identity, template-prefix validation, and nested entity-target isolation audited and repaired; no speculative empty-argument restriction added; nine hand-derived course regressions and refreshed representative immutable interleaved performance evidence recorded; final through-PA13 947/947, PA14 88/111 with the exact 23 authorized nonclaim failures, and file audit pass with four nonfatal warnings | Checkpoint-audit changes committed; final worktree clean |
+| Current PA14 dependent 400/500 checkpoint audit | landed `3e333caa` from `623abbe4` | Focused 400/500 coverage 17/17; 100–300 preservation 87/87; course fact regressions 10/10; public typed-model wrapper 1/1; parse→serialize→parse 17/17 plus decltype-id; malformed typed-model, cycle, and unsupported-wide-value probes reject; final through-PA13 947/947; final PA14 104/111 with exactly the seven authorized 600 failures; file audit passes with four known warnings; diff check passes; repaired six-row performance evidence and preserved pre-repair record documented | checkpoint audit complete; approved bounded source/docs/course regressions recorded; no handout/ref changes |

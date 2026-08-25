@@ -1902,6 +1902,7 @@ private:
     const std::size_t index = static_cast<std::size_t>(kind);
     if(index == 0 || index >= sizeof(codes) / sizeof(codes[0])) { throw std::logic_error("missing ABI expression cast kind"); } return codes[index];
   }
+  bool expression_operator_has_arity(AbiExpressionOperatorKind kind, std::size_t arity) const { return arity == 1 ? ((kind >= ABI_EXPRESSION_OPERATOR_DELETE && kind <= ABI_EXPRESSION_OPERATOR_COMPLEMENT) || kind == ABI_EXPRESSION_OPERATOR_LOGICAL_NOT || kind == ABI_EXPRESSION_OPERATOR_INCREMENT || kind == ABI_EXPRESSION_OPERATOR_DECREMENT) : arity == 2 ? ((kind >= ABI_EXPRESSION_OPERATOR_PLUS && kind <= ABI_EXPRESSION_OPERATOR_SPACESHIP) || kind == ABI_EXPRESSION_OPERATOR_LOGICAL_AND || kind == ABI_EXPRESSION_OPERATOR_LOGICAL_OR || kind == ABI_EXPRESSION_OPERATOR_COMMA || kind == ABI_EXPRESSION_OPERATOR_MEMBER_POINTER) : false; }
   void append_function_parameter_expression(std::size_t index, std::string & output) { output += "fp"; if(index != 0) output += number_string(index - 1); output.push_back('_'); }
   void append_direct_template_parameter_expression(std::size_t index, std::string & output) const { output += template_parameter(index); }
   void append_expression(const AbiDependentExpression & expression,
@@ -1911,10 +1912,8 @@ private:
     case ABI_EXPRESSION_TEMPLATE_PARAMETER: append_direct_template_parameter_expression(expression.index, output); return;
     case ABI_EXPRESSION_FUNCTION_PARAMETER: append_function_parameter_expression(expression.index, output); return;
     case ABI_EXPRESSION_LITERAL: case ABI_EXPRESSION_INTEGRAL_VALUE: if(!has_type_shape(expression.value_type)) { throw std::logic_error("literal ABI expression has no value type"); } output += encode_value_literal(expression.value_type, expression.value); return;
-    case ABI_EXPRESSION_UNARY:
-      if(expression.expression_refs.size() != 1) { throw std::logic_error("unary ABI expression has the wrong arity"); } output += expression_operator_code(expression.operator_kind); if(expression.operator_kind == ABI_EXPRESSION_OPERATOR_INCREMENT || expression.operator_kind == ABI_EXPRESSION_OPERATOR_DECREMENT) output.push_back('_'); output += encode_expression_reference(expression.expression_refs[0]); return;
-    case ABI_EXPRESSION_BINARY:
-      if(expression.expression_refs.size() != 2) { throw std::logic_error("binary ABI expression has the wrong arity"); } output += expression_operator_code(expression.operator_kind); output += encode_expression_reference(expression.expression_refs[0]); output += encode_expression_reference(expression.expression_refs[1]); return;
+    case ABI_EXPRESSION_UNARY: if(expression.expression_refs.size() != 1 || !expression_operator_has_arity(expression.operator_kind, 1)) { throw std::logic_error("unary ABI expression has invalid operator or arity"); } output += expression_operator_code(expression.operator_kind); if(expression.operator_kind == ABI_EXPRESSION_OPERATOR_INCREMENT || expression.operator_kind == ABI_EXPRESSION_OPERATOR_DECREMENT) output.push_back('_'); output += encode_expression_reference(expression.expression_refs[0]); return;
+    case ABI_EXPRESSION_BINARY: if(expression.expression_refs.size() != 2 || !expression_operator_has_arity(expression.operator_kind, 2)) { throw std::logic_error("binary ABI expression has invalid operator or arity"); } output += expression_operator_code(expression.operator_kind); output += encode_expression_reference(expression.expression_refs[0]); output += encode_expression_reference(expression.expression_refs[1]); return;
     case ABI_EXPRESSION_CONDITIONAL:
       if(expression.expression_refs.size() != 3) { throw std::logic_error("conditional ABI expression has the wrong arity"); } output += "qu"; for(std::vector<AbiDefinitionId>::const_iterator it = expression.expression_refs.begin(); it != expression.expression_refs.end(); ++it) output += encode_expression_reference(*it); return;
     case ABI_EXPRESSION_PACK_EXPANSION:
@@ -1934,7 +1933,7 @@ private:
     case ABI_EXPRESSION_MEMBER:
       if(!has_type_shape(expression.type) || expression.name.components.size() != 1) { throw std::logic_error("member ABI expression is incomplete"); } output += "sr"; append_type(expression.type, output); if(expression.close_member_owner) output.push_back('E'); output += source_name(expression.name.components[0]); return;
     case ABI_EXPRESSION_OBJECT_MEMBER: if(expression.expression_refs.size() != 1 || expression.name.components.size() != 1) { throw std::logic_error("object-member ABI expression is incomplete"); } if(expression.member_access_kind == ABI_EXPRESSION_MEMBER_ACCESS_DOT) output += "dt"; else if(expression.member_access_kind == ABI_EXPRESSION_MEMBER_ACCESS_ARROW) output += "pt"; else throw std::logic_error("object-member ABI expression has no access operator"); output += encode_expression_reference(expression.expression_refs[0]); output += source_name(expression.name.components[0]); append_template_arguments(expression.argument_refs, output); return;
-    case ABI_EXPRESSION_EXTERNAL_ENTITY: if(expression.symbol.empty()) { throw std::logic_error("external entity expression has no symbol"); } output += "L" + expression.symbol + "E"; return;
+    case ABI_EXPRESSION_EXTERNAL_ENTITY: if(expression.symbol.empty() || expression.symbol == "-") { throw std::logic_error("external entity expression has no symbol"); } output += "L" + expression.symbol + "E"; return;
     case ABI_EXPRESSION_ENTITY: if(expression.entity_ref.index == ABI_INVALID_DEFINITION_ID) { throw std::logic_error("entity expression has no entity reference"); } { const std::string symbol = encode_entity_symbol(definition(expression.entity_ref).entity); output += "L" + symbol + "E"; return; }
     }
     throw std::logic_error("unknown ABI expression kind");

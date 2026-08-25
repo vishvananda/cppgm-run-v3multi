@@ -47,11 +47,14 @@ for an identified function-template encoding.
 The current dependent boundary extends that pipeline instead of adding a text
 fallback.  The adapter maps every checked-in `let-expr` form to typed operator,
 cast, access, source-name, type, expression-reference, and argument fields,
-with explicit arity, operator-shape, and vocabulary validation.  Member-template type records
-retain their owner, member source component, and argument range; decltype types
-retain the Dt/DT category.  Expression identity includes all such fields and
-typed children, including literal type/value, trait operands, member owner,
-access mode, and close-owner state.  Encoding is a direct prefix traversal;
+with explicit arity, operator-shape, and vocabulary validation.
+Member-template records retain their owner, member source component, and
+argument range; decltype types retain the Dt/DT category.  For
+`ABI_TYPE_DECLTYPE_EXPRESSION`, `type_identity` owns the `AbiDecltypeKind` and
+child expression identity.  Expression identity includes its own typed fields
+and children, including literal type/value, trait source-name/type operands,
+member owner, access mode, and close-owner state.  Encoding is a direct prefix
+traversal;
 type operands share the case substitution state, while direct template
 parameter expression leaves do not create a symbol-table candidate.  Recursive
 expression and definition walks are cycle-checked, and no rendered expression
@@ -75,8 +78,8 @@ normal work is plausibly O(n log n) for ordinary distinct interned facts/edges
 and each structural map operation is logarithmic.  Structural key comparison
 still carries the size of its typed operands, so this is not a claim for
 arbitrarily wide keys or later families.  Entity isolation adds O(1) state
-swaps per nested symbol.  There are no whole-case rescans or quadratic
-rendered/vector keys.
+swaps per nested symbol.  There is no whole-case retry/rescan path or
+quadratic rendered/vector keys.
 
 ## Failure Map
 
@@ -88,13 +91,13 @@ distinct-array-bound-substitution, minimum-signed-integral-value,
 std-allocator-substitution, std-initializer-list-member-parameter,
 std-initializer-list-parameter, and template-template-argument.
 
-At this turn start, clean HEAD `623abbe4` had that same 88/111 result and
-exactly 23 listed failures.  Final validation reports 104/111: 100=25/25,
-200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7.  The focused checked-in
-400/500 command is 17/17, so all three 400 and thirteen 500 turn-start
-failures are resolved without reducing coverage.  The public serializer
-round-trip harness also passes all 17 400/500 inputs with identical mangles,
-plus a `decltype-id` smoke case.
+At this checkpoint turn start, clean landed HEAD `3e333caa` had 104/111:
+100=25/25, 200=25/25, 300=37/37, 400=4/4, 500=13/13, and 600=0/7.  The
+focused checked-in 400/500 command remains 17/17, and the 100–300 preservation
+command is 87/87.  The public serializer round-trip harness also passes all
+17 400/500 inputs with identical mangles, plus a `decltype-id` smoke case.
+The prior parent `623abbe4` is retained as the historical 88/111 pre-dependent
+baseline; this checkpoint does not claim any of the seven 600 cases.
 
 The complete pre-milestone failure set was:
 
@@ -114,10 +117,10 @@ The complete pre-milestone failure set was:
   `nested-helper-owner`, `template-param-template-type-substitution`,
   `template-parameter-pack-reference-constructor`.
 
-The final prior-stage gate is `make test-report-through-pa13` at 947/947.
-`make test-pa14` covers all 111 tests and reports the seven exact 600
-nonclaims below.  The PA14 file audit passes with the four known nonfatal
-header `bad-division` warnings; `git diff --check` also passes.
+The final `make test-report-through-pa13` gate passed 947/947.  The final
+`make test-pa14` covered all 111 tests and passed 104/111 with exactly the
+seven 600 nonclaims below; `git diff --check` passed.  The final file audit
+passed with the four known nonfatal header `bad-division` warnings.
 
 ## Active Checkpoint and Spec Alignment
 
@@ -130,8 +133,9 @@ the preserved foundation.
 
 The implementation follows spec.md §§1--4 and §7 by keeping one typed
 adapter/model/encoder pipeline, validating malformed fact combinations at the
-adapter boundary, representing symbolic substitutions with complete typed
-keys, and encoding ABI structure directly in left-to-right order.  It follows
+typed adapter and encoder boundaries, representing symbolic substitutions with
+complete typed keys, and encoding ABI structure directly in left-to-right
+order.  It follows
 Itanium Chapter 5.1 for dependent types and decltype, function-parameter
 references, template arguments, prefix expression traversal, unresolved names,
 and compression.  Direct expression leaves remain distinct from type
@@ -139,7 +143,7 @@ operands: the latter publish candidates in grammar order, while expressions
 themselves are never string-keyed or substituted as rendered text.  The
 prior 300 substitutions and multi-owner identity remain preserved; the
 remaining 600 local/lambda, inline-namespace, and pack/template-parameter
-cases are explicit nonclaims.
+cases are explicit nonclaims and define the next bounded checkpoint.
 
 The seven 600 identities remain explicit nonclaims for this milestone:
 `function-local-class-template-arg`, `function-template-local-class-arg`,
@@ -147,38 +151,50 @@ The seven 600 identities remain explicit nonclaims for this milestone:
 `nested-helper-owner`, `template-param-template-type-substitution`, and
 `template-parameter-pack-reference-constructor`.  Member-external raw symbols
 remain a deliberate external-symbol boundary; this work does not reconstruct
-or cross-check them from typed owner/member facts.  No handout fixture,
-reference, generated artifact, or harness was changed.  The 600 nonclaims are
+or cross-check them from typed owner/member facts.  No handout fixture/ref,
+generated artifact, or broad harness was changed; the new course-only
+regression sidecar is not a handout reference.  The 600 nonclaims are
 unchanged; no shared 400/500 fix is being claimed for them.
 
 ## Performance Evidence
 
-Final dependent-expression evidence used immutable candidate
-`/tmp/abimangle-pa14-candidate`, SHA-256
-`691ba38a34eafc26424b6512f3bd1da5cd8933b63d3d89e5e30df28763437e86`, with
-seven interleaved runs per row (`/usr/bin/time -f '%e %U %S %M'`) and median
-wall/user/sys/max-RSS results.  The chain has one final expression selected
-from a 256/512/1024-deep unary chain.  The shared DAG has one shared leaf,
-256/512/1024 unary nodes that each reference it, and one final call listing
-all nodes; its output is deliberately linear rather than an exponential
-recursive fan-out.
+Repaired-current dependent-expression evidence used one immutable mode-0555
+candidate at `/tmp/pa14-dependent-bench-final-PhdJGa/candidate`, 480128 bytes,
+SHA-256
+`96da172f6ceee052e453c81a93e20263d52262aa59ad5ababd249fee1b62314b`.
+Equivalent chain and shared-DAG inputs were run seven times interleaved in
+512/1024/256 order with `/usr/bin/time -f '%e %U %S %M'`; medians are:
 
-| workload | facts | expression nodes | output bytes | median wall | median user | median sys | median max RSS |
+| workload | facts | expression nodes | input bytes | output bytes | wall | user | sys | max RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| chain-256 | 259 | 257 | 7,028 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,392 KiB |
+| chain-512 | 515 | 513 | 14,196 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,832 KiB |
+| chain-1024 | 1,027 | 1,025 | 28,582 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,952 KiB |
+| shared-256 | 260 | 258 | 7,811 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,368 KiB |
+| shared-512 | 516 | 514 | 15,747 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,860 KiB |
+| shared-1024 | 1,028 | 1,026 | 31,669 | 4,111 | 0.02 s | 0.00 s | 0.01 s | 13,948 KiB |
+
+Each shared case has one leaf, 256/512/1024 unary nodes referencing it, and
+one call listing those nodes; repeated occurrences are intentionally
+output-sensitive.  Structural-map/trie inspection corroborates the bounded
+design.  Timer resolution limits fine conclusions at the smallest size; this
+is not an allocation proof, unlimited-recursion claim, or evidence for 600.
+
+The landed/pre-repair six-row record is preserved for comparison.  Its
+immutable candidate SHA-256 was
+`691ba38a34eafc26424b6512f3bd1da5cd8933b63d3d89e5e30df28763437e86`:
+
+| workload | facts | expression nodes | output bytes | wall | user | sys | max RSS |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| chain-256 | 259 | 257 | 526 | 0.00 s | 0.00 s | 0.00 s | 6364 KiB |
-| chain-512 | 515 | 513 | 1038 | 0.01 s | 0.00 s | 0.00 s | 8828 KiB |
-| chain-1024 | 1027 | 1025 | 2062 | 0.02 s | 0.01 s | 0.01 s | 13948 KiB |
-| shared-256 | 260 | 258 | 1039 | 0.00 s | 0.00 s | 0.00 s | 6408 KiB |
-| shared-512 | 516 | 514 | 2063 | 0.01 s | 0.00 s | 0.00 s | 8836 KiB |
-| shared-1024 | 1028 | 1026 | 4111 | 0.02 s | 0.01 s | 0.01 s | 13976 KiB |
+| chain-256 | 259 | 257 | 526 | 0.00 s | 0.00 s | 0.00 s | 6,364 KiB |
+| chain-512 | 515 | 513 | 1,038 | 0.01 s | 0.00 s | 0.00 s | 8,828 KiB |
+| chain-1024 | 1,027 | 1,025 | 2,062 | 0.02 s | 0.01 s | 0.01 s | 13,948 KiB |
+| shared-256 | 260 | 258 | 1,039 | 0.00 s | 0.00 s | 0.00 s | 6,408 KiB |
+| shared-512 | 516 | 514 | 2,063 | 0.01 s | 0.00 s | 0.00 s | 8,836 KiB |
+| shared-1024 | 1,028 | 1,026 | 4,111 | 0.02 s | 0.01 s | 0.01 s | 13,976 KiB |
 
-The 1024-deep recursive walk is safe in this bounded check.  Structural
-definition/expression identities are memoized in typed maps, but encoded
-expression occurrences are intentionally re-emitted; the shared workload's
-larger output measures that unavoidable output-sensitive cost.  This is
-evidence for these representative linear inputs only, not a claim of
-arbitrary-DAG linearity or unlimited recursion depth.  The 0.01 s timer
-resolution limits fine-grained conclusions at 256 nodes.
+The historical rows are not the repaired-build claim; the shared rows were
+rerun against the repaired candidate above.
 
 Prior typed-300 checkpoint evidence used an immutable mode-0555 candidate
 copied before measurement; it was 405800 bytes with SHA-256
@@ -213,5 +229,5 @@ alone proves the asymptotic bound.
 | checkpoint | starting result | measured result | status |
 |---|---|---|---|
 | PA14 typed 300 boundary audit | landed HEAD `490d1ec7` from `12eaf37b`, turn-start 88/111 with 23 failures | Final 100/200/300 focused behavior remains 25/25, 25/25, 37/37; nine hand-derived course test files pass (eight added in this audit); final through-PA13 gate is 947/947; final PA14 is 88/111 with exactly the same 23 failures and no regression; file audit passes with four nonfatal pre-existing header warnings; ordinary qualified and unqualified typed template-entity/prefix reuse, owner template-prefix/complete-specialization order, explicit function-prefix timing, composed multi-owner identity, typed CV/alias unsigned normalization, dependent-wide rejection, nested entity isolation, member-template owner identity, enum-only standard substitution, and RAII cleanup audited | checkpoint-audit changes committed; final worktree clean |
-| Remaining PA14 work | 400--600 families were outside the 300 ownership boundary | 3 named 400 failures, 13 named 500 failures, 7 named 600 failures remain | explicit nonclaim; next checkpoint |
-| PA14 dependent-type/expression checkpoint | clean HEAD `623abbe4`, 88/111 and 23 listed failures | focused 400/500 is 17/17; parse→serialize→parse preserves all 17 mangles; final PA14 is 104/111 with 100/200/300/400/500 at 25/25, 25/25, 37/37, 4/4, 13/13 and the seven exact 600 nonclaims; through-PA13 is 947/947; audit passes with four known warnings; diff check passes | validated checkpoint increment |
+| Remaining PA14 work | 600 family remains outside this dependent 400/500 boundary | Seven exact 600 nonclaims remain: local/lambda ownership, inline-namespace basic-string parameter, template-parameter template-type substitution, and pack-reference constructor | explicit nonclaim; next bounded checkpoint |
+| PA14 dependent-type/expression checkpoint | landed `3e333caa` from parent `623abbe4`; turn-start 104/111 with seven 600 failures | Focused 400/500 is 17/17; 100–300 preservation is 87/87; course fact regressions are 10/10 and the public typed-model wrapper is 1/1; parse→serialize→parse preserves all 17 mangles plus decltype-id; typed malformed/cycle/wide probes reject; final through-PA13 is 947/947; final PA14 is 104/111 with exactly the seven authorized 600 identities; file audit passes with four known warnings; diff check passes | checkpoint audit complete; approved bounded source/docs/course regressions recorded |
