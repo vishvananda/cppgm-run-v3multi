@@ -14,9 +14,16 @@
 #include "posttoken.h"
 #include "pa11_semantic_storage.h"
 
+namespace lowir_model
+{
+struct Program;
+}
+
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
+
+class Pa15Lowerer;
 
 
 enum class TypeKind
@@ -922,8 +929,11 @@ public:
 	;
 	void dump_pa12(std::ostream& output) const
 	;
+	void lower_pa15(lowir_model::Program& program) const
+	;
 
 private:
+	friend class Pa15Lowerer;
 
 	const PA10Ast& ast_;
 	std::vector<std::string> names_;

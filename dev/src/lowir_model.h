@@ -529,9 +529,18 @@ struct ObjectAlias
 
 struct ValueRecord
 {
+  enum ProducerKind
+  {
+    VALUE_UNDEFINED,
+    VALUE_PARAMETER,
+    VALUE_INSTRUCTION
+  };
+
   ValueId id;
   const Parameter *parameter = 0;
   const Instruction *instruction = 0;
+  SymbolId owner_function_id;
+  ProducerKind producer = VALUE_UNDEFINED;
 };
 
 struct Program

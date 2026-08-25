@@ -1,6 +1,7 @@
 // Student-facing scaffold for the PA10+ `cppgm++` binary.
 
 #include "exceptions.h"
+#include "lowir_model.h"
 #include "pa10_ast.h"
 #include "pa11_semantic.h"
 #include "preproc_session.h"
@@ -559,8 +560,62 @@ int run_emit_semantics_mode(const vector<string> & args)
 
 int run_emit_lowir_mode(const vector<string> & args)
 {
-  parse_source_output_invocation(args, true);
-  return run_unimplemented_mode("--emit-lowir", "PA14");
+  const SourceOutputInvocation invocation =
+      parse_source_output_invocation(args, true);
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    if(paths_alias(invocation.outfile, invocation.inputs[i])) {
+      throw logic_error("output file aliases source file: " +
+          invocation.inputs[i]);
+    }
+  }
+
+  lowir_model::Program program;
+  PPPreprocessConfig config;
+  for(size_t i = 0; i < invocation.inputs.size(); ++i) {
+    const string & source_path = invocation.inputs[i];
+    ifstream input(source_path.c_str(), ios::in | ios::binary);
+    if(!input) {
+      throw runtime_error("unable to open source file: " + source_path);
+    }
+    ostringstream source;
+    source << input.rdbuf();
+    if(!input.good() && !input.eof()) {
+      throw runtime_error("unable to read source file: " + source_path);
+    }
+
+    PPPreprocessingSession preprocessing(config);
+    const PPTokenBuffer & tokens = preprocessing.preprocess(source_path,
+        source.str());
+    const PA10Ast ast = parse_pa10_ast(tokens);
+    emit_pa15_lowir(ast, program);
+  }
+
+  bool has_entry = false;
+  for(size_t i = 0; i < program.functions.size(); ++i) {
+    if(program.functions[i].metadata.role == lowir_model::SR_ENTRY) {
+      if(has_entry) {
+        throw logic_error("multiple main definitions");
+      }
+      has_entry = true;
+    }
+  }
+  if(!has_entry) {
+    throw logic_error("missing main definition");
+  }
+
+  ofstream output(invocation.outfile.c_str());
+  if(!output) {
+    throw runtime_error("unable to open output file: " + invocation.outfile);
+  }
+  output << lowir_model::serialize_lowir_program(program);
+  if(!output) {
+    throw runtime_error("unable to write output file: " + invocation.outfile);
+  }
+  output.flush();
+  if(!output) {
+    throw runtime_error("unable to finalize output file: " + invocation.outfile);
+  }
+  return EXIT_SUCCESS;
 }
 
 int run_driver_mode(const vector<string> & args)
