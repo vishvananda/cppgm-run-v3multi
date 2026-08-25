@@ -603,11 +603,12 @@ int run_emit_lowir_mode(const vector<string> & args)
     throw logic_error("missing main definition");
   }
 
+  const string output_text = lowir_model::serialize_lowir_program(program);
   ofstream output(invocation.outfile.c_str());
   if(!output) {
     throw runtime_error("unable to open output file: " + invocation.outfile);
   }
-  output << lowir_model::serialize_lowir_program(program);
+  output << output_text;
   if(!output) {
     throw runtime_error("unable to write output file: " + invocation.outfile);
   }

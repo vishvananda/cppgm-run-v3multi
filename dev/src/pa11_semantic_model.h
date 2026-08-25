@@ -224,6 +224,15 @@ enum class BindingKind
 	Enumerator
 };
 
+// These are source-owned linkage/storage facts.  They are kept on the
+// canonical binding rather than recovered from a rendered declaration when
+// PA15 chooses LowIR metadata.
+enum class LanguageLinkage
+{
+	Cxx,
+	C
+};
+
 struct Binding
 {
 	BindingKind kind;
@@ -235,12 +244,15 @@ struct Binding
 	bool has_value;
 	std::int64_t value;
 	bool has_definition;
+	LanguageLinkage language_linkage;
+	bool internal_linkage;
 
 	Binding(BindingKind kind = BindingKind::Variable, NameId name = NameId(),
 		TypeId type = TypeId())
 		: kind(kind), name(name), type(type), has_tag(false),
 		  class_tag(ClassTag::Struct), declaration_tags(),
-		  has_value(false), value(0), has_definition(false)
+		  has_value(false), value(0), has_definition(false),
+		  language_linkage(LanguageLinkage::Cxx), internal_linkage(false)
 	{}
 };
 
@@ -1008,6 +1020,7 @@ private:
 	NameId builtin_abort_name_;
 	BindingId builtin_abort_binding_;
 	bool pa12_render_mode_;
+	LanguageLinkage current_language_linkage_;
 	static void unsupported(const char* feature)
 	;
 	NameId intern_name(const std::string& name)
@@ -1265,7 +1278,9 @@ private:
 	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
 	bool definition = false, bool lexical_view = false,
 	BindingId backing_storage = BindingId(),
-	SourcePoint declaration_point = SourcePoint())
+	SourcePoint declaration_point = SourcePoint(),
+	bool internal_linkage = false,
+	LanguageLinkage language_linkage = LanguageLinkage::Cxx)
 	;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;

@@ -2,6 +2,30 @@
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
+
+namespace
+{
+
+LanguageLinkage language_linkage(const PA10AstNode& node)
+{
+	if (!node.has_literal)
+		throw std::runtime_error("linkage specification has no language literal");
+	std::string value;
+	for (std::size_t i = 0; i < node.literal.bytes.size(); ++i)
+	{
+		if (node.literal.bytes[i] == 0)
+			break;
+		value.push_back(static_cast<char>(node.literal.bytes[i]));
+	}
+	if (value == "C")
+		return LanguageLinkage::C;
+	if (value == "C++")
+		return LanguageLinkage::Cxx;
+	throw std::runtime_error("unsupported language linkage");
+}
+
+}
+
 template<typename Identity>
 bool append_lookup_candidate(std::vector<Identity>* candidates,
 	Identity candidate)
@@ -36,7 +60,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	conversion_facts_(), declaration_semantic_ids_(),
 	semantic_name_components_(), anonymous_union_fact_index_(),
 	builtin_constant_p_name_(), builtin_abort_name_(),
-	builtin_abort_binding_(), pa12_render_mode_(false)
+	builtin_abort_binding_(), pa12_render_mode_(false),
+	current_language_linkage_(LanguageLinkage::Cxx)
 {
 	global_ = create_scope(ScopeKind::Namespace, ScopeId(), NameId());
 	for (int i = static_cast<int>(FundamentalType::SignedChar);
@@ -2005,7 +2030,8 @@ TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 }
 BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	bool function, bool definition, bool lexical_view, BindingId backing_storage,
-	SourcePoint declaration_point)
+	SourcePoint declaration_point, bool internal_linkage,
+	LanguageLinkage language_linkage)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -2024,6 +2050,9 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 			const Binding& existing = binding(existing_id);
 			if (!function || existing.kind != BindingKind::Function)
 				throw std::runtime_error("incompatible value redeclaration");
+			if (existing.language_linkage != language_linkage ||
+				existing.internal_linkage != internal_linkage)
+				continue;
 			if (type_kind(existing.type) != TypeKind::Function || type_kind(type) != TypeKind::Function)
 				throw std::runtime_error("invalid function redeclaration");
 			const TypeKey& existing_function = types_[existing.type.value];
@@ -2043,6 +2072,11 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	}
 	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
 	value.has_definition = function && definition;
+	if (function)
+	{
+		value.language_linkage = language_linkage;
+		value.internal_linkage = internal_linkage;
+	}
 	const BindingId binding_id = store_binding(scope, value);
 	if (backing_storage.valid() || unadjusted_type != type)
 	{
@@ -2489,9 +2523,13 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		else
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
+			const bool internal_linkage = function && spec.is_static &&
+				target.value < scopes_.size() &&
+				scopes_[target.value].kind == ScopeKind::Namespace;
 			binding_id = add_value(target, name.path.last(), type,
 				function, false, true, BindingId(),
-				SourcePoint(node.source_begin));
+				SourcePoint(node.source_begin), internal_linkage,
+				current_language_linkage_);
 			const NamedRecordId constant_record = named_record_for_type(type);
 			const bool ordinary_const_record = !spec.is_constexpr &&
 				((spec.cv & 1u) != 0) && constant_record.valid() &&
@@ -2759,9 +2797,14 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		return;
 	}
 	case PA10NodeKind::LinkageSpecification:
+	{
+		const LanguageLinkage previous = current_language_linkage_;
+		current_language_linkage_ = language_linkage(node);
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 			process_declaration(node.children[i], scope);
+		current_language_linkage_ = previous;
 		return;
+	}
 	case PA10NodeKind::TemplateDeclaration:
 		process_template_declaration(node, scope);
 		return;

@@ -248,7 +248,9 @@ private:
 		abi_mangle::AbiFactRecord record;
 		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
 		record.target.kind = abi_mangle::ABI_TARGET_FACT_FUNCTION;
-		record.target.linkage = abi_mangle::ABI_LINKAGE_CXX;
+		record.target.linkage = (binding.internal_linkage ||
+			binding.language_linkage == LanguageLinkage::Cxx) ?
+			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
 		record.target.function.name.components = function_components(fact);
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
@@ -356,7 +358,10 @@ private:
 			function.symbol_id = SymbolId(next_symbol_++);
 			function.name_id = name_id;
 			function.return_type = low_type(model_.types_[binding.type.value].result);
-			function.metadata.binding = lowir_model::SBM_STRONG;
+			function.metadata.binding = binding.internal_linkage ?
+				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
+			if (binding.language_linkage == LanguageLinkage::C)
+				function.metadata.linkage = lowir_model::LLM_C;
 			const bool is_main = components.size() == 1 && components.front() == "main";
 			if (is_main)
 			{

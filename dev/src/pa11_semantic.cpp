@@ -522,8 +522,11 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const TypeId type = apply_declarator(declarator, spec.base, target);
 	if (type_kind(type) != TypeKind::Function)
 		throw std::runtime_error("PA11 definition is not a function");
+	const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&
+		scopes_[target.value].kind == ScopeKind::Namespace;
 	const BindingId function_binding = add_value(target, name.path.last(),
-		type, true, true, true, BindingId(), SourcePoint(node.source_begin));
+		type, true, true, true, BindingId(), SourcePoint(node.source_begin),
+		internal_linkage, current_language_linkage_);
 	if (spec.is_static && target.value < scopes_.size() &&
 		scopes_[target.value].kind == ScopeKind::Class)
 		mark_static_member(function_binding);
