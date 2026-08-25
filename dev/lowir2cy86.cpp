@@ -1,9 +1,9 @@
 // Student-facing scaffold for the PA13 `lowir2cy86` binary.
 
 #include "exceptions.h"
+#include "lowir2cy86_backend.h"
 #include "tool_help_text.h"
 
-#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -42,12 +42,54 @@ bool has_batch_stdin_arg(const vector<string> & args)
   return false;
 }
 
-int run_not_implemented_batch_mode()
+vector<string> split_tabs(const string & line)
+{
+  vector<string> fields;
+  size_t begin = 0;
+  for(size_t i = 0; i <= line.size(); ++i) {
+    if(i != line.size() && line[i] != '\t') {
+      continue;
+    }
+    fields.push_back(line.substr(begin, i - begin));
+    begin = i + 1;
+  }
+  return fields;
+}
+
+int run_batch_stdin_mode()
 {
   string line;
   while(getline(cin, line)) {
-    (void)line;
-    cout << "EXIT_NOT_IMPLEMENTED" << endl;
+    vector<string> fields = split_tabs(line);
+    int status = EXIT_FAILURE;
+    try {
+      // The ordinary text-test worker sends three fields:
+      // output-file, input-file, and the source path.  The generic wrapped
+      // worker sends the full five-field request, whose arguments begin at
+      // field four.  Supporting both makes the standalone driver useful and
+      // keeps it compatible with the repository test runner.
+      if(fields.size() == 3) {
+        lowir2cy86::compile(vector<string>(1, fields[2]), fields[0]);
+        status = EXIT_SUCCESS;
+      }
+      else if(fields.size() >= 5) {
+        vector<string> args(fields.begin() + 4, fields.end());
+        if(args.size() < 3 || args[0] != "-o") {
+          throw logic_error("invalid batch invocation");
+        }
+        vector<string> sources(args.begin() + 2, args.end());
+        lowir2cy86::compile(sources, args[1]);
+        status = EXIT_SUCCESS;
+      }
+      else {
+        throw logic_error("invalid batch request");
+      }
+    }
+    catch(const exception & e) {
+      cerr << "ERROR: " << e.what() << endl;
+    }
+    cout << (status == EXIT_SUCCESS ? "EXIT_SUCCESS" : "EXIT_FAILURE")
+         << endl;
   }
   return EXIT_SUCCESS;
 }
@@ -67,7 +109,7 @@ void parse_output_invocation(const vector<string> & args,
 int run_lowir2cy86_mode(const vector<string> & args)
 {
   if(has_batch_stdin_arg(args)) {
-    return run_not_implemented_batch_mode();
+    return run_batch_stdin_mode();
   }
 
   if(has_help_arg(args)) {
@@ -79,10 +121,8 @@ int run_lowir2cy86_mode(const vector<string> & args)
   vector<string> srcfiles;
   parse_output_invocation(args, outfile, srcfiles);
 
-  (void) outfile;
-  (void) srcfiles;
-
-  throw NotImplementedException();
+  lowir2cy86::compile(srcfiles, outfile);
+  return EXIT_SUCCESS;
 }
 
 }  // namespace

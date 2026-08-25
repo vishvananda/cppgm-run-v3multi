@@ -20,5 +20,5 @@ FRONTEND_OBJ_BASENAMES_cppgm++ := pp_tokenizer posttoken ctrlexpr macro \
 	pa11_semantic pa11_semantic_core pa11_semantic_types pa12_semantic \
 	pa12_semantic_resolution
 FRONTEND_OBJ_BASENAMES_lowiropt :=
-FRONTEND_OBJ_BASENAMES_lowir2cy86 :=
+FRONTEND_OBJ_BASENAMES_lowir2cy86 := lowir2cy86_backend
 FRONTEND_OBJ_BASENAMES_lowir2native :=
