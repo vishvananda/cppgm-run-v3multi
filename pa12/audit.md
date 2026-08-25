@@ -2,85 +2,161 @@
 
 ## Current Checkpoint Review
 
-This `checkpointAudit` reviews landed commit `115aff98b17774925ae64e53c1ec3260a0b1e6ca`
-(`PA12: support typed functional casts`), parent `d0d2e2b3`. No bounded source
-repair was justified. The implementation path remains one forward flow:
-source tokens and source points -> the PA10 `PA10Ast` call-shaped boundary ->
-the sole PA11 `PA11SemanticModel` with canonical `TypeKey`/`TypeId`, lookup,
-binding, and `ValueRef` facts -> PA12 `SemanticFact` and `ConversionFact`
-ownership -> cold deterministic rendering. No stage reparses rendered text or
-maintains a parallel parser/type/semantic model.
+This final `checkpointAudit` reviews landed commit
+`613b9cb62e7664eda1462f2a4dedf53f08223101`
+(`PA12: close declaration lifetime and template residuals`), parent
+`fbb9dd85`. It closes the three residual fixture paths and finds no further
+source blocker in the deliberately narrow PA12 bridge. The final audit is
+documentation-only; the implementation under review is the clean `613b9cb6`
+baseline.
 
-At the PA10 boundary, `PA10Parser` builds the indexed delimiter tables once and
-charges that bounded indexing work. `parse_postfix_expression_seed` invokes
-`classify_function_style_cast` once at the current position. The classifier
-charges its contiguous built-in/cv prefix checks, uses the indexed `decltype`
-close position, publishes the classification and `charged_work`, and returns
-before any operand walk. The parser charges that published work once, then
-consumes the same call-shaped syntax: a single built-in keyword keeps its
-legacy identifier callee, while a multi-keyword fundamental target or
-`decltype(expr)` becomes a typed `TypeId` child. The scan is bounded by the
-contiguous prefix and the prebuilt index; it does not retry or shell out to a
-host/reference parser.
+### Pipeline and typed ownership
 
-PA11 keeps canonical type identity and lookup in `TypeId`/`TypeKey`. The
-`SizeofExpression` type is `unsigned long`, so `decltype(sizeof(0))` reaches
-the same canonical target used by the visible `size_t` alias. In
-`functional_cast_target`, built-ins, a parsed `TypeId`, and a name lookup all
-resolve to that canonical identity. Value lookup is attempted before typed
-lookup for an alias-shaped callee, preserving value hiding and ordinary-call
-continuity; no rendered spelling is joined, split, or re-interned for this
-decision.
+The production route is `run_emit_semantics_mode` ->
+`PPPreprocessingSession` -> classified `PPTokenBuffer` ->
+`PA10Ast` -> one `PA11SemanticModel` -> PA12 facts ->
+requested cold dump. `PA11SemanticModel` owns canonical
+`TypeKey`/`TypeId`, `BindingId`, `ScopeId`, `NamedRecordId`,
+`TemplateFunctionId`, `TemplateSpecializationId`, `SemanticFactId`, and
+`ConversionFactId`. PA10 owns syntax and indexed lookahead; PA11 owns
+declaration, type, scope, and lookup identity; PA12 owns expression,
+conversion, lifetime, and rendering facts. The source contains no reference or
+host-toolchain shell-out, rendered-text reparse, parallel semantic model, or
+whole-program retry in this path. Text is retained only as source/presentation
+data and is rendered at the requested dump boundary.
 
-PA12 resolves the target in `pa12_semantic_resolution.cpp`, validates the
-supported void/scalar/enum target set, and sends zero-argument supported
-targets to a typed prvalue zero `Literal` fact. A one-argument functional cast
-and an explicit/static cast both call `semantic_cast_to_target`. That shared
-owner performs the reference, integral, pointer, enum, void, and retained
-member-pointer checks, creates the selected source-to-target `ConversionFact`,
-and attaches it to the resulting `CastExpression`. If a later context asks for
-an exact target type, `record_builtin_conversion` does not append a second
-identity conversion to a cast-owned fact, so the conversion range remains
-contiguous and the selected conversion is not lost. Ordinary calls remain
-after the functional-target check and still use typed value lookup, candidate
-selection, argument conversion, and selected callee facts. The retained
-explicit/static-cast path, including the member-pointer identity case, remains
-on the same semantic owner.
+### Representative ownership paths
 
-The cold renderer walks typed fact IDs in source/child order and derives type
-and name text only at the requested dump boundary. Functional casts therefore
-render as typed cast or zero-literal facts without becoming a new lookup input.
-Repeated direct dumps of six functional/explicit-cast representatives had
-exit `0/0` and `cmp` exit `0` for every pair. The focused checked-in evidence
-is `make -C pa12 -j2` exit `0`, the three active PA12 cases `3/3`, eight PA12
-call/cast/static-cast controls `8/8`, and four PA10 call-shaped parser controls
-`4/4`. This covers the root spec's one-pipeline and typed-fact requirements in
-sections 1-3, the bounded work/storage requirements in section 4, and the
-determinism/measurement requirements in section 7. The retained five-round
-immutable generated cast-family measurements remain bounded observations; no
-broader timing coefficient or asymptotic claim is made.
+1. **Global-qualified local extern.** At
+   `PA10Parser::declaration_start`, a leading `::` is classified by
+   `PA10ParserSupport::qualified_declaration_start` from the prebuilt
+   delimiter and parenthesized-group facts. Its reported work is charged once;
+   the ordinary parser consumes the declaration. PA11 resolves the declaration
+   scope, applies the one-pass declarator prefix/suffix split, normalizes
+   embedded function types and adjusted parameters, and preserves the
+   unadjusted source type in `BindingSidecar` when PA11 presentation needs it.
+   PA12 then records the local function binding and pointer call from typed
+   facts. The checked-in local-extern dump matches byte-for-byte.
 
-The fresh final stage result is `163/166` with all 166 paths covered. The exact
-residuals are the local-extern declaration, pointee-const-pointer reference
-binding, and overloaded function-template argument cases listed below. Each
-still reproduces the same residual in the fresh broad run; none is a direct
-regression owned by this functional-cast increment, so no residual-family
-repair is included. Fresh through-PA11 is `685/685`; fresh through-PA12 is
-`848/851` with that same three-path set. The fresh file audit passes with the
-two retained header-division warnings, `git diff --check` is clean, and the
-exact authorized-path audit finds only the two record files changed.
+2. **Canonical record display.** A global-qualified type occurrence reaches
+   `remember_type_display_path`, which first checks
+   `canonical_type_display_path` against the `NamedRecordId` owner/name
+   chain. Only that canonical path can populate the sparse named-record
+   sidecar; typedef and namespace-alias spellings are rejected. The cold
+   renderer follows the typed sidecar and never uses an alias spelling as
+   record identity. Alias-only, canonical-only, and both encounter-order
+   probes produced the expected `struct S` versus `struct n::S` views.
+
+3. **Local record lifetime.** `semantic_declaration` checks block scope,
+   defined non-union class kind, empty class scope, and no initializer before
+   calling `semantic_constructor_action`. The action obtains the
+   `NamedRecordId`, creates at most one sparse-sidecar synthetic constructor
+   `BindingId`, attaches the constructor call/action to the variable fact, and
+   lets the cold dump emit the action and synthetic definition. Anonymous unions
+   remain on their existing constructor route. This is a narrow lifetime fact,
+   not constructor overload resolution.
+
+4. **Template bridge.** Template declarations form `TemplateFunctionFact`
+   records and a `NameId` candidate index. Explicit type arguments and direct
+   `T`-deduction remain `TypeId` facts. Selection uses the exact
+   `TemplateSpecializationKey(TemplateFunctionId, vector<TypeId>)` flat index.
+   Each indexed fact is retained through explicit `NotStarted`,
+   `InProgress`, `Complete`, or `Failed` transitions; a retained failed
+   key does not repeat substitution. The completed binding carries a sparse
+   specialization sidecar, and semantic facts retain the selected binding and
+   scope through conversions to cold rendering.
+
+   The supported exception is intentionally narrow: one-component names bound
+   to global template declarations. The checked-in residual fixture uses the
+   unqualified `&hello<stream>` spelling; a focused out-of-tree probe with the
+   global-qualified `&::hello<stream>` spelling also passed. The direct `take(T)`
+   demand is likewise bound to the global template declaration. The candidate
+   list is name-indexed and each candidate is checked against the visible scope
+   ancestry. Namespace-qualified template names and nested same-name template
+   hiding are not claimed by PA12; focused probes rejected those forms (the
+   nested case reported ambiguity) rather than producing an unowned or
+   text-recovered answer. General templates, namespace-alias
+   template lookup, dependent lookup, non-type arguments, and
+   template-aware overload ranking remain out of scope.
+
+### Spec alignment and findings
+
+- §§1-2: the above is one forward production model with typed continuity;
+  display strings are cold presentation only.
+- §3: selected declarations, conversions, value categories, lifetime actions,
+  and the narrow specialization binding are recorded at their owners. Exact
+  specialization keys and all four lifecycle states are explicit.
+- §4: parser classification uses indexed facts and one charge; declarator
+  splitting is one child pass; display walking follows canonical owner depth;
+  lifetime work is constant per eligible object; template work is limited to
+  the indexed same-name list, visible-scope checks, type traversal, and exact
+  key lookup. No global specialization-fact scan or whole-program retry is
+  present.
+- §7: structural counters, immutable repeated dumps, exact output comparisons,
+  stage totals, and file-audit evidence are recorded without claiming timing,
+  asymptotic, or generated-code results that PA12 dump mode cannot establish.
+
+No additional source repair, test, reference, harness, grammar, or script
+change was justified. The only documentation blocker was this stale review
+header and ledger; it is corrected here. The remaining uncertainties are the
+deliberately excluded general template/candidate cases and the absence of
+generated-object evidence in a semantics-dump assignment.
+
+### Focused validation and performance evidence
+
+The focused build passed with `make -C pa12 -j2`. Direct checked-in-output
+comparisons passed for the exact residual trio
+`300-local-extern-function-declaration.t`,
+`300-reference-binding-pointee-const-pointer.t`, and
+`300-static-cast-overloaded-function-template-argument.t` (`3/3`),
+six nearby PA12 controls (`6/6`), two PA10 qualified-declarator controls
+(`2/2`), and four PA11 type/declarator/record controls (`4/4`). The nine
+PA12 dumps each had exit `0` and `cmp` exit `0`. Current layout probes
+report `SemanticFact=136`, `TemplateSpecializationFact=48`,
+`BindingSidecar=48`, and `TemplateSpecializationKey=32` bytes.
+
+The fresh immutable structural probe generated two global templates
+`hello(T)` and `take(T)`, `n` distinct empty records, and `n` direct
+`take(static_cast<void(*)(Ti)>(&hello<Ti>))` demands. Thus each scale has
+`2n` distinct specialization demands and complete specialization declaration
+lines. Three runs per scale produced:
+
+| distinct records `n` | demands / complete facts | output bytes | triplicate SHA-256 |
+|---:|---:|---:|---|
+| 4 | 8 / 8 | 3046 | `f9c9eb757b400d36b809884e9c6119abbeb01381a282d2097aa54e17c2db603ea4` |
+| 8 | 16 / 16 | 5930 | `a9cd17c294bfa227b440c54a87f4d9be173c72f398b0ef7acf119e68990b85e5` |
+| 16 | 32 / 32 | 11752 | `58ab8d80f01744073bf9b102dea2b4672fe308d7be6aebc08f5d57d038a38dcc` |
+| 32 | 64 / 64 | 23432 | `4ca4ef49f7baf3d315307cffade765e7650c36ccdad3e3963fb7da5008cb9223` |
+
+The demand/fact counts are structural observations for this generated shape;
+the source trace confirms each demand uses the exact flat index rather than a
+global fact scan. The hashes are dump determinism evidence only. No timing,
+RSS, asymptotic coefficient, generated-code, or self-hosting claim is made.
+
+The authoritative source checkpoint for this audit is commit
+`613b9cb62e7664eda1462f2a4dedf53f08223101` (`613b9cb6`), with the source tree
+clean before this documentation change. Fresh Phase 2 validation of this
+two-file audit diff reported: `perl scripts/cppgm_file_audit.pl --stage pa12
+--paths dev/src` exit `0`, with exactly two retained `bad-division` warnings
+at `dev/src/cpp_semantic_core.h:1` and `dev/src/pa11_semantic_model.h:1`;
+`make test-report-through-pa12` exit `0`, `851/851` across all `12/12` stages;
+and `git diff --check` exit `0`. The exact changed-path audit found only
+`pa12/audit.md` and `pa12/plan.md`, with no test, reference, harness, grammar,
+script, or source path changed; the pre-commit short status contained only
+those two documentation paths.
 
 ## Prior checkpoint context
 
 The immediately preceding audit row at `4f890322` established the typed
 member-pointer target path and recursive array qualification repair. Earlier
-rows remain preserved below; this review is limited to the functional-cast and
-type-name increment in `115aff98`.
+rows remain preserved below; the immediately prior row at `115aff98` is
+historical context, not the current review.
 
 ## Audit ledger
 
 | audit row | findings and ownership trace | evidence | uncertainties / residual exclusions | exact validation |
 | --- | --- | --- | --- | --- |
+| 2026-08-25 PA12 final `checkpointAudit` at `613b9cb6` | Closed the global-qualified local-extern routing, narrow local empty-class lifetime action, and typed function-template residuals. Rechecked one forward pipeline, canonical record display ownership, source-type side storage, exact four-state specialization lifecycle, selected binding continuity, and cold deterministic rendering. No further source blocker was found; this audit corrects the template wording to distinguish the checked-in unqualified spelling from the separately probed global-qualified spelling. | Focused build; exact residual trio `3/3`; six nearby PA12 controls `6/6`; PA10 `2/2`; PA11 `4/4`; layout `136/48/48/32` bytes; fresh 4/8/16/32 structural scales emitted exact `2n` demands/facts with one hash per scale across three runs; fresh through-PA12 `851/851` across `12/12` stages; file audit exit `0` with exactly two retained `bad-division` warnings at `dev/src/cpp_semantic_core.h:1` and `dev/src/pa11_semantic_model.h:1`; `git diff --check` exit `0`; exact two-document path audit. | Namespace-qualified and nested same-name template probes are deliberately rejected and remain out of scope; PA12 dump mode provides no generated-code evidence. The final audit commit is complete; its identity and post-commit clean-tree proof are reported in the handoff rather than self-referenced in this record. | `make -C pa12 -j2`; direct checked-in comparisons; `make -C pa10 check` (`2/2`); `make -C pa11 check` (`4/4`); immutable structural/determinism probe; fresh `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` (exit `0`); fresh `make test-report-through-pa12` (exit `0`, `851/851`, `12/12`); `git diff --check` (exit `0`); exact changed-path audit. |
 | 2026-08-24 prior PA12 audit at `eee242c6` | Shared typed semantic owner, qualification safety, canonical function redeclaration/definition state, and lexical dump views were recorded before the structured-statement increment. | Prior checkpoint record: PA12 90/166 with 76 residual failures; through-PA11 685/685; performance and file-audit evidence preserved. | Broader PA12 residual families were explicitly excluded. | See the prior committed audit record in history. |
 | 2026-08-24 PA12 `checkpointAudit` at `47ca58be` | Complete ownership path reviewed; shared fixed-target promotion, exact converted-case representability, scoped-enum legality, compact 64-bit case payload continuity, empty control substatements, child order, lexical jump validation, deterministic cold rendering, bounded indexes, and final file-audit shape are repaired or confirmed. | Final PA12 103/166, 63 failures, all 166 covered; through-PA11 685/685; focused 22/22; temporary probes 17/17 expected outcomes; normalized failure paths: 63 baseline, 63 current, 0 current-only, 0 baseline-only; `SemanticFact` layout 144-to-136 bytes. | Future residual-family work requires separate authorization; PA12 is not complete. The two header-division warnings are preserved known findings. No tests, refs, harnesses, grammar, or scripts changed. | `make test-pa12` (exit 2, 103/166); exact through-PA11 command; `perl scripts/cppgm_file_audit.pl --stage pa12 --paths dev/src` (pass, 2 warnings); `git diff --check` (pass); changed-path audit. |
 | 2026-08-24 PA12 `checkpointAudit` at `5fa28b37` | Callable ownership traced from PA10 IDs through PA11 lookup/types/bindings to PA12 deferred `FunctionIdResolution`, fact-free candidate scoring, selected conversions, call result categories, and deterministic cold rendering. Repaired ordinary `nullptr_t` alias lookup precedence and nested named-pack detection; confirmed qualified/parenthesized target IDs. | Post-repair PA12 113/166, 53 failures, all 166; through-PA11 685/685; focused checked-in 28/28; out-of-tree target/pack/alias probes passed; fresh immutable C/A/D/F evidence was 200/200 successful per case with byte-identical dumps; normalized comparison 53 baseline, 53 current, 0 current-only, 0 baseline-only. | The exact 53 residual paths remain outside this checkpoint; overloaded address-of and overloaded parenthesized-callee forms are not claimed. PA12 is not complete. | `make test-pa12` (exit 2, 113/166); exact through-PA11 command; `make -C pa12`; exact 28-test `make -C pa12 check`; fresh 5x40 interleaved immutable probe; file audit passed with the two known warnings; `git diff --check`; changed-path audit. |
