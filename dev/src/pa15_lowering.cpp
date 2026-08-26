@@ -20,7 +20,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  block_ordinal_(0), generated_slot_ordinal_(0), block_indexes_(), control_stack_(),
 		  switch_stack_(), block_order_(), ordered_block_ids_(),
 		  loop_targets_(), reachability_base_(0), reachable_blocks_(),
-		  reachability_work_(){}
+		  reachability_work_(), constant_truth_cache_(){}
 
 void Pa15Lowerer::run(){
 		initialize_spelling_ids();
@@ -31,6 +31,7 @@ void Pa15Lowerer::run(){
 		collect_function_declarations();
 		collect_globals();
 		materialize_pending_global_initializers();
+		constant_truth_cache_.assign(model_.semantic_facts_.size(), 255);
 		loop_targets_.resize(model_.semantic_facts_.size());
 		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 			lower_function(function_plans_[i]);
@@ -2744,58 +2745,6 @@ bool Pa15Lowerer::pointer_like(TypeId type) const{
 		type = model_.strip_cv_type(model_.expression_object_type(type));
 		return type.valid() && (model_.type_kind(type) == TypeKind::Pointer ||
 			model_.type_kind(type) == TypeKind::Array);
-	}
-
-LoweredValue Pa15Lowerer::lower_logical(SemanticFactId id){
-		const std::vector<SemanticFactId> operands = children(id);
-		if (operands.size() != 2)
-			throw std::runtime_error("PA15 invalid logical expression");
-		LowType result_type;
-		result_type.kind = LowType::TYPE_INTEGER;
-		result_type.integer_kind = LowType::INTEGER_I64;
-		const LoweredValue slot = generated_slot(result_type,
-			model_.semantic_facts_[id.value].token == SimpleTokenType::OP_LAND ?
-			"land" : "lor");
-		const bool conjunction = model_.semantic_facts_[id.value].token ==
-			SimpleTokenType::OP_LAND;
-		const BlockId rhs_block = block_id(new_block(conjunction ?
-			"land_rhs" : "lor_rhs"));
-		const BlockId short_block = block_id(new_block(conjunction ?
-			"land_short" : "lor_short"));
-		const BlockId join_block = block_id(new_block(conjunction ?
-			"land_end" : "lor_end"));
-
-
-
-		const LoweredValue left = lower_condition_expression(operands.front());
-		if (conjunction)
-			emit_branch(left.value, rhs_block, short_block);
-		else
-			emit_branch(left.value, short_block, rhs_block);
-		set_current(rhs_block);
-		const LoweredValue right = lower_condition_expression(operands.back());
-		LowType compare_type = right.physical_type;
-		Operand compare_value = right.value;
-		if (compare_value.kind == Operand::OP_INTEGER && compare_type.is_integer())
-			compare_value.literal_type = compare_type;
-		if (!compare_type.is_integer() && !compare_type.is_pointer())
-			throw std::runtime_error("PA15 logical RHS is not scalar");
-		const LoweredValue truth = emit_compare_value(lowir_model::CPP_NE,
-			compare_type, LoweredValue(compare_value, compare_type, false),
-			LoweredValue(integer_operand(0, compare_type), compare_type, false));
-		emit_store(result_type, truth.value, slot.value);
-		if (!terminated(block())) emit_jump(join_block);
-		set_current(short_block);
-		emit_store(result_type, integer_operand(conjunction ? 0 : 1,
-			result_type), slot.value);
-		if (!terminated(block())) emit_jump(join_block);
-		set_current(join_block);
-		const ValueId value = emit_load(slot, result_type);
-		const Instruction& emitted = block().instructions.back();
-		LoweredValue result(temporary_operand(value, emitted.destination_name_id),
-			result_type, false);
-		result.canonical_truth = true;
-		return result;
 	}
 
 void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer,

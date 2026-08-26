@@ -2,98 +2,99 @@
 
 ## Current Checkpoint Review
 
-This review covers `d8d925563ea16945fa92a566f86fb743590e81c5`
-(`PA15: lower typed floating scalar conversions`), parent `ea846ea4`, and
-the bounded checkpoint-audit repairs. PA11 remains the owner of canonical
-types and constants, PA12 the owner of selected `ConversionFact` chains,
-call defaults, and constant-address publication, PA15 the typed LowIR
-lowering owner, and PA13 the serializer/validator contract.
+This review covers the landed source checkpoint
+`98e75ff9dcf02fe6bd0646330dbc121dfc3c6193`
+(`PA15: lower typed discarded and returned expressions`), parent
+`2a10382f8abc0ff44ab7712f62c23f530441a63a`, and its final bounded
+audit/repair commit. PA11 owns canonical types/constants, PA12 owns typed
+conversion and return facts, PA15 owns typed LowIR lowering and declaration
+demand, and PA13 owns serialization/validation.
 
-The earlier audit repairs remain intact: `lower_call` follows each recorded
-argument chain and lets `ReferenceBinding` own pointer-prvalue temporary
-storage and function-reference address flow; PA12 publishes same-type
-lvalue-to-rvalue facts for supported variadic integral, floating, and pointer
-scalars while leaving fixed arguments, decay, promotions, and addresses under
-their existing owners. Floating lowering retains signed/unsigned conversion
-operators and f32/f64/f80 truth/conversion widths. `lower_logical` compares
-each RHS in its physical scalar type, with no floating-source gate. Only
-condition consumers omit final bool materialization; value consumers use
-ordinary `lower_expression`, including initializer, assignment, return, call,
-and unary value paths.
+The final `make test-pa15` gate exited 2 at `103/109`, `109/109` covered,
+with exactly the six unchanged residuals in the plan. Mechanical comparison
+of the sorted names recorded zero added/replacement names and zero missing
+names in `/tmp/pa15-final-failure-set-proof.log`. The exact prior gate exited
+0 at `1058/1058`; the root through-PA15 gate exited 2 at `1161/1167`, which
+is the fully passing prior total plus the 109 PA15 cases and the same six
+residuals. Complete logs are `/tmp/pa15-final-checkpoint-test-pa15.log`,
+`/tmp/pa15-final-checkpoint-through-pa14.log`, and
+`/tmp/pa15-final-checkpoint-through-pa15.log`.
+The preserved names are `100-const-integral-lvalue-overload-category`,
+`100-string-hex-escape-code-unit`, `100-unnamed-parameter-storage`,
+`200-goto-case-block-entry-label`, `200-goto-case-block-label-after-statement`,
+and `200-nested-conditional-array-decay`.
 
-The final repair restores the typed boundary after a canonical comparison or
-logical result. Before dispatching any non-Identity recorded conversion,
-including `ReferenceBinding`, when its source is semantic bool,
-`apply_conversions` emits `convert trunc u8 i64` from canonical physical truth,
-replaces the result with physical/semantic u8, and then dispatches the recorded
-conversion (for example a typed reference store, `zext i32 u8`, or
-`sitofp f64 u8`). It never retags the i64 operand or removes the semantic
-conversion. Identity bool materialization and condition-only omission remain
-separate paths. 404 now scopes this rule through bool-to-integer,
-bool-to-floating, direct variadic, const-bool-reference, and bool-rvalue-
-reference consumers, in addition to bool stores/returns and the existing
-floating/integral coverage.
+The end-to-end ownership trace is coherent. PA12 records `ToVoid`, including
+void-to-void casts, and PA15 lowers the discarded source for its side effects
+while emitting typed `return void` without an unnecessary scalar load. PA12
+rejects a non-void expression in a void return, contextualizes non-void
+returns, and represents supported bool/integral/floating/pointer `return {}`
+as a typed zero; PA15 preserves the type, cv/category, and literal payload
+through LowIR. Comma and discard lowering evaluates the left side once,
+preserves a value-producing right lvalue/xvalue when it is consumed, and
+avoids materializing a discarded right-hand value in expression statements,
+for-init, and iteration paths. The C++11 volatile exception is retained at
+the typed boundary: a scalar volatile lvalue glvalue is loaded when discarded,
+including through a reference-to-volatile binding; nonvolatile reference
+identifiers remain address-only.
 
-Exactly six existing PA15 refs changed for this canonical-bool-to-nonbool
-correction: `100-enum-default-argument-constant-fold.ref`,
-`200-extern-c-internal-functions-stay-distinct.ref`,
-`200-extern-c-internal-header-const.ref`,
-`200-pointer-operator-array-decay.ref`,
-`200-postfix-incdec-evaluates-lhs-once.ref`, and
-`200-prefix-incdec-lvalue-address.ref`. Each change is limited to the explicit
-bool materialization, its recorded conversion, and deterministic temp-number
-shifts. Current enum/extern/header/prefix refs pass `lowir2cy86`; pointer and
-postfix full files retain unrelated pre-existing validator diagnostics
-(`invalid binary type` and `scalar global initializer type mismatch`). Their
-reduced current sequences pass, while the reduced old sequences fail exactly
-with `conversion operand type mismatch`. The complete current/old transcript
-and reduced probes are retained at
-`/tmp/tmp.YWSo4HvvH9/summary.tsv`. No reference tool, unrelated fixture, or
-presentation-only edit was used. The complete amended-checkpoint fixture list
-is these six plus the prior four refs:
-`100-unary-logical-conditional.ref`,
-`200-reference-parameter-temp-name-collision.ref`,
-`200-function-reference-static-cast-call.ref`, and
-`200-floating-logical-branch.ref`.
+The bounded repair closes two late owner gaps found by this audit. A
+follow-up volatile audit then narrowed the value-elision shortcut so it cannot
+claim a volatile reference is side-effect-free. The
+ForInit expression path now calls the common discarded-expression owner. That
+owner recursively handles comma expressions and treats a bare discarded
+nonvolatile function/reference identifier as a side-effect-free value,
+avoiding a storage/value load while retaining assignment/call side effects;
+its typed volatile-scalar check routes volatile glvalues through one value
+load. Value-context logical
+lowering now uses a per-semantic-fact cached proof for literal bool/integer
+truth and recursively omits only a provably unreachable RHS; runtime and
+unknown paths still lower normally. Condition lowering uses the same recursive
+proof, so nested literals cannot leak an unreachable call/address declaration.
+The cache fails closed for unknown or malformed facts and avoids repeated
+subtree work; there is no textual reconstruction, broad DCE, whole-program
+retry, or declaration sweep.
 
-This ordering repair changed no existing `.ref`; the six refs above remain the
-only fixtures changed by the canonical-bool-to-nonbool correction. A reduced
-reference-binding LowIR proof is retained at
-`/tmp/pa15-audit-reference-order-proof.0NdxJb`: the corrected sequence
-validates, while the pre-bridge `store u8` of physical i64 is rejected with
-`store value type mismatch`.
+Function declaration demand remains rooted in lowered reachable calls,
+function addresses/references, and typed global relocations, with one
+deterministic declaration per demanded binding. The focused logical probe
+confirms an unreachable `extern` call is not demanded; owner probes 400--404
+retain the direct-call/address, typed-global-relocation, reference, and
+linkage coverage. The five removed handout tests, adjacent matrix, and one
+narrow owner regression passed; no handout test or `.ref` fixture changed.
 
-Final gates: focused six is `PASS (6/6)`
-(`/tmp/pa15-audit-focused-reference-order.log`); owner probes 400–404
-all exit zero (`/tmp/pa15-audit-owner-probes-reference-order.log`).
-`make test-pa15` exits 2 only for the authoritative residual set and reports
-`98/109`, with `109/109` covered. The mechanical proof is
-`/tmp/pa15-audit-failure-set-reference-order.log`:
-failure count `11`, missing `0`, new/replacement `0`. The exact required
-through-PA14 command reports `1058/1058`
-(`/tmp/pa15-audit-through-pa14-reference-order.log`). File audit passes
-with five known header warnings
-(`/tmp/pa15-audit-file-audit-reference-order.log`), and
-`git diff --check` passes (`/tmp/pa15-audit-diff-check-reference-order.log`).
+Focused evidence for this checkpoint is:
 
-The refreshed §7 artifact is
-`/tmp/pa15-checkpoint-audit-perf-reference-order.cgmxrA`. Its immutable
-`cppgm++` is mode 555 with SHA-256
-`2d2310eaecaa41fd623c317788a5de85615b4d6b13a25dcf1fbda4ff6924347d`.
-Seven bounded inputs retain LowIR, validator, structural-counter, raw-timing,
-median, and hash artifacts. Five interleaved forward/reverse rounds used 20
-compilations per sample; candidate-only medians are `0.0030s` per invocation
-for each retained selected input and `0.0060s` for `owner_404`. RSS medians
-are `5132–5360 KiB` for the selected inputs and `5956 KiB` for `owner_404`.
-Selected structural rows range from 19–89 lines and 0–5 conversions;
-`owner_404` is 569 lines, 32 conversions, 6 calls, 13 comparisons, and 70
-slots. These are bounded affected-path measurements, not universal or
-comparative performance claims.
+- the five residual-owner tests pass `5/5` and the representative adjacent
+  matrix passes `7/7`;
+- `cppgm.tests/course/pa15/405-typed-discarded-return-regression.sh` passes,
+  including typed empty-brace bool/integral/f32/f64/f80/pointer returns,
+  void-to-void discard, for-init comma discard, nested/value logical pruning,
+  evaluated runtime call/address demand, direct volatile-object and
+  reference-to-volatile discard loads, and `lowir2cy86` validation;
+- the current `dev/cppgm++` build passes, owner probes 400--404 pass, and the
+  five removed inputs plus 405 compile and validate with `lowir2cy86`.
 
-The exact remaining uncertainty is the unchanged 11-name set in the plan:
-overload/category, string decoding, unnamed-parameter storage, comma/xvalue,
-control-flow labels/iteration, literal short-circuit, nested array decay,
-void-call return, and empty-brace scalar return remain outside this checkpoint.
+The PA15 file audit exits 0 with five known header-division warnings
+(`/tmp/pa15-final-file-audit.log`), and `git diff --check` exits 0. Moving
+`lower_logical` to the existing flow owner keeps
+`dev/src/pa15_lowering.cpp` at 2945 lines, below the 3000-line limit; no new
+source set or parallel lowering implementation was introduced.
+
+Fresh candidate-only performance evidence is retained at
+`/tmp/pa15-checkpoint-audit-discarded-final.fRe1n0`: immutable candidate mode
+`0555`, SHA-256
+`f03860f091c4a646af8937a7e9023e79facd1a6aebb4c885d408d1a81f16d95e`, six
+affected-path inputs, five interleaved forward/reverse rounds, 20 compilations
+per sample, verified implementation/input/toolchain/LowIR hashes, and zero
+compile/validator statuses. Median wall time per invocation is
+`0.0025--0.0040 s` and median RSS is `5124--5384 KiB`; these bounded
+candidate-only measurements are not comparative or universal claims.
+
+The six unchanged residuals—three `100-*` surfaces, two goto-label cases,
+and nested conditional array decay—remain outside this audit and define the
+next checkpoint. No unrelated source, handout test, or `.ref` fixture was
+changed.
 
 ## Historical Checkpoint Review — typed global pointer null/zero initializers
 
@@ -295,4 +296,4 @@ checkpoint.
 |---|---|---|
 | Historical | PA15 full-stage / checkpointAudit — typed address/value ownership | Amended PA12 relocation ownership with explicit `Value`/`ObjectAddress`/`ArrayDecay` context, rejecting bare pointer/scalar lvalue relocations while preserving object, array, one-past, function, and array-element forms; focused `20/20` plus probes, through-PA14 `1058/1058`, PA15 `68/109` with the exact historical 41 names and all `109` covered, immutable `n=256` performance evidence, file audit pass, and diff-check pass. |
 | Historical | PA15 full-stage / checkpointAudit — typed global pointer null/zero initializers | Hardened transactional PA12 literal snapshots and binding invariants; kept PA15 on `ConstantAddressFact` identity/ranges; tightened terminal/destination-safe typed null chains and pointer cv behavior; corrected lvalue loads and runtime `nullptr`-to-bool typing; target matrix `10/10`, narrow regression pass, final PA15 `70/109` with the exact unchanged 39-name set and all `109` covered, through-PA14 `1058/1058`, file audit pass, diff-check pass, and immutable performance evidence. Preserved as historical context. |
-| Current | PA15 full-stage / checkpointAudit — typed floating scalar conversion ownership (`d8d925563ea16945fa92a566f86fb743590e81c5` + bounded audit repair) | Final `98/109`, all `109` covered, exact authoritative 11-name set retained, failure count `11`, missing `0`, new/replacement `0`; focused matrix `6/6`, owner probes 400–404 including const/rvalue bool-reference value flow, no new fixture changes, through-PA14 `1058/1058`, file audit pass with five known warnings, diff-check pass, and immutable candidate-only interleaved performance artifact `/tmp/pa15-checkpoint-audit-perf-reference-order.cgmxrA`. PA12 publishes same-type variadic scalar lvalue-to-rvalue facts; PA15 materializes canonical truth as typed u8 before every recorded non-Identity conversion, including ReferenceBinding, and keeps condition-only omission. |
+| Current | PA15 typed discarded/returned-expression ownership at `98e75ff9dcf02fe6bd0646330dbc121dfc3c6193` plus final bounded audit repair | Final `make test-pa15` `103/109`, all `109/109` covered, exact six residuals preserved with zero added/replacement or missing names; through-PA14 `1058/1058` exit 0; through-PA15 `1161/1167` with the same six; focused owner matrix `5/5`, adjacent matrix `7/7`, owner regression 405 (including volatile discard and nested logical demand), owner probes 400–404, and affected-path `lowir2cy86` validation pass. PA12 owns typed `ToVoid`, return conversion, cv/volatile and empty-brace facts; PA15 owns discard/return/logical lowering and demand roots. Fresh immutable candidate-only artifact `/tmp/pa15-checkpoint-audit-discarded-final.fRe1n0` is hash-verified; file audit, diff-check, and checkpoint commit complete. |

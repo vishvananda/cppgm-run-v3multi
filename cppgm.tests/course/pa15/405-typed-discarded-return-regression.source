@@ -1,0 +1,49 @@
+extern bool unavailable();
+extern bool runtime_gate();
+extern bool kept_address();
+extern bool omitted_address();
+
+bool empty_bool() { return {}; }
+unsigned long empty_integral() { return {}; }
+float empty_float() { return {}; }
+double empty_double() { return {}; }
+long double empty_long_double() { return {}; }
+int *empty_pointer() { return {}; }
+
+void void_to_void(int &value) {
+  return static_cast<void>(static_cast<void>(value = 1));
+}
+
+bool logical_value() {
+  return true || unavailable();
+}
+
+bool nested_logical_value() {
+  return (true && false) && unavailable();
+}
+
+void for_init_discards_lvalue(int &value) {
+  for ((value = 1, value); value != 0; value = 0) {
+  }
+}
+
+void volatile_object_discard() {
+  volatile int value = 0;
+  value;
+}
+
+void volatile_reference_discard(volatile int &value) {
+  value;
+  for ((value = 1, value); value != 0; value = 0) {
+  }
+}
+
+bool nested_runtime_logical() {
+  return (runtime_gate() && true) || &kept_address;
+}
+
+bool nested_address_short_circuit() {
+  return false && &omitted_address;
+}
+
+int main() { return 0; }

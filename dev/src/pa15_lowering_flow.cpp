@@ -138,6 +138,69 @@ LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
 			LoweredValue(right.value, type, false));
 }
 
+LoweredValue Pa15Lowerer::lower_logical(SemanticFactId id){
+		const std::vector<SemanticFactId> operands = children(id);
+		if (operands.size() != 2)
+			throw std::runtime_error("PA15 invalid logical expression");
+		LowType result_type;
+		result_type.kind = LowType::TYPE_INTEGER;
+		result_type.integer_kind = LowType::INTEGER_I64;
+		const bool conjunction = model_.semantic_facts_[id.value].token ==
+			SimpleTokenType::OP_LAND;
+		bool left_truth = false;
+		const bool left_short_circuits =
+			constant_truth(operands.front(), &left_truth) &&
+			((conjunction && !left_truth) || (!conjunction && left_truth));
+		if (left_short_circuits)
+		{
+			LoweredValue result(integer_operand(conjunction ? 0 : 1,
+				result_type), result_type, false);
+			result.canonical_truth = true;
+			return result;
+		}
+		const LoweredValue slot = generated_slot(result_type,
+			model_.semantic_facts_[id.value].token == SimpleTokenType::OP_LAND ?
+			"land" : "lor");
+		const BlockId rhs_block = block_id(new_block(conjunction ?
+			"land_rhs" : "lor_rhs"));
+		const BlockId short_block = block_id(new_block(conjunction ?
+			"land_short" : "lor_short"));
+		const BlockId join_block = block_id(new_block(conjunction ?
+			"land_end" : "lor_end"));
+
+
+
+		const LoweredValue left = lower_condition_expression(operands.front());
+		if (conjunction)
+			emit_branch(left.value, rhs_block, short_block);
+		else
+			emit_branch(left.value, short_block, rhs_block);
+		set_current(rhs_block);
+		const LoweredValue right = lower_condition_expression(operands.back());
+		LowType compare_type = right.physical_type;
+		Operand compare_value = right.value;
+		if (compare_value.kind == Operand::OP_INTEGER && compare_type.is_integer())
+			compare_value.literal_type = compare_type;
+		if (!compare_type.is_integer() && !compare_type.is_pointer())
+			throw std::runtime_error("PA15 logical RHS is not scalar");
+		const LoweredValue truth = emit_compare_value(lowir_model::CPP_NE,
+			compare_type, LoweredValue(compare_value, compare_type, false),
+			LoweredValue(integer_operand(0, compare_type), compare_type, false));
+		emit_store(result_type, truth.value, slot.value);
+		if (!terminated(block())) emit_jump(join_block);
+		set_current(short_block);
+		emit_store(result_type, integer_operand(conjunction ? 0 : 1,
+			result_type), slot.value);
+		if (!terminated(block())) emit_jump(join_block);
+		set_current(join_block);
+		const ValueId value = emit_load(slot, result_type);
+		const Instruction& emitted = block().instructions.back();
+		LoweredValue result(temporary_operand(value, emitted.destination_name_id),
+			result_type, false);
+		result.canonical_truth = true;
+		return result;
+	}
+
 LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boolean_context,
 		bool materialize_lvalue, bool force_integral_literal_conversion, bool defer_conversions){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
@@ -312,6 +375,33 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 
 void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		const TypeId object_type = model_.expression_object_type(fact.type);
+		const bool volatile_lvalue =
+			fact.category == SemanticValueCategory::Lvalue &&
+			(model_.cv_qualifiers(object_type) & 2u) != 0;
+		if (volatile_lvalue && model_.scalar_id(object_type))
+		{
+			(void)lower_expression_impl(id, false, true);
+			return;
+		}
+		if (fact.kind == SemanticFactKind::IdExpression &&
+			!volatile_lvalue && fact.conversion_count == 0 && fact.binding.valid())
+		{
+			const Binding& binding = model_.binding(fact.binding);
+			if (binding.kind == BindingKind::Function ||
+				reference_binding(fact.binding))
+				return;
+		}
+		if (fact.kind == SemanticFactKind::BinaryExpression &&
+			fact.token == SimpleTokenType::OP_COMMA)
+		{
+			const std::vector<SemanticFactId> facts = children(id);
+			if (facts.size() != 2)
+				throw std::runtime_error("PA15 invalid discarded comma expression");
+			lower_discarded_expression(facts.front());
+			lower_discarded_expression(facts.back());
+			return;
+		}
 		if (fact.kind == SemanticFactKind::ConditionalExpression &&
 			model_.void_id(fact.type))
 		{
@@ -340,16 +430,57 @@ void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
 		(void)lower_expression_impl(id, false, false);
 }
 
-bool Pa15Lowerer::constant_truth(SemanticFactId id, bool* value) const{
+bool Pa15Lowerer::constant_truth(SemanticFactId id, bool* value){
 		if (value == NULL || !id.valid() || id.value >= model_.semantic_facts_.size())
 			return false;
+		if (id.value >= constant_truth_cache_.size())
+			return false;
+		unsigned char& state = constant_truth_cache_[id.value];
+		if (state == 1 || state == 2)
+		{
+			*value = state == 2;
+			return true;
+		}
+		if (state == 0)
+			return false;
+		// Mark the fact unknown while visiting it.  Semantic facts form an
+		// acyclic tree, but this also makes a malformed cycle fail closed.
+		state = 0;
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind == SemanticFactKind::BinaryExpression &&
+			(fact.token == SimpleTokenType::OP_LAND ||
+			 fact.token == SimpleTokenType::OP_LOR))
+		{
+			const std::vector<SemanticFactId> operands = children(id);
+			if (operands.size() != 2)
+				return false;
+			bool left = false;
+			if (!constant_truth(operands.front(), &left))
+				return false;
+			if (fact.token == SimpleTokenType::OP_LAND && !left)
+			{
+				*value = false;
+				state = 1;
+				return true;
+			}
+			if (fact.token == SimpleTokenType::OP_LOR && left)
+			{
+				*value = true;
+				state = 2;
+				return true;
+			}
+			if (!constant_truth(operands.back(), value))
+				return false;
+			state = *value ? 2 : 1;
+			return true;
+		}
 		if (fact.kind != SemanticFactKind::Literal)
 			return false;
 		if (fact.token == SimpleTokenType::KW_TRUE ||
 			fact.token == SimpleTokenType::KW_FALSE)
 		{
 			*value = fact.token == SimpleTokenType::KW_TRUE;
+			state = *value ? 2 : 1;
 			return true;
 		}
 		__int128 integer = 0;
@@ -363,6 +494,7 @@ bool Pa15Lowerer::constant_truth(SemanticFactId id, bool* value) const{
 		else
 			return false;
 		*value = integer != 0;
+		state = *value ? 2 : 1;
 		return true;
 }
 
@@ -400,10 +532,8 @@ void Pa15Lowerer::lower_condition_branch(SemanticFactId id, BlockId true_target,
 				const bool short_circuit = fact.token == SimpleTokenType::OP_LAND ?
 					!left_truth : left_truth;
 				if (short_circuit)
-				{
-					const LoweredValue left = lower_condition_expression(operands[0]);
-					emit_branch(left.value, true_target, false_target);
-				}
+					lower_condition_branch(operands[0], true_target,
+						false_target);
 				else
 					lower_condition_branch(operands[1], true_target, false_target);
 				return;
@@ -1046,7 +1176,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					SemanticFactKind::SimpleDeclaration)
 					lower_statement(facts[i]);
 				else
-					(void)lower_expression(facts[i]);
+					lower_discarded_expression(facts[i]);
 			}
 			break;
 		case SemanticFactKind::Iteration:

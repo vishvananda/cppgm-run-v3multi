@@ -174,6 +174,7 @@ private:
 	std::size_t reachability_base_;
 	std::vector<unsigned char> reachable_blocks_;
 	std::vector<BlockId> reachability_work_;
+	std::vector<unsigned char> constant_truth_cache_;
 	void initialize_spelling_ids();
 	void initialize_identity_counters();
 	const std::string& spelling(SpellingId id) const;
@@ -320,7 +321,7 @@ private:
 	void emit_branch(const Operand& condition, BlockId true_target,
 		BlockId false_target);
 	bool condition_is_empty(SemanticFactId id) const;
-	bool constant_truth(SemanticFactId id, bool* value) const;
+	bool constant_truth(SemanticFactId id, bool* value);
 	bool has_direct_short_circuit(SemanticFactId id) const;
 	void lower_condition_branch(SemanticFactId id, BlockId true_target,
 		BlockId false_target);
