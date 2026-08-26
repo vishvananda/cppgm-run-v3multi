@@ -1833,6 +1833,9 @@ private:
 	;
 	ExprInfo semantic_call_expression(const PA10AstNode& node, ScopeId scope)
 	;
+	void apply_call_argument_conversions(std::vector<ExprInfo>& arguments,
+		TypeId selected_type, ScopeId scope)
+	;
 	ExprInfo semantic_builtin_call(const PA10AstNode& node, ScopeId scope,
 	BuiltinKind builtin, const PA10AstNode& argument_node)
 	;

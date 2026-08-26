@@ -2294,7 +2294,9 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 				((spec.cv & 1u) != 0) && constant_record.valid() &&
 				constant_record.value < named_.size() &&
 				named_[constant_record.value].kind == NamedKind::Class;
-			if (!ordinary_const_record && (spec.is_constexpr ||
+			const bool integral_constant_type = integral_id(type) ||
+				enumeration_id(type);
+			if (!ordinary_const_record && integral_constant_type && (spec.is_constexpr ||
 				((spec.cv & 1u) != 0 && type_kind(type) == TypeKind::Cv)))
 			{
 				if (init.children.size() > 1)

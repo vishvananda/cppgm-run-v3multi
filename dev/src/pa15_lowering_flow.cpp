@@ -42,7 +42,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			break;
 		}
 		case SemanticFactKind::Literal:
-			result = literal(fact);
+			result = fact.literal_element_count != 0 ? lower_address(id) :
+				literal(fact);
 			break;
 		case SemanticFactKind::SizeofExpression:
 			result = lower_sizeof(fact);
@@ -1137,6 +1138,10 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		reachable_blocks_.clear();
 		reachability_work_.clear();
 		Function& target = function();
+		used_slot_names_.clear();
+		slot_collision_counters_.clear();
+		for (std::size_t slot = 0; slot < target.slots.size(); ++slot)
+			used_slot_names_.insert(spelling(target.slots[slot].name_id));
 		used_value_names_.clear();
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 			used_value_names_.insert(spelling(target.params[i].name_id));

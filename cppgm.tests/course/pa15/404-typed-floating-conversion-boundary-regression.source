@@ -1,0 +1,116 @@
+float from_signed(int value)
+{
+  return value;
+}
+
+float from_unsigned(unsigned int value)
+{
+  return value;
+}
+
+double from_signed_double(long value)
+{
+  return value;
+}
+
+long double from_unsigned_wide(unsigned long value)
+{
+  return value;
+}
+
+int to_signed(float value)
+{
+  return value;
+}
+
+unsigned int to_unsigned(float value)
+{
+  return value;
+}
+
+long to_signed_double(double value)
+{
+  return value;
+}
+
+unsigned long to_unsigned_long_double(long double value)
+{
+  return value;
+}
+
+double widen(float value)
+{
+  return value;
+}
+
+float narrow(long double value)
+{
+  return value;
+}
+
+long double widen_double(double value)
+{
+  return value;
+}
+
+double narrow_long_double(long double value)
+{
+  return value;
+}
+
+int negative_zero(long double value)
+{
+  if (value)
+    return 1;
+  return 0;
+}
+
+int negative_zero_literal()
+{
+  if (-0.0L)
+    return 1;
+  return 0;
+}
+
+double ref_target(const double& first, const double& second,
+  const double& third)
+{
+  return first + second + third;
+}
+
+int refarg_collision()
+{
+  double refarg__1 = 1.0;
+  double refarg__2 = 2.0;
+  double refarg__3 = 3.0;
+  int cond__1 = 0;
+  return ref_target(refarg__1 + 1.0, refarg__2 + 1.0,
+    refarg__3 + 1.0) == 9.0 ? cond__1 : 1;
+}
+
+extern "C" int sink(const char *, ...);
+
+enum NarrowEnum : unsigned char
+{
+  narrow_enum_value = 7
+};
+
+int variadic_promotions()
+{
+  bool boolean_value = true;
+  char character_value = 1;
+  signed char signed_character_value = 2;
+  unsigned char unsigned_character_value = 3;
+  short short_value = 4;
+  unsigned short unsigned_short_value = 5;
+  NarrowEnum enum_value = narrow_enum_value;
+  float float_value = 1.0F;
+  return sink("", boolean_value, character_value, signed_character_value,
+    unsigned_character_value, short_value, unsigned_short_value,
+    enum_value, float_value);
+}
+
+int main()
+{
+  return 0;
+}

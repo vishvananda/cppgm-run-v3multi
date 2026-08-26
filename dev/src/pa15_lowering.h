@@ -39,13 +39,19 @@ struct LoweredValue
 	LowType type;
 	LowType physical_type;
 	bool lvalue;
+	bool canonical_truth;
+	Operand condition_value;
+	bool has_condition_value;
 
-	LoweredValue() : value(), type(), physical_type(), lvalue(false) {}
+	LoweredValue() : value(), type(), physical_type(), lvalue(false),
+		canonical_truth(false), condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue)
-		: value(value), type(type), physical_type(type), lvalue(lvalue) {}
+		: value(value), type(type), physical_type(type), lvalue(lvalue),
+		canonical_truth(false), condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue,
 		const LowType& physical_type)
-		: value(value), type(type), physical_type(physical_type), lvalue(lvalue) {}
+		: value(value), type(type), physical_type(physical_type), lvalue(lvalue),
+		canonical_truth(false), condition_value(), has_condition_value(false) {}
 };
 
 struct FunctionPlan
@@ -239,6 +245,7 @@ private:
 	Operand block_operand(std::size_t index) const;
 	Operand block_operand(BlockId id) const;
 	Operand integer_operand(long long value, const LowType& type) const;
+	Operand floating_operand(long double value, const LowType& type) const;
 	ValueId destination(const LowType& type, Instruction* instruction);
 	ValueId emit_load(const LoweredValue& storage, const LowType& type);
 	void materialize_lvalue_value(LoweredValue* result, const LowType& type);
@@ -261,6 +268,12 @@ private:
 	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context = false, bool materialize_lvalue = true,
 		bool force_integral_literal_conversion = false);
+	LoweredValue apply_pointer_conversion(LoweredValue result,
+		const ConversionFact& conversion, const LowType& target);
+	LoweredValue apply_integral_literal_conversion(
+		const LoweredValue& result, const ConversionFact& conversion,
+		const LowType& source_type, const LowType& target,
+		bool force_integral_literal_conversion);
 	lowir_model::ConversionOperator conversion_operator(const ConversionFact& conversion) const;
 	LoweredValue emit_binary_value(lowir_model::BinaryOperator operation,
 		const LowType& type, const LoweredValue& left, const LoweredValue& right);

@@ -961,19 +961,17 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
 		if (target_kind == TypeKind::LvalueReference && source_lvalue)
 		{
-			if (!qualification_convertible(source_value, target_referred))
-				return ConversionChoice();
-			return ConversionChoice(true,
-				source_value == target_referred ? 0 : 1,
-				ConversionKind::ReferenceBinding);
+			if (qualification_convertible(source_value, target_referred))
+				return ConversionChoice(true,
+					source_value == target_referred ? 0 : 1,
+					ConversionKind::ReferenceBinding);
 		}
 		if (target_kind == TypeKind::RvalueReference && !source_lvalue)
 		{
-			if (!qualification_convertible(source_value, target_referred))
-				return ConversionChoice();
-			return ConversionChoice(true,
-				source_value == target_referred ? 0 : 1,
-				ConversionKind::ReferenceBinding);
+			if (qualification_convertible(source_value, target_referred))
+				return ConversionChoice(true,
+					source_value == target_referred ? 0 : 1,
+					ConversionKind::ReferenceBinding);
 		}
 		// A prvalue can bind to a const lvalue reference.  This is the
 		// only temporary-binding case in the PA12 foundation.
@@ -1981,7 +1979,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 				function.parameters[arg],
 				semantic_facts_[arguments[arg].fact.value].source);
 	}
-
+	apply_call_argument_conversions(arguments, selected_type, scope);
 	const TypeId result_type = function_result_type(selected_type);
 	SemanticValueCategory result_category = SemanticValueCategory::Prvalue;
 	if (type_kind(result_type) == TypeKind::LvalueReference)
