@@ -43,11 +43,12 @@ member-pointers, unsupported unions, bases, and virtual records are
 conservative rejection cases.
 
 The new non-template implementation is out of the header. The typed summary
-and dependency fact remain in `pa11_semantic_core.cpp`; layout access,
-completion, checked alignment, size, and alignment definitions are in the
-existing affected `pa15_lowering_flow.cpp` to keep both sources within the
-3000-line audit limit. This is one PA11 model and one state, not a second
-layout implementation or translation unit.
+and dependency fact remain in `pa11_semantic_core.cpp`; the complete PA11
+layout owner (`align_up_checked`, layout access/completion, checked alignment,
+size, and alignment definitions) is `pa11_record_layout.cpp`. It is registered
+only in `FRONTEND_OBJ_BASENAMES_cppgm++`; PA15 flow contains lowering behavior
+only. This is one PA11 model and one state, not a second layout implementation
+or an unregistered tool source.
 
 Direct bases and virtual members are recorded as typed boundary facts but are
 not flattened here. Their layout state becomes `Failed`, so complete-type,

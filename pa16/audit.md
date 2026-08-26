@@ -44,11 +44,13 @@ Unions, references, member-pointers, incomplete types, base/virtual records,
 and unsupported lifetime cases remain conservative boundaries.
 
 The non-template layout implementation was removed from the warned header.
-The PA11-owned typed summary/dependency portions are in the existing
-`pa11_semantic_core.cpp`; layout access/completion/checking definitions are in
-the existing `pa15_lowering_flow.cpp` so the source-size audit remains clean.
-The model, state, and identity are still single-owner; no new translation
-unit or duplicate layout map was added.
+The PA11-owned typed summary/dependency portions remain in
+`pa11_semantic_core.cpp`; `pa11_record_layout.cpp` now owns
+`align_up_checked`, layout access/completion/checking, size, and alignment.
+That unit is registered only in `FRONTEND_OBJ_BASENAMES_cppgm++`, while
+`pa15_lowering_flow.cpp` owns lowering behavior only. The model, state, and
+identity are still single-owner; no duplicate layout map or unrelated tool
+source was added.
 
 ## Fresh final evidence
 
