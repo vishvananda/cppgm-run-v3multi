@@ -693,6 +693,7 @@ ExprInfo PA11SemanticModel::semantic_injected_member(
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = SimpleTokenType::OP_DOT;
 	fact.binding = member_id;
+	fact.selected_binding = member_id;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_name(result, name_path(node));
 	set_semantic_children(result,
@@ -737,6 +738,7 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = node.token;
 	fact.binding = member_id;
+	fact.selected_binding = member_id;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_name(result, member_name);
 	set_semantic_children(result,

@@ -951,7 +951,7 @@ void Pa15Lowerer::materialize_pending_global_initializers(){
 			const LoweredValue sequence = emit_decay(address);
 			const LoweredValue index(pending.index, pending.index.literal_type, false);
 			const LoweredValue element = emit_index(sequence, index,
-				pending.element_type, true);
+				pending.element_type, lowir_model::IPK_ARRAY_ELEMENT);
 			LowType pointer;
 			pointer.kind = LowType::TYPE_POINTER;
 			emit_store(pointer, element.value,
@@ -1686,7 +1686,7 @@ LoweredValue Pa15Lowerer::address_of_storage(const LoweredValue& storage){
 	}
 
 LoweredValue Pa15Lowerer::emit_index(const LoweredValue& base, const LoweredValue& offset,
-		const LowType& element, bool array_projection){
+		const LowType& element, lowir_model::IndexProjectionKind projection){
 		if (!base.type.is_pointer() && !base.type.is_object())
 			throw std::runtime_error("PA15 index base is not addressable");
 		Instruction instruction;
@@ -1694,8 +1694,7 @@ LoweredValue Pa15Lowerer::emit_index(const LoweredValue& base, const LoweredValu
 		instruction.type = element;
 		instruction.first = base.value;
 		instruction.second = offset.value;
-		instruction.index_projection = array_projection ?
-			lowir_model::IPK_ARRAY_ELEMENT : lowir_model::IPK_NONE;
+		instruction.index_projection = projection;
 		LowType pointer;
 		pointer.kind = LowType::TYPE_POINTER;
 		const ValueId value = destination(pointer, &instruction);
@@ -2438,7 +2437,7 @@ LoweredValue Pa15Lowerer::pointer_offset(const LoweredValue& base, TypeId base_t
 		LowType byte;
 		byte.kind = LowType::TYPE_INTEGER;
 		byte.integer_kind = LowType::INTEGER_I8;
-		return emit_index(base, scaled, byte, false);
+		return emit_index(base, scaled, byte, lowir_model::IPK_NONE);
 	}
 
 LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
@@ -2742,6 +2741,7 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 					function_name_ids_.find(fact.binding.value)->second), pointer, false));
 			}
 			return address_of_storage(lower_lvalue(id));
+		case SemanticFactKind::MemberExpression: return lower_member_address(id);
 		case SemanticFactKind::UnaryExpression:
 			if (facts.size() != 1) throw std::runtime_error("PA15 invalid address unary fact");
 			if (fact.token == SimpleTokenType::OP_AMP)
@@ -2780,7 +2780,7 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 			const bool array = sequence_type.valid() &&
 				model_.type_kind(sequence_type) == TypeKind::Array;
 			const LowType element = low_type(fact.type);
-			return emit_index(sequence, index, element, array);
+			return emit_index(sequence, index, element, array ? lowir_model::IPK_ARRAY_ELEMENT : lowir_model::IPK_NONE);
 		}
 		case SemanticFactKind::AssignmentExpression:
 				return address_of_storage(lower_assignment(id, true));
@@ -2842,7 +2842,7 @@ void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer
 				LowType byte;
 				byte.kind = LowType::TYPE_INTEGER;
 				byte.integer_kind = LowType::INTEGER_I8;
-				destination_address = emit_index(base, offset, byte, false);
+				destination_address = emit_index(base, offset, byte, lowir_model::IPK_NONE);
 			}
 			if (i < values.size() && model_.semantic_facts_[values[i].value].kind ==
 				SemanticFactKind::BracedInitList)

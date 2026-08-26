@@ -18,7 +18,7 @@ FRONTEND_OBJ_BASENAMES_cy86 := pp_tokenizer posttoken ctrlexpr macro preproc_ses
 FRONTEND_OBJ_BASENAMES_cppgm++ := pp_tokenizer posttoken ctrlexpr macro \
 	preproc_session pa10_ast pa10_declarator_shape pa10_parser_support pa10_renderer \
 	pa11_semantic pa11_semantic_core pa11_record_layout pa11_semantic_types pa12_semantic \
-	pa12_semantic_labels pa12_semantic_calls pa12_semantic_resolution pa12_semantic_facts abi_mangle lowir_model pa15_lowering pa15_operator_abi pa15_lowering_labels pa15_lowering_flow
+	pa12_semantic_labels pa12_semantic_calls pa12_semantic_resolution pa12_semantic_facts abi_mangle lowir_model pa15_lowering pa15_lowering_member pa15_operator_abi pa15_lowering_labels pa15_lowering_flow
 FRONTEND_OBJ_BASENAMES_lowiropt :=
 FRONTEND_OBJ_BASENAMES_lowir2cy86 := lowir2cy86_backend lowir_model lowir_text_adapter
 FRONTEND_OBJ_BASENAMES_lowir2native :=

@@ -405,7 +405,7 @@ private:
 	void emit_store(const LowType& type, const Operand& value, const Operand& storage);
 	LoweredValue address_of_storage(const LoweredValue& storage);
 	LoweredValue emit_index(const LoweredValue& base, const LoweredValue& offset,
-		const LowType& element, bool array_projection);
+		const LowType& element, lowir_model::IndexProjectionKind projection);
 	LoweredValue emit_decay(const LoweredValue& address);
 	LoweredValue storage_for(BindingId binding) const;
 	std::vector<SemanticFactId> children(SemanticFactId id) const;
@@ -446,6 +446,7 @@ private:
 	bool conditional_address_result(SemanticFactId id) const;
 	LoweredValue lower_conditional_address(SemanticFactId id);
 	LoweredValue lower_conditional_value(SemanticFactId id);
+	LoweredValue lower_member_address(SemanticFactId id);
 	LoweredValue lower_address(SemanticFactId id);
 	bool pointer_like(TypeId type) const;
 	LoweredValue lower_logical(SemanticFactId id);

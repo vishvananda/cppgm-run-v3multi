@@ -320,6 +320,9 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			else
 				result = lower_lvalue(id);
 			break;
+		case SemanticFactKind::MemberExpression:
+			result = lower_lvalue(id);
+			break;
 		case SemanticFactKind::UnaryExpression:
 		{
 			const std::vector<SemanticFactId> operands = children(id);
