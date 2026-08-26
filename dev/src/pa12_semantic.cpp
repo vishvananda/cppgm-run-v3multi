@@ -2012,6 +2012,8 @@ ExprInfo PA11SemanticModel::semantic_braced_init_list(
 	const TypeId object = strip_top_cv_type(target);
 	if (type_kind(object) != TypeKind::Array)
 	{
+		if (node.children.empty())
+			return semantic_empty_braced_init_list(node, target);
 		if (node.children.size() != 1)
 			throw std::runtime_error("PA12 scalar braced initializer needs one value");
 		const ExprInfo expression = semantic_expression_for_target(
@@ -2703,28 +2705,7 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 	case PA10NodeKind::SimpleDeclaration:
 		return semantic_declaration_statement(node, scope);
 	case PA10NodeKind::ReturnStatement:
-	{
-		const Binding& function_binding = binding(function.binding);
-		const TypeKey& function_type = types_[function_binding.type.value];
-		if (type_kind(function_binding.type) != TypeKind::Function)
-			throw std::runtime_error("PA12 function fact has non-function type");
-		const TypeId result_type = function_type.result;
-		std::vector<SemanticFactId> children;
-		if (!node.children.empty())
-		{
-			if (void_id(result_type))
-				throw std::runtime_error("PA12 value returned from void function");
-			const ExprInfo expression = semantic_expression(node.children.front(),
-				scope);
-			apply_context_conversion(expression, result_type,
-				semantic_facts_[expression.fact.value].source);
-			children.push_back(expression.fact);
-		}
-		else if (!void_id(result_type))
-			throw std::runtime_error("PA12 missing return value");
-		return make_expression_fact(SemanticFactKind::ReturnStatement,
-			TypeId(), SemanticValueCategory::Prvalue, node, children);
-	}
+		return semantic_return_statement(node, scope, function);
 	case PA10NodeKind::ExpressionStatement:
 	{
 		if (node.children.empty())

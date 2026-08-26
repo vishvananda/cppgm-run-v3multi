@@ -711,7 +711,8 @@ enum class ConversionKind
 	ReferenceBinding,
 	PointerToBool,
 	Floating,
-	Reinterpret
+	Reinterpret,
+	ToVoid
 };
 
 // PA12 uses this local discriminator while validating the source-level cast
@@ -1844,6 +1845,9 @@ private:
 	ExprInfo semantic_braced_init_list(const PA10AstNode& node,
 		TypeId target, ScopeId scope)
 	;
+	ExprInfo semantic_empty_braced_init_list(const PA10AstNode& node,
+		TypeId target)
+	;
 	SemanticFactId semantic_declaration(const PA10AstNode& node, ScopeId scope)
 	;
 	SemanticFactId semantic_declaration_statement(const PA10AstNode& node,
@@ -1889,6 +1893,9 @@ private:
 	SemanticFactId semantic_statement(const PA10AstNode& node, ScopeId scope,
 	const FunctionFact& function, unsigned int loop_depth,
 	unsigned int switch_depth, SwitchValidationContext* switch_context)
+	;
+	SemanticFactId semantic_return_statement(const PA10AstNode& node,
+		ScopeId scope, const FunctionFact& function)
 	;
 	void analyze_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;

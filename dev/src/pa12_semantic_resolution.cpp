@@ -648,6 +648,42 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 		throw std::runtime_error("PA12 no function matches target type");
 	return semantic_id_expression_selected(*function_id, scope, resolution);
 }
+SemanticFactId PA11SemanticModel::semantic_return_statement(
+	const PA10AstNode& node, ScopeId scope, const FunctionFact& function)
+{
+	const Binding& function_binding = binding(function.binding);
+	const TypeKey& function_type = types_[function_binding.type.value];
+	if (type_kind(function_binding.type) != TypeKind::Function)
+		throw std::runtime_error("PA12 function fact has non-function type");
+	const TypeId result_type = function_type.result;
+	std::vector<SemanticFactId> children;
+	if (!node.children.empty())
+	{
+		if (void_id(result_type))
+		{
+			const ExprInfo expression = semantic_expression(
+				node.children.front(), scope);
+			if (!void_id(expression.type))
+				throw std::runtime_error("PA12 non-void expression returned from void function");
+			children.push_back(expression.fact);
+		}
+		else
+		{
+			const bool braced = node.children.front().kind ==
+				PA10NodeKind::BracedInitList;
+			const ExprInfo expression = semantic_expression_for_target(
+				node.children.front(), scope, result_type);
+			if (!braced)
+				apply_context_conversion(expression, result_type,
+					semantic_facts_[expression.fact.value].source);
+			children.push_back(expression.fact);
+		}
+	}
+	else if (!void_id(result_type))
+		throw std::runtime_error("PA12 missing return value");
+	return make_expression_fact(SemanticFactKind::ReturnStatement,
+		TypeId(), SemanticValueCategory::Prvalue, node, children);
+}
 ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	const PA10AstNode& node, TypeId target, const ExprInfo& operand)
 {
@@ -712,7 +748,11 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		kind = ConversionKind::Reinterpret;
 	}
 	else if (void_id(target))
-		valid = scalar_id(source) || type_kind(source) == TypeKind::Function;
+	{
+		valid = void_id(source) || scalar_id(source) ||
+			type_kind(source) == TypeKind::Function;
+		kind = ConversionKind::ToVoid;
+	}
 	else if (integral_id(target))
 	{
 		if (bool_id(target))

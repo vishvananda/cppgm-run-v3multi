@@ -3,6 +3,141 @@
 namespace pa11_semantic_internal
 {
 
+void Pa15Lowerer::demand_function_declaration(BindingId binding){
+		if (!binding.valid()) return;
+		if (function_declaration_plans_.find(binding.value) !=
+			function_declaration_plans_.end())
+			demanded_function_declarations_.insert(binding.value);
+}
+
+void Pa15Lowerer::materialize_function_declarations(){
+		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size();
+			++scope_index)
+		{
+			const Scope& scope = model_.scopes_[scope_index];
+			if (scope.kind != ScopeKind::Namespace) continue;
+			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+			{
+				const BindingId binding_id = scope.bindings[i];
+				if (demanded_function_declarations_.find(binding_id.value) ==
+					demanded_function_declarations_.end())
+					continue;
+				const std::map<std::size_t, FunctionDeclaration>::const_iterator plan =
+					function_declaration_plans_.find(binding_id.value);
+				if (plan != function_declaration_plans_.end())
+					program_.function_declarations.push_back(plan->second);
+			}
+		}
+	}
+
+LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		const std::vector<SemanticFactId> operands = children(id);
+		if (operands.size() != 2)
+			throw std::runtime_error("PA15 invalid binary fact");
+		if (fact.token == SimpleTokenType::OP_COMMA)
+		{
+			lower_discarded_expression(operands.front());
+			if (model_.semantic_facts_[operands.back().value].category !=
+				SemanticValueCategory::Prvalue)
+				return lower_lvalue(operands.back());
+			return lower_expression(operands.back());
+		}
+		if (fact.token == SimpleTokenType::OP_LAND ||
+			fact.token == SimpleTokenType::OP_LOR)
+			return lower_logical(id);
+		const bool left_pointer = pointer_like(
+			model_.semantic_facts_[operands[0].value].type);
+		const bool right_pointer = pointer_like(
+			model_.semantic_facts_[operands[1].value].type);
+		const bool force_size_operands = fact.size_type_derived;
+		LoweredValue left = lower_expression_impl(operands[0], false, true,
+			force_size_operands, true);
+		LoweredValue right = lower_expression_impl(operands[1], false, true,
+			force_size_operands, true);
+		left = apply_conversions(operands[0], left, false, true,
+			force_size_operands);
+		right = apply_conversions(operands[1], right, false, true,
+			force_size_operands);
+		if ((fact.token == SimpleTokenType::OP_PLUS ||
+			fact.token == SimpleTokenType::OP_MINUS) && left_pointer &&
+			!right_pointer && left.type.is_pointer())
+		{
+			return pointer_offset(left,
+				model_.semantic_facts_[operands[0].value].type, right,
+				model_.semantic_facts_[operands[1].value].type,
+				fact.token == SimpleTokenType::OP_MINUS);
+		}
+		if (fact.token == SimpleTokenType::OP_PLUS && right_pointer &&
+			!left_pointer && right.type.is_pointer())
+		{
+			return pointer_offset(right,
+				model_.semantic_facts_[operands[1].value].type, left,
+				model_.semantic_facts_[operands[0].value].type, false);
+		}
+		if (fact.token == SimpleTokenType::OP_MINUS && left_pointer &&
+			right_pointer && left.type.is_pointer() && right.type.is_pointer())
+		{
+			const LowType pointer = left.type;
+			const LoweredValue difference = emit_binary_value(
+				lowir_model::BOP_SUB, pointer, left, right);
+			const LowType i64 = []() {
+				LowType value;
+				value.kind = LowType::TYPE_INTEGER;
+				value.integer_kind = LowType::INTEGER_I64;
+				return value;
+			}();
+			const std::size_t element_size = pointer_element_size(
+				model_.semantic_facts_[operands[0].value].type);
+			LoweredValue quotient = difference;
+			if (element_size != 1)
+				quotient = emit_binary_value(lowir_model::BOP_DIV, i64,
+					difference, LoweredValue(integer_operand(
+						static_cast<long long>(element_size), i64), i64, false));
+			return quotient;
+		}
+		if (is_comparison(fact.token))
+		{
+			const TypeId operation_type = fact.operation_type.valid() ?
+				fact.operation_type : model_.expression_object_type(
+					model_.semantic_facts_[operands[0].value].type);
+			const NamedRecordId operation_record =
+				model_.named_record_for_type(operation_type);
+			const bool scoped_enum_operation = operation_record.valid() &&
+				operation_record.value < model_.named_.size() &&
+				model_.named_[operation_record.value].kind == NamedKind::Enum &&
+				model_.named_[operation_record.value].scoped_enum;
+			LowType compare_type = operation_type.valid() ?
+				low_type(operation_type) : left.physical_type;
+			if (!compare_type.valid())
+				compare_type = low_type(model_.expression_object_type(
+					model_.semantic_facts_[operands[0].value].type));
+			if (!scoped_enum_operation && !compare_type.is_pointer() &&
+				compare_type.is_integer() && compare_type.integer_width() < 32)
+			{
+				compare_type.kind = LowType::TYPE_INTEGER;
+				compare_type.integer_kind = LowType::INTEGER_I32;
+			}
+			return emit_compare_value(compare_predicate(fact.token,
+				operation_type.valid() && unsigned_type_for(operation_type)),
+				compare_type,
+				LoweredValue(left.value, compare_type, false, compare_type),
+				LoweredValue(right.value, compare_type, false, compare_type));
+		}
+		const TypeId operation_type = fact.operation_type.valid() ?
+			fact.operation_type : fact.type;
+		LowType type = low_type(operation_type);
+		if (fact.size_type_derived && type.is_integer() &&
+			type.integer_width() == 64)
+			type = size_low_type();
+		const lowir_model::BinaryOperator operation = binary_operator(
+			fact.token, unsigned_type_for(operation_type));
+		if (operation == lowir_model::BOP_INVALID)
+			throw std::runtime_error("PA15 unsupported binary operator");
+		return emit_binary_value(operation, type, left,
+			LoweredValue(right.value, type, false));
+}
+
 LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boolean_context,
 		bool materialize_lvalue, bool force_integral_literal_conversion, bool defer_conversions){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
@@ -101,137 +236,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			result = lower_lvalue(id);
 			break;
 		case SemanticFactKind::BinaryExpression:
-		{
-			const std::vector<SemanticFactId> operands = children(id);
-			if (operands.size() != 2) throw std::runtime_error("PA15 invalid binary fact");
-				if (fact.token == SimpleTokenType::OP_COMMA)
-				{
-					lower_discarded_expression(operands.front());
-				if (model_.semantic_facts_[operands.back().value].category !=
-					SemanticValueCategory::Prvalue)
-					result = lower_lvalue(operands.back());
-				else
-					result = lower_expression(operands.back());
-				break;
-			}
-			if (fact.token == SimpleTokenType::OP_LAND ||
-				fact.token == SimpleTokenType::OP_LOR)
-			{
-				result = lower_logical(id);
-				break;
-			}
-			const bool left_pointer = pointer_like(
-				model_.semantic_facts_[operands[0].value].type);
-			const bool right_pointer = pointer_like(
-				model_.semantic_facts_[operands[1].value].type);
-			const bool force_size_operands = fact.size_type_derived;
-			LoweredValue left;
-			LoweredValue right;
-			if (force_size_operands)
-			{
-				left = lower_expression_impl(operands[0], false, true,
-					force_size_operands, true); right = lower_expression_impl(operands[1],
-					false, true, force_size_operands, true);
-				left = apply_conversions(operands[0], left, false, true, force_size_operands);
-				right = apply_conversions(operands[1], right, false, true, force_size_operands);
-			}
-			else
-			{
-				left = lower_expression_impl(operands[0], false, true,
-					force_size_operands, true);
-				right = lower_expression_impl(operands[1], false, true,
-					force_size_operands, true);
-				left = apply_conversions(operands[0], left, false, true,
-					force_size_operands);
-				right = apply_conversions(operands[1], right, false, true,
-					force_size_operands);
-			}
-			if ((fact.token == SimpleTokenType::OP_PLUS ||
-				fact.token == SimpleTokenType::OP_MINUS) && left_pointer &&
-				!right_pointer && left.type.is_pointer())
-			{
-				result = pointer_offset(left,
-					model_.semantic_facts_[operands[0].value].type, right,
-					model_.semantic_facts_[operands[1].value].type,
-					fact.token == SimpleTokenType::OP_MINUS);
-			}
-			else if (fact.token == SimpleTokenType::OP_PLUS && right_pointer &&
-				!left_pointer && right.type.is_pointer())
-			{
-				result = pointer_offset(right,
-					model_.semantic_facts_[operands[1].value].type, left,
-					model_.semantic_facts_[operands[0].value].type, false);
-			}
-			else if (fact.token == SimpleTokenType::OP_MINUS && left_pointer &&
-				right_pointer && left.type.is_pointer() && right.type.is_pointer())
-			{
-				const LowType pointer = left.type;
-				const LoweredValue difference = emit_binary_value(
-					lowir_model::BOP_SUB, pointer, left, right);
-				const LowType i64 = []() {
-					LowType value;
-					value.kind = LowType::TYPE_INTEGER;
-					value.integer_kind = LowType::INTEGER_I64;
-					return value;
-				}();
-				const std::size_t element_size = pointer_element_size(
-					model_.semantic_facts_[operands[0].value].type);
-				LoweredValue quotient = difference;
-				if (element_size != 1)
-					quotient = emit_binary_value(lowir_model::BOP_DIV, i64,
-						difference, LoweredValue(integer_operand(
-							static_cast<long long>(element_size), i64), i64, false));
-				result = quotient;
-			}
-			else if (is_comparison(fact.token))
-			{
-				const TypeId operation_type = fact.operation_type.valid() ?
-					fact.operation_type :
-					model_.expression_object_type(
-						model_.semantic_facts_[operands[0].value].type);
-				const NamedRecordId operation_record =
-					model_.named_record_for_type(operation_type);
-				const bool scoped_enum_operation = operation_record.valid() &&
-					operation_record.value < model_.named_.size() &&
-					model_.named_[operation_record.value].kind == NamedKind::Enum &&
-					model_.named_[operation_record.value].scoped_enum;
-				LowType compare_type = operation_type.valid() ?
-					low_type(operation_type) : left.physical_type;
-				if (!compare_type.valid())
-				{
-					compare_type = low_type(model_.expression_object_type(
-						model_.semantic_facts_[operands[0].value].type));
-				}
-				if (!scoped_enum_operation && !compare_type.is_pointer() &&
-					compare_type.is_integer() &&
-					compare_type.integer_width() < 32)
-				{
-					compare_type.kind = LowType::TYPE_INTEGER;
-					compare_type.integer_kind = LowType::INTEGER_I32;
-				}
-				result = emit_compare_value(compare_predicate(fact.token,
-					operation_type.valid() && unsigned_type_for(operation_type)),
-					compare_type,
-					LoweredValue(left.value, compare_type, false, compare_type),
-					LoweredValue(right.value, compare_type, false, compare_type));
-			}
-			else
-			{
-				const TypeId operation_type = fact.operation_type.valid() ?
-					fact.operation_type : fact.type;
-				LowType type = low_type(operation_type);
-				if (fact.size_type_derived && type.is_integer() &&
-					type.integer_width() == 64)
-					type = size_low_type();
-				const lowir_model::BinaryOperator operation = binary_operator(
-					fact.token, unsigned_type_for(operation_type));
-				if (operation == lowir_model::BOP_INVALID)
-					throw std::runtime_error("PA15 unsupported binary operator");
-				result = emit_binary_value(operation, type, left,
-					LoweredValue(right.value, type, false));
-			}
+			result = lower_binary_expression(id);
 			break;
-		}
 		case SemanticFactKind::AssignmentExpression:
 			result = lower_assignment(id);
 			break;
@@ -253,7 +259,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			break;
 		case SemanticFactKind::CastExpression:
 		{
-			if (children(id).size() != 1)
+			const std::vector<SemanticFactId> operands = children(id);
+			if (operands.size() != 1)
 				throw std::runtime_error("PA15 unsupported cast expression");
 			const TypeKind target_kind = model_.type_kind(
 				model_.strip_cv_type(fact.type));
@@ -268,8 +275,16 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 					low_reference_value_type(fact.type), true,
 					address.physical_type);
 			}
+			else if (model_.void_id(fact.type))
+			{
+				// A discarded conversion to void evaluates the source, but its
+				// scalar result is not needed.  Keep that context all the way
+				// through the source so side-effecting lvalues are not reloaded.
+				lower_discarded_expression(operands.front());
+				result = LoweredValue(Operand(), low_type(fact.type), false);
+			}
 			else
-				result = lower_expression(children(id).front());
+				result = lower_expression(operands.front());
 			break;
 		}
 		default:
@@ -294,6 +309,62 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 		return apply_conversions(id, result, omit_boolean_context,
 			materialize_lvalue, force_integral_literal_conversion);
 	}
+
+void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind == SemanticFactKind::ConditionalExpression &&
+			model_.void_id(fact.type))
+		{
+			const std::vector<SemanticFactId> facts = children(id);
+			if (facts.size() != 3)
+				throw std::runtime_error("PA15 invalid discarded conditional expression");
+			const BlockId then_block = block_id(new_block("discard_cond_then"));
+			const BlockId else_block = block_id(new_block("discard_cond_else"));
+			const BlockId end_block = block_id(new_block("discard_cond_end"));
+			if (has_direct_short_circuit(facts[0]))
+				lower_condition_branch(facts[0], then_block, else_block);
+			else
+			{
+				const LoweredValue condition = lower_condition(facts[0]);
+				emit_branch(condition.value, then_block, else_block);
+			}
+			set_current(then_block);
+			lower_discarded_expression(facts[1]);
+			if (!terminated(block())) emit_jump(end_block);
+			set_current(else_block);
+			lower_discarded_expression(facts[2]);
+			if (!terminated(block())) emit_jump(end_block);
+			set_current(end_block);
+			return;
+		}
+		(void)lower_expression_impl(id, false, false);
+}
+
+bool Pa15Lowerer::constant_truth(SemanticFactId id, bool* value) const{
+		if (value == NULL || !id.valid() || id.value >= model_.semantic_facts_.size())
+			return false;
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind != SemanticFactKind::Literal)
+			return false;
+		if (fact.token == SimpleTokenType::KW_TRUE ||
+			fact.token == SimpleTokenType::KW_FALSE)
+		{
+			*value = fact.token == SimpleTokenType::KW_TRUE;
+			return true;
+		}
+		__int128 integer = 0;
+		if (fact.has_constant_value)
+			integer = fact.constant_value;
+		else if (fact.has_literal_value)
+		{
+			integer = static_cast<__int128>(fact.literal_value);
+			if (fact.literal_value_negative) integer = -integer;
+		}
+		else
+			return false;
+		*value = integer != 0;
+		return true;
+}
 
 void Pa15Lowerer::lower_condition_branch(SemanticFactId id, BlockId true_target,
 		BlockId false_target){
@@ -323,6 +394,20 @@ void Pa15Lowerer::lower_condition_branch(SemanticFactId id, BlockId true_target,
 			const std::vector<SemanticFactId> operands = children(id);
 			if (operands.size() != 2)
 				throw std::runtime_error("PA15 invalid logical condition fact");
+			bool left_truth = false;
+			if (constant_truth(operands[0], &left_truth))
+			{
+				const bool short_circuit = fact.token == SimpleTokenType::OP_LAND ?
+					!left_truth : left_truth;
+				if (short_circuit)
+				{
+					const LoweredValue left = lower_condition_expression(operands[0]);
+					emit_branch(left.value, true_target, false_target);
+				}
+				else
+					lower_condition_branch(operands[1], true_target, false_target);
+				return;
+			}
 			const std::size_t rhs_index = new_block(fact.token ==
 				SimpleTokenType::OP_LAND ? "land_rhs" : "lor_rhs");
 			const BlockId rhs_target = block_id(rhs_index);
@@ -928,7 +1013,10 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			instruction.type = function().return_type;
 			if (facts.size() == 1)
 			{
-				instruction.first = lower_expression(facts.front()).value;
+				if (instruction.type.is_void())
+					lower_discarded_expression(facts.front());
+				else
+					instruction.first = lower_expression(facts.front()).value;
 			}
 			else if (!instruction.type.is_void())
 				throw std::runtime_error("PA15 missing return operand");

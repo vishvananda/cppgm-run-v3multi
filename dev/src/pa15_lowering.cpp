@@ -1,5 +1,4 @@
 #include "pa15_lowering.h"
-
 #include <cstring>
 
 namespace pa11_semantic_internal
@@ -9,7 +8,8 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		: model_(model), program_(program), spelling_ids_(), used_symbols_(),
 		  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
-		  function_name_ids_(), global_symbols_(), global_name_ids_(),
+		  function_name_ids_(), function_declaration_plans_(),
+		  demanded_function_declarations_(), global_symbols_(), global_name_ids_(),
 		  symbol_name_ids_(), literal_address_symbols_(), variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
@@ -31,11 +31,10 @@ void Pa15Lowerer::run(){
 		collect_function_declarations();
 		collect_globals();
 		materialize_pending_global_initializers();
-
-
 		loop_targets_.resize(model_.semantic_facts_.size());
 		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 			lower_function(function_plans_[i]);
+		materialize_function_declarations();
 		finalize_value_records();
 	}
 
@@ -619,6 +618,7 @@ bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
 			std::map<std::size_t, SymbolId>::const_iterator function =
 				function_symbols_.find(value.target.value);
 			if (function == function_symbols_.end()) return false;
+			demand_function_declaration(BindingId(value.target.value));
 			*target = function->second;
 		}
 		*addend = value.byte_addend;
@@ -702,10 +702,6 @@ void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
 	}
 
 void Pa15Lowerer::collect_globals(){
-
-
-
-
 		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
 		{
 			const Scope& scope = model_.scopes_[scope_index];
@@ -746,10 +742,6 @@ void Pa15Lowerer::collect_globals(){
 					variable_facts_.find(binding_id.value) != variable_facts_.end() ?
 					children(variable_facts_.find(binding_id.value)->second) :
 					std::vector<SemanticFactId>();
-
-
-
-
 				const bool declaration_only = declaration != NULL && declaration->is_extern &&
 					initializers.empty();
 				if (declaration_only)
@@ -1031,19 +1023,12 @@ void Pa15Lowerer::collect_functions(){
 			{
 				const Binding& parameter_binding = model_.binding(
 					function_scope.bindings[parameter]);
-				if (parameter_binding.kind == BindingKind::Parameter &&
-					parameter_binding.name.valid())
-					++active_names[parameter_binding.name.value];
-			}
-
-
-
-
-			collect_local_slots(stored, fact.function_scope, &active_names);
-
-
-
-			const std::vector<BindingId>& owned_variables =
+					if (parameter_binding.kind == BindingKind::Parameter &&
+						parameter_binding.name.valid())
+						++active_names[parameter_binding.name.value];
+				}
+				collect_local_slots(stored, fact.function_scope, &active_names);
+				const std::vector<BindingId>& owned_variables =
 				function_scope_variables_[fact.function_scope.value];
 			for (std::size_t i = 0; i < owned_variables.size(); ++i)
 			{
@@ -1102,7 +1087,7 @@ void Pa15Lowerer::collect_function_declarations(){
 						parameter_record.metadata.passing = lowir_model::PPM_REFERENCE;
 					declaration.params.push_back(parameter_record);
 				}
-			program_.function_declarations.push_back(declaration);
+			function_declaration_plans_[binding_id.value] = declaration;
 			function_symbols_[binding_id.value] = declaration.symbol_id;
 			function_name_ids_[binding_id.value] = declaration.name_id;
 			symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;
@@ -1830,11 +1815,17 @@ LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
 		else
 			throw std::runtime_error("PA15 unsupported floating literal type");
 		operand.literal_type = type;
-		// Preserve the producer-owned spelling only at the LowIR presentation
-		// edge; semantic decisions use the typed value above.
-		if (fact.source != NULL && fact.source->text != 0)
+		// Preserve source spelling only for a source floating literal.  A typed
+		// value-initialized zero has a braced source node whose spelling is not
+		// a floating literal, so give the LowIR parser a typed spelling.
+		if (fact.source != NULL && fact.source->kind == PA10NodeKind::Literal &&
+			fact.source->text != 0)
 			operand.presentation_id = intern_spelling(
 				model_.ast_.spelling(fact.source->text));
+		else
+			operand.presentation_id = intern_spelling(
+				type.float_kind == LowType::FLOAT_F32 ? "0.0F" :
+				type.float_kind == LowType::FLOAT_F80 ? "0.0L" : "0.0");
 		return LoweredValue(operand, type, false);
 	}
 	long long value = 0;
@@ -2064,6 +2055,13 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			if (force_integral_literal_conversion && target.is_integer() &&
 				target.integer_width() == 64)
 				target = size_low_type();
+			if (conversion.kind == ConversionKind::ToVoid)
+			{
+				// The source was lowered in discarded context, so no scalar
+				// conversion or result is needed for a void target.
+				result = LoweredValue(Operand(), target, false);
+				continue;
+			}
 			// Comparisons and short-circuit expressions carry canonical truth as
 			// physical i64 until a value context asks for the semantic bool.  A
 			// following recorded bool conversion must consume that semantic u8;
@@ -2503,6 +2501,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 				function_symbols_.find(fact.selected_binding.value);
 			if (symbol == function_symbols_.end())
 				throw std::runtime_error("PA15 direct call target was not emitted");
+			demand_function_declaration(fact.selected_binding);
 			callee_binding = &model_.binding(fact.selected_binding);
 			if (model_.type_kind(callee_binding->type) != TypeKind::Function)
 				throw std::runtime_error("PA15 direct call target is not a function");
@@ -2679,6 +2678,7 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 					function_symbols_.find(fact.binding.value);
 				if (found == function_symbols_.end())
 					throw std::runtime_error("PA15 function address has no symbol");
+				demand_function_declaration(fact.binding);
 				LowType pointer;
 				pointer.kind = LowType::TYPE_POINTER;
 				return address_of_storage(LoweredValue(global_operand(found->second,
@@ -2844,10 +2844,6 @@ LoweredValue Pa15Lowerer::lower_condition_expression(SemanticFactId id){
 		return lower_expression_impl(id, true);
 	}
 
-void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
-		(void)lower_expression_impl(id, false, false);
-	}
-
 bool Pa15Lowerer::is_comparison(SimpleTokenType token) const{
 		return token == SimpleTokenType::OP_EQ || token == SimpleTokenType::OP_NE ||
 			token == SimpleTokenType::OP_LT || token == SimpleTokenType::OP_LE ||
@@ -2924,7 +2920,7 @@ void Pa15Lowerer::emit_branch(const Operand& condition, BlockId true_target,
 bool Pa15Lowerer::condition_is_empty(SemanticFactId id) const{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		return fact.kind == SemanticFactKind::Condition && fact.child_count == 0;
-	}
+}
 
 bool Pa15Lowerer::has_direct_short_circuit(SemanticFactId id) const{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];

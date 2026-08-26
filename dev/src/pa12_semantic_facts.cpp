@@ -1,6 +1,8 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
 
+#include <cstring>
+
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
@@ -69,6 +71,46 @@ bool parameter_has_default_argument(const PA10AstNode& parameter)
 	return false;
 }
 
+template <typename T>
+void zero_floating_literal(LiteralData* literal)
+{
+	const T value = T();
+	literal->bytes.resize(sizeof(value));
+	std::memcpy(literal->bytes.data(), &value, sizeof(value));
+}
+
+}
+
+ExprInfo PA11SemanticModel::semantic_empty_braced_init_list(
+	const PA10AstNode& node, TypeId target)
+{
+	const TypeId object = strip_top_cv_type(target);
+	if ((!integral_id(object) && !pointer_id(object) &&
+		!bool_id(object) && !floating_id(object)) || void_id(object))
+		throw std::runtime_error("PA12 empty braced initializer needs scalar target");
+	SemanticFact fact(SemanticFactKind::Literal, object,
+		SemanticValueCategory::Prvalue, &node);
+	const bool integer_zero = !floating_id(object);
+	fact.has_literal_value = integer_zero;
+	fact.literal_value = 0;
+	fact.literal_value_unsigned = unsigned_integral_type(object);
+	if (!integer_zero)
+	{
+		FundamentalType fundamental_type;
+		if (!fundamental_of(object, &fundamental_type))
+			throw std::runtime_error("PA12 empty floating initializer has no type");
+		LiteralData zero;
+		zero.type = fundamental_type;
+		if (fundamental_type == FundamentalType::Float)
+			zero_floating_literal<float>(&zero);
+		else if (fundamental_type == FundamentalType::Double)
+			zero_floating_literal<double>(&zero);
+		else
+			zero_floating_literal<long double>(&zero);
+		fact.literal_float = add_floating_literal(zero);
+	}
+	return ExprInfo(make_semantic_fact(fact), object,
+		SemanticValueCategory::Prvalue, integer_zero);
 }
 
 bool PA11SemanticModel::unsigned_integral_type(TypeId type) const

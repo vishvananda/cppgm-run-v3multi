@@ -142,6 +142,8 @@ private:
 	std::map<std::string, std::size_t> slot_collision_counters_;
 	std::map<std::size_t, SymbolId> function_symbols_;
 	std::map<std::size_t, SpellingId> function_name_ids_;
+	std::map<std::size_t, FunctionDeclaration> function_declaration_plans_;
+	std::set<std::size_t> demanded_function_declarations_;
 	std::map<std::size_t, SymbolId> global_symbols_;
 	std::map<std::size_t, SpellingId> global_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
@@ -201,6 +203,8 @@ private:
 	void index_function_scope_variables();
 	void collect_functions();
 	void collect_function_declarations();
+	void demand_function_declaration(BindingId binding);
+	void materialize_function_declarations();
 	SpellingId parameter_value_name(NameId name, std::size_t ordinal);
 	SpellingId slot_name(NameId name, std::size_t ordinal, bool shadowed);
 	void collect_local_slots(Function& function, ScopeId scope,
@@ -301,6 +305,7 @@ private:
 	LoweredValue lower_expression(SemanticFactId id);
 	LoweredValue lower_condition_expression(SemanticFactId id);
 	void lower_discarded_expression(SemanticFactId id);
+	LoweredValue lower_binary_expression(SemanticFactId id);
 	LoweredValue lower_expression_impl(SemanticFactId id,
 		bool omit_boolean_context, bool materialize_lvalue = true,
 		bool force_integral_literal_conversion = false,
@@ -315,6 +320,7 @@ private:
 	void emit_branch(const Operand& condition, BlockId true_target,
 		BlockId false_target);
 	bool condition_is_empty(SemanticFactId id) const;
+	bool constant_truth(SemanticFactId id, bool* value) const;
 	bool has_direct_short_circuit(SemanticFactId id) const;
 	void lower_condition_branch(SemanticFactId id, BlockId true_target,
 		BlockId false_target);
