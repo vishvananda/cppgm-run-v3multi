@@ -13,16 +13,20 @@ every procedural form.
   records, rejects duplicate labels during registration, resolves each `goto`
   through the function-local table, and publishes labeled/goto statement
   facts. Unresolved `goto` is a semantic error.
-- PA15 uses dense per-function `LabelId` indexing for one target block per
-  label. A typed fact prepass marks referenced-label ancestors; recovery walks
-  only those compound/switch structural paths, so dead non-label statements
-  are not emitted. Normal fallthrough and forward/backward `goto` edges
-  converge on the same block.
-- The label path is bounded by semantic facts and gotos: PA12 uses the
-  existing expected-O(1) flat index, and PA15 uses direct vector indexing plus
-  two bounded fact passes. Output order and generated block identities remain
-  deterministic. No textual label search, reference binary, host compiler, or
-  test-specific output path is used.
+- PA15 uses dense `LabelId` indexing for one target block per label. The typed
+  fact prepass marks referenced-label ancestors; recovery walks only those
+  compound/switch structural paths, so dead non-label statements are not
+  emitted. Normal fallthrough and forward/backward `goto` edges converge on
+  the same block.
+- PA15 sizes its label/fact value and generation arrays once for the
+  translation unit. Each function advances a guarded epoch, so normal setup
+  is O(1), each relevant fact is touched by the two bounded passes O(1) times,
+  and typed label lookup is expected O(1); there is no F-times-TU clear. Thus
+  total setup/traversal is O(TU label/fact storage + total relevant facts +
+  gotos), with one defensive full stamp reset only on 32-bit epoch wrap.
+  Output order and generated block identities remain deterministic. No
+  textual label search, reference binary, host compiler, or test-specific
+  output path is used.
 
 ## Failure Map
 
@@ -42,11 +46,12 @@ covered and exactly six failures. Final gate result is `105/109` with
 ## Active Checkpoint
 
 The PA11 storage/model, PA12 semantic registration/resolution, and PA15
-statement lowering owners are complete and commit-ready. The target pair
-passed `2/2`; the expanded 406 owner regression passed, including positive
-typed semantic handoff, LowIR validation, one-target forward recovery, and
-backward convergence, dead-sibling omission, and duplicate/unresolved
-rejection. The ordinary-goto/switch/loop/nested-compound matrix passed `6/6`.
+statement lowering owners are complete and commit-ready. The corrective
+generation-stamped setup retains the target pair at `2/2`; the expanded 406
+owner regression passed, including positive typed semantic handoff, LowIR
+validation, one-target forward recovery, and backward convergence,
+dead-sibling omission, and duplicate/unresolved rejection. The
+ordinary-goto/switch/loop/nested-compound matrix passed `6/6`.
 
 Final gates:
 
@@ -62,31 +67,37 @@ Final gates:
 
 ## Performance Evidence
 
-Affected-path artifact: `/tmp/pa15-label-perf-final.GLh7wr`. The copied candidate
-compiler is mode `0555` with SHA-256
-`6b2ce447133d89160b33063471f15bff64fa16de8a1ad03095a20364bca9fbd3`; its
-copied validator hash is
+Many-function affected-path artifact: `/tmp/pa15-label-many-functions.2kvXCG`.
+The copied candidate compiler is mode `0555` with SHA-256
+`d15163a4c0435daa88d2ef145669f9166f7be18ff8ad1d67c85ba522f649285e`;
+its copied validator hash is
 `c4d2af08ed8ca2c357790c174220f2fbbe753ce63524e20301f64456291cbf40`.
-Equivalent forward/reverse generated inputs were run in five interleaved
-forward/reverse rounds, five samples per orientation and size. The input hash
-manifest is `inputs.sha256` (manifest SHA-256
-`0dff4d6a064f508a6b1f027e5739d8f2634e7a99d0790eb51be0e966b329e653`);
+Each generated input has one label and one goto in every function. Forward
+and reverse definition orders were run in five interleaved rounds, with five
+samples per orientation and size. The input hash manifest is `inputs.sha256`
+(manifest SHA-256
+`bee2fb4d171f8be11e9ffb1da8edc82417a5c04eb8fad385ec43b5de8760121e`);
 copied-validator validation was `8/8`.
 
-| labels/gotos | forward median wall/RSS | reverse median wall/RSS | goto blocks/edges | LowIR bytes |
+| functions | forward median wall/RSS | reverse median wall/RSS | goto blocks/edges | LowIR bytes |
 |---:|---:|---:|---:|---:|
-| 256 | 0.00 s / 5,728 KiB | 0.00 s / 5,716 KiB | 256 / 256 | 9,990 |
-| 1,024 | 0.01 s / 8,748 KiB | 0.01 s / 8,756 KiB | 1,024 / 1,024 | 39,992 |
-| 2,048 | 0.03 s / 12,548 KiB | 0.03 s / 12,540 KiB | 2,048 / 2,048 | 81,976 |
-| 4,096 | 0.06 s / 20,708 KiB | 0.06 s / 20,724 KiB | 4,096 / 4,096 | 165,944 |
+| 64 | 0.00 s / 5,620 KiB | 0.00 s / 5,636 KiB | 64 / 64 | 8,369 |
+| 256 | 0.01 s / 7,636 KiB | 0.01 s / 7,624 KiB | 256 / 256 | 33,449 |
+| 1,024 | 0.05 s / 16,068 KiB | 0.05 s / 16,068 KiB | 1,024 / 1,024 | 134,105 |
+| 2,048 | 0.10 s / 28,496 KiB | 0.10 s / 28,244 KiB | 2,048 / 2,048 | 270,297 |
 
-The dense target vector and bounded fact prepass avoid `std::map` lookup per
-label. This is bounded affected-path evidence, not a universal or comparative
-speed claim; timings and RSS are machine- and startup-sensitive.
+The prior single-function artifact `/tmp/pa15-label-perf-final.GLh7wr` remains
+a compact structural sanity sample: sizes 256/1,024/2,048/4,096 produced
+the same number of goto blocks and edges as labels, with LowIR sizes
+9,990/39,992/81,976/165,944 bytes. The dense target vector and generation
+stamps avoid `std::map` lookup and global-width per-function clearing. This is
+bounded affected-path evidence, not a universal or comparative speed claim;
+timings and RSS are machine- and startup-sensitive.
 
 ## Checkpoint Ledger
 
 | checkpoint | result | durable value |
 |---|---|---|
 | `959f9481` prior typed discard/return checkpoint | retained the six-test PA15 baseline | preserves earlier typed discard, return, and LowIR ownership work |
-| current PA15 typed statement-CFG/label checkpoint | target `2/2`, owner regression PASS, adjacent `6/6`, final PA15 `105/109` with `109/109` covered and four residuals, through-PA14 `1058/1058`, audit PASS, diff-check PASS | adds function-local typed label identity, one-target recovery, and deterministic compound/switch CFG lowering |
+| `a2f33047` prior typed statement-CFG/label checkpoint | target `2/2`, owner regression PASS, adjacent `6/6`, PA15 `105/109` with `109/109` covered and four residuals, through-PA14 `1058/1058`, audit PASS | adds function-local typed label identity, one-target recovery, and deterministic compound/switch CFG lowering |
+| current corrective label-flow checkpoint | target `2/2`, owner regression PASS, adjacent `6/6`, PA15 `105/109` with `109/109` covered and four residuals, through-PA14 `1058/1058`, audit PASS, diff-check PASS | replaces per-function TU-wide initialization with generation-stamped typed state and many-function evidence |

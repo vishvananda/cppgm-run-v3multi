@@ -1103,8 +1103,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			fact.kind != SemanticFactKind::CaseStatement &&
 			fact.kind != SemanticFactKind::DefaultStatement &&
 			!(fact.kind == SemanticFactKind::LabeledStatement &&
-				fact.label.valid() && fact.label.value < label_blocks_.size() &&
-				label_blocks_[fact.label.value].valid()))
+				current_label_target(fact.label)))
 			return;
 		const std::vector<SemanticFactId> facts = children(id);
 		switch (fact.kind)
@@ -1229,8 +1228,10 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			if (!fact.label.valid() || fact.label.value >= label_lowered_.size() ||
 				facts.size() > 1)
 				throw std::runtime_error("PA15 invalid labeled statement");
-			if (label_lowered_[fact.label.value] != 0)
+			if (label_lowered_generations_[fact.label.value] ==
+				label_generation_ && label_lowered_[fact.label.value] != 0)
 				return;
+			label_lowered_generations_[fact.label.value] = label_generation_;
 			label_lowered_[fact.label.value] = 1;
 			const BlockId target = label_target(fact.label);
 			if (current_block_ != InvalidIdentityValue &&
@@ -1353,7 +1354,6 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		block_indexes_.clear();
 		control_stack_.clear();
 		switch_stack_.clear();
-		label_blocks_.clear();
 		block_order_.clear();
 		ordered_block_ids_.clear();
 		reachability_base_ = next_block_;

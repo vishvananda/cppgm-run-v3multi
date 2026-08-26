@@ -4,6 +4,7 @@
 #include "pa11_semantic_model.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <set>
@@ -154,6 +155,12 @@ private:
 	std::vector<unsigned char> label_index_states_;
 	std::vector<unsigned char> label_subtree_states_;
 	std::vector<unsigned char> label_lowered_;
+	std::vector<std::uint32_t> label_block_generations_;
+	std::vector<std::uint32_t> label_referenced_generations_;
+	std::vector<std::uint32_t> fact_index_generations_;
+	std::vector<std::uint32_t> fact_subtree_generations_;
+	std::vector<std::uint32_t> label_lowered_generations_;
+	std::uint32_t label_generation_;
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
@@ -326,7 +333,11 @@ private:
 	void emit_jump(BlockId target);
 	void emit_branch(const Operand& condition, BlockId true_target,
 		BlockId false_target);
+	void initialize_label_storage();
+	void begin_label_flow();
 	BlockId label_target(LabelId label);
+	bool current_label_target(LabelId label) const;
+	bool current_label_referenced(LabelId label) const;
 	void initialize_label_flow(SemanticFactId body);
 	void collect_label_flow(SemanticFactId id);
 	bool compute_label_subtree(SemanticFactId id);

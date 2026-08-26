@@ -12,7 +12,10 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  demanded_function_declarations_(), global_symbols_(), global_name_ids_(),
 		  symbol_name_ids_(), literal_address_symbols_(), label_blocks_(),
 		  label_referenced_(), label_subtrees_(), label_index_states_(),
-		  label_subtree_states_(), label_lowered_(), variable_facts_(),
+		  label_subtree_states_(), label_lowered_(), label_block_generations_(),
+		  label_referenced_generations_(), fact_index_generations_(),
+		  fact_subtree_generations_(), label_lowered_generations_(),
+		  label_generation_(0), variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
 		  function_scope_variables_(), next_symbol_(0),
@@ -35,6 +38,7 @@ void Pa15Lowerer::run(){
 		materialize_pending_global_initializers();
 		constant_truth_cache_.assign(model_.semantic_facts_.size(), 255);
 		loop_targets_.resize(model_.semantic_facts_.size());
+		initialize_label_storage();
 		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 			lower_function(function_plans_[i]);
 		materialize_function_declarations();
