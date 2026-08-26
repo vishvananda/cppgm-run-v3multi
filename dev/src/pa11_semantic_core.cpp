@@ -213,6 +213,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	function_fact_index_(), function_binding_fact_index_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
 	class_function_facts_(),
+	member_call_demand_index_(),
 	synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
@@ -1278,6 +1279,22 @@ void PA11SemanticModel::mark_static_member(BindingId id)
 	if (existing != NULL)
 		sidecar = *existing;
 	sidecar.static_member = true;
+	set_binding_sidecar(id, sidecar);
+}
+MemberAccess PA11SemanticModel::member_access(BindingId id) const
+{
+	const BindingSidecar* sidecar = binding_sidecar(id);
+	return sidecar == NULL ? MemberAccess::Public : sidecar->member_access;
+}
+void PA11SemanticModel::set_member_access(BindingId id, MemberAccess access)
+{
+	if (!id.valid() || id.value >= bindings_.size())
+		throw std::runtime_error("invalid member access binding identity");
+	BindingSidecar sidecar;
+	const BindingSidecar* existing = binding_sidecar(id);
+	if (existing != NULL)
+		sidecar = *existing;
+	sidecar.member_access = access;
 	set_binding_sidecar(id, sidecar);
 }
 const NamedRecordSidecar* PA11SemanticModel::named_record_sidecar(

@@ -185,6 +185,11 @@ std::vector<std::string> Pa15Lowerer::function_components(const FunctionFact& fa
 			const Scope& current = model_.scopes_[scope.value];
 			if (current.kind == ScopeKind::Namespace && current.name.valid())
 				reversed.push_back(model_.name_text(current.name));
+			else if (current.kind == ScopeKind::Class && current.record.valid() &&
+				current.record.value < model_.named_.size() &&
+				model_.named_[current.record.value].name.valid())
+				reversed.push_back(model_.name_text(
+					model_.named_[current.record.value].name));
 			scope = current.parent;
 		}
 		std::reverse(reversed.begin(), reversed.end());
@@ -201,6 +206,11 @@ std::vector<std::string> Pa15Lowerer::value_components(ScopeId owner, NameId nam
 			const Scope& current = model_.scopes_[scope.value];
 			if (current.kind == ScopeKind::Namespace && current.name.valid())
 				reversed.push_back(model_.name_text(current.name));
+			else if (current.kind == ScopeKind::Class && current.record.valid() &&
+				current.record.value < model_.named_.size() &&
+				model_.named_[current.record.value].name.valid())
+				reversed.push_back(model_.name_text(
+					model_.named_[current.record.value].name));
 			scope = current.parent;
 		}
 		std::reverse(reversed.begin(), reversed.end());
@@ -347,9 +357,24 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact) const{
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
+		if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
+			model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
+			(function.cv & 3u) != 0)
+		{
+			abi_mangle::AbiFactRecord qualifier;
+			qualifier.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			qualifier.function.kind = abi_mangle::ABI_FUNCTION_RECORD_QUALIFIER;
+			if ((function.cv & 1u) != 0)
+				qualifier.function.qualifiers.push_back(
+					abi_mangle::ABI_FUNCTION_QUALIFIER_CONST);
+			if ((function.cv & 2u) != 0)
+				qualifier.function.qualifiers.push_back(
+					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
+			facts.records.push_back(qualifier);
+		}
 		facts.records.push_back(record);
 		return abi_mangle::mangle_abi_fact_case(facts);
-	}
+}
 
 std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner) const{
 		const Binding& binding = model_.binding(binding_id);
@@ -371,9 +396,24 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
+		if (owner.valid() && owner.value < model_.scopes_.size() &&
+			model_.scopes_[owner.value].kind == ScopeKind::Class &&
+			(function.cv & 3u) != 0)
+		{
+			abi_mangle::AbiFactRecord qualifier;
+			qualifier.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			qualifier.function.kind = abi_mangle::ABI_FUNCTION_RECORD_QUALIFIER;
+			if ((function.cv & 1u) != 0)
+				qualifier.function.qualifiers.push_back(
+					abi_mangle::ABI_FUNCTION_QUALIFIER_CONST);
+			if ((function.cv & 2u) != 0)
+				qualifier.function.qualifiers.push_back(
+					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
+			facts.records.push_back(qualifier);
+		}
 		facts.records.push_back(record);
 		return abi_mangle::mangle_abi_fact_case(facts);
-	}
+}
 
 LowType Pa15Lowerer::low_type(TypeId type) const{
 		while (type.valid() && model_.type_kind(type) == TypeKind::Cv)
@@ -973,7 +1013,8 @@ void Pa15Lowerer::index_function_scope_variables(){
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
 			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size() ||
-				model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
+				(model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace &&
+					model_.scopes_[fact.owner.value].kind != ScopeKind::Class))
 				continue;
 			if (!fact.function_scope.valid())
 				continue;
@@ -1014,9 +1055,14 @@ void Pa15Lowerer::collect_functions(){
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
+			if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
+				model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
+				model_.member_call_demand_index_.find(fact.binding) == NULL)
+				continue;
 			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size())
 				throw std::runtime_error("PA15 function owner is missing");
-			if (model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
+			if (model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace &&
+				model_.scopes_[fact.owner.value].kind != ScopeKind::Class)
 				continue;
 			if (!fact.function_scope.valid())
 				continue;
@@ -2543,91 +2589,6 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 		}
 		emit_store(target, updated.value, left.value);
 		return preserve_lvalue ? LoweredValue(left.value, target, true) : updated;
-	}
-
-LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		const std::vector<SemanticFactId> facts = children(id);
-		const Binding* callee_binding = NULL;
-		const TypeKey* function_type = NULL;
-		std::size_t argument_begin = 0;
-		Instruction instruction;
-		instruction.kind = Instruction::IK_CALL;
-		if (!fact.callable_type.valid() ||
-			model_.type_kind(fact.callable_type) != TypeKind::Function)
-			throw std::runtime_error("PA15 call has no typed callable signature");
-		function_type = &model_.types_[fact.callable_type.value];
-		if (fact.has_callee)
-		{
-			if (!fact.selected_binding.valid())
-				throw std::runtime_error("PA15 direct call has no selected binding");
-			std::map<std::size_t, SymbolId>::const_iterator symbol =
-				function_symbols_.find(fact.selected_binding.value);
-			if (symbol == function_symbols_.end())
-				throw std::runtime_error("PA15 direct call target was not emitted");
-			demand_function_declaration(fact.selected_binding);
-			callee_binding = &model_.binding(fact.selected_binding);
-			if (model_.type_kind(callee_binding->type) != TypeKind::Function)
-				throw std::runtime_error("PA15 direct call target is not a function");
-			instruction.direct_callee_id = symbol->second;
-			instruction.first = global_operand(symbol->second,
-				function_name_ids_.find(fact.selected_binding.value)->second);
-		}
-		else
-		{
-			if (facts.empty()) throw std::runtime_error("PA15 indirect call has no callee");
-			argument_begin = 1;
-			instruction.has_call_signature = true;
-		}
-		const std::size_t argument_count = facts.size() - argument_begin;
-		if (!function_type || (!function_type->variadic &&
-			argument_count != function_type->parameters.size()) ||
-			(function_type->variadic && argument_count < function_type->parameters.size()))
-			throw std::runtime_error("PA15 call arity mismatch");
-		instruction.call_return_type = low_type(function_type->result);
-		instruction.call_returns_void = instruction.call_return_type.is_void();
-		instruction.call_boundary.arity = function_type->variadic ?
-			lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
-		for (std::size_t i = 0; i < argument_count; ++i)
-		{
-			const SemanticFactId argument = facts[argument_begin + i];
-			instruction.args.push_back(lower_expression(argument).value);
-		}
-		if (!fact.has_callee)
-			instruction.first = lower_expression(facts.front()).value;
-		if (instruction.has_call_signature)
-			for (std::size_t i = 0; i < function_type->parameters.size(); ++i)
-			{
-				Parameter parameter;
-				std::ostringstream name;
-				name << "%arg" << i;
-				parameter.name_id = intern_spelling(name.str());
-				parameter.type = low_type(function_type->parameters[i]);
-				TypeId parameter_type = function_type->parameters[i];
-				while (model_.type_kind(parameter_type) == TypeKind::Cv)
-					parameter_type = model_.types_[parameter_type.value].child;
-				const TypeKind kind = model_.type_kind(parameter_type);
-				if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
-					parameter.metadata.passing = lowir_model::PPM_REFERENCE;
-				instruction.call_params.push_back(parameter);
-			}
-		if (instruction.call_returns_void)
-		{
-			block().instructions.push_back(instruction);
-			return LoweredValue(Operand(), instruction.call_return_type, false);
-		}
-		const ValueId value = destination(instruction.call_return_type, &instruction);
-		block().instructions.push_back(instruction);
-		const bool reference_result = model_.type_kind(model_.strip_cv_type(
-			function_type->result)) == TypeKind::LvalueReference ||
-			model_.type_kind(model_.strip_cv_type(function_type->result)) ==
-			TypeKind::RvalueReference;
-		if (reference_result)
-			return LoweredValue(temporary_operand(value, instruction.destination_name_id),
-				low_reference_value_type(function_type->result), true,
-				instruction.call_return_type);
-		return LoweredValue(temporary_operand(value, instruction.destination_name_id),
-			instruction.call_return_type, false);
 	}
 
 bool Pa15Lowerer::conditional_address_result(SemanticFactId id) const{

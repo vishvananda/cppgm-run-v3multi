@@ -302,21 +302,39 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 		throw std::runtime_error("class has no named record");
 	if (!alignment_applied)
 		apply_record_alignment(node, record_id, owner, true);
+	MemberAccess access = named_[record_id.value].class_tag == ClassTag::Class ?
+		MemberAccess::Private : MemberAccess::Public;
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 	{
-		const PA10NodeKind kind = node.children[i].kind;
+		const PA10AstNode& child = node.children[i];
+		const PA10NodeKind kind = child.kind;
 		if (kind == PA10NodeKind::ClassKey || kind == PA10NodeKind::BaseClause)
 		{
 			if (kind == PA10NodeKind::BaseClause)
-				process_base_clause(node.children[i], record_id, owner);
+				process_base_clause(child, record_id, owner);
 			continue;
 		}
-		if (has_virtual_member_specifier(node.children[i]))
-			named_[record_id.value].has_virtual_member = true;
-		if (kind == PA10NodeKind::AccessSpecifier ||
-			kind == PA10NodeKind::EmptyDeclaration)
+		if (kind == PA10NodeKind::AccessSpecifier)
+		{
+			switch (child.token)
+			{
+			case SimpleTokenType::KW_PUBLIC: access = MemberAccess::Public; break;
+			case SimpleTokenType::KW_PROTECTED: access = MemberAccess::Protected; break;
+			case SimpleTokenType::KW_PRIVATE: access = MemberAccess::Private; break;
+			default: throw std::runtime_error("invalid class access specifier");
+			}
 			continue;
-		process_declaration(node.children[i], class_scope);
+		}
+		if (has_virtual_member_specifier(child))
+			named_[record_id.value].has_virtual_member = true;
+		if (kind == PA10NodeKind::EmptyDeclaration)
+			continue;
+		const std::size_t binding_begin = scopes_[class_scope.value].bindings.size();
+		process_declaration(child, class_scope);
+		Scope& current = scopes_[class_scope.value];
+		for (std::size_t binding_index = binding_begin;
+			binding_index < current.bindings.size(); ++binding_index)
+			set_member_access(current.bindings[binding_index], access);
 	}
 	complete_record_layout(named_record_for_type(type));
 	(void)owner;

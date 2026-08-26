@@ -52,6 +52,13 @@ enum class ClassTag
 	Union
 };
 
+enum class MemberAccess
+{
+	Public,
+	Protected,
+	Private
+};
+
 struct TypeKey
 {
 	TypeKind kind;
@@ -275,6 +282,7 @@ struct BindingSidecar
 	BindingId backing_storage;
 	NamedRecordId constructor_record;
 	NamedRecordId generated_name_record;
+	MemberAccess member_access;
 	bool static_member;
 	// A default member initializer is a typed source fact.  Namespace object
 	// zero storage must not erase it at the layout-only boundary.
@@ -297,7 +305,8 @@ struct BindingSidecar
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record),
-		  generated_name_record(generated_name_record), static_member(false),
+		  generated_name_record(generated_name_record),
+		  member_access(MemberAccess::Public), static_member(false),
 		  has_default_member_initializer(false),
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
@@ -439,6 +448,9 @@ struct Scope
 	ScopeId parent;
 	NameId name;
 	NamedRecordId record;
+	// PA12 owns the exact synthetic object parameter for a member function.
+	// Consumers must not rediscover it from names or parameter ordering.
+	BindingId implicit_object_binding;
 	bool inline_namespace;
 	std::vector<ScopeId> children;
 	std::vector<BindingId> bindings;
@@ -461,7 +473,8 @@ struct Scope
 		bool inline_namespace = false, std::size_t creation_order = 0,
 		std::size_t depth = 0)
 		: kind(kind), parent(parent), name(name), record(record),
-		  inline_namespace(inline_namespace), children(), bindings(),
+		  implicit_object_binding(), inline_namespace(inline_namespace),
+		  children(), bindings(),
 		  types(), namespaces(), namespace_aliases(), values(), using_types(),
 		  using_directives(), effective_using_directives(), binding_views(),
 		  scope_views(), creation_order(creation_order), depth(depth)
@@ -1041,6 +1054,9 @@ struct SemanticFact
 	// this marker is a typed semantic relation for containing expressions.
 	bool size_type_derived;
 	bool has_callee;
+	// A direct member call stores its typed implicit object as child zero.
+	// The remaining children are the already-converted explicit arguments.
+	bool has_implicit_object;
 
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
 		TypeId type = TypeId(),
@@ -1062,7 +1078,8 @@ struct SemanticFact
 			constant_address(),
 			operation_type(),
 			size_type_derived(false),
-			has_callee(false)
+			has_callee(false),
+			has_implicit_object(false)
 	{}
 };
 
@@ -1322,6 +1339,8 @@ private:
 	std::vector<LabelFact> label_facts_;
 	std::vector<FunctionLabelTable> label_tables_;
 	std::vector<FunctionFactId> class_function_facts_;
+	FlatIndex<BindingId, bool, IdentityHash<BindingId> >
+		member_call_demand_index_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
@@ -1521,6 +1540,10 @@ private:
 	bool is_static_member(BindingId id) const
 	;
 	void mark_static_member(BindingId id)
+	;
+	MemberAccess member_access(BindingId id) const
+	;
+	void set_member_access(BindingId id, MemberAccess access)
 	;
 	const NamedRecordSidecar* named_record_sidecar(NamedRecordId id) const
 	;
@@ -1843,7 +1866,26 @@ private:
 	;
 	BindingId member_binding(TypeId object, NameId name) const
 	;
+	std::vector<ValueRef> member_function_candidates(TypeId object,
+		NameId name) const
+	;
+	bool member_accessible(BindingId binding, ScopeId member_scope,
+		ScopeId access_scope) const
+	;
+	void record_member_call_demand(BindingId binding)
+	;
+	BindingId implicit_this_binding(ScopeId scope) const
+	;
+	ExprInfo semantic_this_expression(const PA10AstNode& node,
+		ScopeId scope)
+	;
 	ExprInfo semantic_member_expression(const PA10AstNode& node,
+		ScopeId scope)
+	;
+	ExprInfo semantic_member_call_expression(const PA10AstNode& node,
+		const PA10AstNode& member_node, ScopeId scope)
+	;
+	ExprInfo semantic_member_call_probe(const PA10AstNode& node,
 		ScopeId scope)
 	;
 	ExprInfo semantic_injected_member(const PA10AstNode& node,
@@ -1912,6 +1954,8 @@ private:
 		explicit SemanticTailGuard(PA11SemanticModel& model)
 		;
 		~SemanticTailGuard()
+		;
+		void commit()
 		;
 		void discard()
 		;

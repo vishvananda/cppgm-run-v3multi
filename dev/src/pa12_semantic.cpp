@@ -359,21 +359,26 @@ void PA11SemanticModel::prepare_pa12_member_parameter(FunctionFact& function)
 		scopes_[function.owner.value].kind != ScopeKind::Class ||
 		is_static_member(function.binding))
 		return;
+	if (!function.function_scope.valid() ||
+		function.function_scope.value >= scopes_.size() ||
+		scopes_[function.function_scope.value].kind != ScopeKind::Function)
+		throw std::runtime_error("PA12 member function scope is invalid");
 	const TypeId object_pointer = member_object_pointer_type(
 		binding(function.binding).type, function.owner);
 	if (!object_pointer.valid())
 		throw std::runtime_error("PA12 member function has no object type");
-	const NameId this_name = intern_name("this");
 	Scope& function_scope = scopes_[function.function_scope.value];
-	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+	if (function_scope.implicit_object_binding.valid())
 	{
-		const Binding& parameter = binding(function_scope.bindings[i]);
-		if (parameter.kind == BindingKind::Parameter &&
-			parameter.name == this_name)
-			return;
+		const Binding& parameter = binding(function_scope.implicit_object_binding);
+		if (parameter.kind != BindingKind::Parameter ||
+			parameter.type != object_pointer)
+			throw std::runtime_error("PA12 member function has invalid this binding");
+		return;
 	}
-	store_binding(function.function_scope,
-		Binding(BindingKind::Parameter, this_name, object_pointer), 0);
+	const BindingId this_binding = store_binding(function.function_scope,
+		Binding(BindingKind::Parameter, intern_name("this"), object_pointer), 0);
+	function_scope.implicit_object_binding = this_binding;
 }
 
 void PA11SemanticModel::prepare_pa12()
@@ -432,6 +437,10 @@ PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model
 PA11SemanticModel::SemanticTailGuard::~SemanticTailGuard()
 {
 	discard();
+}
+void PA11SemanticModel::SemanticTailGuard::commit()
+{
+	active_ = false;
 }
 void PA11SemanticModel::SemanticTailGuard::discard()
 {
@@ -606,24 +615,6 @@ TypeId PA11SemanticModel::expression_object_type(TypeId type) const
 {
 	return strip_reference_type(type);
 }
-TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member)
-{
-	const unsigned int qualifiers = cv_qualifiers(expression_object_type(object));
-	return qualifiers == 0 ? member : make_cv(member, qualifiers);
-}
-BindingId PA11SemanticModel::member_binding(TypeId object, NameId name) const
-{
-	const TypeId record_type = strip_cv_type(expression_object_type(object));
-	if (type_kind(record_type) != TypeKind::Named)
-		return BindingId();
-	const ScopeId scope = class_scope_for_type(record_type);
-	if (!scope.valid())
-		return BindingId();
-	const ValueList* values = scopes_[scope.value].values.find(name);
-	if (values == NULL || values->entries.size() != 1)
-		return BindingId();
-	return values->entries.front().binding;
-}
 ExprInfo PA11SemanticModel::semantic_storage_id(BindingId storage,
 	const PA10AstNode* source)
 {
@@ -696,51 +687,6 @@ ExprInfo PA11SemanticModel::semantic_injected_member(
 	fact.selected_binding = member_id;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_name(result, name_path(node));
-	set_semantic_children(result,
-		std::vector<SemanticFactId>(1, object.fact));
-	return ExprInfo(result, type, SemanticValueCategory::Lvalue, false);
-}
-ExprInfo PA11SemanticModel::semantic_member_expression(
-	const PA10AstNode& node, ScopeId scope)
-{
-	if (node.kind != PA10NodeKind::MemberExpression ||
-		node.children.size() != 2 || !node.has_token ||
-		(node.token != SimpleTokenType::OP_DOT &&
-		 node.token != SimpleTokenType::OP_ARROW) ||
-		node.children[1].kind != PA10NodeKind::Identifier)
-		throw std::runtime_error("PA12 invalid member expression");
-	const ExprInfo object = semantic_expression(node.children.front(), scope);
-	const NamePath member_name = name_path(node.children.back());
-	if (member_name.global || member_name.components.size() != 1)
-		throw std::runtime_error("PA12 qualified member is unsupported");
-	TypeId record_object = object.type;
-	if (node.token == SimpleTokenType::OP_ARROW)
-	{
-		const TypeId pointer = strip_cv_type(expression_object_type(object.type));
-		if (type_kind(pointer) != TypeKind::Pointer)
-			throw std::runtime_error("PA12 arrow operand is not a pointer");
-		record_object = types_[pointer.value].child;
-		const TypeId pointer_value = strip_top_cv_type(object.type);
-		record_builtin_conversion(object, pointer_value);
-	}
-	else if (type_kind(strip_cv_type(expression_object_type(record_object))) !=
-		TypeKind::Named)
-		throw std::runtime_error("PA12 dot operand is not a record");
-	const BindingId member_id = member_binding(record_object,
-		member_name.last());
-	if (!member_id.valid())
-		throw std::runtime_error("PA12 unknown record member");
-	const Binding& member = binding(member_id);
-	if (member.kind != BindingKind::Variable)
-		throw std::runtime_error("PA12 member function access is unsupported");
-	const TypeId type = member_access_type(record_object, member.type);
-	SemanticFact fact(SemanticFactKind::MemberExpression, type,
-		SemanticValueCategory::Lvalue, &node);
-	fact.token = node.token;
-	fact.binding = member_id;
-	fact.selected_binding = member_id;
-	const SemanticFactId result = make_semantic_fact(fact);
-	set_semantic_name(result, member_name);
 	set_semantic_children(result,
 		std::vector<SemanticFactId>(1, object.fact));
 	return ExprInfo(result, type, SemanticValueCategory::Lvalue, false);
@@ -1305,6 +1251,40 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 		throw std::runtime_error("PA12 overloaded id requires a target");
 	const Binding& value = binding(values.front().binding);
 	TypeId type = value.type;
+	if (value.kind == BindingKind::Variable &&
+		!is_static_member(values.front().binding))
+	{
+		const BindingSidecar* sidecar = binding_sidecar(values.front().binding);
+		const BindingId this_id = implicit_this_binding(scope);
+		if ((sidecar == NULL || !sidecar->backing_storage.valid()) &&
+			this_id.valid())
+		{
+			const Binding& this_binding = binding(this_id);
+			const TypeId this_pointer = strip_cv_type(
+				expression_object_type(this_binding.type));
+			if (type_kind(this_pointer) == TypeKind::Pointer)
+			{
+				const TypeId this_record = types_[this_pointer.value].child;
+				if (class_scope_for_type(this_record) == values.front().scope)
+				{
+					const ExprInfo object = semantic_this_expression(node, scope);
+					const TypeId member_type = member_access_type(this_record,
+						value.type);
+					SemanticFact fact(SemanticFactKind::MemberExpression,
+						member_type, SemanticValueCategory::Lvalue, &node);
+					fact.token = SimpleTokenType::OP_ARROW;
+					fact.binding = values.front().binding;
+					fact.selected_binding = values.front().binding;
+					const SemanticFactId result = make_semantic_fact(fact);
+					set_semantic_name(result, path);
+					set_semantic_children(result,
+						std::vector<SemanticFactId>(1, object.fact));
+					return ExprInfo(result, member_type,
+						SemanticValueCategory::Lvalue, false);
+				}
+			}
+		}
+	}
 	if (value.kind == BindingKind::Function)
 		type = member_function_expression_type(type, values.front().scope,
 			values.front().binding);
@@ -1779,11 +1759,13 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	const BuiltinKind builtin = builtin_kind(callee_node);
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
-
 	TypeId functional_target;
 	if (functional_cast_target(callee_node, scope, &functional_target))
 		return semantic_functional_cast(node, scope, functional_target,
 			argument_node);
+	const ExprInfo member_call = semantic_member_call_probe(node, scope);
+	if (member_call.fact.valid())
+		return member_call;
 	if (callee_node.kind == PA10NodeKind::IdExpression &&
 		!has_template_id(callee_node))
 	{
@@ -1826,7 +1808,6 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 			function.parameters.size()))
 			throw std::runtime_error("PA12 indirect call arity mismatch");
 	}
-
 	std::vector<ExprInfo> arguments;
 	if (!direct)
 	{
@@ -1856,7 +1837,6 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 					scope));
 		}
 	}
-
 	ValueRef selected;
 	TypeId selected_type;
 	if (direct)
@@ -2052,12 +2032,19 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 	switch (node.kind)
 	{
 	case PA10NodeKind::Literal:
-	case PA10NodeKind::KeywordLiteral:
 	{
 		const SemanticFactId fact = semantic_literal(node);
 		return ExprInfo(fact, semantic_facts_[fact.value].type,
 			semantic_facts_[fact.value].category, integer_zero(node));
 	}
+	case PA10NodeKind::KeywordLiteral:
+		if (node.has_token && node.token == SimpleTokenType::KW_THIS)
+			return semantic_this_expression(node, scope);
+		{
+			const SemanticFactId fact = semantic_literal(node);
+			return ExprInfo(fact, semantic_facts_[fact.value].type,
+				semantic_facts_[fact.value].category, integer_zero(node));
+		}
 	case PA10NodeKind::IdExpression:
 		return semantic_id_expression(node, scope);
 	case PA10NodeKind::MemberExpression:
