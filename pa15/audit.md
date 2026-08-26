@@ -2,6 +2,191 @@
 
 ## Current Checkpoint Review
 
+This checkpoint review covers landed commit
+`b7eaf9d868b17cbbf542f3415e7a5e46f07007ba` (`PA15: preserve typed
+conditional array glvalues`), parent
+`f038141d14cc5c9d10e01964d3a1bdf3a6c5f4ca`, and only the conditional-array
+ownership increment. The allowed production files are
+`dev/src/pa12_semantic.cpp`, `dev/src/pa15_lowering.cpp`, and
+`dev/src/pa15_lowering_flow.cpp`. The affected checked-in case is
+`pa15/tests/general/200-nested-conditional-array-decay.t`. Labels/CFG,
+classes, templates, and the three unrelated residual surfaces were not
+re-audited or repaired.
+
+The supplied full-stage baseline at turn start is `106/109` passing, with
+all `109/109` tests covered and exactly these residual failures, as recorded
+in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+
+- `100-const-integral-lvalue-overload-category`
+- `100-string-hex-escape-code-unit`
+- `100-unnamed-parameter-storage`
+
+The affected nested conditional test passes in the focused checks and is not
+in the final failure set. The authorized broad gates preserve the baseline:
+`make test-pa15` exits `2` at `106/109` with `109/109` covered, the exact
+three-name failure proof is in
+`/tmp/pa15-audit-gates-20260826/actual-failures.txt`, and the through-PA14
+report exits `0` at `1058/1058`. The file audit exits `0` with five existing
+`bad-division` warnings; the combined through-PA15 report exits `2` at
+`1164/1167` with the same three names.
+
+### Ownership trace
+
+1. PA10/PA11 own the canonical type and expression facts. An array `TypeId`
+   retains its element type and bound (including differing bounds), while
+   `ExprInfo` retains the typed value category. PA12's
+   `expression_object_type` removes a reference wrapper without erasing the
+   object shape; `strip_top_cv_type` removes only the permitted top
+   qualification and does not turn an array into a pointer.
+
+2. PA12's `semantic_conditional_expression` (at
+   `dev/src/pa12_semantic.cpp:1636`) owns the conditional result. For arrays,
+   the same-object-type path now preserves an array only when both operands
+   have the same non-prvalue category, yielding an lvalue for lvalue/lvalue
+   and an xvalue for xvalue/xvalue. Different bounds or different categories
+   use the existing pointer common-type path. `conversion_for` and
+   `record_builtin_conversion` append typed `ArrayToPointer` facts to the
+   relevant local conversion range; reference contexts append typed
+   `ReferenceBinding` facts. No source spelling participates in this choice.
+
+3. PA15 consumes those facts. `conditional_address_result` (at
+   `dev/src/pa15_lowering.cpp:2595`) checks the semantic category, canonical
+   object `TypeId`, and local typed conversion range. It selects address
+   lowering for non-prvalue array results and reference bindings, including
+   array lvalues and xvalues. `lower_conditional_address` creates one typed
+   pointer slot and the condition/arm/join blocks, then lowers each selected
+   arm through `lower_address`. A nested conditional therefore follows the
+   same typed path recursively.
+
+4. The PA15 conditional case (at
+   `dev/src/pa15_lowering_flow.cpp:308`) exposes the selected pointer directly
+   when the conditional is prvalue or owns an `ArrayToPointer` conversion. A
+   non-prvalue conditional without that conversion remains an lvalue-shaped
+   result for the later conversion pass. `apply_conversions` then consumes
+   the fact-local range once. Thus a contextual array-to-pointer conversion
+   on a conditional does not add a second decay, while an ordinary array
+   expression still reaches the normal typed decay path.
+
+5. PA13's LowIR model serializes the typed unary operation as
+   `unary decay ptr ...` (`dev/src/lowir_model.cpp:366`). The validator checks
+   that the operand/result type is the same and that `decay` has pointer type
+   (`dev/src/lowir2cy86_backend.cpp:684-688`). The complete production entry
+   remains the single source -> PA10/PA11 -> PA12 -> PA15 typed LowIR path;
+   no text rendering, reference binary, host compiler, retry, or alternate
+   production pipeline is involved.
+
+### Correctness findings
+
+The landed increment is semantically and architecturally sound under this
+bounded audit. No source repair or new durable test was necessary. The
+representative matrix exercised the following ownership cases:
+
+| case | expected typed fact/lowering | focused result |
+|---|---|---|
+| same-bound lvalue arrays | array lvalue fact; conditional address blocks | affected test, subscript, address, and reference cases pass |
+| same-bound xvalue arrays | array xvalue fact; selected address remains usable as an array reference | PA12 xvalue fixture and custom conditional/reference probes pass |
+| differing bounds | pointer common type with per-arm typed array-to-pointer conversions | affected outer `char[3]`/`char[4]` nesting passes |
+| differing value categories | pointer common type; each required arm conversion is applied once | custom lvalue/xvalue mixed probe passes |
+| scalar and reference conditionals | existing scalar value/reference materialization ownership remains intact | focused 15-case related matrix and scalar-reference probe pass |
+| nested conditionals | inner conditional publishes its own typed address/value fact to the outer consumer | `200-nested-conditional-array-decay` passes |
+| contextual array-to-pointer conversion | conditional address is exposed directly; no duplicate materialization/decay | custom pointer call and return paths pass |
+
+The affected `.my` LowIR has one decay in the short-array arm and one decay
+for the later array comparison in `main`; the selected same-bound inner
+array arms have no extra decay. The custom xvalue conditional has no decay in
+the reference-returning selector and one decay at the later subscript use.
+The mixed-category pointer result emits one decay in each arm, as required.
+The scalar prvalue-to-`const int&` probe creates one conditional value slot
+and one reference argument temporary, with no array path involved.
+
+The implementation work is bounded by each fact's child and conversion
+ranges plus emitted LowIR. The new decisions are constant work per
+conditional and a local conversion scan; there is no body rescan, retry-until
+stable loop, source reparsing, text lookup, unbounded ancestry copy, or
+timeout/shortcut path. Storage is typed semantic facts, compact conversion
+ranges, and the conditional's local LowIR slots/blocks. Arm order and block
+names are deterministic.
+
+### Focused evidence
+
+- `make -C pa15 check TEST='tests/general/200-nested-conditional-array-decay.t tests/general/200-conditional-array-decay-subscript.t tests/general/200-lvalue-conditional-address.t tests/general/200-lvalue-conditional-reference-return.t tests/general/200-reinterpret-reference-conditional-materialization.t tests/general/200-global-array-conditional-cast-initializer.t'` -> `PASS (6/6)`.
+- The broader related PA15 matrix of 15 checked-in tests, including comma
+  lvalue/xvalue, array decay, reference casts, global array initialization,
+  scalar reference return, and reference-parameter collision cases ->
+  `PASS (15/15)`.
+- `make -C pa12 check TEST=tests/general/300-array-xvalue-subscript.t` ->
+  `PASS (1/1)`.
+- Five `/dev/stdin` array probes covered lvalue contextual pointer use, xvalue
+  nested selection, mixed lvalue/xvalue categories, and lvalue/xvalue array
+  reference parameters. All compiler exits were `0`; all five outputs passed
+  `./dev/lowir2cy86`. The scalar prvalue/reference probe also compiled and
+  validated with exit `0`.
+- Semantic dumps for the checked-in nested case and the PA12 xvalue case,
+  plus the custom xvalue conditional, exited `0` and retained the expected
+  array lvalue/xvalue categories. The affected LowIR and every focused
+  custom LowIR were accepted by the typed validator.
+- `git diff --check` exits `0`; the final post-documentation capture is
+  `/tmp/pa15-audit-gates-20260826/diff-check-final.log`. No
+  handout test, `.ref` fixture, or generated repository artifact was edited;
+  no additional regression test was needed.
+
+### Bounded performance evidence
+
+Fresh ephemeral inputs with 64 and 1,024 repeated nested conditional-array
+selectors were compiled three times per size. The exact generated inputs are
+`input-64.cpp` and `input-1024.cpp`; the compact generator is
+`generate_inputs.sh`, and the expanded recipe trace is `command.log`, all in
+`/tmp/pa15-audit-scale-final-20260826-samebound`. Each selector uses three
+same-bound `int[4]` lvalue array arms with a nested conditional, exercising
+the preserved array-glvalue address path; differing-bound behavior is covered
+by the checked-in affected fixture and focused probes. Every LowIR output
+passed `lowir2cy86`; the input/output checksum manifest is
+`input-output-manifest.sha256` and the complete artifact manifest is
+`artifact-manifest.sha256`.
+
+| repeated selectors | input lines / bytes | LowIR lines / bytes | condaddr blocks | address ops | decay ops | wall samples | RSS samples (KiB) |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 64 | 258 / 6,168 | 3,080 / 66,208 | 384 | 192 | 0 | `0.01, 0.01, 0.01` s | `7,856, 7,940, 8,108` |
+| 1,024 | 4,098 / 106,300 | 49,160 / 1,069,864 | 6,144 | 3,072 | 0 | `0.17, 0.17, 0.17` s | `50,316, 50,072, 50,276` |
+
+The structural counters scale by exactly 16x from 64 to 1,024 selectors, and
+all six compilation commands and six validator commands completed under the
+60-second timeout. Stable per-size LowIR hashes are recorded three times in
+`output-hashes.tsv`: the 64-selector hash is
+`0a9eaef30cc63aa80bd919108bc9c37596f630239988cb7282a2038ac8b7ef64`, and the
+1,024-selector hash is
+`ad4bea5b3a7ce62bb140a545428bd22ba2f2986dd5014fa12a123349ac3f85ac`.
+The candidate hash is in `candidate.sha256`
+(`506aa46be6476f23b9eb7567253d7d60c0ba348d167e62a365d8f9b86af10796`), and
+the validator hash is in `validator.sha256`
+(`c4d2af08ed8ca2c357790c174220f2fbbe753ce63524e20301f64456291cbf40`).
+These measurements support bounded output and timing invariance at the
+listed sizes, not an asymptotic or machine-independent performance claim.
+
+### Broad-gate disposition and bounded uncertainties
+
+The authorized broad gate logs are in `/tmp/pa15-audit-gates-20260826`:
+`test-pa15.log` exits `2` at `106/109`, `through-pa14.log` exits `0` at
+`1058/1058`, `file-audit.log` exits `0`, and `through-pa15.log` exits `2` at
+`1164/1167`. The mechanically compared failure files are
+`expected-failures.txt` and `actual-failures.txt`; they are identical and
+contain only the three named residuals. `status.tsv` records all command
+exits, including `diff-check` exit `0`. The five file-audit warnings are the
+existing `bad-division` findings for `dev/src/abi_mangle.h`,
+`dev/src/cpp_semantic_core.h`, `dev/src/lowir_model.h`,
+`dev/src/pa11_semantic_model.h`, and `dev/src/pa15_lowering.h`; there are no
+file-audit errors.
+
+The final full-stage uncertainty is therefore limited to the three explicitly
+unrepaired owner surfaces and the bounded nature of the performance sample.
+The direct xvalue conditional checks are ephemeral probes rather than a new
+checked-in fixture; the existing PA12 xvalue fixture and PA15 reference/LowIR
+matrix provide durable adjacent coverage. No handout, test, or `.ref` file
+was changed.
+
+
+## Historical Checkpoint Review — typed label ownership and sparse flow
+
 This bounded review covers `d5e10599edfa983c64746b25373fe3d3ec129b39`
 (`PA15: avoid per-function label state clears`), its ownership parent
 `a2f33047782dbdc248a382c71cea926a2f3371eb` (`PA15: add typed label CFG
@@ -515,4 +700,5 @@ checkpoint.
 | Historical | PA15 full-stage / checkpointAudit — typed address/value ownership | Amended PA12 relocation ownership with explicit `Value`/`ObjectAddress`/`ArrayDecay` context, rejecting bare pointer/scalar lvalue relocations while preserving object, array, one-past, function, and array-element forms; focused `20/20` plus probes, through-PA14 `1058/1058`, PA15 `68/109` with the exact historical 41 names and all `109` covered, immutable `n=256` performance evidence, file audit pass, and diff-check pass. |
 | Historical | PA15 full-stage / checkpointAudit — typed global pointer null/zero initializers | Hardened transactional PA12 literal snapshots and binding invariants; kept PA15 on `ConstantAddressFact` identity/ranges; tightened terminal/destination-safe typed null chains and pointer cv behavior; corrected lvalue loads and runtime `nullptr`-to-bool typing; target matrix `10/10`, narrow regression pass, final PA15 `70/109` with the exact unchanged 39-name set and all `109` covered, through-PA14 `1058/1058`, file audit pass, diff-check pass, and immutable performance evidence. Preserved as historical context. |
 | Historical | PA15 typed discarded/returned-expression ownership at `98e75ff9dcf02fe6bd0646330dbc121dfc3c6193` plus final bounded audit repair | Final `make test-pa15` `103/109`, all `109/109` covered, exact six residuals preserved with zero added/replacement or missing names; through-PA14 `1058/1058` exit 0; through-PA15 `1161/1167` with the same six; focused owner matrix `5/5`, adjacent matrix `7/7`, owner regression 405 (including volatile discard and nested logical demand), owner probes 400–404, and affected-path `lowir2cy86` validation pass. PA12 owns typed `ToVoid`, return conversion, cv/volatile and empty-brace facts; PA15 owns discard/return/logical lowering and demand roots. Fresh immutable candidate-only artifact `/tmp/pa15-checkpoint-audit-discarded-final.fRe1n0` is hash-verified; file audit, diff-check, and checkpoint commit complete. Retired as the prior current row. |
-| Current | PA15 full-stage / checkpointAudit — typed label ownership, sparse flow arenas, and generation-guarded canonical structural recovery at `d5e10599edfa983c64746b25373fe3d3ec129b39` plus the completed supervisor-reviewed correction | Focused owner regression exit `0` with `22/22` labeled/goto facts and instruction/structure assertions for intervening and nested fallthrough, live-join deferred recovery, loop entry/backedge, nested loop break-context replacement, switch-to-loop break/continue replacement, ordinary-label switch continuation, and one shared recovery tail; checked-in goto fixtures `2/2`; adjacent matrix `6/6`; direct validation, CY86 compilation/execution, and duplicate/unresolved rejection pass. PA10 spelling -> PA12 `NameId`/dense `LabelId` and function-local `LabelTableId` -> PA15 typed `SemanticFactId`/`BlockId` -> PA13 validation remains the sole production trace. Fact-indexed sparse `LoopFlow`/`IfFlow`/`SwitchContext` arenas replace heavyweight per-fact records; typed parent/index cursors and continuation identities canonicalize overlapping tails; the persistent typed control context uses shared parent links and cached nearest-loop lookup with exact pop-on-unwind; the persistent switch map removes recovered-label arm rescans; final queue drainage, seven guarded stamp arrays, and wrap-reset continuation indexes preserve function isolation and wrap safety. Immutable candidate-only artifact `/tmp/pa15-label-perf-control-context-locked.n0tpXf` has verified per-file/artifact manifests, candidate hash `d777451f7246a573c0bd03470ba10e7ce3674c33a7017d6b99cd9426852da1cc`, `130` timing rows, `26/26` semantic generations, `26/26` validation, and one stable output hash at each position across many, nested, and deferred families. The proven recovery bound is `O((F + L) log(F + L + 1) + G)` with no duplicated ordinary tails and `O(1)` recovered break/continue selection and frame pop. Final `make test-pa15` stage progress is `105/109` with all `109/109` covered and exactly the four preserved residuals; through-PA14 is `1058/1058`, combined through-PA15 is `1163/1167`, and the file audit passes with five existing warnings. |
+| Historical | PA15 full-stage / checkpointAudit — typed label ownership, sparse flow arenas, and generation-guarded canonical structural recovery at `d5e10599edfa983c64746b25373fe3d3ec129b39` plus the completed supervisor-reviewed correction | Focused owner regression exit `0` with `22/22` labeled/goto facts and instruction/structure assertions for intervening and nested fallthrough, live-join deferred recovery, loop entry/backedge, nested loop break-context replacement, switch-to-loop break/continue replacement, ordinary-label switch continuation, and one shared recovery tail; checked-in goto fixtures `2/2`; adjacent matrix `6/6`; direct validation, CY86 compilation/execution, and duplicate/unresolved rejection pass. PA10 spelling -> PA12 `NameId`/dense `LabelId` and function-local `LabelTableId` -> PA15 typed `SemanticFactId`/`BlockId` -> PA13 validation remains the sole production trace. Fact-indexed sparse `LoopFlow`/`IfFlow`/`SwitchContext` arenas replace heavyweight per-fact records; typed parent/index cursors and continuation identities canonicalize overlapping tails; the persistent typed control context uses shared parent links and cached nearest-loop lookup with exact pop-on-unwind; the persistent switch map removes recovered-label arm rescans; final queue drainage, seven guarded stamp arrays, and wrap-reset continuation indexes preserve function isolation and wrap safety. Immutable candidate-only artifact `/tmp/pa15-label-perf-control-context-locked.n0tpXf` has verified per-file/artifact manifests, candidate hash `d777451f7246a573c0bd03470ba10e7ce3674c33a7017d6b99cd9426852da1cc`, `130` timing rows, `26/26` semantic generations, `26/26` validation, and one stable output hash at each position across many, nested, and deferred families. The proven recovery bound is `O((F + L) log(F + L + 1) + G)` with no duplicated ordinary tails and `O(1)` recovered break/continue selection and frame pop. Final `make test-pa15` stage progress is `105/109` with all `109/109` covered and exactly the four preserved residuals; through-PA14 is `1058/1058`, combined through-PA15 is `1163/1167`, and the file audit passes with five existing warnings. |
+| Current | PA15 full-stage / checkpointAudit — typed conditional-array glvalues at `b7eaf9d868b17cbbf542f3415e7a5e46f07007ba` | Final `make test-pa15` exit `2`, `106/109` with `109/109` covered and exactly the three named residuals; through-PA14 exit `0` at `1058/1058`; file audit exit `0` with the five listed existing warnings; through-PA15 exit `2` at `1164/1167`; focused checked-in matrix `6/6` and `15/15`, PA12 xvalue fixture `1/1`, custom semantic/LowIR probes and validators exit `0`. Complete logs are in `/tmp/pa15-audit-gates-20260826`, and the reproducible performance artifact, stable output hashes, candidate/validator hashes, and manifests are in `/tmp/pa15-audit-scale-final-20260826-samebound`. Typed PA12 category/type/conversion ownership flows through PA15 address/value lowering to PA13 validation with no source-text reconstruction or duplicate decay. No source repair was found. |
