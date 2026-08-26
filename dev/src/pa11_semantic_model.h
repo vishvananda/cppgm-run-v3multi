@@ -1372,6 +1372,8 @@ private:
 	TypeId constant_expression_type(const PA10AstNode& node, ScopeId scope,
 		bool allow_scoped_enum_integral_comparison = false)
 	;
+	TypeId conditional_common_type(TypeId when_true, TypeId when_false) const
+	;
 	bool enumeration_id(TypeId type) const
 	;
 	TypeId sizeof_operand_type(const PA10AstNode& node, ScopeId scope)

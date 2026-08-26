@@ -5,6 +5,20 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+TypeId PA11SemanticModel::conditional_common_type(TypeId when_true,
+	TypeId when_false) const
+{
+	when_true = strip_cv_type(expression_object_type(when_true));
+	when_false = strip_cv_type(expression_object_type(when_false));
+	if (!when_true.valid() || !when_false.valid())
+		return TypeId();
+	if (when_true == when_false)
+		return when_true;
+	if (integral_id(when_true) && integral_id(when_false))
+		return common_integral_type(when_true, when_false);
+	return TypeId();
+}
+
 TypeId PA11SemanticModel::constant_expression_type(
 	const PA10AstNode& node, ScopeId scope,
 	bool allow_scoped_enum_integral_comparison)
@@ -89,16 +103,11 @@ TypeId PA11SemanticModel::constant_expression_type(
 	if (node.kind == PA10NodeKind::ConditionalExpression &&
 		node.children.size() == 3)
 	{
-		const TypeId when_true = strip_cv_type(expression_object_type(
-			constant_expression_type(node.children[1], scope,
-				allow_scoped_enum_integral_comparison)));
-		const TypeId when_false = strip_cv_type(expression_object_type(
-			constant_expression_type(node.children[2], scope,
-				allow_scoped_enum_integral_comparison)));
-		if (when_true == when_false)
-			return when_true;
-		if (integral_id(when_true) && integral_id(when_false))
-			return common_integral_type(when_true, when_false);
+		const TypeId when_true = constant_expression_type(node.children[1],
+			scope, allow_scoped_enum_integral_comparison);
+		const TypeId when_false = constant_expression_type(node.children[2],
+			scope, allow_scoped_enum_integral_comparison);
+		return conditional_common_type(when_true, when_false);
 	}
 	return TypeId();
 }
@@ -349,8 +358,12 @@ ConstValue PA11SemanticModel::eval_constexpr_conditional(
 	const std::size_t selected = condition.value != 0 ? 1 : 2;
 	const ConstValue value = eval_constexpr(node.children[selected], scope,
 		allow_scoped_enum_integral_comparison);
-	const TypeId common_type = constant_expression_type(node, scope,
+	const std::size_t unselected = selected == 1 ? 2 : 1;
+	const TypeId unselected_type = constant_expression_type(
+		node.children[unselected], scope,
 		allow_scoped_enum_integral_comparison);
+	const TypeId common_type = conditional_common_type(value.type,
+		unselected_type);
 	if (!common_type.valid())
 		throw NonConstantExpression("invalid conditional constant expression");
 	return constant_value_as_type(value, common_type);

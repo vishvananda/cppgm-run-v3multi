@@ -17,13 +17,16 @@ operation_type; same-type scoped-enum operation types remain canonical enum
 TypeIds, and PA15 checks their NamedRecord identity in O(1) to preserve narrow
 storage. Enumerator bindings retain source unsignedness and 64-bit bit storage
 while semantic facts derive final signedness from the canonical enum underlying
-type.
+type. Typed conditional evaluation reuses the selected `ConstValue.type`,
+type-walks only the unselected branch, and computes the common/promoted type
+from those two canonical TypeIds.
 
 PA15 consumes the enum's selected underlying type through low_type and uses
 operation_type and its canonical enum NamedRecord identity to preserve narrow
 representation and unsigned C++ operators in comparisons, division, shifts,
-and conversions. The 64-bit scalar boundary uses the PA13 i64 spelling required
-by the checked-in
+and conversions. Selected nested conditional chains therefore retain one
+typed evaluator walk per level without a whole-node type rewalk. The 64-bit
+scalar boundary uses the PA13 i64 spelling required by the checked-in
 enum oracle; signedness comes from canonical TypeId facts rather than that
 spelling. No lowering path performs text/name rediscovery, creates a second
 enum model, retries a whole program, or shells out to another compiler.
@@ -135,8 +138,9 @@ The final set comparison against the incoming primary log is explicit: removed
     new failures: none
 
 Thus the final set is exactly the 39-name baseline minus those nine names;
-coverage remains 109. The fresh final log is
-/tmp/pa15-final-checkpoint-test-pa15.log. Mechanical comparison with the
+coverage remains 109. The fresh follow-up log is
+/tmp/pa15-enum-followup-full-pa15.log. Mechanical comparison recorded in
+/tmp/pa15-enum-followup-failure-set.log with the
 incoming primary full-stage log
 /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log gives
 zero names in final-minus-incoming and zero names in incoming-minus-final.
@@ -159,20 +163,23 @@ Final checkpoint proof:
     make -C dev cppgm++
     make -C pa15 check TEST='tests/general/100-enum-default-argument-constant-fold.t tests/general/100-scoped-enum-braced-assignment.t tests/general/100-scoped-enum-previous-enumerator-bitwise-or.t tests/general/100-scoped-enum-no-implicit-int-bad.t tests/general/200-enum-class-scalar-lowering.t tests/general/200-global-array-bitwise-or-enum-init.t tests/general/200-namespace-default-argument-declaration-lookup.t tests/general/200-scoped-enum-global-constant-init.t tests/general/200-scoped-enum-underlying-type.t tests/general/200-scoped-enum-unsigned-high-bit.t tests/general/200-signed-enum-compare-lowering.t tests/general/200-unscoped-enum-promotion-overload.t tests/general/200-wide-unscoped-enum-promotion.t'
     ./cppgm.tests/course/pa15/402-typed-enum-boundary-regression.sh
+    dev/cppgm++ --emit-lowir -O0 -o /tmp/pa15-enum-followup-conditional-chain.lowir /tmp/pa15-followup-conditional-chain.cpp
     make test-pa15                         # exit 2, 79/109, all 109 covered
     n=15; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
     perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src
     git diff --check
 
-The build exits 0, the focused harness is 13/13, and the durable regression
-exits 0. The full PA15 gate exits 2 only for the unchanged exact 30-name
+The build exits 0, the focused harness is 13/13, the selected-chain probe
+exits 0, and the durable regression exits 0. The full PA15 gate exits 2 only
+for the unchanged exact 30-name
 residual set; coverage remains 109. The exact through-PA14 gate exits 0 with
 1058/1058. The file audit exits 0 with its five pre-existing header-division
 warnings, and the final diff check exits 0. Temporary probes cover
 declaration-only and interleaved default ownership, fixed and implicit enum
 boundaries, unsigned global wrap, signed/unsigned operator selection, enum
 pointer offsets, promoted-width shift rejection, conditional common-type
-conversion, and bool normalization. The generated witnesses include i64 for
+conversion, bool normalization, and the selected nested conditional chain.
+The generated witnesses include i64 for
 the enum-class scalar function, u8 for the high-bit scoped comparison, i32
 for the signed scoped/global comparison, a default call @f(0), and the correct
 int/unsigned overload selections.
@@ -201,37 +208,37 @@ claimed as present or as final evidence.
 The earlier structural and timing interpretation remains historical context,
 not a final performance claim after the Phase 1 repairs.
 
-## Fresh Performance Evidence
+## Fresh Performance Evidence — selected nested conditional ownership
 
 Fresh evidence was generated from the immutable final candidate
-/tmp/pa15-final-enum-perf.postgates.bHzCH8/cppgm++-final-immutable, mode 0555,
+/tmp/pa15-final-enum-perf.followup.efvCDA/cppgm++-final-immutable, mode 0555,
 SHA-256
-dc945f3cfd2116ea26610b58ac5a4382e6d242d01a2f5ef8515062b3a6c5d555.
-The artifact directory is /tmp/pa15-final-enum-perf.postgates.bHzCH8 and contains
-candidate.sha256, candidate.mode, structure.tsv, timings.tsv, medians.tsv,
-the bounded source inputs, and the corresponding semantic/LowIR outputs.
-Inputs at sizes 16, 64, 256, and 512 exercise enum declaration/value
-processing, default-argument ownership, unscoped promotion, scoped
-comparison, conditional common-type conversion, bool conversion, signed and
-unsigned operators, promoted-width shifts, global constants, and enum pointer
-offsets. Five timing rounds alternate ascending and descending size order.
+7aca7c7423be52b33d8966db79ad787aa9569256457821e709406e8365078e60.
+The artifact directory is /tmp/pa15-final-enum-perf.followup.efvCDA and
+contains candidate.sha256, candidate.mode, structure.tsv, timings.tsv,
+medians.tsv, the generated nested source inputs, and the corresponding
+semantic/LowIR outputs. Each input retains the bounded enum/default/promotion
+and operator coverage while replacing the flat conditional with a selected
+nested chain of depth 16, 64, 256, or 512. Five timing rounds alternate
+ascending and descending size order.
 
-| n | input bytes/lines | semantic bytes/lines | LowIR bytes/lines | enumerator bindings | LowIR globals/functions | median wall/user/sys s | median max RSS KB |
+| depth | input bytes/lines | semantic bytes/lines | LowIR bytes/lines | semantic conditional nodes | LowIR globals/functions | median wall/user/sys s | median max RSS KB |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 16 | 1644/51 | 5185/121 | 4544/167 | 16 | 20/7 | 0.00/0.00/0.00 | 5356 |
-| 64 | 3612/147 | 8353/217 | 7424/215 | 64 | 68/7 | 0.00/0.00/0.00 | 5896 |
-| 256 | 12108/531 | 21337/601 | 19412/407 | 256 | 260/7 | 0.01/0.00/0.00 | 7492 |
-| 512 | 23628/1043 | 38745/1113 | 35540/663 | 512 | 516/7 | 0.02/0.01/0.01 | 10076 |
+| 16 | 1871/67 | 7885/166 | 4544/167 | 18 | 20/7 | 0.00/0.00/0.00 | 5356 |
+| 64 | 4559/211 | 28765/406 | 7424/215 | 66 | 68/7 | 0.01/0.00/0.00 | 5884 |
+| 256 | 15935/787 | 250837/1366 | 19412/407 | 258 | 260/7 | 0.02/0.01/0.00 | 8632 |
+| 512 | 31295/1555 | 891093/2646 | 35540/663 | 514 | 516/7 | 0.04/0.03/0.01 | 12672 |
 
-These are bounded measurements of the affected path, not a universal
-performance claim. The fresh artifact shows linear enumerator/global
-structural growth across the sampled sizes, with five interleaved runs and
-the recorded medians in timings.tsv and medians.tsv.
+These are bounded measurements of the selected nested path, not a universal
+performance claim. The depth and conditional-node counters scale with the
+generated chain; nested semantic rendering contributes its own depth-shaped
+text size. Raw interleaved timings and medians are retained in the artifact
+directory.
 
 ## Checkpoint Ledger
 
 | status | checkpoint | evidence or next proof |
 |---|---|---|
 | Historical | PA15 typed null/global initializer boundary | Prior plan recorded the earlier 70/109 baseline and typed-null work; it is historical context, not evidence for this enum increment. |
-| Current | PA15 typed enum scalar boundary (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Build `0`, compact focused proof `13/13`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh post-gate immutable performance evidence under `/tmp/pa15-final-enum-perf.postgates.bHzCH8`. |
+| Current | PA15 typed enum scalar boundary (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused proof `13/13`, selected-chain probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.followup.efvCDA`. |
 | Next | PA15 residual boundary | `200-reinterpret-enum-to-pointer` is the next enum-adjacent residual boundary; continue only in a later checkpoint. |
