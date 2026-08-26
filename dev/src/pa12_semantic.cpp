@@ -1778,9 +1778,6 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
 
-	// PA10 retains function-style casts as call-shaped syntax.  Resolve the
-	// typed target here; aliases are considered only after value lookup so a
-	// real function or hiding value keeps ordinary call semantics.
 	TypeId functional_target;
 	if (functional_cast_target(callee_node, scope, &functional_target))
 		return semantic_functional_cast(node, scope, functional_target,
@@ -1946,6 +1943,9 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 				throw std::runtime_error("PA12 ambiguous call");
 		selected = viable_candidates[best_index].value;
 		selected_type = viable_candidates[best_index].type;
+		if (function_declaration_kind(selected.binding) ==
+			FunctionDeclarationKind::Deleted)
+			throw std::runtime_error("PA12 call selects deleted function");
 		const TypeKey& function = types_[selected_type.value];
 		const std::size_t explicit_count = arguments.size();
 		for (std::size_t arg = explicit_count;
@@ -2092,7 +2092,8 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 			sequence = strip_cv_type(expression_object_type(
 				sequence_expression.type));
 		}
-		if (type_kind(sequence) == TypeKind::Array)
+		const bool sequence_array = type_kind(sequence) == TypeKind::Array;
+		if (sequence_array)
 			sequence = make_pointer(types_[sequence.value].child);
 		if (type_kind(sequence) != TypeKind::Pointer ||
 			!integral_id(index_expression.type))
@@ -2100,6 +2101,12 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 		record_builtin_conversion(sequence_expression, sequence);
 		record_builtin_conversion(index_expression,
 			promote_integral_type(index_expression.type));
+		// The array-to-pointer conversion above gives PA12 enough typed
+		// context to publish a literal address fact.  PA15 can then consume
+		// the decoded payload through the normal address path without looking
+		// back at the source spelling.
+		if (sequence_array)
+			record_constant_address(sequence_expression.fact, scope);
 		const TypeId element = types_[sequence.value].child;
 		std::vector<SemanticFactId> children;
 		children.push_back(sequence_expression.fact);
@@ -2244,8 +2251,18 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const bool implicit_default_object = init.children.size() == 1 &&
 			local_object_scope && record.valid() &&
 			implicit_default_constructor_supported(record);
+		const bool special_function_initializer =
+			value.kind == BindingKind::Function &&
+			function_declaration_kind(binding_id) !=
+				FunctionDeclarationKind::Normal;
 		const PA10AstNode* direct_operand = NULL;
-		if (direct_initializer_operand(init, declaration->scope, &direct_operand))
+		if (special_function_initializer)
+		{
+			// PA11 has already retained `= default`/`= delete` as a typed
+			// binding fact.  They are declaration properties, not expressions
+			// to feed through PA12's target-conversion machinery.
+		}
+		else if (direct_initializer_operand(init, declaration->scope, &direct_operand))
 		{
 			const ExprInfo expression = semantic_expression_for_target(
 				*direct_operand, declaration->scope, value.type);
@@ -2333,6 +2350,9 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 	const ExprInfo& argument)
 {
 	const ValueRef selected = resolution.selected;
+	if (function_declaration_kind(selected.binding) ==
+		FunctionDeclarationKind::Deleted)
+		throw std::runtime_error("PA12 call selects deleted function");
 	const TypeKey& function = types_[binding(selected.binding).type.value];
 	const ExprInfo converted = apply_context_conversion(argument,
 		function.parameters.front(),

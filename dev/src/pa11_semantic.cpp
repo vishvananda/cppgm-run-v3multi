@@ -1156,6 +1156,8 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const BindingId function_binding = add_value(target, name.path.last(),
 		type, true, true, true, BindingId(), SourcePoint(node.source_begin),
 		internal_linkage, current_language_linkage_);
+	record_function_declarator(function_binding, name, declarator,
+		FunctionDeclarationKind::Normal);
 	if (spec.is_static && target.value < scopes_.size() &&
 		scopes_[target.value].kind == ScopeKind::Class)
 		mark_static_member(function_binding);

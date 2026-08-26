@@ -339,7 +339,10 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact) const{
 			binding.language_linkage == LanguageLinkage::Cxx) ?
 			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
-		record.target.function.name.components = function_components(fact);
+		record.target.function.name.components = function_abi_components(
+			fact.binding, fact.owner);
+		record.target.function.operator_terminal = operator_terminal(
+			fact.binding, function.parameters.size());
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
@@ -360,7 +363,10 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 			binding.language_linkage == LanguageLinkage::Cxx) ?
 			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
-		record.target.function.name.components = value_components(owner, binding.name);
+		record.target.function.name.components = function_abi_components(
+			binding_id, owner);
+		record.target.function.operator_terminal = operator_terminal(
+			binding_id, function.parameters.size());
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
@@ -1007,6 +1013,9 @@ void Pa15Lowerer::collect_functions(){
 			function.symbol_id = SymbolId(next_symbol_++);
 			function.name_id = name_id;
 			function.return_type = low_type(model_.types_[binding.type.value].result);
+			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+			if (sidecar != NULL && sidecar->nonthrowing)
+				function.boundary.unwind = lowir_model::CUM_NO;
 			function.metadata.binding = binding.internal_linkage ?
 				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
 			if (binding.language_linkage == LanguageLinkage::C)
@@ -1099,6 +1108,9 @@ void Pa15Lowerer::collect_function_declarations(){
 				declaration.name_id = symbol_spelling(internal_value_name(
 					ScopeId(scope_index), binding.name));
 				declaration.return_type = low_type(type.result);
+				const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
+				if (sidecar != NULL && sidecar->nonthrowing)
+					declaration.boundary.unwind = lowir_model::CUM_NO;
 				declaration.metadata.binding = binding.internal_linkage ?
 					lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
 				if (binding.language_linkage != LanguageLinkage::C ||
@@ -2721,10 +2733,22 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 		case SemanticFactKind::SubscriptExpression:
 		{
 			if (facts.size() != 2) throw std::runtime_error("PA15 invalid subscript fact");
-			const LoweredValue sequence = lower_expression(facts.front());
+			const SemanticFact& sequence_fact =
+				model_.semantic_facts_[facts.front().value];
+			const TypeId sequence_object = model_.strip_cv_type(
+				model_.expression_object_type(sequence_fact.type));
+			const bool literal_array = sequence_fact.kind ==
+				SemanticFactKind::Literal && sequence_fact.literal_element_count != 0 &&
+				sequence_object.valid() && model_.type_kind(sequence_object) ==
+				TypeKind::Array;
+			// PA12's literal fact owns the decoded bytes and the constant-address
+			// relation.  Consume that address directly for an array subscript so
+			// the backing global is materialized once; no source-text decoding or
+			// rendered-name reconstruction is needed here.
+			const LoweredValue sequence = literal_array ?
+				lower_address(facts.front()) : lower_expression(facts.front());
 			const LoweredValue index = lower_expression(facts.back());
-			TypeId sequence_type = model_.expression_object_type(
-				model_.semantic_facts_[facts.front().value].type);
+			TypeId sequence_type = model_.expression_object_type(sequence_fact.type);
 			sequence_type = model_.strip_cv_type(sequence_type);
 			const bool array = sequence_type.valid() &&
 				model_.type_kind(sequence_type) == TypeKind::Array;

@@ -1851,17 +1851,28 @@ bool PA10Parser::looks_like_c_style_cast() const
 {
 	if (!fixed(SimpleTokenType::OP_LPAREN))
 		return false;
-	const bool simple_type = look(1).kind == PA10TokenKind::Fixed &&
-		(PA10ParserSupport::is_type_keyword(look(1).fixed) ||
-			PA10ParserSupport::is_cv(look(1).fixed));
-	if (!simple_type && !identifier(1))
+	const std::size_t local_close = position_ < delimiter_close_index_.size() ?
+		delimiter_close_index_[position_] : tokens_.size();
+	if (local_close == tokens_.size() || local_close <= position_)
 		return false;
-	const bool named_type = name_scopes_.is_type(look(1).spelling);
-	std::size_t close = 2;
-	const bool pointer_shape =
-		fixed(SimpleTokenType::OP_STAR, close) ||
-		fixed(SimpleTokenType::OP_AMP, close) ||
-		fixed(SimpleTokenType::OP_LAND, close);
+	std::size_t close = 1;
+	bool simple_type = false;
+	while (close < local_close - position_ &&
+		look(close).kind == PA10TokenKind::Fixed &&
+		(PA10ParserSupport::is_type_keyword(look(close).fixed) ||
+			PA10ParserSupport::is_cv(look(close).fixed)))
+	{
+		simple_type = true;
+		++close;
+	}
+	const bool identifier_type = !simple_type && identifier(1);
+	const bool named_type = identifier_type && name_scopes_.is_type(look(1).spelling);
+	if (!simple_type && !identifier_type)
+		return false;
+	if (!simple_type)
+		close = 2;
+	const bool pointer_shape = fixed(SimpleTokenType::OP_STAR, close) ||
+		fixed(SimpleTokenType::OP_AMP, close) || fixed(SimpleTokenType::OP_LAND, close);
 	close += pointer_shape;
 	if (!fixed(SimpleTokenType::OP_RPAREN, close))
 		return false;
@@ -1870,14 +1881,10 @@ bool PA10Parser::looks_like_c_style_cast() const
 		next_kind == PA10TokenKind::Literal)
 		return true;
 	if (simple_type && next_kind == PA10TokenKind::Fixed &&
-		(fixed(SimpleTokenType::OP_INC, close + 1) ||
-		 fixed(SimpleTokenType::OP_DEC, close + 1) ||
-		 fixed(SimpleTokenType::OP_STAR, close + 1) ||
-		 fixed(SimpleTokenType::OP_AMP, close + 1) ||
-		 fixed(SimpleTokenType::OP_PLUS, close + 1) ||
-		 fixed(SimpleTokenType::OP_MINUS, close + 1) ||
-		 fixed(SimpleTokenType::OP_LNOT, close + 1) ||
-		 fixed(SimpleTokenType::OP_COMPL, close + 1)))
+		(fixed(SimpleTokenType::OP_INC, close + 1) || fixed(SimpleTokenType::OP_DEC, close + 1) ||
+		 fixed(SimpleTokenType::OP_STAR, close + 1) || fixed(SimpleTokenType::OP_AMP, close + 1) ||
+		 fixed(SimpleTokenType::OP_PLUS, close + 1) || fixed(SimpleTokenType::OP_MINUS, close + 1) ||
+		 fixed(SimpleTokenType::OP_LNOT, close + 1) || fixed(SimpleTokenType::OP_COMPL, close + 1)))
 		return true;
 	if (fixed(SimpleTokenType::OP_LPAREN, close + 1) &&
 		!simple_type && !pointer_shape && !named_type)

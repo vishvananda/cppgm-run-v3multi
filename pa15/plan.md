@@ -1,115 +1,105 @@
-# PA15 typed conditional-array checkpoint
+# PA15 typed declaration and literal-address checkpoint
 
 ## Stage Design
 
-The production path is source -> PA10/PA11 typed facts -> PA12 semantic
-facts -> PA15 typed LowIR -> PA13 serialization/validation.  Conditional
-meaning stays at the PA12 semantic-fact boundary; PA15 lowers those facts
-without inspecting source spelling or emitted text.  This checkpoint audits
-landed `b7eaf9d868b17cbbf542f3415e7a5e46f07007ba`, parent
-`f038141d14cc5c9d10e01964d3a1bdf3a6c5f4ca`.
+The production path is source -> PA10 typed syntax -> PA11 canonical
+bindings/types -> PA12 semantic facts and conversions -> PA15 typed LowIR ->
+PA13 serialization/validation.  Each residual fact is retained and consumed
+at its owning boundary:
 
-- PA12 preserves an array result when the operands have the same object type
-  (under the existing top-level-cv common-type rule) and the same non-prvalue
-  value category.  This covers same-bound lvalue and xvalue arrays.  When
-  bounds or value categories differ, the existing pointer common-type path
-  records the required typed `ArrayToPointer` conversions.
-- PA15 selects conditional address lowering from the result fact's category
-  and object type, or its typed `ReferenceBinding` conversion range.  A
-  conditional carrying an `ArrayToPointer` fact is exposed as its selected
-  address, avoiding duplicate decay; ordinary array expressions retain their
-  normal typed decay.
-- The bound is `O(sum of local child/conversion ranges + emitted LowIR)`:
-  constant work per conditional plus fact-local child/conversion scans.  There
-  are no body rescans, textual reparsing, or heuristic child reconstruction.
+- PA10 keeps the operator enum/token on `OperatorFunction` identifiers and
+  routes C-style casts by scanning only the local parenthesized token range;
+  `parse_type_id` remains the validity check.  String code units continue to
+  come only from decoded `LiteralData`.
+- PA11 stores operator kind/token, bare `noexcept`, and the
+  `Normal`/`Defaulted`/`Deleted` `FunctionDeclarationKind` in the binding
+  sidecar.  Special forms are inserted as definitions, so a deleted or
+  supported defaulted form must be first and cannot be repeated; an ordinary
+  compatible redeclaration preserves the canonical special state.  A
+  fixed-vocabulary `NameId` string is only a one-way lookup/presentation
+  adapter derived from the PA10 enum/token, never a canonical semantic key.
+- PA12 treats special function initializers as declaration properties, lets a
+  deleted candidate participate in overload ranking, then rejects a call that
+  selects it.  Array-to-pointer semantic context publishes the typed literal
+  constant-address relation.
+- PA15 maps the typed operator sidecar directly to the centralized PA14 ABI
+  terminal, carries nonthrowing to `unwind=no`, preserves generated ordinal
+  names for unnamed parameters, and consumes a literal array address through
+  the normal cached global/index/load path exactly once.
+
+The ordinary work is bounded by local declarator/token ranges, semantic-fact
+children, and emitted IR: there is no textual reparsing, rendered-name ABI
+reconstruction, body rescan, or fixture-specific branch.  The scale samples
+below support deterministic, linear-looking growth for these paths but do not
+prove an asymptotic bound.
 
 ## Failure Map
 
-The supplied turn-start baseline and authorized final full-stage result are
-both `106/109` passing with `109/109` covered and exactly the three unrelated
-failures below.  Mechanical comparison of the final PA15 failure names found
-no added or replacement failure.  `make test-pa15` exits `2` for these three
-residuals, while the affected nested conditional remains absent from the
-failure set.
+The clean turn-start baseline at `83d60e96` was `106/109`, with all `109`
+tests covered.  The complete residual map is now resolved:
 
-| test | supplied baseline | checkpoint disposition |
+| test | owning repair | final disposition |
 |---|---|---|
-| `100-const-integral-lvalue-overload-category` | fail | residual; unrelated to this checkpoint |
-| `100-string-hex-escape-code-unit` | fail | residual; unrelated to this checkpoint |
-| `100-unnamed-parameter-storage` | fail | residual; unrelated to this checkpoint |
-| `200-nested-conditional-array-decay` | pass; absent from failure set | focused `PASS`; landed conditional-array increment confirmed |
+| `100-const-integral-lvalue-overload-category` | PA11 inserts `= delete` as a typed definition with `Binding.has_definition`; PA12 skips it as an expression and rejects a selected deleted overload | PASS |
+| `100-string-hex-escape-code-unit` | PA10 accepts the multi-token cast; PA12 carries typed decoded bytes/address; PA15 lowers one cached string global and its ordinary subscript | PASS |
+| `100-unnamed-parameter-storage` | PA10 operator identity reaches the PA11 sidecar; PA15 emits typed delete ABI, two generated parameter/slot identities, and `unwind=no` | PASS |
+
+PA15 coverage is `109/109`.
 
 ## Active Checkpoint
 
-This checkpoint audits the nested conditional-array ownership path.  No
-bounded source repair was necessary: the committed implementation in
-`dev/src/pa12_semantic.cpp`, `dev/src/pa15_lowering.cpp`, and
-`dev/src/pa15_lowering_flow.cpp` remains unchanged, and no tests or `.ref`
-fixtures were changed.  The final gate logs are in
-`/tmp/pa15-audit-gates-20260826`: PA15 `106/109`, through-PA14 `1058/1058`,
-file audit exit `0`, combined through-PA15 `1164/1167`, and final
-`git diff --check` exit `0` (`diff-check-final.log`).  String parsing,
-unnamed-parameter storage, overload-category behavior, labels/CFG, classes,
-and templates remain outside this checkpoint.
+The implementation is complete in `dev/src/pa10_ast.cpp`,
+`dev/src/pa11_semantic_model.h`, `dev/src/pa11_semantic_core.cpp`,
+`dev/src/pa11_semantic.cpp`, `dev/src/pa12_semantic.cpp`,
+`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering.cpp`,
+`dev/src/pa15_operator_abi.cpp`, and `dev/frontend_source_sets.mk`.
+`pa15/plan.md` records this checkpoint and its evidence; no tests or reference
+fixtures were changed.
+
+Focused validation passed with normal harnesses:
+
+- `make -C pa15 check TEST='tests/general/100-const-integral-lvalue-overload-category.t tests/general/100-string-hex-escape-code-unit.t tests/general/100-unnamed-parameter-storage.t tests/general/100-subscript-sizeof.t tests/general/200-global-array-element-address-initializer.t tests/general/200-const-cast-reference-array-subscript.t tests/general/200-address-of-local-const-integral-uses-storage.t'` -> `PASS (7/7)`.
+- `make -C pa10 check TEST='tests/general/100-c-style-cast-expression.t tests/general/200-cast-parenthesized-identifier-shift.t tests/general/200-cast-parenthesized-identifier-shift-or.t tests/general/200-sys-types-minor-cast-expression.t'` -> `PASS (4/4)`.
+- Ephemeral declaration probes show: first deleted definition `rc=0`; deleted
+  then ordinary compatible redeclaration `rc=0`; its call fails with `PA12
+  call selects deleted function`; ordinary then deleted fails with `deleted/defaulted
+  function must be first declaration`; duplicate deleted definitions and a body
+  after deleted fail with `duplicate function definition`.  A competing
+  nondeleted lvalue overload exits `0` and is selected.  Repeated compatible
+  operator declarations merge to one `_ZdlPvS_` symbol with `unwind=no`.
+- The parser matrix has two typed casts (including cv-qualified/multi-token
+  scalars) and two ambiguous parenthesized-expression nodes; AST emission
+  succeeds and the adjacent PA10 cases pass.
 
 ## Performance Evidence
 
-Fresh exact inputs and a compact generator are preserved in
-`/tmp/pa15-audit-scale-final-20260826-samebound` beside the expanded
-`command.log`. Each selector uses three same-bound `int[4]` lvalue array arms
-with a nested conditional; differing-bound behavior is covered by the
-checked-in affected fixture and focused probes. The normal PA15 runner
-compiled each input three times with `--emit-lowir -O0` under `timeout 60s`;
-all six outputs passed the normal `lowir2cy86` validator. This is a bounded
-affected-path sample, not an asymptotic benchmark.
+Recipe: `/tmp/pa15_perf_input.pl COUNT` emits `COUNT` repeated functions with
+`(const unsigned long)` casts and `COUNT` string subscripts of
+`(unsigned char)"\\xab"[0]`, plus one deleted definition followed by one
+ordinary compatible redeclaration per generated signature and repeated
+compatible operator declarations.  It was run at `COUNT=32` and `COUNT=256`; each generated
+LowIR output was checked by the normal PA15 harness from
+`/tmp/pa15-perf-check` (`PASS (2/2)`, successful exit sidecars).
 
-| repeated selectors | input lines / bytes | LowIR lines / bytes | `condaddr` blocks | address ops | decay ops | wall samples | RSS samples (KiB) |
-|---:|---:|---:|---:|---:|---:|---|---|
-| 64 | 258 / 6,168 | 3,080 / 66,208 | 384 | 192 | 0 | `0.01, 0.01, 0.01` s | `7,856, 7,940, 8,108` |
-| 1,024 | 4,098 / 106,300 | 49,160 / 1,069,864 | 6,144 | 3,072 | 0 | `0.17, 0.17, 0.17` s | `50,316, 50,072, 50,276` |
+| count | input bytes / lines | LowIR bytes / lines | globals / functions / instructions / slots | SHA-256 of LowIR | time/RSS samples (s/KB) |
+|---:|---:|---:|---:|---|---|
+| 32 | 6,000 / 356 | 16,753 / 741 | 32 / 65 / 192 / 32 | `f4c89127448b65d0e939aa7c257992cf5ee1eec771dc70782314e551d946cba3` | `0.01/6652`, `0.00/6820`, `0.00/6636` |
+| 256 | 48,064 / 2,820 | 134,775 / 5,893 | 256 / 513 / 1,536 / 256 | `42242a80f56f8c28943ca5f2661dd07000e1c90b582af56b886a2db0bf647b55` | `0.05/17884`, `0.05/18152`, `0.05/17888` |
 
-The structural counters scale by exactly 16x from 64 to 1,024 selectors, with
-stable per-size LowIR hashes recorded three times in `output-hashes.tsv`:
-`0a9eaef30cc63aa80bd919108bc9c37596f630239988cb7282a2038ac8b7ef64` for 64
-and `ad4bea5b3a7ce62bb140a545428bd22ba2f2986dd5014fa12a123349ac3f85ac` for
-1,024.  Candidate and validator hashes are in `candidate.sha256` and
-`validator.sha256`; `input-output-manifest.sha256` and
-`artifact-manifest.sha256` cover the recipe, inputs, outputs, and validation
-artifacts.  The justified complexity bound remains
-`O(sum of local child/conversion ranges + emitted LowIR)`; the local scans do
-not rescan source bodies or retry lowering.
-
-## Focused Evidence
-
-- The six direct affected-path and adjacent PA15 tests pass `6/6`.
-- The broader related PA15 matrix passes `15/15`; the PA12 checked-in array
-  xvalue fixture passes `1/1`.
-- Ephemeral `/dev/stdin` probes for lvalue contextual use, xvalue nesting,
-  mixed lvalue/xvalue categories, array lvalue/xvalue reference parameters,
-  and scalar prvalue reference materialization compile and validate with
-  exit `0`.
-- Semantic dumps retain array lvalue/xvalue categories, and the affected
-  LowIR contains no duplicate inner-array decay. No durable regression test
-  was needed; handouts and fixtures remain immutable.
-
-## Next Checkpoint
-
-The next bounded work is the three remaining owner surfaces, each kept
-separate from this conditional-array checkpoint:
-
-- `100-const-integral-lvalue-overload-category`
-- `100-string-hex-escape-code-unit`
-- `100-unnamed-parameter-storage`
-
-The final gate logs and performance artifact for this checkpoint are retained
-in `/tmp/pa15-audit-gates-20260826` and
-`/tmp/pa15-audit-scale-final-20260826-samebound`; no broad-validation work
-remains for this checkpoint.
+The structural counts and output hashes are stable for each recipe.  These
+two runs are representative evidence of deterministic growth with the
+number of typed facts and emitted IR; the coarse timings and RSS samples are
+not a proof of asymptotic complexity.
 
 ## Checkpoint Ledger
 
 | checkpoint | result | durable value |
 |---|---|---|
-| `959f9481` | prior typed discard/return checkpoint retained | typed discard, return, and LowIR ownership |
-| `a2f33047` -> `d5e10599` -> `f038141d` | prior typed statement-CFG/label sequence completed | typed label identity, shared recovery, deterministic statement CFG, and sparse flow state |
-| current typed conditional-array checkpoint at `b7eaf9d8` | final `make test-pa15` exit `2`, `106/109` with `109/109` covered and exactly the three named residuals; through-PA14 exit `0` at `1058/1058`; file audit exit `0` with five existing warnings; through-PA15 exit `2` at `1164/1167`; focused matrices and validators pass; logs in `/tmp/pa15-audit-gates-20260826` and performance manifest in `/tmp/pa15-audit-scale-final-20260826-samebound` | preserves same-category array glvalues, keeps typed array-to-pointer ownership, and removes spelling-based conditional address selection |
+| prior typed conditional-array checkpoint `b7eaf9d8` | retained; supplied baseline `106/109` | typed PA12 category/conversion ownership through PA15 address lowering |
+| current typed declaration/literal-address boundary checkpoint | complete; all focused and full gates green; no test/ref changes | typed declaration status, operator identity/ABI, bounded cast routing, and decoded string-address continuity through LowIR |
+
+## Final State
+
+PA15 is complete at `109/109`; through PA14 is `1058/1058` and through PA15
+is `1167/1167`.  The source audit passes with five pre-existing header
+warnings, `git diff --check` passes, and the committed worktree is clean.

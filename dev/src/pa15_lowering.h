@@ -312,6 +312,10 @@ private:
 	SpellingId symbol_spelling(const std::string& name);
 	std::vector<std::string> function_components(const FunctionFact& fact) const;
 	std::vector<std::string> value_components(ScopeId owner, NameId name) const;
+	std::vector<std::string> function_abi_components(BindingId binding_id,
+		ScopeId owner) const;
+	abi_mangle::AbiOperatorTerminalKind operator_terminal(
+		BindingId binding_id, std::size_t parameter_count) const;
 	std::string abi_variable_symbol(BindingId binding_id, ScopeId owner) const;
 	std::vector<std::string> named_type_components(NamedRecordId record) const;
 	abi_mangle::AbiType abi_type_nested(TypeId type) const;

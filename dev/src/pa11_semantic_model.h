@@ -259,6 +259,16 @@ struct Binding
 	{}
 };
 
+// A function's deleted/defaulted status is a declaration fact, not a
+// property of its rendered name.  PA11 merges this fact onto the canonical
+// binding; PA12 consumes it when it builds a call boundary.
+enum class FunctionDeclarationKind
+{
+	Normal,
+	Defaulted,
+	Deleted
+};
+
 // Rare anonymous-union and synthetic-function relations live beside the
 // canonical binding table instead of enlarging every Binding.
 struct BindingSidecar
@@ -267,6 +277,13 @@ struct BindingSidecar
 	NamedRecordId constructor_record;
 	NamedRecordId generated_name_record;
 	bool static_member;
+	// Operator identity and exception behavior are declaration facts.  Keep
+	// them beside the canonical binding so ABI/lowering consumers do not have
+	// to recover either fact from a rendered name or a declarator body.
+	PA10OperatorFunctionKind operator_function_kind;
+	SimpleTokenType operator_token;
+	bool nonthrowing;
+	FunctionDeclarationKind declaration_kind;
 	TemplateSpecializationId template_specialization;
 	TypeId unadjusted_type;
 
@@ -275,6 +292,9 @@ struct BindingSidecar
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record),
 		  generated_name_record(generated_name_record), static_member(false),
+		  operator_function_kind(PA10OperatorFunctionKind::None),
+		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
+		  declaration_kind(FunctionDeclarationKind::Normal),
 		  template_specialization(), unadjusted_type()
 	{}
 };
@@ -611,8 +631,14 @@ struct DeclaratorName
 {
 	bool found;
 	NamePath path;
+	bool operator_function;
+	PA10OperatorFunctionKind operator_function_kind;
+	SimpleTokenType operator_token;
 
-	DeclaratorName() : found(false), path() {}
+	DeclaratorName()
+		: found(false), path(), operator_function(false),
+		  operator_function_kind(PA10OperatorFunctionKind::None),
+		  operator_token(SimpleTokenType::OP_SEMICOLON) {}
 };
 
 struct DeclaratorOp
@@ -1241,11 +1267,20 @@ private:
 	;
 	unsigned int cv_bit(const PA10AstNode& node) const
 	;
+	NameId operator_name(PA10OperatorFunctionKind kind,
+		SimpleTokenType token)
+	;
 	NamePath name_path(const PA10AstNode& node)
 	;
-	bool find_declarator_name(const PA10AstNode& node, NamePath* result)
+	bool find_declarator_name(const PA10AstNode& node, DeclaratorName* result)
 	;
 	DeclaratorName declarator_name(const PA10AstNode& node)
+	;
+	FunctionDeclarationKind function_declaration_kind(BindingId binding) const
+	;
+	void record_function_declarator(BindingId binding,
+		const DeclaratorName& name, const PA10AstNode& declarator,
+		FunctionDeclarationKind declaration_kind)
 	;
 	ClassTag class_tag(const PA10AstNode& node) const
 	;
@@ -1498,7 +1533,8 @@ private:
 	BindingId backing_storage = BindingId(),
 	SourcePoint declaration_point = SourcePoint(),
 	bool internal_linkage = false,
-	LanguageLinkage language_linkage = LanguageLinkage::Cxx)
+	LanguageLinkage language_linkage = LanguageLinkage::Cxx,
+	FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal)
 	;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;

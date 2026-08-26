@@ -24,6 +24,103 @@ LanguageLinkage language_linkage(const PA10AstNode& node)
 	throw std::runtime_error("unsupported language linkage");
 }
 
+// PA11's existing value table is keyed by NameId.  This one-way adapter maps
+// PA10's typed operator alternative to a fixed vocabulary for that table's
+// lookup/presentation only.  It is not a canonical semantic key: operator
+// identity remains in the typed PA10 kind/token sidecar, and no consumer
+// parses these labels back into an operator.
+const char* operator_name_key(PA10OperatorFunctionKind kind,
+	SimpleTokenType token)
+{
+	switch (kind)
+	{
+	case PA10OperatorFunctionKind::Subscript: return "operatorsubscript";
+	case PA10OperatorFunctionKind::Call: return "operatorcall";
+	case PA10OperatorFunctionKind::New: return "operatornew";
+	case PA10OperatorFunctionKind::Delete: return "operatordelete";
+	case PA10OperatorFunctionKind::NewArray: return "operatornewarray";
+	case PA10OperatorFunctionKind::DeleteArray: return "operatordeletearray";
+	case PA10OperatorFunctionKind::Token:
+		switch (token)
+		{
+		case SimpleTokenType::OP_PLUS: return "operatorplus";
+		case SimpleTokenType::OP_MINUS: return "operatorminus";
+		case SimpleTokenType::OP_STAR: return "operatorstar";
+		case SimpleTokenType::OP_DIV: return "operatordiv";
+		case SimpleTokenType::OP_MOD: return "operatormod";
+		case SimpleTokenType::OP_XOR: return "operatorxor";
+		case SimpleTokenType::OP_AMP: return "operatoramp";
+		case SimpleTokenType::OP_BOR: return "operatorbor";
+		case SimpleTokenType::OP_COMPL: return "operatorcompl";
+		case SimpleTokenType::OP_LNOT: return "operatorlnot";
+		case SimpleTokenType::OP_ASS: return "operatorassign";
+		case SimpleTokenType::OP_LT: return "operatorlt";
+		case SimpleTokenType::OP_GT: return "operatorgt";
+		case SimpleTokenType::OP_PLUSASS: return "operatorplusassign";
+		case SimpleTokenType::OP_MINUSASS: return "operatorminusassign";
+		case SimpleTokenType::OP_STARASS: return "operatorstarassign";
+		case SimpleTokenType::OP_DIVASS: return "operatordivassign";
+		case SimpleTokenType::OP_MODASS: return "operatormodassign";
+		case SimpleTokenType::OP_XORASS: return "operatorxorassign";
+		case SimpleTokenType::OP_BANDASS: return "operatorampassign";
+		case SimpleTokenType::OP_BORASS: return "operatorborassign";
+		case SimpleTokenType::OP_LSHIFT: return "operatorshiftleft";
+		case SimpleTokenType::OP_RSHIFT: return "operatorshiftright";
+		case SimpleTokenType::OP_LSHIFTASS: return "operatorshiftleftassign";
+		case SimpleTokenType::OP_RSHIFTASS: return "operatorshiftrightassign";
+		case SimpleTokenType::OP_EQ: return "operatorequal";
+		case SimpleTokenType::OP_NE: return "operatornotequal";
+		case SimpleTokenType::OP_LE: return "operatorlessequal";
+		case SimpleTokenType::OP_GE: return "operatorgreaterequal";
+		case SimpleTokenType::OP_LAND: return "operatorlogicaland";
+		case SimpleTokenType::OP_LOR: return "operatorlogicalor";
+		case SimpleTokenType::OP_INC: return "operatorincrement";
+		case SimpleTokenType::OP_DEC: return "operatordecrement";
+		case SimpleTokenType::OP_COMMA: return "operatorcomma";
+		case SimpleTokenType::OP_ARROWSTAR: return "operatorarrowstar";
+		case SimpleTokenType::OP_ARROW: return "operatorarrow";
+		case SimpleTokenType::OP_DOTSTAR: return "operatordotstar";
+		default: return NULL;
+		}
+	case PA10OperatorFunctionKind::Conversion:
+	case PA10OperatorFunctionKind::Literal:
+	case PA10OperatorFunctionKind::None:
+		return NULL;
+	}
+	return NULL;
+}
+
+FunctionDeclarationKind special_initializer_kind(const PA10AstNode& init)
+{
+	if (init.children.size() != 2 ||
+		(init.children[1].kind != PA10NodeKind::Initializer &&
+		 init.children[1].kind != PA10NodeKind::ParenInitializer) ||
+		init.children[1].children.size() != 1)
+		return FunctionDeclarationKind::Normal;
+	const PA10AstNode& special = init.children[1].children.front();
+	if (special.kind != PA10NodeKind::SpecialInitializer ||
+		!special.has_token)
+		return FunctionDeclarationKind::Normal;
+	if (special.token == SimpleTokenType::KW_DELETE)
+		return FunctionDeclarationKind::Deleted;
+	if (special.token == SimpleTokenType::KW_DEFAULT)
+		return FunctionDeclarationKind::Defaulted;
+	return FunctionDeclarationKind::Normal;
+}
+
+bool has_bare_noexcept(const PA10AstNode& declarator)
+{
+	for (std::size_t i = 0; i < declarator.children.size(); ++i)
+	{
+		const PA10AstNode& child = declarator.children[i];
+		if (child.kind == PA10NodeKind::FunctionQualifier && child.has_token &&
+			child.token == SimpleTokenType::KW_NOEXCEPT &&
+			child.children.empty())
+			return true;
+	}
+	return false;
+}
+
 }
 
 template<typename Identity>
@@ -184,6 +281,14 @@ unsigned int PA11SemanticModel::cv_bit(const PA10AstNode& node) const
 		return 2u;
 	return 0;
 }
+NameId PA11SemanticModel::operator_name(PA10OperatorFunctionKind kind,
+	SimpleTokenType token)
+{
+	const char* key = operator_name_key(kind, token);
+	if (key == NULL)
+		unsupported("operator function identity");
+	return intern_name(key);
+}
 NamePath PA11SemanticModel::name_path(const PA10AstNode& node)
 {
 	if (node.name_prefix_count != 0)
@@ -199,6 +304,9 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node)
 	}
 	if (result.components.empty() && node.producer_spelling != 0)
 		result.components.push_back(name_from_spelling(node.producer_spelling));
+	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
+		result.components.push_back(operator_name(node.operator_function_kind,
+			node.operator_token));
 	if (result.components.empty())
 		throw std::runtime_error("PA11 name has no semantic component");
 	return result;
@@ -215,13 +323,21 @@ TypeId PA11SemanticModel::strip_reference_type(TypeId type) const
 		return types_[type.value].child;
 	return type;
 }
-bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node, NamePath* result)
+bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node,
+	DeclaratorName* result)
 {
 	if (node.kind == PA10NodeKind::Identifier &&
 		(node.producer_spelling != 0 || !node.name_parts.empty() ||
-		 node.global_name || node.name_prefix_count != 0))
+			node.global_name || node.name_prefix_count != 0 ||
+			node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction))
 	{
-		*result = name_path(node);
+		result->path = name_path(node);
+		if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
+		{
+			result->operator_function = true;
+			result->operator_function_kind = node.operator_function_kind;
+			result->operator_token = node.operator_token;
+		}
 		return true;
 	}
 	for (std::size_t i = 0; i < node.children.size(); ++i)
@@ -236,7 +352,7 @@ bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node, NamePath* 
 DeclaratorName PA11SemanticModel::declarator_name(const PA10AstNode& node)
 {
 	DeclaratorName result;
-	result.found = find_declarator_name(node, &result.path);
+	result.found = find_declarator_name(node, &result);
 	return result;
 }
 ClassTag PA11SemanticModel::class_tag(const PA10AstNode& node) const
@@ -1039,6 +1155,45 @@ void PA11SemanticModel::set_binding_sidecar(BindingId id,
 		throw std::runtime_error("invalid PA11 binding sidecar identity");
 	binding_sidecars_.set(id, sidecar);
 }
+void PA11SemanticModel::record_function_declarator(BindingId binding_id,
+	const DeclaratorName& name, const PA10AstNode& declarator,
+	FunctionDeclarationKind declaration_kind)
+{
+	const bool nonthrowing = has_bare_noexcept(declarator);
+	const BindingSidecar* existing = binding_sidecar(binding_id);
+	if (!name.operator_function && !nonthrowing &&
+		declaration_kind == FunctionDeclarationKind::Normal)
+		return;
+	BindingSidecar sidecar;
+	if (existing != NULL)
+		sidecar = *existing;
+	if (name.operator_function)
+	{
+		if (sidecar.operator_function_kind != PA10OperatorFunctionKind::None &&
+			(sidecar.operator_function_kind != name.operator_function_kind ||
+			 sidecar.operator_token != name.operator_token))
+			throw std::runtime_error("conflicting operator declaration identity");
+		sidecar.operator_function_kind = name.operator_function_kind;
+		sidecar.operator_token = name.operator_token;
+	}
+	if (nonthrowing)
+		sidecar.nonthrowing = true;
+	if (declaration_kind != FunctionDeclarationKind::Normal)
+	{
+		if (sidecar.declaration_kind != FunctionDeclarationKind::Normal &&
+			sidecar.declaration_kind != declaration_kind)
+			throw std::runtime_error("conflicting function declaration kind");
+		sidecar.declaration_kind = declaration_kind;
+	}
+	set_binding_sidecar(binding_id, sidecar);
+}
+FunctionDeclarationKind PA11SemanticModel::function_declaration_kind(
+	BindingId binding_id) const
+{
+	const BindingSidecar* sidecar = binding_sidecar(binding_id);
+	return sidecar == NULL ? FunctionDeclarationKind::Normal :
+		sidecar->declaration_kind;
+}
 bool PA11SemanticModel::is_static_member(BindingId id) const
 {
 	const BindingSidecar* sidecar = binding_sidecar(id);
@@ -1557,7 +1712,13 @@ std::size_t PA11SemanticModel::type_size(TypeId type) const
 TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope)
 {
 	if (node.kind == PA10NodeKind::Literal)
-		return fundamental(node.literal.type);
+	{
+		const TypeId type = fundamental(node.literal.type);
+		if (node.literal.element_count != 0)
+			return make_array(make_cv(type, 1u), false,
+				ArrayBound(node.literal.element_count));
+		return type;
+	}
 	if (node.kind == PA10NodeKind::KeywordLiteral)
 	{
 		if (node.token == SimpleTokenType::KW_NULLPTR)
@@ -1781,7 +1942,7 @@ TypeId PA11SemanticModel::normalize_function_type(TypeId type)
 BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	bool function, bool definition, bool lexical_view, BindingId backing_storage,
 	SourcePoint declaration_point, bool internal_linkage,
-	LanguageLinkage language_linkage)
+	LanguageLinkage language_linkage, FunctionDeclarationKind declaration_kind)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -1813,6 +1974,10 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 				continue;
 			if (existing_function.result != candidate_function.result)
 				throw std::runtime_error("conflicting function return type");
+			if (declaration_kind != FunctionDeclarationKind::Normal &&
+				!existing.has_definition)
+				throw std::runtime_error(
+					"deleted/defaulted function must be first declaration");
 			if (definition && existing.has_definition)
 				throw std::runtime_error("duplicate function definition");
 			if (definition) binding(existing_id).has_definition = true;
@@ -2283,13 +2448,21 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		else
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
+			const FunctionDeclarationKind declaration_kind = function ?
+				special_initializer_kind(init) :
+				FunctionDeclarationKind::Normal;
+			const bool definition = function && declaration_kind !=
+				FunctionDeclarationKind::Normal;
 			const bool internal_linkage = spec.is_static &&
 				target.value < scopes_.size() &&
 				scopes_[target.value].kind == ScopeKind::Namespace;
 			binding_id = add_value(target, name.path.last(), type,
-				function, false, true, BindingId(),
+				function, definition, true, BindingId(),
 				SourcePoint(node.source_begin), internal_linkage,
-				current_language_linkage_);
+				current_language_linkage_, declaration_kind);
+			if (function)
+				record_function_declarator(binding_id, name, declarator,
+					declaration_kind);
 			const NamedRecordId constant_record = named_record_for_type(type);
 			const bool ordinary_const_record = !spec.is_constexpr &&
 				((spec.cv & 1u) != 0) && constant_record.valid() &&
