@@ -608,7 +608,7 @@ TypeId PA11SemanticModel::expression_object_type(TypeId type) const
 }
 TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member)
 {
-	const unsigned int qualifiers = cv_qualifiers(object);
+	const unsigned int qualifiers = cv_qualifiers(expression_object_type(object));
 	return qualifiers == 0 ? member : make_cv(member, qualifiers);
 }
 BindingId PA11SemanticModel::member_binding(TypeId object, NameId name) const

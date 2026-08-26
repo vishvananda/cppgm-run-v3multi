@@ -1577,6 +1577,9 @@ void PA11SemanticModel::inject_anonymous_union(TypeId type, ScopeId owner, bool 
 	const NamedRecordId record_id = named_record_for_type(type);
 	if (!record_id.valid() || record_id.value >= named_.size() || !named_[record_id.value].scope.valid())
 		throw std::runtime_error("anonymous union has no scope");
+	if (!create_storage && owner.valid() && owner.value < scopes_.size() &&
+		scopes_[owner.value].kind == ScopeKind::Class)
+		throw std::runtime_error("class anonymous member injection is outside PA16 checkpoint");
 	BindingId storage;
 	if (create_storage)
 	{

@@ -17,6 +17,9 @@ LoweredValue Pa15Lowerer::lower_member_address(SemanticFactId id){
 			throw std::runtime_error("PA15 member address is not a data member");
 		if (model_.is_static_member(member_id))
 			throw std::runtime_error("PA15 static member projection is unsupported");
+		const BindingSidecar* sidecar = model_.binding_sidecar(member_id);
+		if (sidecar != NULL && sidecar->backing_storage.valid())
+			throw std::runtime_error("PA15 injected member projection is unsupported");
 
 		const SemanticFact& object_fact = model_.semantic_facts_[facts.front().value];
 		TypeId record_type = TypeId();
