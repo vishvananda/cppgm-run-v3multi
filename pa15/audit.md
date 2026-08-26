@@ -168,9 +168,9 @@ shell-out, duplicate production model, or textual downgrade was introduced.
 - `git diff --check` exited `0`; its log is
   `/tmp/pa15-enum-followup-diff-check.log`.
 - Fresh post-correction performance evidence uses
-  `/tmp/pa15-final-enum-perf.followup.efvCDA/cppgm++-final-immutable`, mode
-  `0555`, SHA-256
-  `7aca7c7423be52b33d8966db79ad787aa9569256457821e709406e8365078e60`.
+  `/tmp/pa15-final-enum-perf.relational-final.ES1ytx/cppgm++-final-immutable`,
+  mode `0555`, SHA-256
+  `65df5ea3b49bff32cfbf76866001ddc67b89874d18fe7b36bad1704781a3c67e`.
   Five interleaved ascending/descending rounds, proportional selected-chain
   counters, and medians are recorded in that directory's `structure.tsv`,
   `timings.tsv`, and `medians.tsv`.
@@ -178,9 +178,9 @@ shell-out, duplicate production model, or textual downgrade was introduced.
 ## Fresh Performance Evidence — selected nested conditional ownership
 
 The immutable candidate is
-`/tmp/pa15-final-enum-perf.followup.efvCDA/cppgm++-final-immutable`, mode `0555`,
+`/tmp/pa15-final-enum-perf.relational-final.ES1ytx/cppgm++-final-immutable`, mode `0555`,
 SHA-256
-`7aca7c7423be52b33d8966db79ad787aa9569256457821e709406e8365078e60`.
+`65df5ea3b49bff32cfbf76866001ddc67b89874d18fe7b36bad1704781a3c67e`.
 The directory contains the candidate hash/mode records, bounded source
 inputs, semantic and LowIR outputs, `structure.tsv`, `timings.tsv`, and
 `medians.tsv`. Each input retains the bounded enum/default/promotion/operator
@@ -191,10 +191,10 @@ ascending and descending size order.
 
 | depth | input bytes/lines | semantic bytes/lines | LowIR bytes/lines | semantic conditional nodes | LowIR globals/functions | median wall/user/sys s | median max RSS KB |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 16 | 1871/67 | 7885/166 | 4544/167 | 18 | 20/7 | 0.00/0.00/0.00 | 5356 |
-| 64 | 4559/211 | 28765/406 | 7424/215 | 66 | 68/7 | 0.01/0.00/0.00 | 5884 |
-| 256 | 15935/787 | 250837/1366 | 19412/407 | 258 | 260/7 | 0.02/0.01/0.00 | 8632 |
-| 512 | 31295/1555 | 891093/2646 | 35540/663 | 514 | 516/7 | 0.04/0.03/0.01 | 12672 |
+| 16 | 1871/67 | 7885/166 | 4544/167 | 18 | 20/7 | 0.00/0.00/0.00 | 5380 |
+| 64 | 4559/211 | 28765/406 | 7424/215 | 66 | 68/7 | 0.00/0.00/0.00 | 6084 |
+| 256 | 15935/787 | 250837/1366 | 19412/407 | 258 | 260/7 | 0.01/0.01/0.00 | 8680 |
+| 512 | 31295/1555 | 891093/2646 | 35540/663 | 514 | 516/7 | 0.02/0.01/0.01 | 12676 |
 
 These are bounded measurements of the selected nested path, not a universal
 performance claim. The depth and conditional-node counters scale with the
@@ -272,4 +272,4 @@ checkpoint.
 |---|---|---|
 | Historical | PA15 full-stage / checkpointAudit — typed address/value ownership | Amended PA12 relocation ownership with explicit `Value`/`ObjectAddress`/`ArrayDecay` context, rejecting bare pointer/scalar lvalue relocations while preserving object, array, one-past, function, and array-element forms; focused `20/20` plus probes, through-PA14 `1058/1058`, PA15 `68/109` with the exact historical 41 names and all `109` covered, immutable `n=256` performance evidence, file audit pass, and diff-check pass. |
 | Historical | PA15 full-stage / checkpointAudit — typed global pointer null/zero initializers | Hardened transactional PA12 literal snapshots and binding invariants; kept PA15 on `ConstantAddressFact` identity/ranges; tightened terminal/destination-safe typed null chains and pointer cv behavior; corrected lvalue loads and runtime `nullptr`-to-bool typing; target matrix `10/10`, narrow regression pass, final PA15 `70/109` with the exact unchanged 39-name set and all `109` covered, through-PA14 `1058/1058`, file audit pass, diff-check pass, and immutable performance evidence. Preserved as historical context. |
-| Current | PA15 full-stage / checkpointAudit — typed enum scalar ownership (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused matrix `13/13`, selected-chain probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.followup.efvCDA`. |
+| Current | PA15 full-stage / checkpointAudit — typed enum scalar ownership (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused matrix `13/13`, selected-chain relational probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.relational-final.ES1ytx`. |

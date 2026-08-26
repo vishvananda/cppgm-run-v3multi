@@ -5,6 +5,22 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+static bool is_constant_comparison_token(SimpleTokenType token)
+{
+	switch (token)
+	{
+	case SimpleTokenType::OP_EQ:
+	case SimpleTokenType::OP_NE:
+	case SimpleTokenType::OP_LT:
+	case SimpleTokenType::OP_LE:
+	case SimpleTokenType::OP_GT:
+	case SimpleTokenType::OP_GE:
+		return true;
+	default:
+		return false;
+	}
+}
+
 TypeId PA11SemanticModel::conditional_common_type(TypeId when_true,
 	TypeId when_false) const
 {
@@ -89,8 +105,7 @@ TypeId PA11SemanticModel::constant_expression_type(
 			return right;
 		if (node.token == SimpleTokenType::OP_LAND ||
 			node.token == SimpleTokenType::OP_LOR ||
-			(node.token >= SimpleTokenType::OP_EQ &&
-			 node.token <= SimpleTokenType::OP_GE))
+			is_constant_comparison_token(node.token))
 			return fundamental(FundamentalType::Bool);
 		if (node.token == SimpleTokenType::OP_LSHIFT ||
 			node.token == SimpleTokenType::OP_RSHIFT)

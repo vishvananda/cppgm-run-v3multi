@@ -211,10 +211,10 @@ not a final performance claim after the Phase 1 repairs.
 ## Fresh Performance Evidence — selected nested conditional ownership
 
 Fresh evidence was generated from the immutable final candidate
-/tmp/pa15-final-enum-perf.followup.efvCDA/cppgm++-final-immutable, mode 0555,
+/tmp/pa15-final-enum-perf.relational-final.ES1ytx/cppgm++-final-immutable, mode 0555,
 SHA-256
-7aca7c7423be52b33d8966db79ad787aa9569256457821e709406e8365078e60.
-The artifact directory is /tmp/pa15-final-enum-perf.followup.efvCDA and
+65df5ea3b49bff32cfbf76866001ddc67b89874d18fe7b36bad1704781a3c67e.
+The artifact directory is /tmp/pa15-final-enum-perf.relational-final.ES1ytx and
 contains candidate.sha256, candidate.mode, structure.tsv, timings.tsv,
 medians.tsv, the generated nested source inputs, and the corresponding
 semantic/LowIR outputs. Each input retains the bounded enum/default/promotion
@@ -224,10 +224,10 @@ ascending and descending size order.
 
 | depth | input bytes/lines | semantic bytes/lines | LowIR bytes/lines | semantic conditional nodes | LowIR globals/functions | median wall/user/sys s | median max RSS KB |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 16 | 1871/67 | 7885/166 | 4544/167 | 18 | 20/7 | 0.00/0.00/0.00 | 5356 |
-| 64 | 4559/211 | 28765/406 | 7424/215 | 66 | 68/7 | 0.01/0.00/0.00 | 5884 |
-| 256 | 15935/787 | 250837/1366 | 19412/407 | 258 | 260/7 | 0.02/0.01/0.00 | 8632 |
-| 512 | 31295/1555 | 891093/2646 | 35540/663 | 514 | 516/7 | 0.04/0.03/0.01 | 12672 |
+| 16 | 1871/67 | 7885/166 | 4544/167 | 18 | 20/7 | 0.00/0.00/0.00 | 5380 |
+| 64 | 4559/211 | 28765/406 | 7424/215 | 66 | 68/7 | 0.00/0.00/0.00 | 6084 |
+| 256 | 15935/787 | 250837/1366 | 19412/407 | 258 | 260/7 | 0.01/0.01/0.00 | 8680 |
+| 512 | 31295/1555 | 891093/2646 | 35540/663 | 514 | 516/7 | 0.02/0.01/0.01 | 12676 |
 
 These are bounded measurements of the selected nested path, not a universal
 performance claim. The depth and conditional-node counters scale with the
@@ -240,5 +240,5 @@ directory.
 | status | checkpoint | evidence or next proof |
 |---|---|---|
 | Historical | PA15 typed null/global initializer boundary | Prior plan recorded the earlier 70/109 baseline and typed-null work; it is historical context, not evidence for this enum increment. |
-| Current | PA15 typed enum scalar boundary (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused proof `13/13`, selected-chain probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.followup.efvCDA`. |
+| Current | PA15 typed enum scalar boundary (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused proof `13/13`, selected-chain relational probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.relational-final.ES1ytx`. |
 | Next | PA15 residual boundary | `200-reinterpret-enum-to-pointer` is the next enum-adjacent residual boundary; continue only in a later checkpoint. |
