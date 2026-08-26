@@ -124,47 +124,6 @@ bool has_bare_noexcept(const PA10AstNode& declarator)
 	return false;
 }
 
-bool has_virtual_member_specifier_impl(const PA10AstNode& node, bool root)
-{
-	// A nested declaration owns its own members.  Do not let a virtual
-	// specifier in one of those declarations become a fact about the enclosing
-	// record.  Function bodies and other executable/declarative scopes are
-	// boundaries for the same reason.
-	if (!root &&
-		(node.kind == PA10NodeKind::ClassSpecifier ||
-		 node.kind == PA10NodeKind::ClassForwardDeclaration ||
-		 node.kind == PA10NodeKind::EnumSpecifier ||
-		 node.kind == PA10NodeKind::CompoundStatement ||
-		 node.kind == PA10NodeKind::LambdaExpression ||
-		 node.kind == PA10NodeKind::FunctionDefinition ||
-		 node.kind == PA10NodeKind::NamespaceDefinition ||
-		 node.kind == PA10NodeKind::LinkageSpecification))
-		return false;
-
-	if ((node.kind == PA10NodeKind::MemberSpecifier && node.has_token &&
-			node.token == SimpleTokenType::KW_VIRTUAL) ||
-		(node.kind == PA10NodeKind::DeclSpecifier && node.has_token &&
-			node.token == SimpleTokenType::KW_VIRTUAL) ||
-		node.kind == PA10NodeKind::VirtualSpecifier ||
-		node.kind == PA10NodeKind::VirtSpecifier)
-		return true;
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-		if (has_virtual_member_specifier_impl(node.children[i], false))
-			return true;
-	return false;
-}
-
-bool has_virtual_member_specifier(const PA10AstNode& node)
-{
-	// A class/enum declaration appearing as a member is itself a nested
-	// declarative boundary, not a virtual member declaration of this record.
-	if (node.kind == PA10NodeKind::ClassSpecifier ||
-		node.kind == PA10NodeKind::ClassForwardDeclaration ||
-		node.kind == PA10NodeKind::EnumSpecifier)
-		return false;
-	return has_virtual_member_specifier_impl(node, true);
-}
-
 }
 
 bool PA11SemanticModel::layout_depends_on_template_parameter(TypeId type) const
@@ -235,7 +194,8 @@ bool append_lookup_candidate(std::vector<Identity>* candidates,
 }
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  record_layouts_(), named_record_sidecars_(), template_function_facts_(),
+	  record_layouts_(), named_record_sidecars_(),
+	  named_record_alignment_facts_(), template_function_facts_(),
 	  template_function_index_(), template_specialization_facts_(),
 	  template_specialization_index_(), scopes_(),
 	  unnamed_namespace_index_(),
@@ -1391,6 +1351,19 @@ void PA11SemanticModel::set_named_record_sidecar(NamedRecordId id,
 		throw std::runtime_error("invalid PA11 named-record sidecar identity");
 	named_record_sidecars_.set(id, sidecar);
 }
+const NamedRecordAlignmentFact* PA11SemanticModel::named_record_alignment_fact(
+	NamedRecordId id) const
+{
+	return id.valid() ? named_record_alignment_facts_.find(id) : NULL;
+}
+void PA11SemanticModel::set_named_record_alignment_fact(NamedRecordId id,
+	const NamedRecordAlignmentFact& fact)
+{
+	if (!id.valid() || id.value >= named_.size())
+		throw std::runtime_error(
+			"invalid PA11 named-record alignment fact identity");
+	named_record_alignment_facts_.set(id, fact);
+}
 void PA11SemanticModel::add_dump_binding_view(ScopeId scope, BindingId binding_id)
 {
 	DumpBindingView view;
@@ -2092,8 +2065,9 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 				add_type_binding(owner, name.last(), type, tag, true,
 					SourcePoint(child.source_begin));
 			}
-			apply_record_alignment(node, named_record_for_type(type), owner);
-			process_class_body(child, type, owner);
+			apply_record_alignment(node, named_record_for_type(type), owner,
+				true, &child);
+			process_class_body(child, type, owner, true);
 			result.base = type;
 			result.has_base = true;
 			continue;
@@ -2124,8 +2098,8 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 				add_type_binding(owner, name.last(), type, tag, true,
 					SourcePoint(child.source_begin));
 			}
-			apply_record_alignment(child, named_record_for_type(type), scope);
-			apply_record_alignment(node, named_record_for_type(type), scope);
+			apply_record_alignment(node, named_record_for_type(type), scope,
+				false, &child);
 			result.base = type;
 			result.has_base = true;
 			continue;
@@ -2286,34 +2260,6 @@ NamePath PA11SemanticModel::class_name(const PA10AstNode& node)
 	return NamePath();
 }
 
-void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner)
-{
-	const ScopeId class_scope = class_scope_for_type(type);
-	if (!class_scope.valid())
-		throw std::runtime_error("class has no class scope");
-	const NamedRecordId record_id = named_record_for_type(type);
-	if (!record_id.valid() || record_id.value >= named_.size())
-		throw std::runtime_error("class has no named record");
-	apply_record_alignment(node, record_id, owner);
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		const PA10NodeKind kind = node.children[i].kind;
-		if (kind == PA10NodeKind::ClassKey || kind == PA10NodeKind::BaseClause)
-		{
-			if (kind == PA10NodeKind::BaseClause)
-				process_base_clause(node.children[i], record_id, owner);
-			continue;
-		}
-		if (has_virtual_member_specifier(node.children[i]))
-			named_[record_id.value].has_virtual_member = true;
-		if (kind == PA10NodeKind::AccessSpecifier ||
-			kind == PA10NodeKind::EmptyDeclaration)
-			continue;
-		process_declaration(node.children[i], class_scope);
-	}
-	complete_record_layout(named_record_for_type(type));
-	(void)owner;
-}
 ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
 {
 	if (node.kind != PA10NodeKind::Literal || !node.has_literal ||
@@ -2554,7 +2500,9 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (spec.is_static && target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class)
 			mark_static_member(binding_id);
-		if (!spec.is_static && type_kind(type) != TypeKind::Function &&
+		if (binding(binding_id).kind == BindingKind::Variable &&
+			!is_static_member(binding_id) &&
+			type_kind(type) != TypeKind::Function &&
 			target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class)
 			apply_member_alignment(node.children.front(), binding_id, target);
@@ -2783,7 +2731,7 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		const TypeId type = ensure_named_class(target, name.last(), tag, false);
 		add_type_binding(target, name.last(), type, tag, true,
 			SourcePoint(node.source_begin));
-		apply_record_alignment(node, named_record_for_type(type), target);
+		apply_record_alignment(node, named_record_for_type(type), target, false);
 		return;
 	}
 	case PA10NodeKind::ClassSpecifier:
@@ -2793,7 +2741,8 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		if (name.empty())
 		{
 			const TypeId type = create_anonymous_class(scope, tag, node);
-			process_class_body(node, type, scope);
+			apply_record_alignment(node, named_record_for_type(type), scope, true);
+			process_class_body(node, type, scope, true);
 			if (tag == ClassTag::Union)
 				inject_anonymous_union(type, scope,
 					scopes_[scope.value].kind == ScopeKind::Block, &node);
@@ -2805,7 +2754,8 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		const TypeId type = ensure_named_class(target, name.last(), tag, true);
 		add_type_binding(target, name.last(), type, tag, true,
 			SourcePoint(node.source_begin));
-		process_class_body(node, type, target);
+		apply_record_alignment(node, named_record_for_type(type), target, true);
+		process_class_body(node, type, target, true);
 		return;
 	}
 	case PA10NodeKind::LinkageSpecification:

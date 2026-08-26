@@ -2,106 +2,92 @@
 
 ## Current Checkpoint Review
 
-This review is bounded to the typed record-layout, complete-type, and PA15
-class-storage increment landed in `453d03a6`. It does not claim completion of
-PA16.
+This review covers landed `5f8983b6` and the checkpoint repairs in
+`pa11_semantic.cpp`, `pa11_semantic_core.cpp`, `pa11_semantic_model.h`, and the
+course boundary regression.  The audited slice is the typed alignment and
+complete non-virtual single-base layout foundation; PA16 is not complete.
 
-The ownership path is coherent:
+The owned fact flow is:
 
 ```text
-NamedRecordId creation
-  -> one PA11 RecordLayout state/size/alignment/member-offset map
-  -> typed complete-type and sizeof consumers
-  -> PA15 obj<bytesxalignment>, local materialization, or namespace zero storage
+PA10 typed alignas argument/range or BaseName
+  -> PA11 canonical NamedRecordId / BindingSidecar fact
+  -> PA11 RecordLayout state, size, alignment, base, and member offsets
+  -> PA15 complete object LowIR type / existing sizeof consumer
 ```
 
-PA11 gives each named record one stable layout slot with explicit
-`Incomplete`, `Computing`, `Complete`, and `Failed` states. Class bindings are
-visited in declaration order; functions, nested type declarations, and static
-members do not become non-static layout members. Natural padding/alignment,
-empty records, arrays, pointers, self-pointers, previously completed member
-classes, and checked overflow are handled through typed `TypeId`/`NamedRecordId`
-facts. Incomplete members, by-value cycles, and overflow poison the layout
-state and do not trigger textual recovery or a retry guess.
+PA10 retains each `alignas` argument as typed syntax classified as a type-id or
+expression, including sparse ranges for multiple specifiers.  PA11 evaluates
+the argument semantically and combines all specifiers belonging to one
+declaration by the strictest non-zero value.  `alignas(0)` is retained as
+specifier presence but has no layout effect.  At canonical `NamedRecord`
+ownership, the effective non-zero request remains directly available to
+`RecordLayout`.  Only records that need alignment redeclaration checking
+receive a sparse `NamedRecordId`-keyed typed fact.  Its compact flags retain
+specifier presence, the first non-defining effective alignment, an O(1)
+conflict bit, and the defining effective alignment; an unaligned definition
+uses the canonical record's existing `defined` fact and does not allocate this
+cold entry.  Equivalent redeclarations, omitted non-defining specifiers, and
+the converse requirement that every defining declaration agree with any
+aligned declaration are checked without text recovery or a global rescan.
+Class natural-alignment validation remains in `RecordLayout`.
 
-The narrow namespace fact is
-`RecordLayout::checkpoint_zero_storage_eligible`. PA11 computes it during
-completion from typed DMI sidecars and completed member summaries. It is
-explicitly narrower than full C++ triviality. PA15 performs an O(1) class
-summary read, with only array-wrapper recursion by type depth. Ordinary and
-static member methods are skipped and therefore do not block an ordinary
-two-int global. A DMI is a typed rejection fact; no constructor/destructor
-meaning is recovered from rendered names. Unsupported user-declared
-destructor syntax remains an upstream PA11 rejection, which prevents fake
-zero/no-op-lifetime output.
+Class alignment belongs to the canonical `NamedRecord`.  A member alignment is
+attached only after canonical binding merge and only when the binding is a
+non-static variable in a class scope, using the canonical static-member fact;
+static objects remain outside this narrow `RecordLayout` member fact.  Natural
+member placement, checked padding/size arithmetic, and the class alignment
+are then consumed by the layout owner.
 
-Virtual-member collection stops at nested class/enum declarations and other
-declarative/executable boundaries, so a nested polymorphic class cannot mark
-its enclosing ordinary record polymorphic. Direct bases and virtual records
-are recorded and fail before natural layout; they are not silently flattened.
-An outer record containing a pointer to such a nested record remains usable.
-Unions, references, member-pointers, incomplete types, base/virtual records,
-and unsupported lifetime cases remain conservative boundaries.
+`BaseName` is resolved once to a `NamedRecordId`.  The path requires a complete
+non-union, non-virtual class base, rejects self, union-derived, virtual, and
+multiple-base forms, and records the direct base as a distinct subobject at
+offset zero.  Derived member placement starts after that complete base
+representation.  `RecordLayout` exposes explicit `Incomplete`, `Computing`,
+`Complete`, and `Failed` states; failure cleanup clears published storage and
+member/base facts, and derived records remain ineligible for the narrow
+namespace zero-storage shortcut.
 
-The non-template layout implementation was removed from the warned header.
-The PA11-owned typed summary/dependency portions remain in
-`pa11_semantic_core.cpp`; `pa11_record_layout.cpp` now owns
-`align_up_checked`, layout access/completion/checking, size, and alignment.
-That unit is registered only in `FRONTEND_OBJ_BASENAMES_cppgm++`, while
-`pa15_lowering_flow.cpp` owns lowering behavior only. The model, state, and
-identity are still single-owner; no duplicate layout map or unrelated tool
-source was added.
+The production layout owner remains `pa11_record_layout.cpp`, registered only
+for `cppgm++`.  PA15 consumes the completed typed layout and does not implement
+a second layout map or reconstruct facts from rendered output.
 
-## Fresh final evidence
+## Final evidence
 
-- `make -C dev cppgm++`: exit 0.
-- `make test-pa16`: exit 2, `32/243` passed, `211` failed, `243/243` covered.
-  Compared with the supplied baseline log, the fresh and baseline failure
-  sets are both 211 identities: no additions and no removals. Fresh residuals
-  are 5 generated-LowIR mismatches and 206 status mismatches (203 expected
-  success/actual failure, 3 expected failure/actual success). The five LowIR
-  identities are `general/200-unnamed-namespace-hidden-friend-single-definition`,
-  `general/300-alignas-class-layout`,
-  `general/300-enum-operator-adl-selects-matching-overload`,
-  `general/300-packed-class-layout`, and
-  `general/300-pragma-pack-followed-by-endif`. The baseline's
-  `general/300-alignas-derived-base-layout` moved from LowIR mismatch to the
-  rejected-status category without changing identity membership.
-- The requested through-PA15 command: exit 0, `1167/1167` passed.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: exit 0
-  with five historical bad-division warnings for `abi_mangle.h`,
-  `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
-  `pa15_lowering.h`; no fatal finding.
-- `cppgm.tests/course/pa16/400-typed-layout-boundary-regression.sh`: exit 0;
-  `sh -n` and `git diff --check`: exit 0. The script checks status and
-  absence of fake zero/lifetime output, not diagnostic wording.
+- `make test-pa16`: exit `2`, `35/243` passed, `208` failed, all `243/243`
+  covered.
+- Exact failure categories: 4 generated-LowIR mismatches, 201 expected-success
+  / actual-failure mismatches, and 3 expected-failure / actual-success
+  mismatches.
+- Comparison with
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+  failure-set additions `0`, removals `0`; no baseline-passing identity newly
+  fails; coverage remains `243/243`.
+- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`:
+  exit `0`, all `1167/1167` through-PA15 tests passed.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: exit `0`;
+  five nonfatal pre-existing `bad-division` warnings remain for
+  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+  `pa11_semantic_model.h`, and `pa15_lowering.h`.
+- `git diff --check`: exit `0`.
+- Focused representative checks and the course boundary regression pass,
+  including direct-base consumption, union-derived rejection, declaration
+  alignment consistency, `alignas(0)`, and same-declaration combination.
 
-The focused boundary cases include nested-class virtuality, direct-base
-rejection, ordinary/static methods on a two-int global, DMI/destructor
-rejection, reuse of a completed member summary, f80 array alignment
-(`obj<32x16>`), and the reachable signed LowIR `sizeof` range check.
+Structural performance evidence is representative only: alignment capture is a
+bounded forward range walk, redeclaration consistency is a sparse
+`NamedRecordId`-keyed O(1) fact merge, base identity is one lookup per class,
+and layout scans each class binding vector once with checked arithmetic per
+member.  No timing, RSS, allocation, or instrumentation-counter measurement
+was taken, so no numerical performance claim is made.
 
-## Architecture, performance, and limits
-
-The structural performance evidence is limited but direct: one summary is
-published while each record completes, and each namespace object consumes the
-typed summary without a class-scope DAG walk. Layout remains bounded by the
-class binding vector and wrapper/type depth. No timing, memory, or benchmark
-measurement was taken, so none is claimed.
-
-`sizeof` rejects values above `LLONG_MAX` because the actual LowIR size
-operand is signed `INTEGER_I64` and `integer_operand` stores `long long`; the
-maximum-array probe reaches this branch. The result is an implementation
-boundary, not a speculative unreachable guard.
-
-This checkpoint intentionally leaves inheritance, polymorphism, constructors,
-destructors, aggregate/member initialization, alignas/packing, bit-fields,
-lookup/ADL, and broader PA16 object lifetime to later owners. In particular,
-the failed base/virtual boundary must be implemented before any flattening or
-zero-storage eligibility claim is widened.
+Known boundary: the qualified out-of-class nested class-declarator alignment
+route remains outside this checkpoint.  The next technical PA16 checkpoint is
+to design and implement that narrow parser/semantic route with its own focused
+regression, while preserving the same typed ownership boundary.
 
 ## Audit ledger
 
 | checkpoint | current result | disposition |
 | --- | --- | --- |
-| `453d03a6` typed class-layout checkpoint | Fresh final gates satisfy the bounded criterion: `32/243`, `211` residual failures, `243/243` covered; through-PA15 `1167/1167`; audit exit 0 with 5 warnings; durable regression passed | Current audited checkpoint; PA16 remains incomplete |
+| `5f8983b6` plus checkpoint repairs | Typed alignment/redeclaration and single-base focused checks pass; final PA16 remains `35/243` with `208` failures and `243/243` coverage, exactly matching the supplied failure set; through-PA15 and file audit pass, with five listed nonfatal warnings | Current audited checkpoint; PA16 remains incomplete and the qualified nested class-declarator route is the next technical slice |

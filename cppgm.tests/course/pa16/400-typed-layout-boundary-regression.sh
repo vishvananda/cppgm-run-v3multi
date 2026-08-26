@@ -76,9 +76,58 @@ printf '%s\n' \
   'struct Derived : Base { int value; };' \
   'int main() { return sizeof(Derived); }' >"$base_source"
 base_output=$build_dir/derived.lowir
-expect_failure "$base_output" "$base_source" \
-  "derived record was flattened"
-assert_no_fake_zero_lifetime "$base_output" "derived record"
+"$app" --emit-lowir -O0 -o "$base_output" "$base_source"
+if ! rg -Fq -- 'const i64 8' "$base_output"; then
+  echo "complete direct-base layout was not consumed by sizeof" >&2
+  exit 1
+fi
+
+aligned_forward_source=$build_dir/aligned-forward.cpp
+printf '%s\n' \
+  'struct alignas(16) AlignedForward;' \
+  'struct AlignedForward { char value; };' \
+  'int main() { return 0; }' >"$aligned_forward_source"
+expect_failure "$build_dir/aligned-forward.lowir" "$aligned_forward_source" \
+  "unaligned definition followed an aligned forward declaration"
+
+mismatched_source=$build_dir/mismatched-alignment.cpp
+printf '%s\n' \
+  'struct alignas(16) Mismatched;' \
+  'struct alignas(32) Mismatched { char value; };' \
+  'int main() { return 0; }' >"$mismatched_source"
+expect_failure "$build_dir/mismatched-alignment.lowir" "$mismatched_source" \
+  "mismatched aligned declarations were accepted"
+
+later_conflict_source=$build_dir/later-alignment-conflict.cpp
+printf '%s\n' \
+  'struct Defined { char value; };' \
+  'struct alignas(16) Defined;' \
+  'int main() { return 0; }' >"$later_conflict_source"
+expect_failure "$build_dir/later-alignment-conflict.lowir" "$later_conflict_source" \
+  "a later aligned declaration conflicted with an existing definition"
+
+alignment_combination_source=$build_dir/alignment-combination.cpp
+printf '%s\n' \
+  'struct alignas(0) ZeroAlignment { char value; };' \
+  'struct alignas(0) alignas(16) CombinedAlignment { char value; };' \
+  'int main() { return sizeof(ZeroAlignment) + sizeof(CombinedAlignment); }' \
+  >"$alignment_combination_source"
+alignment_combination_output=$build_dir/alignment-combination.lowir
+"$app" --emit-lowir -O0 -o "$alignment_combination_output" \
+  "$alignment_combination_source"
+if ! rg -Fq -- 'const i64 1' "$alignment_combination_output" ||
+   ! rg -Fq -- 'const i64 16' "$alignment_combination_output"; then
+  echo "alignas(0) or same-declaration alignment combination changed layout" >&2
+  exit 1
+fi
+
+union_source=$build_dir/union-derived.cpp
+printf '%s\n' \
+  'struct Base { int base; };' \
+  'union Invalid : Base { int value; };' \
+  'int main() { return sizeof(Invalid); }' >"$union_source"
+expect_failure "$build_dir/union-derived.lowir" "$union_source" \
+  "union derived record was accepted"
 
 ordinary_source=$build_dir/ordinary-global.cpp
 printf '%s\n' \

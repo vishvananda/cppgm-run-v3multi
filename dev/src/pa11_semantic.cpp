@@ -7,6 +7,52 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+namespace
+{
+
+bool has_virtual_member_specifier_impl(const PA10AstNode& node, bool root)
+{
+	// A nested declaration owns its own members.  Do not let a virtual
+	// specifier in one of those declarations become a fact about the enclosing
+	// record.  Function bodies and other executable/declarative scopes are
+	// boundaries for the same reason.
+	if (!root &&
+		(node.kind == PA10NodeKind::ClassSpecifier ||
+		 node.kind == PA10NodeKind::ClassForwardDeclaration ||
+		 node.kind == PA10NodeKind::EnumSpecifier ||
+		 node.kind == PA10NodeKind::CompoundStatement ||
+		 node.kind == PA10NodeKind::LambdaExpression ||
+		 node.kind == PA10NodeKind::FunctionDefinition ||
+		 node.kind == PA10NodeKind::NamespaceDefinition ||
+		 node.kind == PA10NodeKind::LinkageSpecification))
+		return false;
+
+	if ((node.kind == PA10NodeKind::MemberSpecifier && node.has_token &&
+			node.token == SimpleTokenType::KW_VIRTUAL) ||
+		(node.kind == PA10NodeKind::DeclSpecifier && node.has_token &&
+			node.token == SimpleTokenType::KW_VIRTUAL) ||
+		node.kind == PA10NodeKind::VirtualSpecifier ||
+		node.kind == PA10NodeKind::VirtSpecifier)
+		return true;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (has_virtual_member_specifier_impl(node.children[i], false))
+			return true;
+	return false;
+}
+
+bool has_virtual_member_specifier(const PA10AstNode& node)
+{
+	// A class/enum declaration appearing as a member is itself a nested
+	// declarative boundary, not a virtual member declaration of this record.
+	if (node.kind == PA10NodeKind::ClassSpecifier ||
+		node.kind == PA10NodeKind::ClassForwardDeclaration ||
+		node.kind == PA10NodeKind::EnumSpecifier)
+		return false;
+	return has_virtual_member_specifier_impl(node, true);
+}
+
+}
+
 std::size_t PA11SemanticModel::alignment_specifier_value(
 	const PA10AlignmentSpecifier& spec, ScopeId scope)
 {
@@ -46,12 +92,14 @@ std::size_t PA11SemanticModel::alignment_specifier_value(
 }
 
 std::size_t PA11SemanticModel::requested_alignment(const PA10AstNode& node,
-	ScopeId scope)
+	ScopeId scope, bool* has_specifier)
 {
 	if (node.alignment_specifier_begin > ast_.alignment_specifiers.size() ||
 		node.alignment_specifier_count > ast_.alignment_specifiers.size() -
 			node.alignment_specifier_begin)
 		throw std::runtime_error("invalid PA11 alignment specifier range");
+	if (has_specifier != NULL)
+		*has_specifier = node.alignment_specifier_count != 0;
 	std::size_t result = 0;
 	for (std::size_t i = 0; i < node.alignment_specifier_count; ++i)
 	{
@@ -64,18 +112,101 @@ std::size_t PA11SemanticModel::requested_alignment(const PA10AstNode& node,
 }
 
 void PA11SemanticModel::apply_record_alignment(const PA10AstNode& node,
-	NamedRecordId record_id, ScopeId scope)
+	NamedRecordId record_id, ScopeId scope, bool definition,
+	const PA10AstNode* additional)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class)
 		throw std::runtime_error("alignment has no class owner");
-	const std::size_t alignment = requested_alignment(node, scope);
+	bool has_specifier = false;
+	std::size_t alignment = requested_alignment(node, scope, &has_specifier);
+	if (additional != NULL)
+	{
+		bool additional_has_specifier = false;
+		const std::size_t additional_alignment = requested_alignment(
+			*additional, scope, &additional_has_specifier);
+		has_specifier = has_specifier || additional_has_specifier;
+		if (additional_alignment > alignment)
+			alignment = additional_alignment;
+	}
+	NamedRecord& record = named_[record_id.value];
+	NamedRecordAlignmentFact alignment_fact;
+	const NamedRecordAlignmentFact* existing =
+		named_record_alignment_fact(record_id);
+	if (existing != NULL)
+		alignment_fact = *existing;
+	if (!has_specifier)
+	{
+		if (!definition)
+			return;
+		if (alignment_fact.has(NamedRecordAlignmentFlag::HasDefinition) ||
+			alignment_fact.has(NamedRecordAlignmentFlag::HasSpecifier))
+			throw std::runtime_error(
+				"class definition alignment does not match declaration");
+		// An unaligned definition needs no cold sidecar entry.  The canonical
+		// NamedRecord::defined fact rejects a later aligned non-defining
+		// declaration below.
+		return;
+	}
+	if (definition)
+	{
+		if (alignment_fact.has(NamedRecordAlignmentFlag::HasDefinition) ||
+			(alignment_fact.has(
+					NamedRecordAlignmentFlag::HasNondefiningSpecifier) &&
+				(alignment_fact.has(
+						NamedRecordAlignmentFlag::NondefiningConflict) ||
+					alignment_fact.nondefining_alignment != alignment)))
+			throw std::runtime_error(
+				"class definition alignment does not match declaration");
+	}
+	else if (alignment_fact.has(NamedRecordAlignmentFlag::HasDefinition))
+	{
+		if (!alignment_fact.has(
+				NamedRecordAlignmentFlag::DefinitionHasSpecifier) ||
+			alignment_fact.definition_alignment != alignment)
+			throw std::runtime_error(
+				"class declaration alignment does not match definition");
+	}
+	else if (record.defined)
+	{
+		throw std::runtime_error(
+			"class declaration alignment does not match definition");
+	}
+	else if (alignment_fact.has(
+			NamedRecordAlignmentFlag::HasNondefiningSpecifier) &&
+		alignment_fact.nondefining_alignment != alignment)
+		alignment_fact.add(NamedRecordAlignmentFlag::NondefiningConflict);
+	alignment_fact.add(NamedRecordAlignmentFlag::HasSpecifier);
+	if (definition)
+	{
+		alignment_fact.add(NamedRecordAlignmentFlag::HasDefinition);
+		alignment_fact.add(NamedRecordAlignmentFlag::DefinitionHasSpecifier);
+		alignment_fact.definition_alignment = alignment;
+	}
+	else
+	{
+		if (!alignment_fact.has(
+				NamedRecordAlignmentFlag::HasNondefiningSpecifier))
+		{
+			alignment_fact.add(
+				NamedRecordAlignmentFlag::HasNondefiningSpecifier);
+			alignment_fact.nondefining_alignment = alignment;
+		}
+	}
+	set_named_record_alignment_fact(record_id, alignment_fact);
 	if (alignment == 0)
 		return;
-	NamedRecord& record = named_[record_id.value];
-	if (record.has_requested_alignment &&
-		record.requested_alignment >= alignment)
+	if (record.has_requested_alignment)
+	{
+		if (record.requested_alignment != alignment)
+		{
+			if (!definition && !alignment_fact.has(
+					NamedRecordAlignmentFlag::HasDefinition))
+				return;
+			throw std::runtime_error("conflicting class alignment");
+		}
 		return;
+	}
 	if (record_id.value >= record_layouts_.size())
 		throw std::runtime_error("alignment has no record layout owner");
 	if (record_layouts_[record_id.value].state == RecordLayoutState::Complete)
@@ -106,6 +237,11 @@ void PA11SemanticModel::apply_member_alignment(const PA10AstNode& node,
 void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 	NamedRecordId record_id, ScopeId scope)
 {
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		throw std::runtime_error("base clause has no class owner");
+	if (named_[record_id.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("union cannot have a base class");
 	if (node.kind != PA10NodeKind::BaseClause || node.children.empty())
 		throw std::runtime_error("empty PA11 base clause");
 	if (node.children.size() != 1)
@@ -153,6 +289,37 @@ void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 	record.has_base = true;
 	record.direct_base = base_record;
 	record.direct_base_virtual = false;
+}
+
+void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
+	ScopeId owner, bool alignment_applied)
+{
+	const ScopeId class_scope = class_scope_for_type(type);
+	if (!class_scope.valid())
+		throw std::runtime_error("class has no class scope");
+	const NamedRecordId record_id = named_record_for_type(type);
+	if (!record_id.valid() || record_id.value >= named_.size())
+		throw std::runtime_error("class has no named record");
+	if (!alignment_applied)
+		apply_record_alignment(node, record_id, owner, true);
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10NodeKind kind = node.children[i].kind;
+		if (kind == PA10NodeKind::ClassKey || kind == PA10NodeKind::BaseClause)
+		{
+			if (kind == PA10NodeKind::BaseClause)
+				process_base_clause(node.children[i], record_id, owner);
+			continue;
+		}
+		if (has_virtual_member_specifier(node.children[i]))
+			named_[record_id.value].has_virtual_member = true;
+		if (kind == PA10NodeKind::AccessSpecifier ||
+			kind == PA10NodeKind::EmptyDeclaration)
+			continue;
+		process_declaration(node.children[i], class_scope);
+	}
+	complete_record_layout(named_record_for_type(type));
+	(void)owner;
 }
 
 static bool is_constant_comparison_token(SimpleTokenType token)

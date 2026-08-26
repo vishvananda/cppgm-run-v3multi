@@ -526,8 +526,9 @@ struct NamedRecord
 	NamedRecordId direct_base;
 	bool direct_base_virtual;
 	bool has_virtual_member;
-	// The strongest non-zero class alignment requested by an alignas
-	// declaration.  The layout owner validates it against natural alignment.
+	// The effective non-zero alignment for the canonical record.  This is the
+	// strictest value within one declaration; equivalent redeclarations are
+	// checked separately below rather than merged by strength.
 	bool has_requested_alignment;
 	std::size_t requested_alignment;
 	bool scoped_enum;
@@ -549,6 +550,40 @@ struct NamedRecord
 		  has_underlying(false), underlying(), template_template(false), scope(),
 		  has_generated_identity(false), generated_identity(), dump_scope_view()
 	{}
+};
+
+// Only canonical records that need alignment redeclaration checking receive
+// this sparse typed fact.  The effective non-zero request remains on
+// NamedRecord because RecordLayout consumes it directly.
+enum class NamedRecordAlignmentFlag : std::uint8_t
+{
+	HasSpecifier = 1,
+	HasNondefiningSpecifier = 2,
+	NondefiningConflict = 4,
+	HasDefinition = 8,
+	DefinitionHasSpecifier = 16
+};
+
+struct NamedRecordAlignmentFact
+{
+	std::uint8_t flags;
+	std::size_t nondefining_alignment;
+	std::size_t definition_alignment;
+
+	NamedRecordAlignmentFact()
+		: flags(0), nondefining_alignment(0), definition_alignment(0)
+	{}
+
+	bool has(NamedRecordAlignmentFlag flag) const
+	{
+		return (flags & static_cast<std::uint8_t>(flag)) != 0;
+	}
+
+	void add(NamedRecordAlignmentFlag flag)
+	{
+		flags = static_cast<std::uint8_t>(flags |
+			static_cast<std::uint8_t>(flag));
+	}
 };
 
 // A record's object layout is a PA11 semantic fact keyed by NamedRecordId.
@@ -1238,6 +1273,8 @@ private:
 	std::vector<RecordLayout> record_layouts_;
 	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
 		named_record_sidecars_;
+	FlatIndex<NamedRecordId, NamedRecordAlignmentFact,
+		IdentityHash<NamedRecordId> > named_record_alignment_facts_;
 	std::vector<TemplateFunctionFact> template_function_facts_;
 	FlatIndex<NameId, TemplateFunctionList, IdentityHash<NameId> >
 		template_function_index_;
@@ -1490,6 +1527,12 @@ private:
 	void set_named_record_sidecar(NamedRecordId id,
 		const NamedRecordSidecar& sidecar)
 	;
+	const NamedRecordAlignmentFact* named_record_alignment_fact(
+		NamedRecordId id) const
+	;
+	void set_named_record_alignment_fact(NamedRecordId id,
+		const NamedRecordAlignmentFact& fact)
+	;
 	void remember_type_display_path(TypeId type, const NamePath& path)
 	;
 	bool canonical_type_display_path(TypeId type, const NamePath& path) const
@@ -1649,10 +1692,12 @@ private:
 	std::size_t alignment_specifier_value(
 		const PA10AlignmentSpecifier& spec, ScopeId scope)
 	;
-	std::size_t requested_alignment(const PA10AstNode& node, ScopeId scope)
+	std::size_t requested_alignment(const PA10AstNode& node, ScopeId scope,
+		bool* has_specifier = NULL)
 	;
 	void apply_record_alignment(const PA10AstNode& node,
-		NamedRecordId record, ScopeId scope)
+		NamedRecordId record, ScopeId scope, bool definition,
+		const PA10AstNode* additional = NULL)
 	;
 	void apply_member_alignment(const PA10AstNode& node,
 		BindingId binding, ScopeId scope)
@@ -1660,7 +1705,8 @@ private:
 	void process_base_clause(const PA10AstNode& node,
 		NamedRecordId record, ScopeId scope)
 	;
-	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner)
+	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner,
+		bool alignment_applied)
 	;
 	TypeId type_from_type_id(const PA10AstNode& node, ScopeId scope)
 	;
