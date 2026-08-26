@@ -1873,6 +1873,12 @@ LoweredValue Pa15Lowerer::apply_reinterpret_conversion(LoweredValue result,
 		materialize_lvalue_value(&result, result.type);
 	if (result.value.kind == Operand::OP_INTEGER && target.is_pointer())
 	{
+		// PA13 permits a pointer literal only for the typed null value.  A
+		// nonzero integer-to-pointer reinterpret has no representable LowIR
+		// conversion in this stage; reject it before emitting an invalid copy.
+		if (result.value.int_value != 0)
+			throw std::runtime_error(
+				"PA15 unsupported nonzero integer-to-pointer reinterpret");
 		result.value.literal_type = target;
 		Instruction instruction;
 		instruction.kind = Instruction::IK_COPY;

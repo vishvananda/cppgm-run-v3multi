@@ -2,75 +2,75 @@
 
 ## Current Checkpoint Review
 
-This review is for the landed increment `3bf82dbe45fcc77af7246331b9c6a88674ed43ff`
-(`PA15: lower typed enum scalars`), parent checkpoint `dea5352e`, and is
-bounded to the enum scalar ownership path. The fresh final PA15 stage result
-is `79/109` with all `109` covered and exactly `30` residual failures,
-recorded in `/tmp/pa15-enum-followup-full-pa15.log`. Comparison with the
-incoming primary log at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` has
-zero names in final-minus-incoming and zero names in incoming-minus-final; no
-failure was added or replaced. The residual failures, including
-`200-reinterpret-enum-to-pointer`, remain outside this checkpoint.
+This review covers landed increment `fbc3cce76cfbe89872651f8c2d8e5ab410e3607c`
+(`PA15: preserve typed callable and reference conversions`), parent checkpoint
+`ca3c38ca`, and the bounded guard plus owner regression 403. Final validation
+is `90/109`, all `109/109` covered, with the same 19 failure names as the
+authoritative incoming log. The mechanical comparison in
+`/tmp/pa15-checkpoint-failure-set.log` proves final-minus-incoming `0` and
+incoming-minus-final `0`; no new or replacement failure was introduced.
 
-The ownership trace is single and typed:
+The ownership trace is one typed pipeline:
 
-1. PA11 owns enum declaration scope, the canonical `NamedRecord` and enum
-   `TypeId`, the selected underlying `TypeId`, and enumerator bindings. Enum
-   initializers are evaluated in the enum value scope. Explicit integral
-   underlying types are checked against each enumerator's signed range or
-   unsigned bit width, while implicit scoped and unscoped representations are
-   selected from the complete value range. Binding values retain signedness
-   and 64-bit bits for later consumers.
-2. PA12 consumes those canonical facts for unscoped integral promotion and
-   overload ranking, same-type scoped-enum comparison operation types,
-   scalar braced assignment, and default arguments. Default arguments are
-   recorded in a contiguous range owned by the canonical `FunctionFact`; a
-   declaration, definition, or compatible redeclaration contributes the
-   default expression from that declaration context, and calls reuse the
-   converted fact. Typed constant-expression folding preserves the operation
-   type's width and signedness, including unsigned wrap. Integral-to-bool
-   conversion normalizes nonzero values to `1`; fixed enum underlying-type
-   representability remains an enum-declaration check at its owner, so it
-   still rejects a fixed `bool` enumerator value outside `0`/`1`.
-3. PA15 consumes the typed facts through `low_type`, `operation_type`, and
-   canonical enum identity. Conditional evaluation reuses the selected
-   branch's typed `ConstValue.type`, type-walks only the unselected branch,
-   and computes the common/promoted integral type from those two canonical
-   TypeIds. Same-type scoped branches retain their enum type. A selected
-   nested chain therefore performs one evaluator walk plus one bounded
-   unselected-branch type walk per level, without rewalking the whole
-   conditional node. Shift counts are checked against the promoted left
-   operation type's actual bit width. It emits the PA13 i64 spelling for
-   64-bit scalar storage while retaining signedness in the TypeId-driven
-   operator selection; comparisons, division, remainder, shifts, compound
-   operators, and pointer offsets therefore retain the appropriate signed or
-   unsigned LowIR form. No textual downgrade, name rediscovery, second
-   semantic model, whole-program retry, or host/reference compiler is
-   involved.
+1. PA10 records nearest-binding `PA10NameKind` type/value scopes. Temporary
+   declarator scopes do not leak; namespace, class, and compound scopes do.
+   Parameter names are collected once from the immediate clause and published
+   when a function-definition body scope opens. C-style/functional cast routing
+   uses nearest typed/value classification and bounded indexed delimiter facts.
+   Parser/cast/call probes exit `0` in `/tmp/pa15-checkpoint-parser-probes.log`
+   and `/tmp/pa15-checkpoint-callable-probe.log`.
+2. PA11 owns canonical `TypeId` identity. PA12 publishes
+   `FunctionToPointer`, reference/value categories, conversion facts, and
+   `SemanticFact::callable_type`. PA15 consumes the callable type directly for
+   direct/indirect calls and emits typed indirect signature/parameter metadata;
+   the callable probe shows pointer-valued reference return and typed indirect
+   call flow.
+3. `cv_cast_compatible_impl` recursively checks pointer, reference, array,
+   member-pointer, and complete function signatures while stripping only cv
+   wrappers. The corrected `const_nested_store` probe reports frontend/backend
+   `0/0` and validates the nested similar-pointer owner path without the
+   unrelated bool-result conversion. Function-signature mismatch is rejected;
+   reinterpret-reference compatibility remains in the supported typed scalar
+   domain.
+4. PA12's scalar-to-pointer reinterpret boundary could otherwise reach PA15 as
+   a nonzero integer literal. PA13 has no pointer/integer conversion opcode and
+   only permits typed zero pointer literals. The PA15 guard rejects nonzero
+   integer/enum values before invalid `copy ptr N`; typed integer/enum/nullptr
+   zero, pointer-to-pointer, and the typed global address relocation path remain
+   valid. Dynamic integer-to-pointer and pointer-to-integral runtime values
+   remain rejected within this PA13 contract.
+5. PA12's transactional floating sidecar retains sparse PA2-decoded f32/f64/
+   f80 bytes. PA15 checks the sidecar range/fundamental type and decodes once at
+   the literal edge. `/tmp/pa15-checkpoint-float-sidecar.log` records the three
+   literal types and `sizeof(SemanticFact) = 208`.
+6. The landed LowIR parameter serializer and main-only fallthrough behavior
+   remain intact. The focused matrix, full PA15 gate, and through-PA14 gate
+   cover those boundaries; the remaining 19 failures are not expanded here.
 
-The audit repaired the in-scope ownership gaps: declaration-only default facts
-were not attached to the canonical function across compatible declarations;
-fixed-underlying enum values were not range-checked; typed constant folding
-could lose unsigned width or reject defined unsigned wrap; shifts used a
-hard-coded width; bool conversion did not normalize nonzero values; and a
-conditional expression returned its selected branch without applying its
-common type. The evaluator remains in the semantic owner, and the scoped
-comparison compatibility context is limited to the existing static-assert
-constant-expression use. This follow-up removed the selected-branch
-conditional rewalk and kept the common-type helper owned by the same typed
-constant evaluator. The existing same-scoped-enum declaration fold remains
-supported for the checked enum-body bitwise fixture. No residual failure was
-targeted.
+The durable owner regression
+`cppgm.tests/course/pa15/403-typed-reinterpret-boundary-regression.sh` exits
+`0` (`/tmp/pa15-checkpoint-403.log`). It validates typed zero integer/enum and
+pointer-to-pointer LowIR with `lowir2cy86`, and expects nonzero integer/enum
+reinterprets to fail before invalid LowIR. No PA15 test or `.ref` fixture was
+changed. Build and the focused 17-test matrix exit `0`; logs are
+`/tmp/pa15-checkpoint-build.log` and `/tmp/pa15-checkpoint-focused.log`.
 
-The changed path remains bounded: enum processing and default-range filling
-are linear in their source facts, canonical identity and same-type checks are
-O(1), and the existing ordered identity structures retain their ordinary
-O(n log n) behavior. Conditional selected-chain evaluation reuses each
-selected typed result and performs only the other branch's type walk at that
-level. Fresh immutable/interleaved/median evidence is recorded below from
-the nested-chain artifact; it is limited to measured bounded inputs and makes
-no universal performance claim.
+The required full gate exits `2` only because the expected 19 residual tests
+remain; it reports `90/109` and `109/109` coverage in
+`/tmp/pa15-checkpoint-full-pa15.log`. The exact through-PA14 command exits `0`
+with `1058/1058` (`/tmp/pa15-checkpoint-through-pa14.log`). The source file
+audit exits `0` with only the five known header-division warnings
+(`/tmp/pa15-checkpoint-file-audit.log`), and `git diff --check` exits `0`
+(`/tmp/pa15-checkpoint-diff-check.log`).
+
+The refreshed §7 measurement uses immutable compiler copy
+`/tmp/pa15-checkpoint-perf.oyAXma/cppgm++-immutable`, mode `555`, with the
+recorded hash and three interleaved rounds in
+`/tmp/pa15-checkpoint-performance-immutable.log`. Equivalent 8/32/128-call
+inputs produce 41/113/401 LowIR lines; medians are 0.00000s wall and
+4896/5104/6128 KiB RSS. These are bounded structural/resource observations,
+not universal complexity claims. No host compiler, reference binary, duplicate
+semantic model, text/name rediscovery, or whole-program retry was introduced.
 
 ## Historical Checkpoint Review — typed global pointer null/zero initializers
 
@@ -272,4 +272,4 @@ checkpoint.
 |---|---|---|
 | Historical | PA15 full-stage / checkpointAudit — typed address/value ownership | Amended PA12 relocation ownership with explicit `Value`/`ObjectAddress`/`ArrayDecay` context, rejecting bare pointer/scalar lvalue relocations while preserving object, array, one-past, function, and array-element forms; focused `20/20` plus probes, through-PA14 `1058/1058`, PA15 `68/109` with the exact historical 41 names and all `109` covered, immutable `n=256` performance evidence, file audit pass, and diff-check pass. |
 | Historical | PA15 full-stage / checkpointAudit — typed global pointer null/zero initializers | Hardened transactional PA12 literal snapshots and binding invariants; kept PA15 on `ConstantAddressFact` identity/ranges; tightened terminal/destination-safe typed null chains and pointer cv behavior; corrected lvalue loads and runtime `nullptr`-to-bool typing; target matrix `10/10`, narrow regression pass, final PA15 `70/109` with the exact unchanged 39-name set and all `109` covered, through-PA14 `1058/1058`, file audit pass, diff-check pass, and immutable performance evidence. Preserved as historical context. |
-| Current | PA15 full-stage / checkpointAudit — typed enum scalar ownership (`3bf82dbe45fcc77af7246331b9c6a88674ed43ff`) | Follow-up build `0`, compact focused matrix `13/13`, selected-chain relational probe `0`, durable `402` regression `0`, final PA15 `79/109` with all `109` covered and the exact unchanged `30`-name residual set, through-PA14 `1058/1058`, file-audit exit `0` with five pre-existing warnings, diff-check exit `0`, and fresh nested-chain immutable performance evidence under `/tmp/pa15-final-enum-perf.relational-final.ES1ytx`. |
+| Current | PA15 full-stage / checkpointAudit — typed callable/reference and LowIR-safe reinterpret ownership (`fbc3cce76cfbe89872651f8c2d8e5ab410e3607c` + bounded audit repair) | Final `90/109`, all `109` covered, exact incoming 19-name set retained, final-minus-incoming `0`, incoming-minus-final `0`; focused matrix `17/17`, owner regression 403 exit `0`, through-PA14 `1058/1058`, file audit exit `0` with five known warnings, diff-check exit `0`, and refreshed immutable interleaved performance evidence. The guard rejects nonzero integer-to-pointer emission because PA13 has no pointer/integer conversion; this checkpoint adds no broader residual repair. |

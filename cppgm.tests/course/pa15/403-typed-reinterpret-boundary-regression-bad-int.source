@@ -1,0 +1,9 @@
+int *bad_integer()
+{
+  return reinterpret_cast<int *>(42);
+}
+
+int main()
+{
+  return 0;
+}

@@ -1,0 +1,11 @@
+enum { typed_nonzero = 1 };
+
+int *bad_enum()
+{
+  return reinterpret_cast<int *>(typed_nonzero);
+}
+
+int main()
+{
+  return 0;
+}

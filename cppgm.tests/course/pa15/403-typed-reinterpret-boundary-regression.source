@@ -1,0 +1,21 @@
+enum { typed_zero = 0 };
+
+int *from_integer_zero()
+{
+  return reinterpret_cast<int *>(0);
+}
+
+int *from_enum_zero()
+{
+  return reinterpret_cast<int *>(typed_zero);
+}
+
+int *from_pointer(const int *value)
+{
+  return reinterpret_cast<int *>(value);
+}
+
+int main()
+{
+  return 0;
+}
