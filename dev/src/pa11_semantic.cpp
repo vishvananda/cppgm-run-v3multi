@@ -5,6 +5,428 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+TypeId PA11SemanticModel::constant_expression_type(
+	const PA10AstNode& node, ScopeId scope,
+	bool allow_scoped_enum_integral_comparison)
+{
+	if (node.kind == PA10NodeKind::Literal)
+		return fundamental(node.literal.type);
+	if (node.kind == PA10NodeKind::KeywordLiteral)
+	{
+		if (node.token == SimpleTokenType::KW_TRUE ||
+			node.token == SimpleTokenType::KW_FALSE)
+			return fundamental(FundamentalType::Bool);
+		return TypeId();
+	}
+	if (node.kind == PA10NodeKind::ParenthesizedExpression)
+	{
+		if (node.children.size() != 1)
+			return TypeId();
+		return constant_expression_type(node.children.front(), scope,
+			allow_scoped_enum_integral_comparison);
+	}
+	if (node.kind == PA10NodeKind::IdExpression)
+	{
+		const std::vector<ValueRef> values = lookup_value_path(
+			name_path(node), scope);
+		if (!values.empty())
+			return binding(values.front().binding).type;
+		return TypeId();
+	}
+	if (node.kind == PA10NodeKind::CastExpression)
+	{
+		if (node.children.size() < 2)
+			return TypeId();
+		return type_from_type_id(node.children.front(), scope);
+	}
+	if (node.kind == PA10NodeKind::SizeofExpression)
+		return fundamental(FundamentalType::UnsignedLongInt);
+	if (node.kind == PA10NodeKind::TypeTraitExpression)
+		return fundamental(FundamentalType::LongLongInt);
+	if (node.kind == PA10NodeKind::UnaryExpression)
+	{
+		if (node.children.size() != 1)
+			return TypeId();
+		const TypeId operand = constant_expression_type(
+			node.children.front(), scope, allow_scoped_enum_integral_comparison);
+		if (node.token == SimpleTokenType::OP_LNOT)
+			return fundamental(FundamentalType::Bool);
+		if (node.token == SimpleTokenType::OP_PLUS ||
+			node.token == SimpleTokenType::OP_MINUS ||
+			node.token == SimpleTokenType::OP_COMPL)
+			return promote_integral_type(operand);
+		return TypeId();
+	}
+	if (node.kind == PA10NodeKind::BinaryExpression ||
+		node.kind == PA10NodeKind::AssignmentExpression)
+	{
+		if (node.children.size() != 2)
+			return TypeId();
+		const TypeId left = constant_expression_type(node.children[0], scope,
+			allow_scoped_enum_integral_comparison);
+		const TypeId right = constant_expression_type(node.children[1], scope,
+			allow_scoped_enum_integral_comparison);
+		const NamedRecordId left_record = named_record_for_type(left);
+		const bool same_scoped_enum = left == right && left_record.valid() &&
+			left_record.value < named_.size() &&
+			named_[left_record.value].kind == NamedKind::Enum &&
+			named_[left_record.value].scoped_enum;
+		if (node.token == SimpleTokenType::OP_COMMA)
+			return right;
+		if (node.token == SimpleTokenType::OP_LAND ||
+			node.token == SimpleTokenType::OP_LOR ||
+			(node.token >= SimpleTokenType::OP_EQ &&
+			 node.token <= SimpleTokenType::OP_GE))
+			return fundamental(FundamentalType::Bool);
+		if (node.token == SimpleTokenType::OP_LSHIFT ||
+			node.token == SimpleTokenType::OP_RSHIFT)
+			return integral_id(left) && integral_id(right) ?
+				promote_integral_type(left) : TypeId();
+		if (same_scoped_enum || (integral_id(left) && integral_id(right)))
+			return common_integral_type(left, right);
+		return TypeId();
+	}
+	if (node.kind == PA10NodeKind::ConditionalExpression &&
+		node.children.size() == 3)
+	{
+		const TypeId when_true = strip_cv_type(expression_object_type(
+			constant_expression_type(node.children[1], scope,
+				allow_scoped_enum_integral_comparison)));
+		const TypeId when_false = strip_cv_type(expression_object_type(
+			constant_expression_type(node.children[2], scope,
+				allow_scoped_enum_integral_comparison)));
+		if (when_true == when_false)
+			return when_true;
+		if (integral_id(when_true) && integral_id(when_false))
+			return common_integral_type(when_true, when_false);
+	}
+	return TypeId();
+}
+
+ConstValue PA11SemanticModel::constant_value_as_type(
+	const ConstValue& value, TypeId type) const
+{
+	if (!value.valid)
+		return value;
+	const TypeId object_type = strip_cv_type(expression_object_type(type));
+	type = object_type;
+	const NamedRecordId record = named_record_for_type(type);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Enum)
+	{
+		if (!named_[record.value].has_underlying)
+			type = fundamental(FundamentalType::Int);
+		else
+			type = strip_cv_type(named_[record.value].underlying);
+	}
+	FundamentalType fundamental_type;
+	if (!fundamental_of(type, &fundamental_type) ||
+		!integral_type(fundamental_type))
+		throw NonConstantExpression("constant expression is not integral");
+	const std::size_t width = type_size(type) * 8;
+	if (width == 0 || width > 64)
+		throw NonConstantExpression("constant expression type is too wide");
+	if (fundamental_type == FundamentalType::Bool)
+		return ConstValue(true, value.value == 0 ? 0 : 1, false, object_type);
+	const bool is_unsigned = unsigned_type(fundamental_type);
+	if (is_unsigned)
+	{
+		const __int128 modulus = static_cast<__int128>(1) << width;
+		__int128 normalized = value.value % modulus;
+		if (normalized < 0) normalized += modulus;
+		return ConstValue(true, normalized, true, object_type);
+	}
+	const __int128 modulus = static_cast<__int128>(1) << width;
+	const __int128 minimum = -(modulus >> 1);
+	const __int128 maximum = (modulus >> 1) - 1;
+	if (value.value < minimum || value.value > maximum)
+		throw NonConstantExpression("constant expression overflow");
+	return ConstValue(true, value.value, false, object_type);
+}
+
+ConstValue PA11SemanticModel::eval_constexpr_unary(const PA10AstNode& node,
+	ScopeId scope, bool allow_scoped_enum_integral_comparison)
+{
+	if (node.children.size() != 1)
+		throw std::runtime_error("invalid unary constant expression");
+	ConstValue value = eval_constexpr(node.children.front(), scope,
+		allow_scoped_enum_integral_comparison);
+	const TypeId operation_type = node.token == SimpleTokenType::OP_LNOT ?
+		fundamental(FundamentalType::Bool) : promote_integral_type(value.type);
+	if (node.token != SimpleTokenType::OP_LNOT && !operation_type.valid())
+		throw NonConstantExpression("unsupported unary constant operator");
+	if (node.token != SimpleTokenType::OP_LNOT)
+		value = constant_value_as_type(value, operation_type);
+	switch (node.token)
+	{
+	case SimpleTokenType::OP_PLUS:
+		break;
+	case SimpleTokenType::OP_MINUS:
+		value.value = -value.value;
+		break;
+	case SimpleTokenType::OP_LNOT:
+		value.value = value.value == 0 ? 1 : 0;
+		value.is_unsigned = false;
+		break;
+	case SimpleTokenType::OP_COMPL:
+		value.value = ~value.value;
+		break;
+	default:
+		throw NonConstantExpression("unsupported unary constant operator");
+	}
+	if (node.token == SimpleTokenType::OP_LNOT)
+		return constant_value_as_type(value, fundamental(FundamentalType::Bool));
+	return constant_value_as_type(value, operation_type);
+}
+
+ConstValue PA11SemanticModel::eval_constexpr_binary(const PA10AstNode& node,
+	ScopeId scope, bool allow_scoped_enum_integral_comparison)
+{
+	if (node.children.size() != 2)
+		throw std::runtime_error("invalid binary constant expression");
+	const ConstValue left_value = eval_constexpr(node.children[0], scope,
+		allow_scoped_enum_integral_comparison);
+	if (node.token == SimpleTokenType::OP_LAND && left_value.value == 0)
+		return ConstValue(true, 0, false, fundamental(FundamentalType::Bool));
+	if (node.token == SimpleTokenType::OP_LOR && left_value.value != 0)
+		return ConstValue(true, 1, false, fundamental(FundamentalType::Bool));
+	const ConstValue right_value = eval_constexpr(node.children[1], scope,
+		allow_scoped_enum_integral_comparison);
+	const TypeId left_type = left_value.type;
+	const TypeId right_type = right_value.type;
+	const bool comparison = node.token == SimpleTokenType::OP_EQ ||
+		node.token == SimpleTokenType::OP_NE ||
+		node.token == SimpleTokenType::OP_LT ||
+		node.token == SimpleTokenType::OP_LE ||
+		node.token == SimpleTokenType::OP_GT ||
+		node.token == SimpleTokenType::OP_GE;
+	const bool logical = node.token == SimpleTokenType::OP_LAND ||
+		node.token == SimpleTokenType::OP_LOR;
+	TypeId operation_type;
+	if (comparison)
+	{
+		const NamedRecordId record = named_record_for_type(left_type);
+		const NamedRecordId right_record = named_record_for_type(right_type);
+		const bool same_scoped_enum = left_type == right_type && record.valid() &&
+			record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Enum &&
+			named_[record.value].scoped_enum;
+		operation_type = same_scoped_enum ? left_type :
+			(integral_id(left_type) && integral_id(right_type) ?
+			common_integral_type(left_type, right_type) : TypeId());
+		if (!operation_type.valid() && allow_scoped_enum_integral_comparison)
+		{
+			const bool left_scoped = record.valid() && record.value < named_.size() &&
+				named_[record.value].kind == NamedKind::Enum &&
+				named_[record.value].scoped_enum;
+			const bool right_scoped = right_record.valid() &&
+				right_record.value < named_.size() &&
+				named_[right_record.value].kind == NamedKind::Enum &&
+				right_record.value < named_.size() &&
+				named_[right_record.value].scoped_enum;
+			if (left_scoped && integral_id(right_type))
+			{
+				const TypeId underlying = named_[record.value].has_underlying ?
+					named_[record.value].underlying :
+					fundamental(FundamentalType::Int);
+				operation_type = common_integral_type(underlying, right_type);
+			}
+			else if (right_scoped && integral_id(left_type))
+			{
+				const TypeId underlying = named_[right_record.value].has_underlying ?
+					named_[right_record.value].underlying :
+					fundamental(FundamentalType::Int);
+				operation_type = common_integral_type(left_type, underlying);
+			}
+		}
+	}
+	else if (node.token == SimpleTokenType::OP_LSHIFT ||
+		node.token == SimpleTokenType::OP_RSHIFT)
+	{
+		if (integral_id(left_type) && integral_id(right_type))
+			operation_type = promote_integral_type(left_type);
+	}
+	else if (!logical && node.token != SimpleTokenType::OP_COMMA)
+	{
+		const NamedRecordId record = named_record_for_type(left_type);
+		const bool same_scoped_enum = left_type == right_type && record.valid() &&
+			record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Enum &&
+			named_[record.value].scoped_enum;
+		if (same_scoped_enum || (integral_id(left_type) && integral_id(right_type)))
+			operation_type = common_integral_type(left_type, right_type);
+	}
+	if (!logical && node.token != SimpleTokenType::OP_COMMA &&
+		!operation_type.valid())
+		throw NonConstantExpression("invalid integral constant expression");
+	ConstValue left = left_value;
+	ConstValue right = right_value;
+	if (operation_type.valid())
+	{
+		left = constant_value_as_type(left, operation_type);
+		const TypeId right_operation_type =
+			node.token == SimpleTokenType::OP_LSHIFT ||
+			node.token == SimpleTokenType::OP_RSHIFT ?
+			promote_integral_type(right_type) : operation_type;
+		right = constant_value_as_type(right, right_operation_type);
+	}
+	ConstValue result(true, 0, operation_type.valid() &&
+		unsigned_integral_type(operation_type));
+	switch (node.token)
+	{
+	case SimpleTokenType::OP_PLUS: result.value = left.value + right.value; break;
+	case SimpleTokenType::OP_MINUS: result.value = left.value - right.value; break;
+	case SimpleTokenType::OP_STAR:
+		result.value = result.is_unsigned ?
+			static_cast<__int128>(static_cast<unsigned __int128>(left.value) *
+				static_cast<unsigned __int128>(right.value)) :
+			left.value * right.value;
+		break;
+	case SimpleTokenType::OP_DIV:
+		if (right.value == 0) throw NonConstantExpression("constant division by zero");
+		if (!result.is_unsigned && left.value ==
+			static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) &&
+			right.value == -1)
+			throw NonConstantExpression("constant signed division overflow");
+		result.value = left.value / right.value; break;
+	case SimpleTokenType::OP_MOD:
+		if (right.value == 0) throw NonConstantExpression("constant modulo by zero");
+		if (!result.is_unsigned && left.value ==
+			static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) &&
+			right.value == -1)
+			throw NonConstantExpression("constant signed modulo overflow");
+		result.value = left.value % right.value; break;
+	case SimpleTokenType::OP_LSHIFT:
+	case SimpleTokenType::OP_RSHIFT:
+	{
+		const std::size_t width = type_size(operation_type) * 8;
+		if (width == 0 || width > 64 || right.value < 0 ||
+			right.value >= static_cast<__int128>(width))
+			throw NonConstantExpression("constant shift count out of range");
+		const unsigned int shift = static_cast<unsigned int>(right.value);
+		if (node.token == SimpleTokenType::OP_LSHIFT)
+		{
+			if (!left.is_unsigned && left.value < 0)
+				throw NonConstantExpression("constant signed shift overflow");
+			result.value = static_cast<__int128>(
+				static_cast<unsigned __int128>(left.value) << shift);
+		}
+		else
+			result.value = left.is_unsigned ?
+				static_cast<__int128>(static_cast<unsigned __int128>(left.value) >> shift) :
+				left.value >> shift;
+		break;
+	}
+	case SimpleTokenType::OP_BOR: result.value = left.value | right.value; break;
+	case SimpleTokenType::OP_XOR: result.value = left.value ^ right.value; break;
+	case SimpleTokenType::OP_AMP: result.value = left.value & right.value; break;
+	case SimpleTokenType::OP_EQ: result.value = left.value == right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_NE: result.value = left.value != right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_LT: result.value = left.value < right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_LE: result.value = left.value <= right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_GT: result.value = left.value > right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_GE: result.value = left.value >= right.value; result.is_unsigned = false; break;
+	case SimpleTokenType::OP_LAND: result.value = (left.value != 0 && right.value != 0); result.is_unsigned = false; break;
+	case SimpleTokenType::OP_LOR: result.value = (left.value != 0 || right.value != 0); result.is_unsigned = false; break;
+	case SimpleTokenType::OP_COMMA: result = right; break;
+	default: throw NonConstantExpression("unsupported binary constant operator");
+	}
+	if (comparison || logical)
+		return constant_value_as_type(result, fundamental(FundamentalType::Bool));
+	if (node.token == SimpleTokenType::OP_COMMA)
+		return right;
+	return constant_value_as_type(result, operation_type);
+}
+
+ConstValue PA11SemanticModel::eval_constexpr_conditional(
+	const PA10AstNode& node, ScopeId scope,
+	bool allow_scoped_enum_integral_comparison)
+{
+	if (node.children.size() != 3)
+		throw std::runtime_error("invalid conditional constant expression");
+	const ConstValue condition = eval_constexpr(node.children[0], scope,
+		allow_scoped_enum_integral_comparison);
+	const std::size_t selected = condition.value != 0 ? 1 : 2;
+	const ConstValue value = eval_constexpr(node.children[selected], scope,
+		allow_scoped_enum_integral_comparison);
+	const TypeId common_type = constant_expression_type(node, scope,
+		allow_scoped_enum_integral_comparison);
+	if (!common_type.valid())
+		throw NonConstantExpression("invalid conditional constant expression");
+	return constant_value_as_type(value, common_type);
+}
+
+ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node,
+	ScopeId scope, bool allow_scoped_enum_integral_comparison)
+{
+	if (node.kind == PA10NodeKind::Literal)
+	{
+		const ConstValue value = literal_constant(node);
+		return constant_value_as_type(value, fundamental(node.literal.type));
+	}
+	if (node.kind == PA10NodeKind::KeywordLiteral)
+	{
+		const ConstValue value(true, node.has_token &&
+			node.token == SimpleTokenType::KW_TRUE ? 1 : 0, false);
+		return constant_value_as_type(value, fundamental(FundamentalType::Bool));
+	}
+	if (node.kind == PA10NodeKind::ParenthesizedExpression)
+	{
+		if (node.children.empty())
+			throw std::runtime_error("empty constant expression");
+		return eval_constexpr(node.children.front(), scope,
+			allow_scoped_enum_integral_comparison);
+	}
+	if (node.kind == PA10NodeKind::IdExpression)
+	{
+		const std::vector<ValueRef> values = lookup_value_path(name_path(node), scope);
+		if (values.empty())
+			throw std::runtime_error("constant name is not a value");
+		const Binding& value_binding = binding(values.front().binding);
+		if (!value_binding.has_value)
+			throw NonConstantExpression("value is not a constant");
+		const bool value_unsigned = value_binding.value_unsigned ||
+			unsigned_integral_type(value_binding.type);
+		const __int128 value = value_unsigned ?
+			static_cast<__int128>(value_binding.value_bits) :
+			static_cast<__int128>(value_binding.value);
+		const NamedRecordId record = named_record_for_type(value_binding.type);
+		const bool enum_value = record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Enum;
+		const bool enum_underlying = enum_value && named_[record.value].has_underlying;
+		const TypeId value_type = strip_cv_type(expression_object_type(value_binding.type));
+		const ConstValue result(true, value, value_unsigned, value_type);
+		if (enum_underlying || !enum_value)
+			return constant_value_as_type(result, value_binding.type);
+		return result;
+	}
+	if (node.kind == PA10NodeKind::UnaryExpression)
+		return eval_constexpr_unary(node, scope,
+			allow_scoped_enum_integral_comparison);
+	if (node.kind == PA10NodeKind::BinaryExpression ||
+		node.kind == PA10NodeKind::AssignmentExpression)
+		return eval_constexpr_binary(node, scope,
+			allow_scoped_enum_integral_comparison);
+	if (node.kind == PA10NodeKind::ConditionalExpression)
+		return eval_constexpr_conditional(node, scope,
+			allow_scoped_enum_integral_comparison);
+	if (node.kind == PA10NodeKind::CastExpression)
+	{
+		if (node.children.size() < 2)
+			throw std::runtime_error("invalid cast constant expression");
+		const TypeId target = type_from_type_id(node.children.front(), scope);
+		return constant_value_as_type(eval_constexpr(node.children.back(), scope,
+			allow_scoped_enum_integral_comparison), target);
+	}
+	if (node.kind == PA10NodeKind::SizeofExpression ||
+		node.kind == PA10NodeKind::TypeTraitExpression)
+		return ConstValue(true, static_cast<__int128>(type_size(
+			sizeof_operand_type(node, scope))), false,
+			fundamental(node.kind == PA10NodeKind::SizeofExpression ?
+				FundamentalType::UnsignedLongInt : FundamentalType::LongLongInt));
+	throw NonConstantExpression("unsupported constant expression");
+}
+
 TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeId scope,
 	NamedRecordId* anonymous_record)
 {
@@ -14,12 +436,17 @@ TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeI
 		child_of_kind(node, PA10NodeKind::Enumerator) != NULL;
 	bool has_underlying = false;
 	TypeId underlying = fundamental(FundamentalType::Int);
+	FundamentalType underlying_fundamental = FundamentalType::Int;
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 		if (node.children[i].kind == PA10NodeKind::TypeId)
 		{
 			underlying = type_from_type_id(node.children[i], scope);
 			has_underlying = true;
 		}
+	if (has_underlying &&
+		(!fundamental_of(underlying, &underlying_fundamental) ||
+			!integral_type(underlying_fundamental)))
+		throw std::runtime_error("enum underlying type is not integral");
 	if (name.empty() && !scoped && !definition)
 		throw std::runtime_error("opaque unscoped enum");
 	if (!scoped && !definition && !has_underlying && !name.empty())
@@ -85,6 +512,26 @@ TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeI
 			(value.value < static_cast<__int128>(std::numeric_limits<int>::min()) ||
 				value.value > static_cast<__int128>(std::numeric_limits<int>::max())))
 			throw std::runtime_error("scoped enum value is not representable by int");
+		if (has_underlying)
+		{
+			// This is the enum declaration rule, not a general integral
+			// conversion.  In particular, a bool conversion elsewhere may
+			// normalize any nonzero value, but a fixed bool base still accepts
+			// only the values 0 and 1 here.
+			const std::size_t width = type_size(underlying) * 8;
+			const __int128 modulus = static_cast<__int128>(1) << width;
+			const bool underlying_unsigned =
+				underlying_fundamental == FundamentalType::Bool ||
+				unsigned_type(underlying_fundamental);
+			const __int128 minimum = underlying_fundamental ==
+				FundamentalType::Bool ? 0 :
+				(underlying_unsigned ? 0 : -(modulus >> 1));
+			const __int128 maximum = underlying_fundamental ==
+				FundamentalType::Bool ? 1 :
+				(underlying_unsigned ? modulus - 1 : (modulus >> 1) - 1);
+			if (value.value < minimum || value.value > maximum)
+				throw std::runtime_error("enumerator value is outside underlying type");
+		}
 		if (!have_value_range)
 		{
 			minimum_value = value.value;

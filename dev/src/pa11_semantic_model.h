@@ -592,10 +592,11 @@ struct ConstValue
 	bool valid;
 	bool is_unsigned;
 	__int128 value;
+	TypeId type;
 
 	ConstValue(bool valid = false, __int128 value = 0,
-		bool is_unsigned = false)
-		: valid(valid), is_unsigned(is_unsigned), value(value)
+		bool is_unsigned = false, TypeId type = TypeId())
+		: valid(valid), is_unsigned(is_unsigned), value(value), type(type)
 	{}
 };
 
@@ -1368,11 +1369,26 @@ private:
 	;
 	TypeId expression_type(const PA10AstNode& node, ScopeId scope)
 	;
+	TypeId constant_expression_type(const PA10AstNode& node, ScopeId scope,
+		bool allow_scoped_enum_integral_comparison = false)
+	;
 	bool enumeration_id(TypeId type) const
 	;
 	TypeId sizeof_operand_type(const PA10AstNode& node, ScopeId scope)
 	;
-	ConstValue eval_constexpr(const PA10AstNode& node, ScopeId scope)
+	ConstValue eval_constexpr(const PA10AstNode& node, ScopeId scope,
+		bool allow_scoped_enum_integral_comparison = false)
+	;
+	ConstValue eval_constexpr_unary(const PA10AstNode& node, ScopeId scope,
+		bool allow_scoped_enum_integral_comparison)
+	;
+	ConstValue eval_constexpr_binary(const PA10AstNode& node, ScopeId scope,
+		bool allow_scoped_enum_integral_comparison)
+	;
+	ConstValue eval_constexpr_conditional(const PA10AstNode& node,
+		ScopeId scope, bool allow_scoped_enum_integral_comparison)
+	;
+	ConstValue constant_value_as_type(const ConstValue& value, TypeId type) const
 	;
 	void record_constant_expression_value(SemanticFactId fact, ScopeId scope)
 	;
@@ -1491,6 +1507,8 @@ private:
 	;
 	const FunctionFact* function_fact_for_binding(BindingId binding) const
 	;
+	FunctionFact* function_fact_for_binding(BindingId binding)
+	;
 	SemanticFactId function_default_argument(BindingId binding,
 		std::size_t parameter) const
 	;
@@ -1506,7 +1524,11 @@ private:
 	;
 	void prepare_pa12_member_parameter(FunctionFact& function)
 	;
-	void record_function_default_arguments(FunctionFact& function)
+	bool has_function_default_argument(const PA10AstNode& declaration,
+		std::size_t declarator_index) const
+	;
+	void record_function_default_arguments(FunctionFact& function,
+		const PA10AstNode& declaration, std::size_t declarator_index)
 	;
 	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;

@@ -903,8 +903,9 @@ void Pa15Lowerer::index_function_scope_variables(){
 			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size() ||
 				model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
 				continue;
-			if (!fact.function_scope.valid() ||
-				fact.function_scope.value >= model_.scopes_.size())
+			if (!fact.function_scope.valid())
+				continue;
+			if (fact.function_scope.value >= model_.scopes_.size())
 				throw std::runtime_error("PA15 function scope is missing");
 			collected_function_scope[fact.function_scope.value] = true;
 		}
@@ -944,6 +945,8 @@ void Pa15Lowerer::collect_functions(){
 			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size())
 				throw std::runtime_error("PA15 function owner is missing");
 			if (model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
+				continue;
+			if (!fact.function_scope.valid())
 				continue;
 			const Binding& binding = model_.binding(fact.binding);
 			if (binding.kind != BindingKind::Function ||

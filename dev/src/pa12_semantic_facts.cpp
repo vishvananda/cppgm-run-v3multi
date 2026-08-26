@@ -39,6 +39,36 @@ const PA10AstNode* default_argument_expression(const PA10AstNode& parameter)
 	return NULL;
 }
 
+const PA10AstNode* function_declarator(const PA10AstNode& declaration,
+	std::size_t declarator_index)
+{
+	if (declaration.kind == PA10NodeKind::FunctionDefinition)
+	{
+		if (declarator_index != 0 || declaration.children.size() < 2)
+			return NULL;
+		return &declaration.children[1];
+	}
+	if (declaration.kind != PA10NodeKind::SimpleDeclaration ||
+		declaration.children.size() != 2 ||
+		declaration.children[1].kind != PA10NodeKind::InitDeclaratorList)
+		return NULL;
+	const PA10AstNode& list = declaration.children[1];
+	if (declarator_index >= list.children.size())
+		return NULL;
+	const PA10AstNode& init = list.children[declarator_index];
+	if (init.kind != PA10NodeKind::InitDeclarator || init.children.empty())
+		return NULL;
+	return &init.children.front();
+}
+
+bool parameter_has_default_argument(const PA10AstNode& parameter)
+{
+	for (std::size_t i = 0; i < parameter.children.size(); ++i)
+		if (parameter.children[i].kind == PA10NodeKind::DefaultArgument)
+			return true;
+	return false;
+}
+
 }
 
 bool PA11SemanticModel::unsigned_integral_type(TypeId type) const
@@ -108,6 +138,13 @@ const FunctionFact* PA11SemanticModel::function_fact_for_binding(
 		return NULL;
 	return &function_facts_[found->value];
 }
+FunctionFact* PA11SemanticModel::function_fact_for_binding(
+	BindingId binding_id)
+{
+	return const_cast<FunctionFact*>(
+		static_cast<const PA11SemanticModel*>(this)->function_fact_for_binding(
+			binding_id));
+}
 SemanticFactId PA11SemanticModel::function_default_argument(
 	BindingId binding_id, std::size_t parameter) const
 {
@@ -115,15 +152,37 @@ SemanticFactId PA11SemanticModel::function_default_argument(
 	if (function == NULL || parameter >= function->default_argument_count ||
 		function->default_argument_begin == InvalidIdentityValue)
 		return SemanticFactId();
+	if (parameter > std::numeric_limits<std::size_t>::max() -
+		function->default_argument_begin)
+		return SemanticFactId();
 	const std::size_t index = function->default_argument_begin + parameter;
 	if (index >= function_default_arguments_.size())
 		return SemanticFactId();
 	return function_default_arguments_[index];
 }
 
-void PA11SemanticModel::record_function_default_arguments(FunctionFact& function)
+bool PA11SemanticModel::has_function_default_argument(
+	const PA10AstNode& declaration, std::size_t declarator_index) const
 {
-	if (function.default_argument_begin != InvalidIdentityValue)
+	const PA10AstNode* declarator = function_declarator(
+		declaration, declarator_index);
+	if (declarator == NULL)
+		return false;
+	const PA10AstNode* clause = top_parameter_clause(*declarator);
+	if (clause == NULL)
+		return false;
+	for (std::size_t i = 0; i < clause->children.size(); ++i)
+		if (clause->children[i].kind == PA10NodeKind::ParameterDeclaration &&
+			parameter_has_default_argument(clause->children[i]))
+			return true;
+	return false;
+}
+
+void PA11SemanticModel::record_function_default_arguments(
+	FunctionFact& function, const PA10AstNode& declaration,
+	std::size_t declarator_index)
+{
+	if (!has_function_default_argument(declaration, declarator_index))
 		return;
 	if (!function.binding.valid() || function.binding.value >= bindings_.size())
 		throw std::runtime_error("PA12 default argument function is missing");
@@ -131,44 +190,55 @@ void PA11SemanticModel::record_function_default_arguments(FunctionFact& function
 	if (type_kind(function_type) != TypeKind::Function)
 		throw std::runtime_error("PA12 default argument type is not a function");
 	const TypeKey& signature = types_[function_type.value];
-	function.default_argument_begin = function_default_arguments_.size();
-	function.default_argument_count = signature.parameters.size();
-	const PA10AstNode* clause = NULL;
-	if (function.node != NULL && function.node->children.size() > 1)
-		clause = top_parameter_clause(function.node->children[1]);
-	std::size_t parameter_index = 0;
-	if (clause != NULL)
+	if (function.default_argument_begin == InvalidIdentityValue)
 	{
-		for (std::size_t i = 0; i < clause->children.size(); ++i)
-		{
-			const PA10AstNode& parameter = clause->children[i];
-			if (parameter.kind == PA10NodeKind::ParameterPack)
-				continue;
-			if (parameter.kind != PA10NodeKind::ParameterDeclaration)
-				throw std::runtime_error("PA12 invalid default parameter");
-			if (parameter_index >= signature.parameters.size())
-				throw std::runtime_error("PA12 default parameter count mismatch");
-			const PA10AstNode* expression =
-				default_argument_expression(parameter);
-			SemanticFactId fact;
-			if (expression != NULL)
-			{
-				const ExprInfo value = semantic_expression_for_target(
-					*expression, function.owner, signature.parameters[parameter_index]);
-				const ExprInfo converted = apply_context_conversion(value,
-					signature.parameters[parameter_index],
-					semantic_facts_[value.fact.value].source);
-				fact = converted.fact;
-			}
-			function_default_arguments_.push_back(fact);
-			++parameter_index;
-		}
+		function.default_argument_begin = function_default_arguments_.size();
+		function.default_argument_count = signature.parameters.size();
+		for (std::size_t i = 0; i < signature.parameters.size(); ++i)
+			function_default_arguments_.push_back(SemanticFactId());
 	}
-	while (parameter_index < signature.parameters.size())
+	else if (function.default_argument_count != signature.parameters.size() ||
+		function.default_argument_begin > function_default_arguments_.size() ||
+		function.default_argument_count > function_default_arguments_.size() -
+		function.default_argument_begin)
+		throw std::runtime_error("PA12 default argument range mismatch");
+	const PA10AstNode* declarator = function_declarator(
+		declaration, declarator_index);
+	const PA10AstNode* clause = declarator == NULL ? NULL :
+		top_parameter_clause(*declarator);
+	if (clause == NULL)
+		throw std::runtime_error("PA12 default parameter clause is missing");
+	std::size_t parameter_index = 0;
+	for (std::size_t i = 0; i < clause->children.size(); ++i)
 	{
-		function_default_arguments_.push_back(SemanticFactId());
+		const PA10AstNode& parameter = clause->children[i];
+		if (parameter.kind == PA10NodeKind::ParameterPack)
+			continue;
+		if (parameter.kind != PA10NodeKind::ParameterDeclaration)
+			throw std::runtime_error("PA12 invalid default parameter");
+		if (parameter_index >= signature.parameters.size())
+			throw std::runtime_error("PA12 default parameter count mismatch");
+		const PA10AstNode* expression =
+			default_argument_expression(parameter);
+		if (parameter_has_default_argument(parameter) && expression == NULL)
+			throw std::runtime_error("PA12 invalid default argument");
+		if (expression != NULL)
+		{
+			const std::size_t range_index = function.default_argument_begin +
+				parameter_index;
+			if (function_default_arguments_[range_index].valid())
+				throw std::runtime_error("PA12 duplicate default argument");
+			const ExprInfo value = semantic_expression_for_target(
+				*expression, function.owner, signature.parameters[parameter_index]);
+			const ExprInfo converted = apply_context_conversion(value,
+				signature.parameters[parameter_index],
+				semantic_facts_[value.fact.value].source);
+			function_default_arguments_[range_index] = converted.fact;
+		}
 		++parameter_index;
 	}
+	if (parameter_index != signature.parameters.size())
+		throw std::runtime_error("PA12 default parameter count mismatch");
 }
 
 bool PA11SemanticModel::constant_integer_value(SemanticFactId fact_id,

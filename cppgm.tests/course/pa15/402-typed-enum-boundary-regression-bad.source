@@ -1,0 +1,2 @@
+enum class TooWide : unsigned char { value = 256 };
+int main() { return 0; }

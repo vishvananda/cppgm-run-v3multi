@@ -2197,6 +2197,27 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const BindingId binding_id = declaration_bindings_[
 			declaration->binding_begin + i];
 		const Binding& value = binding(binding_id);
+		if (value.kind == BindingKind::Function &&
+			has_function_default_argument(node, i))
+		{
+			FunctionFact* function = function_fact_for_binding(binding_id);
+			if (function == NULL)
+			{
+				if (init.children.empty())
+					throw std::runtime_error("PA12 default function declarator is missing");
+				const DeclaratorName name = declarator_name(init.children.front());
+				const ScopeId owner = name.found ?
+					declaration_scope(name.path, declaration->scope) : ScopeId();
+				if (!owner.valid())
+					throw std::runtime_error("PA12 default function scope is missing");
+				const FunctionFact declaration_function(&node, owner, binding_id);
+				const FunctionFactId function_id(function_facts_.size());
+				function_facts_.push_back(declaration_function);
+				function_binding_fact_index_.set(binding_id, function_id);
+				function = &function_facts_[function_id.value];
+			}
+			record_function_default_arguments(*function, node, i);
+		}
 		SemanticFact fact(SemanticFactKind::Variable, value.type,
 			SemanticValueCategory::Prvalue, &init);
 		fact.binding = binding_id;
@@ -2950,7 +2971,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		if (function == NULL || function->body_fact.valid())
 			throw std::runtime_error("PA12 function fact is missing");
 		prepare_pa12_member_parameter(*function);
-		record_function_default_arguments(*function);
+		record_function_default_arguments(*function, node, 0);
 		function->body_fact = semantic_compound(node.children.back(),
 			function->function_scope, *function, 0, 0, NULL);
 		break;

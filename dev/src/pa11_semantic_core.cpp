@@ -1675,185 +1675,6 @@ TypeId PA11SemanticModel::sizeof_operand_type(const PA10AstNode& node, ScopeId s
 	}
 	return expression_type(operand, scope);
 }
-ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.kind == PA10NodeKind::Literal)
-		return literal_constant(node);
-	if (node.kind == PA10NodeKind::KeywordLiteral)
-		return ConstValue(true, node.has_token &&
-			node.token == SimpleTokenType::KW_TRUE ? 1 : 0, false);
-	if (node.kind == PA10NodeKind::ParenthesizedExpression)
-	{
-		if (node.children.empty())
-			throw std::runtime_error("empty constant expression");
-		return eval_constexpr(node.children.front(), scope);
-	}
-	if (node.kind == PA10NodeKind::IdExpression)
-	{
-		const std::vector<ValueRef> values = lookup_value_path(name_path(node),
-			scope);
-		if (values.empty())
-			throw std::runtime_error("constant name is not a value");
-		const Binding& value_binding = binding(values.front().binding);
-		if (!value_binding.has_value)
-			throw NonConstantExpression("value is not a constant");
-		bool value_unsigned = value_binding.value_unsigned;
-		__int128 value = value_unsigned ?
-			static_cast<__int128>(value_binding.value_bits) :
-			static_cast<__int128>(value_binding.value);
-		const NamedRecordId record = named_record_for_type(value_binding.type);
-		const bool enum_value = record.valid() && record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Enum;
-		const bool enum_underlying = enum_value &&
-			named_[record.value].has_underlying;
-		if (enum_underlying)
-			value_unsigned = unsigned_integral_type(value_binding.type);
-		if (value_unsigned && (!enum_value || enum_underlying))
-		{
-			const __int128 modulus = static_cast<__int128>(1) <<
-				type_size(value_binding.type) * 8;
-			value %= modulus;
-			if (value < 0) value += modulus;
-		}
-		return ConstValue(true, value, value_unsigned);
-	}
-	if (node.kind == PA10NodeKind::UnaryExpression)
-	{
-		if (node.children.size() != 1)
-			throw std::runtime_error("invalid unary constant expression");
-		ConstValue value = eval_constexpr(node.children.front(), scope);
-		switch (node.token)
-		{
-		case SimpleTokenType::OP_PLUS:
-			break;
-		case SimpleTokenType::OP_MINUS:
-			value.value = -value.value;
-			break;
-		case SimpleTokenType::OP_LNOT:
-			value.value = value.value == 0 ? 1 : 0;
-			value.is_unsigned = false;
-			break;
-		case SimpleTokenType::OP_COMPL:
-			value.value = ~value.value;
-			break;
-		default:
-			throw NonConstantExpression("unsupported unary constant operator");
-		}
-		check_constant_range(value);
-		return value;
-	}
-	if (node.kind == PA10NodeKind::BinaryExpression ||
-		node.kind == PA10NodeKind::AssignmentExpression)
-	{
-		if (node.children.size() != 2)
-			throw std::runtime_error("invalid binary constant expression");
-		const ConstValue left = eval_constexpr(node.children[0], scope);
-		if (node.token == SimpleTokenType::OP_LAND && left.value == 0)
-			return ConstValue(true, 0, false);
-		if (node.token == SimpleTokenType::OP_LOR && left.value != 0)
-			return ConstValue(true, 1, false);
-		const ConstValue right = eval_constexpr(node.children[1], scope);
-		ConstValue result(true, 0, left.is_unsigned || right.is_unsigned);
-		switch (node.token)
-		{
-		case SimpleTokenType::OP_PLUS: result.value = left.value + right.value; break;
-		case SimpleTokenType::OP_MINUS: result.value = left.value - right.value; break;
-		case SimpleTokenType::OP_STAR:
-			if (result.is_unsigned)
-			{
-				const unsigned __int128 product =
-					static_cast<unsigned __int128>(left.value) *
-					static_cast<unsigned __int128>(right.value);
-				if (product > static_cast<unsigned __int128>(
-					std::numeric_limits<std::uint64_t>::max()))
-					throw NonConstantExpression("constant expression overflow");
-				result.value = static_cast<__int128>(product);
-			}
-			else
-				result.value = left.value * right.value;
-			break;
-		case SimpleTokenType::OP_DIV:
-			if (right.value == 0) throw NonConstantExpression("constant division by zero");
-			if (!result.is_unsigned &&
-				left.value == static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) &&
-				right.value == -1)
-				throw NonConstantExpression("constant signed division overflow");
-			result.value = left.value / right.value; break;
-		case SimpleTokenType::OP_MOD:
-			if (right.value == 0) throw NonConstantExpression("constant modulo by zero");
-			if (!result.is_unsigned &&
-				left.value == static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) &&
-				right.value == -1)
-				throw NonConstantExpression("constant signed modulo overflow");
-			result.value = left.value % right.value; break;
-		case SimpleTokenType::OP_LSHIFT:
-		{
-			if (right.value < 0 || right.value >= 64)
-				throw NonConstantExpression("constant shift count out of range");
-			const unsigned int shift = static_cast<unsigned int>(right.value);
-			const unsigned __int128 shifted =
-				static_cast<unsigned __int128>(left.value) << shift;
-			if (left.is_unsigned)
-			{
-				if (shifted > static_cast<unsigned __int128>(
-					std::numeric_limits<std::uint64_t>::max()))
-					throw NonConstantExpression("constant expression overflow");
-				result.value = static_cast<__int128>(shifted);
-			}
-			else
-			{
-				if (left.value < 0 || shifted > static_cast<unsigned __int128>(
-					std::numeric_limits<std::int64_t>::max()))
-					throw NonConstantExpression("constant expression overflow");
-				result.value = static_cast<__int128>(shifted);
-			}
-			break;
-		}
-		case SimpleTokenType::OP_RSHIFT:
-		{
-			if (right.value < 0 || right.value >= 64)
-				throw NonConstantExpression("constant shift count out of range");
-			const unsigned int shift = static_cast<unsigned int>(right.value);
-			result.value = left.is_unsigned ?
-				static_cast<__int128>(static_cast<unsigned __int128>(left.value) >> shift) :
-				left.value >> shift;
-			break;
-		}
-		case SimpleTokenType::OP_BOR: result.value = left.value | right.value; break;
-		case SimpleTokenType::OP_XOR: result.value = left.value ^ right.value; break;
-		case SimpleTokenType::OP_AMP: result.value = left.value & right.value; break;
-		case SimpleTokenType::OP_EQ: result.value = left.value == right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_NE: result.value = left.value != right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_LT: result.value = left.value < right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_LE: result.value = left.value <= right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_GT: result.value = left.value > right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_GE: result.value = left.value >= right.value; result.is_unsigned = false; break;
-		case SimpleTokenType::OP_LAND: result.value = (left.value != 0 && right.value != 0); result.is_unsigned = false; break;
-		case SimpleTokenType::OP_LOR: result.value = (left.value != 0 || right.value != 0); result.is_unsigned = false; break;
-		default: throw NonConstantExpression("unsupported binary constant operator");
-		}
-		check_constant_range(result);
-		return result;
-	}
-	if (node.kind == PA10NodeKind::ConditionalExpression)
-	{
-		if (node.children.size() != 3)
-			throw std::runtime_error("invalid conditional constant expression");
-		return eval_constexpr(node.children[eval_constexpr(node.children[0],
-			scope).value != 0 ? 1 : 2], scope);
-	}
-	if (node.kind == PA10NodeKind::CastExpression)
-	{
-		if (node.children.size() < 2)
-			throw std::runtime_error("invalid cast constant expression");
-		return eval_constexpr(node.children.back(), scope);
-	}
-	if (node.kind == PA10NodeKind::SizeofExpression ||
-		node.kind == PA10NodeKind::TypeTraitExpression)
-		return ConstValue(true, static_cast<__int128>(type_size(
-			sizeof_operand_type(node, scope))), false);
-	throw NonConstantExpression("unsupported constant expression");
-}
 TypeId PA11SemanticModel::decltype_type(const PA10AstNode& node, ScopeId scope)
 {
 	if (node.children.empty())
@@ -2483,12 +2304,20 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 						throw std::runtime_error("empty constant initializer");
 					const ConstValue value = eval_constexpr(
 						initializer.children.front(), target);
-					if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
+					if (value.is_unsigned)
+					{
+						if (value.value < 0 || value.value >
+							static_cast<__int128>(std::numeric_limits<std::uint64_t>::max()))
+							throw std::runtime_error("constant initializer overflow");
+					}
+					else if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
 						value.value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
 						throw std::runtime_error("constant initializer overflow");
-					binding(binding_id).has_value = true;
-					binding(binding_id).value =
-						static_cast<std::int64_t>(value.value);
+					Binding& constant = binding(binding_id);
+					constant.has_value = true;
+					constant.value = static_cast<std::int64_t>(value.value);
+					constant.value_bits = static_cast<std::uint64_t>(value.value);
+					constant.value_unsigned = value.is_unsigned;
 				}
 			}
 		}
@@ -2747,7 +2576,8 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		process_template_declaration(node, scope);
 		return;
 	case PA10NodeKind::StaticAssertDeclaration:
-		if (node.children.empty() || eval_constexpr(node.children.front(), scope).value == 0)
+		if (node.children.empty() || eval_constexpr(node.children.front(), scope,
+			true).value == 0)
 			throw std::runtime_error("static assertion failed");
 		return;
 	case PA10NodeKind::EnumSpecifier:

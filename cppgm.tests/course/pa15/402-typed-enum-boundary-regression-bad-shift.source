@@ -1,0 +1,2 @@
+enum FixedUnsigned : unsigned int { bad = 1u << 32 };
+int main() { return 0; }

@@ -1,0 +1,27 @@
+namespace api {
+enum Value { selected = 3 };
+int read(int value = selected);
+int read(int value) { return value; }
+}
+
+enum FixedUnsigned : unsigned int
+{
+  conditional_max = false ? 0u : -1,
+  valid_shift = 1u << 31
+};
+
+enum class ScopedValue : unsigned int
+{
+  one = 1,
+  same = false ? one : one
+};
+
+constexpr bool nonzero = static_cast<bool>(2);
+
+int main()
+{
+  return api::read() == 3 && nonzero &&
+    conditional_max == 4294967295U &&
+    valid_shift == 2147483648U &&
+    ScopedValue::same == ScopedValue::one ? 0 : 1;
+}

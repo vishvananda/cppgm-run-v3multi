@@ -1,0 +1,2 @@
+enum FixedBool : bool { bad = 2 };
+int main() { return 0; }

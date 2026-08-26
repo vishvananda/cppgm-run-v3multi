@@ -1,0 +1,6 @@
+enum class ScopedValue : unsigned int
+{
+  one = 1,
+  bad = false ? one : 1
+};
+int main() { return 0; }
