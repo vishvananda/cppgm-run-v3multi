@@ -326,6 +326,7 @@ private:
 	LowType low_type(TypeId type) const;
 	LowType function_result_low_type(TypeId type) const;
 	bool class_object_type(TypeId type) const;
+	bool checkpoint_zero_storage_eligible(TypeId type) const;
 	LowType low_reference_value_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);

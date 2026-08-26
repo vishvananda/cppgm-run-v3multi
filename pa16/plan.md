@@ -1,89 +1,114 @@
 # PA16 implementation plan
 
-## Stage Design
+## Current checkpoint
 
-The PA16 path remains `PA10 AST -> PA11 typed semantic model -> PA12 semantic
-facts -> PA15/PA16 LowIR`.  `NamedRecordId` is the semantic owner of a
-parallel `RecordLayout` fact.  A class body completes that fact once, after
-its declarations have been processed.  `type_size`, complete-object checks,
-and PA15 storage lowering consume the fact; no textual or whole-program
-retry path is involved.  PA12 member semantics, object lifetime, and later
-value-semantics stages remain separate boundaries.
+The target is `pa16` full-stage, phase `checkpointAudit`. The landed
+increment is `453d03a6` (`PA16: typed class-layout checkpoint`), parent
+`31f2d2af`. This checkpoint covers only its typed record-layout, complete-type,
+and PA15 class-storage path; PA16 is not complete.
 
-## Failure Map
+The production path is one forward flow:
 
-Turn-start evidence was 24/243 passing and 219 failing: 213 exit-status
-mismatches and 6 normalized LowIR mismatches.  The completed checkpoint run
-is 32/243, leaving 211 failures: 205 exit-status mismatches and 6 normalized
-LowIR mismatches.  The residuals are assigned to the deferred owners below;
-none is treated as final PA16 completion.
+```text
+PA10 AST -> PA11 typed model -> PA12 semantic facts -> PA15 LowIR lowering
+```
 
-| Owning boundary | Checkpoint disposition |
+`NamedRecordId` is the stable owner key for one `RecordLayout`. PA11 records
+declaration-owned class facts and completes ordinary natural layouts in
+declaration order. Complete-type queries, `sizeof`, and PA15 object/global
+storage consume that state; no source-text recovery, duplicate layout map, or
+whole-program retry is used.
+
+## Spec alignment and ownership
+
+This slice follows the typed declaration/complete-type, natural layout, and
+LowIR object-representation boundaries in the applicable PA16/spec contract.
+It provides member offsets, natural padding/alignment, empty records, arrays,
+pointers, self-pointers, and completed member classes. Methods, types, and
+static data are skipped for non-static member layout.
+
+| fact | owner and consumers |
 | --- | --- |
-| PA11 complete-type/layout ownership | This slice: typed record state, declaration-order member layout, padding/alignment, arrays, pointers/self-pointers, completed class members, incomplete/overflow rejection. |
-| PA15 object-storage boundary | This slice: completed class `obj<bytesxalign>` local slots, class-object declaration address materialization, and trivial no-initializer namespace object zero regions plus their no-op init helper. |
-| PA11/PA12 advanced object semantics | Deferred: member lookup/access, nested/friend/using/ADL resolution, operators and implicit-object calls, inheritance/base offsets, bit-fields, anonymous members, references/casts, and type/value-category conversions. |
-| PA11/PA16 extended representation | Deferred: `alignas`, packed/pragma-pack behavior, bit-field representation, and the associated normalized LowIR cases; the ordinary natural-layout cases in this checkpoint are covered. |
-| PA15 object initialization/lifetime/value lowering | Deferred: constructors/destructors, default/member/aggregate initialization, initialized subobjects, class returns/copies, arrays, namespace/static/thread-local object actions, and broader class-expression lowering. |
-| Semantic negative/compatibility boundaries | Deferred: remaining access, narrowing, operator-viability, and related expected-failure diagnostics, plus compatibility cases outside the ordinary completed-layout slice. |
-| Incomplete-type compatibility | The valid declaration-only forward-class function-address case is covered by this slice; by-value incomplete object use remains rejected. |
+| named record identity | PA11 `append_named_record` and its parallel `RecordLayout` |
+| size/alignment/offsets | PA11 typed completion and `FlatIndex<BindingId, size_t>` |
+| complete object type | PA15 `obj<bytesxalignment>` local/address lowering |
+| namespace class object | PA15 narrow typed zero-storage summary, one zero region and existing init boundary |
 
-The six normalized residuals are four extended-representation cases and two
-friend/operator lookup cases; the other 205 residuals are exit-status cases
-owned by the deferred semantic, representation, initialization/lifetime, or
-negative/compatibility families above.
+The narrow owner fact is named `RecordLayout::checkpoint_zero_storage_eligible`;
+it is not a claim of full C++ triviality. PA11 publishes it while completing
+the record from typed default-member-initializer sidecars and already-completed
+member summaries. PA15 reads it in O(1), unwrapping only cv/array wrappers.
+Ordinary and static member functions do not invalidate it. References,
+member-pointers, unsupported unions, bases, and virtual records are
+conservative rejection cases.
 
-## Active Checkpoint
+The new non-template implementation is out of the header. The typed summary
+and dependency fact remain in `pa11_semantic_core.cpp`; layout access,
+completion, checked alignment, size, and alignment definitions are in the
+existing affected `pa15_lowering_flow.cpp` to keep both sources within the
+3000-line audit limit. This is one PA11 model and one state, not a second
+layout implementation or translation unit.
 
-Implement one canonical `RecordLayout` per `NamedRecordId` with explicit
-`Incomplete`, `Computing`, `Complete`, and `Failed` states.  For an ordinary
-complete non-polymorphic class/struct, process non-static variable members in
-scope declaration order, skip methods/types/static members, recursively use
-already-completed class facts, and apply natural alignment/padding.  Empty
-records are size/alignment `1/1`; arrays, pointers, references, self-pointers,
-and arithmetic-overflow checks are included.  A by-value incomplete member or
-cycle fails the typed fact and is not retried.
+Direct bases and virtual members are recorded as typed boundary facts but are
+not flattened here. Their layout state becomes `Failed`, so complete-type,
+`sizeof`, and storage consumers reject rather than inventing base bytes,
+vpointers, or vtables. The broader PA16 inheritance/polymorphism and lifetime
+owners remain later checkpoints.
 
-Completed class types feed `sizeof`/`type_size` and PA15 object storage.  A
-class local with no initializer materializes its address, and a trivial
-namespace class object gets one layout-sized zero region and a no-op init
-boundary; constructors, destructors, and member initialization are not
-invented here.  The populated typed member-offset map is reserved for the
-later member-access consumer.
+## Fresh final evidence
 
-Validation for this checkpoint is the focused checked-in matrix covering
-empty, two-int, self-pointer, padded/larger, incomplete declaration, both
-namespace-object sizes, and the expected-negative under-aligned case.  Broad
-PA16, through-PA15, audit, and diff checks are now complete.  The focused
-matrix passes 8/8 after the final source correction.
+`make -C dev cppgm++` exited 0. `make test-pa16` exited 2 with
+`32 / 243` passing, `211` failing, and all `243/243` tests covered. This is
+within the bounded checkpoint criterion. Failure identities were extracted
+from the fresh log and compared with
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+both sets contain 211 identities, with no newly failing identity and no
+identity removed from the failure set. The fresh residual categories are:
 
-## Performance Evidence
+- 5 generated-LowIR mismatches:
+  `general/200-unnamed-namespace-hidden-friend-single-definition`,
+  `general/300-alignas-class-layout`,
+  `general/300-enum-operator-adl-selects-matching-overload`,
+  `general/300-packed-class-layout`, and
+  `general/300-pragma-pack-followed-by-endif`;
+- 206 exit-status mismatches: 203 expected-success/actual-failure and 3
+  expected-failure/actual-success.
 
-Each class completion scans its ordered binding list once; each retained
-non-static member is laid out once in that scan.  The per-record state makes
-repeat requests an O(1) complete-state read, and completed named-type lookup
-uses the parallel vector indexed by typed `NamedRecordId`.  Member offsets are
-stored in a typed `FlatIndex` for expected O(1) lookup.  Type wrappers recurse
-only through their typed element/member chain, with no retry-until-stable
-whole-program loop.  The bounded static-member probe exits 0 and emits
-`const i64 1` for a class containing a `long double` static member and a
-`char` non-static member.  Checked-in focused output shows the self-pointer
-class at size 16, the padded class at `obj<16x8>`/size 16, and the two global
-zero-storage cases at sizes 8 and 16.  No timing claim is made.
+The supplied baseline category split was 6 LowIR and 205 status mismatches;
+`general/300-alignas-derived-base-layout` remains in the same failure identity
+set but is now a rejected-status case at this checkpoint boundary. No added
+pass compensates for a new failure.
 
-## Checkpoint Ledger
+The requested through-PA15 command exited 0 with `1167 / 1167` passing. The
+final file audit exited 0 with five warnings: historical substantial-header
+implementation warnings for `abi_mangle.h`, `cpp_semantic_core.h`,
+`lowir_model.h`, `pa11_semantic_model.h`, and `pa15_lowering.h`; no fatal
+source-size issue remains. The durable regression exited 0, `sh -n` exited 0,
+and `git diff --check` exited 0.
 
-- Baseline: 24/243 passing; 219 failing (213 status, 6 normalized LowIR),
-  supplied at turn start.
-- This checkpoint: the required focused matrix passes 8/8; the static-member,
-  self-pointer, and padding probes provide bounded structural evidence.  Full
-  PA16 passes 32/243 with 211 residual failures and unchanged coverage 243.
-  The through-PA15 gate passes 1167/1167.
-- Audit: `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`
-  passes with five warnings (`abi_mangle.h`, `cpp_semantic_core.h`,
-  `lowir_model.h`, `pa11_semantic_model.h`, and `pa15_lowering.h`, all
-  `bad-division` header-body warnings) and no fatals.  `git diff --check`
-  passes.
-- Disposition: committed-candidate evidence recorded for this coherent
-  checkpoint.  The residual 211 failures remain explicitly deferred; this is
-  not a claim of final PA16 completion.
+The durable regression checks statuses and the absence of fake zero/lifetime
+output, never diagnostic text. It covers the nested polymorphic boundary,
+direct-base boundary, ordinary/static-method global, DMI and destructor
+rejections, completed member summary, `long double[2]` as `obj<32x16>`, and
+the signed-range `sizeof` rejection.
+
+## Structural limits and next checkpoint
+
+Layout completion has bounded linear scans over one class binding vector and
+checked `size_t` arithmetic. The eligibility summary is computed once per
+completed record and recursively consumes typed member summaries; PA15 does
+not rescan class binding DAGs per namespace object. No timing, RSS, or
+benchmark evidence was collected, so no material performance number is
+claimed. `sizeof` range rejection is reachable because LowIR uses signed
+`INTEGER_I64` operands backed by `long long`.
+
+The next checkpoint must own direct-base layout, polymorphic representation,
+and constructor/destructor/initialization lifetime before this failed-state or
+zero-storage boundary is broadened. Alignas/packing, inheritance lookup,
+bit-fields, and other out-of-scope PA16 work remain deferred.
+
+## Current audit ledger
+
+| checkpoint | result and disposition |
+| --- | --- |
+| `453d03a6` typed class-layout checkpoint | Fresh final evidence: `32/243`, `211` residual failures, `243/243` covered; through-PA15 `1167/1167`; file audit exit 0 with 5 warnings; durable regression passed. Current bounded checkpoint; PA16 remains incomplete. |

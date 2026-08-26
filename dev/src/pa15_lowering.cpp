@@ -392,11 +392,13 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 			LowType result;
 			result.kind = LowType::TYPE_OBJECT;
 
-
 			result.object_bytes = model_.types_[type.value].unknown_bound ? 0 :
 				model_.type_size(type);
 			const LowType element = low_type(model_.types_[type.value].child);
-			result.object_alignment = element.storage_alignment();
+			// Complete arrays use semantic element alignment; unknown-bound arrays
+			// retain the LowIR fallback because they have no complete layout.
+			result.object_alignment = model_.types_[type.value].unknown_bound ?
+				element.storage_alignment() : model_.type_alignment(type);
 			if (result.object_alignment == 0) result.object_alignment = 1;
 			return result;
 		}
@@ -833,13 +835,14 @@ void Pa15Lowerer::collect_globals(){
 					entry.type = low_type(binding.type);
 					if (entry.type.is_object())
 					{
-						// A class object with no source initializer has one coherent
-						// storage representation at this checkpoint: its canonical
-						// layout-sized zero region.  Construction/lifetime actions are
-						// deliberately left to the later object-model checkpoints.
+						// Emit zero storage only after the conservative typed checkpoint
+						// check; do not synthesize lifetime or initializer actions.
 						if (!initializers.empty())
 							throw std::runtime_error(
 								"PA15 initialized class global is outside layout checkpoint");
+						if (!checkpoint_zero_storage_eligible(binding.type))
+							throw std::runtime_error(
+								"PA15 namespace class zero storage is not proven trivial");
 						entry.structured = true;
 						GlobalDefinition::DataItem zero;
 						zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
@@ -1812,10 +1815,11 @@ LowType Pa15Lowerer::size_low_type() const{
 		type.integer_kind = LowType::INTEGER_I64;
 		return type;
 	}
-
 LoweredValue Pa15Lowerer::lower_sizeof(const SemanticFact& fact){
 		if (!fact.has_literal_value)
 			throw std::runtime_error("PA15 sizeof fact has no typed value");
+		if (fact.literal_value > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 sizeof value exceeds LowIR signed integer range");
 		const LowType type = size_low_type();
 		Instruction instruction;
 		instruction.kind = Instruction::IK_CONST;

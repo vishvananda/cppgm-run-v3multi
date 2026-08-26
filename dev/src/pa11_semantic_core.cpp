@@ -1,4 +1,7 @@
 #include "pa11_semantic_model.h"
+
+#include <limits>
+
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
@@ -121,6 +124,103 @@ bool has_bare_noexcept(const PA10AstNode& declarator)
 	return false;
 }
 
+bool has_virtual_member_specifier_impl(const PA10AstNode& node, bool root)
+{
+	// A nested declaration owns its own members.  Do not let a virtual
+	// specifier in one of those declarations become a fact about the enclosing
+	// record.  Function bodies and other executable/declarative scopes are
+	// boundaries for the same reason.
+	if (!root &&
+		(node.kind == PA10NodeKind::ClassSpecifier ||
+		 node.kind == PA10NodeKind::ClassForwardDeclaration ||
+		 node.kind == PA10NodeKind::EnumSpecifier ||
+		 node.kind == PA10NodeKind::CompoundStatement ||
+		 node.kind == PA10NodeKind::LambdaExpression ||
+		 node.kind == PA10NodeKind::FunctionDefinition ||
+		 node.kind == PA10NodeKind::NamespaceDefinition ||
+		 node.kind == PA10NodeKind::LinkageSpecification))
+		return false;
+
+	if ((node.kind == PA10NodeKind::MemberSpecifier && node.has_token &&
+			node.token == SimpleTokenType::KW_VIRTUAL) ||
+		(node.kind == PA10NodeKind::DeclSpecifier && node.has_token &&
+			node.token == SimpleTokenType::KW_VIRTUAL) ||
+		node.kind == PA10NodeKind::VirtualSpecifier ||
+		node.kind == PA10NodeKind::VirtSpecifier)
+		return true;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (has_virtual_member_specifier_impl(node.children[i], false))
+			return true;
+	return false;
+}
+
+bool has_virtual_member_specifier(const PA10AstNode& node)
+{
+	// A class/enum declaration appearing as a member is itself a nested
+	// declarative boundary, not a virtual member declaration of this record.
+	if (node.kind == PA10NodeKind::ClassSpecifier ||
+		node.kind == PA10NodeKind::ClassForwardDeclaration ||
+		node.kind == PA10NodeKind::EnumSpecifier)
+		return false;
+	return has_virtual_member_specifier_impl(node, true);
+}
+
+}
+
+bool PA11SemanticModel::layout_depends_on_template_parameter(TypeId type) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		throw std::runtime_error("invalid PA11 layout dependency type");
+	const TypeKey& key = types_[type.value];
+	if (key.kind == TypeKind::Cv)
+		return layout_depends_on_template_parameter(key.child);
+	if (key.kind == TypeKind::Array)
+		return !key.unknown_bound &&
+			layout_depends_on_template_parameter(key.child);
+	if (key.kind != TypeKind::Named || !key.named.valid() ||
+		key.named.value >= named_.size())
+		return false;
+	return named_[key.named.value].kind == NamedKind::TemplateParameter;
+}
+
+bool PA11SemanticModel::type_checkpoint_zero_storage_eligible(TypeId type) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	const TypeKey& key = types_[type.value];
+	switch (key.kind)
+	{
+	case TypeKind::Cv:
+		return type_checkpoint_zero_storage_eligible(key.child);
+	case TypeKind::Fundamental:
+		return key.fundamental != FundamentalType::Void;
+	case TypeKind::Pointer:
+		return true;
+	case TypeKind::MemberPointer:
+	case TypeKind::LvalueReference:
+	case TypeKind::RvalueReference:
+	case TypeKind::Function:
+		return false;
+	case TypeKind::Array:
+		return !key.unknown_bound &&
+			type_checkpoint_zero_storage_eligible(key.child);
+	case TypeKind::Named:
+	{
+		if (!key.named.valid() || key.named.value >= named_.size())
+			return false;
+		const NamedRecord& record = named_[key.named.value];
+		if (record.kind == NamedKind::Enum)
+			return true;
+		if (record.kind != NamedKind::Class ||
+			record.class_tag == ClassTag::Union || record.has_base ||
+			record.has_virtual_member)
+			return false;
+		const RecordLayout& layout = record_layout(key.named);
+		return layout.state == RecordLayoutState::Complete &&
+			layout.checkpoint_zero_storage_eligible;
+	}
+	}
+	return false;
 }
 
 template<typename Identity>
@@ -2187,11 +2287,20 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 	const ScopeId class_scope = class_scope_for_type(type);
 	if (!class_scope.valid())
 		throw std::runtime_error("class has no class scope");
+	const NamedRecordId record_id = named_record_for_type(type);
+	if (!record_id.valid() || record_id.value >= named_.size())
+		throw std::runtime_error("class has no named record");
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 	{
 		const PA10NodeKind kind = node.children[i].kind;
 		if (kind == PA10NodeKind::ClassKey || kind == PA10NodeKind::BaseClause)
+		{
+			if (kind == PA10NodeKind::BaseClause)
+				named_[record_id.value].has_base = true;
 			continue;
+		}
+		if (has_virtual_member_specifier(node.children[i]))
+			named_[record_id.value].has_virtual_member = true;
 		if (kind == PA10NodeKind::AccessSpecifier ||
 			kind == PA10NodeKind::EmptyDeclaration)
 			continue;
@@ -2440,6 +2549,18 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (spec.is_static && target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class)
 			mark_static_member(binding_id);
+		if (!spec.is_static && type_kind(type) != TypeKind::Function &&
+			target.value < scopes_.size() &&
+			scopes_[target.value].kind == ScopeKind::Class &&
+			init.children.size() > 1)
+		{
+			BindingSidecar sidecar;
+			const BindingSidecar* existing = binding_sidecar(binding_id);
+			if (existing != NULL)
+				sidecar = *existing;
+			sidecar.has_default_member_initializer = true;
+			set_binding_sidecar(binding_id, sidecar);
+		}
 		declaration_bindings_.push_back(binding_id);
 	}
 	declaration.binding_count = declaration_bindings_.size() -
