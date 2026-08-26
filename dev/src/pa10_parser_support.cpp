@@ -1,9 +1,228 @@
 #include "pa10_parser_support.h"
 
+#include <limits>
 #include <utility>
 
 namespace PA10ParserSupport
 {
+
+namespace
+{
+PPSpellingId identifier_spelling(const PA10AstNode& node)
+{
+	PPSpellingId spelling = node.producer_spelling;
+	if (!node.name_parts.empty())
+		spelling = node.name_parts.back().spelling;
+	return spelling;
+}
+
+PPSpellingId first_declarator_spelling(const PA10AstNode& node)
+{
+	if (node.kind == PA10NodeKind::Identifier)
+	{
+		const PPSpellingId spelling = identifier_spelling(node);
+		if (spelling != 0)
+			return spelling;
+	}
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PPSpellingId spelling = first_declarator_spelling(node.children[i]);
+		if (spelling != 0)
+			return spelling;
+	}
+	return 0;
+}
+
+PPSpellingId parameter_declarator_spelling(const PA10AstNode& node)
+{
+	if (node.kind == PA10NodeKind::Identifier)
+		return identifier_spelling(node);
+	if (node.kind != PA10NodeKind::Declarator &&
+		node.kind != PA10NodeKind::NestedDeclarator)
+		return 0;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& child = node.children[i];
+		if (child.kind == PA10NodeKind::Identifier)
+			return identifier_spelling(child);
+		if (child.kind == PA10NodeKind::Declarator ||
+			child.kind == PA10NodeKind::NestedDeclarator)
+		{
+			const PPSpellingId spelling = parameter_declarator_spelling(child);
+			if (spelling != 0)
+				return spelling;
+		}
+	}
+	return 0;
+}
+
+void collect_parameter_names(const PA10AstNode& clause,
+	std::vector<PPSpellingId>& names)
+{
+	for (std::size_t i = 0; i < clause.children.size(); ++i)
+	{
+		const PA10AstNode& parameter = clause.children[i];
+		if (parameter.kind != PA10NodeKind::ParameterDeclaration)
+			continue;
+		for (std::size_t j = 0; j < parameter.children.size(); ++j)
+		{
+			const PA10AstNode& child = parameter.children[j];
+			if (child.kind != PA10NodeKind::Declarator)
+				continue;
+			const PPSpellingId spelling = parameter_declarator_spelling(child);
+			if (spelling != 0)
+				names.push_back(spelling);
+			break;
+		}
+	}
+}
+}
+
+std::size_t parser_work_limit_for(std::size_t token_count)
+{
+	const std::size_t overhead = 2048;
+	const std::size_t per_token = 96;
+	const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+	if (token_count > (maximum - overhead) / per_token)
+		return maximum;
+	return token_count * per_token + overhead;
+}
+bool advance_token_position(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t amount, std::size_t* result)
+{
+	if (absolute > tokens.size() || amount > tokens.size() - absolute)
+		return false;
+	*result = absolute + amount;
+	return true;
+}
+
+PA10NameScopes::PA10NameScopes()
+	: scopes_(1), collecting_parameter_names_(false),
+	  parameter_clause_depth_(0), pending_parameter_names_(),
+	  publish_parameters_on_enter_(false)
+{
+}
+void PA10NameScopes::enter()
+{
+	scopes_.push_back(
+		std::unordered_map<PPSpellingId, PA10NameKind>());
+	if (!publish_parameters_on_enter_)
+		return;
+	for (std::size_t i = 0; i < pending_parameter_names_.size(); ++i)
+		declare_value(pending_parameter_names_[i]);
+	pending_parameter_names_.clear();
+	publish_parameters_on_enter_ = false;
+}
+void PA10NameScopes::leave()
+{
+	if (scopes_.size() > 1)
+		scopes_.pop_back();
+}
+void PA10NameScopes::declare_type(PPSpellingId spelling)
+{
+	if (spelling != 0)
+		scopes_.back()[spelling] = PA10NameKind::Type;
+}
+void PA10NameScopes::declare_value(PPSpellingId spelling)
+{
+	if (spelling != 0)
+		scopes_.back()[spelling] = PA10NameKind::Value;
+}
+bool PA10NameScopes::is_type(PPSpellingId spelling) const
+{
+	for (std::size_t i = scopes_.size(); i != 0; --i)
+	{
+		const std::unordered_map<PPSpellingId, PA10NameKind>& scope =
+			scopes_[i - 1];
+		const std::unordered_map<PPSpellingId, PA10NameKind>::const_iterator found =
+			scope.find(spelling);
+		if (found != scope.end())
+			return found->second == PA10NameKind::Type;
+	}
+	return false;
+}
+void PA10NameScopes::begin_parameter_collection()
+{
+	collecting_parameter_names_ = true;
+	parameter_clause_depth_ = 0;
+	pending_parameter_names_.clear();
+	publish_parameters_on_enter_ = false;
+}
+void PA10NameScopes::finish_parameter_collection(bool publish_on_next_scope)
+{
+	collecting_parameter_names_ = false;
+	parameter_clause_depth_ = 0;
+	publish_parameters_on_enter_ = publish_on_next_scope;
+	if (!publish_on_next_scope)
+		pending_parameter_names_.clear();
+}
+void PA10NameScopes::enter_parameter_clause()
+{
+	++parameter_clause_depth_;
+}
+void PA10NameScopes::leave_parameter_clause(const PA10AstNode& clause)
+{
+	if (parameter_clause_depth_ == 0)
+		return;
+	--parameter_clause_depth_;
+	if (collecting_parameter_names_ && parameter_clause_depth_ == 0)
+		collect_parameter_names(clause, pending_parameter_names_);
+}
+void record_declarator_name(PA10NameScopes& scopes,
+	const PA10AstNode& node, bool is_type)
+{
+	const PPSpellingId spelling = first_declarator_spelling(node);
+	if (is_type)
+		scopes.declare_type(spelling);
+	else
+		scopes.declare_value(spelling);
+}
+bool is_typedef_specifier(const PA10AstNode& spec)
+{
+	for (std::size_t i = 0; i < spec.children.size(); ++i)
+		if (spec.children[i].kind == PA10NodeKind::DeclSpecifier &&
+			spec.children[i].has_token &&
+			spec.children[i].token == SimpleTokenType::KW_TYPEDEF)
+			return true;
+	return false;
+}
+
+bool token_identifier_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset)
+{
+	return absolute < tokens.size() && offset < tokens.size() - absolute &&
+		tokens[absolute + offset].kind == PA10TokenKind::Identifier;
+}
+bool token_fixed_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset, SimpleTokenType type)
+{
+	return absolute < tokens.size() && offset < tokens.size() - absolute &&
+		tokens[absolute + offset].kind == PA10TokenKind::Fixed &&
+		tokens[absolute + offset].fixed == type;
+}
+bool parenthesized_declaration_start_at(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind,
+	std::size_t open)
+{
+	if (!token_fixed_at(tokens, open, 0, SimpleTokenType::OP_LPAREN) ||
+		open >= delimiter_close_index.size())
+		return false;
+	const std::size_t close = delimiter_close_index[open];
+	if (close >= tokens.size())
+		return false;
+	const bool single_identifier = close == open + 2 &&
+		token_identifier_at(tokens, open, 1);
+	const bool pointer_shape = open < parenthesized_group_kind.size() &&
+		(parenthesized_group_kind[open] ==
+			PA10ParenthesizedGroupKind::AbstractDeclarator ||
+			parenthesized_group_kind[open] ==
+			PA10ParenthesizedGroupKind::NamedDeclarator);
+	return (single_identifier || pointer_shape) &&
+		declaration_follow_is_valid(tokens, close);
+}
+
 namespace
 {
 
@@ -79,21 +298,6 @@ public:
 	std::vector<PA10Token> tokens;
 	bool invalid;
 };
-
-bool token_identifier_at(const std::vector<PA10Token>& tokens,
-	std::size_t absolute, std::size_t offset = 0)
-{
-	return absolute < tokens.size() && offset < tokens.size() - absolute &&
-		tokens[absolute + offset].kind == PA10TokenKind::Identifier;
-}
-
-bool token_fixed_at(const std::vector<PA10Token>& tokens,
-	std::size_t absolute, std::size_t offset, SimpleTokenType type)
-{
-	return absolute < tokens.size() && offset < tokens.size() - absolute &&
-		tokens[absolute + offset].kind == PA10TokenKind::Fixed &&
-		tokens[absolute + offset].fixed == type;
-}
 
 bool is_cv_impl(SimpleTokenType type)
 {

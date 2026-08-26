@@ -1,5 +1,7 @@
 #include "pa15_lowering.h"
 
+#include <cstring>
+
 namespace pa11_semantic_internal
 {
 
@@ -419,8 +421,20 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 			result.kind = LowType::TYPE_FLOAT; result.float_kind = LowType::FLOAT_F80; return result;
 		default:
 			throw std::runtime_error("PA15 unsupported fundamental type");
-		}
 	}
+}
+
+LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
+	const TypeId object = model_.expression_object_type(type);
+	if (object.valid() && model_.type_kind(model_.strip_cv_type(object)) ==
+		TypeKind::Function)
+	{
+		LowType pointer;
+		pointer.kind = LowType::TYPE_POINTER;
+		return pointer;
+	}
+	return low_type(object);
+}
 
 void Pa15Lowerer::index_binding_facts(){
 		for (std::size_t i = 0; i < model_.declaration_facts_.size(); ++i)
@@ -1680,9 +1694,9 @@ std::vector<SemanticFactId> Pa15Lowerer::children(SemanticFactId id) const{
 	}
 
 LowType Pa15Lowerer::lvalue_type(SemanticFactId id) const{
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		return low_type(model_.expression_object_type(fact.type));
-	}
+	const SemanticFact& fact = model_.semantic_facts_[id.value];
+	return low_reference_value_type(fact.type);
+}
 
 bool Pa15Lowerer::reference_binding(BindingId binding) const{
 		if (!binding.valid()) return false;
@@ -1720,6 +1734,14 @@ LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 		{
 			const LoweredValue storage = storage_for(fact.binding);
 			if (!reference_binding(fact.binding)) return storage;
+			if (model_.callable_function_type(model_.binding(fact.binding).type).valid())
+			{
+				const ValueId value = emit_load(storage, storage.type);
+				const Instruction& emitted = block().instructions.back();
+				return LoweredValue(temporary_operand(value,
+					emitted.destination_name_id), storage.type, false,
+					storage.type);
+			}
 			const LowType object = lvalue_type(id);
 			const ValueId value = emit_load(storage, storage.type);
 			const Instruction& emitted = block().instructions.back();
@@ -1752,7 +1774,62 @@ LoweredValue Pa15Lowerer::lower_sizeof(const SemanticFact& fact){
 	}
 
 LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
-		long long value = 0;
+	if (fact.literal_float != InvalidIdentityValue)
+	{
+		if (fact.literal_float >= model_.floating_literal_facts_.size())
+			throw std::runtime_error("PA15 invalid floating literal fact");
+		const FloatingLiteralFact& literal =
+			model_.floating_literal_facts_[fact.literal_float];
+		if (literal.byte_begin > model_.floating_literal_bytes_.size() ||
+			literal.byte_count > model_.floating_literal_bytes_.size() -
+			literal.byte_begin)
+			throw std::runtime_error("PA15 invalid floating literal payload");
+		FundamentalType fact_type;
+		if (!model_.fundamental_of(fact.type, &fact_type) ||
+			fact_type != literal.type)
+			throw std::runtime_error("PA15 floating literal type mismatch");
+		const LowType type = low_type(fact.type);
+		if (!type.is_float())
+			throw std::runtime_error("PA15 floating literal has non-floating type");
+		Operand operand;
+		operand.kind = Operand::OP_FLOAT;
+		const std::uint8_t* bytes = model_.floating_literal_bytes_.data() +
+			literal.byte_begin;
+		if (literal.type == FundamentalType::Float)
+		{
+			if (literal.byte_count != sizeof(float))
+				throw std::runtime_error("PA15 invalid f32 literal payload");
+			float value;
+			std::memcpy(&value, bytes, sizeof(value));
+			operand.float_value = static_cast<long double>(value);
+		}
+		else if (literal.type == FundamentalType::Double)
+		{
+			if (literal.byte_count != sizeof(double))
+				throw std::runtime_error("PA15 invalid f64 literal payload");
+			double value;
+			std::memcpy(&value, bytes, sizeof(value));
+			operand.float_value = static_cast<long double>(value);
+		}
+		else if (literal.type == FundamentalType::LongDouble)
+		{
+			if (literal.byte_count != sizeof(long double))
+				throw std::runtime_error("PA15 invalid f80 literal payload");
+			long double value;
+			std::memcpy(&value, bytes, sizeof(value));
+			operand.float_value = value;
+		}
+		else
+			throw std::runtime_error("PA15 unsupported floating literal type");
+		operand.literal_type = type;
+		// Preserve the producer-owned spelling only at the LowIR presentation
+		// edge; semantic decisions use the typed value above.
+		if (fact.source != NULL && fact.source->text != 0)
+			operand.presentation_id = intern_spelling(
+				model_.ast_.spelling(fact.source->text));
+		return LoweredValue(operand, type, false);
+	}
+	long long value = 0;
 		if (fact.has_literal_value)
 		{
 			__int128 signed_value = static_cast<__int128>(fact.literal_value);
@@ -1790,6 +1867,29 @@ LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
 		return LoweredValue(integer_operand(value, type), type, false);
 	}
 
+LoweredValue Pa15Lowerer::apply_reinterpret_conversion(LoweredValue result,
+	const LowType& target){
+	if (result.lvalue && result.type.is_pointer())
+		materialize_lvalue_value(&result, result.type);
+	if (result.value.kind == Operand::OP_INTEGER && target.is_pointer())
+	{
+		result.value.literal_type = target;
+		Instruction instruction;
+		instruction.kind = Instruction::IK_COPY;
+		instruction.type = target;
+		instruction.first = result.value;
+		const ValueId value = destination(target, &instruction);
+		block().instructions.push_back(instruction);
+		result = LoweredValue(temporary_operand(value,
+			instruction.destination_name_id), target, false);
+	}
+	else if (!(result.type.is_pointer() && target.is_pointer()))
+		throw std::runtime_error("PA15 unsupported reinterpret conversion");
+	result.type = target;
+	result.physical_type = target;
+	result.lvalue = false;
+	return result;
+}
 LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context, bool materialize_lvalue,
 		bool force_integral_literal_conversion){
@@ -1870,9 +1970,17 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			{
 				if (result.lvalue)
 					result = address_of_storage(result);
+				if (!result.type.is_pointer())
+					throw std::runtime_error("PA15 function conversion has no pointer");
+				result = emit_decay(result);
 				result.type = target;
 				result.physical_type = target;
 				result.lvalue = false;
+				continue;
+			}
+			if (conversion.kind == ConversionKind::Reinterpret)
+			{
+				result = apply_reinterpret_conversion(result, target);
 				continue;
 			}
 			if (conversion.kind == ConversionKind::PointerQualification ||
@@ -2260,6 +2368,10 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 		std::size_t argument_begin = 0;
 		Instruction instruction;
 		instruction.kind = Instruction::IK_CALL;
+		if (!fact.callable_type.valid() ||
+			model_.type_kind(fact.callable_type) != TypeKind::Function)
+			throw std::runtime_error("PA15 call has no typed callable signature");
+		function_type = &model_.types_[fact.callable_type.value];
 		if (fact.has_callee)
 		{
 			if (!fact.selected_binding.valid())
@@ -2271,7 +2383,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 			callee_binding = &model_.binding(fact.selected_binding);
 			if (model_.type_kind(callee_binding->type) != TypeKind::Function)
 				throw std::runtime_error("PA15 direct call target is not a function");
-			function_type = &model_.types_[callee_binding->type.value];
 			instruction.direct_callee_id = symbol->second;
 			instruction.first = global_operand(symbol->second,
 				function_name_ids_.find(fact.selected_binding.value)->second);
@@ -2280,13 +2391,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 		{
 			if (facts.empty()) throw std::runtime_error("PA15 indirect call has no callee");
 			argument_begin = 1;
-			TypeId function_id = model_.strip_cv_type(
-				model_.expression_object_type(model_.semantic_facts_[facts.front().value].type));
-			if (model_.type_kind(function_id) == TypeKind::Pointer)
-				function_id = model_.strip_cv_type(model_.types_[function_id.value].child);
-			if (!function_id.valid() || model_.type_kind(function_id) != TypeKind::Function)
-				throw std::runtime_error("PA15 indirect call type is not a function");
-			function_type = &model_.types_[function_id.value];
 			instruction.has_call_signature = true;
 		}
 		const std::size_t argument_count = facts.size() - argument_begin;
@@ -2303,8 +2407,10 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 			const SemanticFactId argument = facts[argument_begin + i];
 			if (i < function_type->parameters.size())
 			{
-				const TypeKind kind = model_.type_kind(
-					model_.strip_cv_type(function_type->parameters[i]));
+				TypeId parameter_type = function_type->parameters[i];
+				while (model_.type_kind(parameter_type) == TypeKind::Cv)
+					parameter_type = model_.types_[parameter_type.value].child;
+				const TypeKind kind = model_.type_kind(parameter_type);
 				if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
 					instruction.args.push_back(lower_address(argument).value);
 				else
@@ -2323,8 +2429,10 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 				name << "%arg" << i;
 				parameter.name_id = intern_spelling(name.str());
 				parameter.type = low_type(function_type->parameters[i]);
-				const TypeKind kind = model_.type_kind(
-					model_.strip_cv_type(function_type->parameters[i]));
+				TypeId parameter_type = function_type->parameters[i];
+				while (model_.type_kind(parameter_type) == TypeKind::Cv)
+					parameter_type = model_.types_[parameter_type.value].child;
+				const TypeKind kind = model_.type_kind(parameter_type);
 				if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
 					parameter.metadata.passing = lowir_model::PPM_REFERENCE;
 				instruction.call_params.push_back(parameter);
@@ -2342,7 +2450,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 			TypeKind::RvalueReference;
 		if (reference_result)
 			return LoweredValue(temporary_operand(value, instruction.destination_name_id),
-				low_type(model_.expression_object_type(function_type->result)), true,
+				low_reference_value_type(function_type->result), true,
 				instruction.call_return_type);
 		return LoweredValue(temporary_operand(value, instruction.destination_name_id),
 			instruction.call_return_type, false);
@@ -2436,6 +2544,9 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 		{
 		case SemanticFactKind::IdExpression:
 		case SemanticFactKind::Variable:
+			if (reference_binding(fact.binding) &&
+				model_.callable_function_type(model_.binding(fact.binding).type).valid())
+				return lower_lvalue(id);
 			if (model_.binding(fact.binding).kind == BindingKind::Function)
 			{
 				const std::map<std::size_t, SymbolId>::const_iterator found =

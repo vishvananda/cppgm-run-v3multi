@@ -219,6 +219,38 @@ void add_metadata(std::ostream &out, const std::vector<std::string> &items)
   out << "]";
 }
 
+void add_parameter_metadata(std::vector<std::string> *items,
+                            const ParameterMetadata &metadata)
+{
+  switch (metadata.passing) {
+  case PPM_DIRECT: break;
+  case PPM_INDIRECT_RESULT: items->push_back("pass=indirect_result"); break;
+  case PPM_BY_ADDRESS: items->push_back("pass=by_address"); break;
+  case PPM_REFERENCE: items->push_back("pass=reference"); break;
+  case PPM_DECAY: items->push_back("pass=decay"); break;
+  default: throw std::runtime_error("LowIR serializer: invalid parameter passing state");
+  }
+  switch (metadata.capture) {
+  case PCM_DEFAULT: break;
+  case PCM_NOCAPTURE: items->push_back("capture=nocapture"); break;
+  case PCM_MAYCAPTURE: items->push_back("capture=maycapture"); break;
+  default: throw std::runtime_error("LowIR serializer: invalid parameter capture state");
+  }
+  switch (metadata.access) {
+  case PAM_DEFAULT: break;
+  case PAM_NONE: items->push_back("access=none"); break;
+  case PAM_READ: items->push_back("access=read"); break;
+  case PAM_WRITE: items->push_back("access=write"); break;
+  case PAM_READWRITE: items->push_back("access=readwrite"); break;
+  default: throw std::runtime_error("LowIR serializer: invalid parameter access state");
+  }
+  switch (metadata.alias) {
+  case PALM_DEFAULT: break;
+  case PALM_NOALIAS: items->push_back("alias=noalias"); break;
+  default: throw std::runtime_error("LowIR serializer: invalid parameter alias state");
+  }
+}
+
 std::string unary_text(UnaryOperator op)
 {
   switch (op) {
@@ -368,6 +400,10 @@ void emit_instruction(std::ostream &out, const Program &program,
         if (i != 0) out << ", ";
         out << spelling(program, instruction.call_params[i].name_id) << " : "
             << type_text(instruction.call_params[i].type);
+        std::vector<std::string> parameter_items;
+        add_parameter_metadata(&parameter_items,
+                               instruction.call_params[i].metadata);
+        add_metadata(out, parameter_items);
       }
       out << ") -> " << type_text(instruction.call_return_type);
       std::vector<std::string> boundary_items;
@@ -413,33 +449,7 @@ void emit_parameters(std::ostream &out, const Program &program,
     out << spelling(program, parameters[i].name_id) << " : "
         << type_text(parameters[i].type);
     std::vector<std::string> items;
-    switch (parameters[i].metadata.passing) {
-    case PPM_DIRECT: break;
-    case PPM_INDIRECT_RESULT: items.push_back("pass=indirect_result"); break;
-    case PPM_BY_ADDRESS: items.push_back("pass=by_address"); break;
-    case PPM_REFERENCE: items.push_back("pass=reference"); break;
-    case PPM_DECAY: items.push_back("pass=decay"); break;
-    default: throw std::runtime_error("LowIR serializer: invalid parameter passing state");
-    }
-    switch (parameters[i].metadata.capture) {
-    case PCM_DEFAULT: break;
-    case PCM_NOCAPTURE: items.push_back("capture=nocapture"); break;
-    case PCM_MAYCAPTURE: items.push_back("capture=maycapture"); break;
-    default: throw std::runtime_error("LowIR serializer: invalid parameter capture state");
-    }
-    switch (parameters[i].metadata.access) {
-    case PAM_DEFAULT: break;
-    case PAM_NONE: items.push_back("access=none"); break;
-    case PAM_READ: items.push_back("access=read"); break;
-    case PAM_WRITE: items.push_back("access=write"); break;
-    case PAM_READWRITE: items.push_back("access=readwrite"); break;
-    default: throw std::runtime_error("LowIR serializer: invalid parameter access state");
-    }
-    switch (parameters[i].metadata.alias) {
-    case PALM_DEFAULT: break;
-    case PALM_NOALIAS: items.push_back("alias=noalias"); break;
-    default: throw std::runtime_error("LowIR serializer: invalid parameter alias state");
-    }
+    add_parameter_metadata(&items, parameters[i].metadata);
     add_metadata(out, items);
   }
   out << ")";

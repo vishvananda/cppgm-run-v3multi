@@ -513,7 +513,100 @@ bool PA11SemanticModel::functional_cast_target(const PA10AstNode& node,
 }
 bool PA11SemanticModel::functional_cast_target_supported(TypeId target) const
 {
-	return void_id(target) || scalar_id(target) || enumeration_id(target);
+	const TypeId unqualified = strip_cv_type(target);
+	const TypeKind direct_kind = unqualified.valid() ? type_kind(unqualified) :
+		TypeKind::Fundamental;
+	if (direct_kind == TypeKind::LvalueReference ||
+		direct_kind == TypeKind::RvalueReference)
+		return true;
+	const TypeId object = strip_cv_type(expression_object_type(target));
+	const TypeKind kind = object.valid() ? type_kind(object) : TypeKind::Fundamental;
+	return void_id(target) || scalar_id(target) || enumeration_id(target) ||
+		kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference;
+}
+bool PA11SemanticModel::cv_cast_compatible(TypeId source, TypeId target) const
+{
+	return cv_cast_compatible_impl(source, target);
+}
+bool PA11SemanticModel::cv_cast_compatible_impl(TypeId source,
+	TypeId target) const
+{
+	while (source.valid() && type_kind(source) == TypeKind::Cv)
+		source = types_[source.value].child;
+	while (target.valid() && type_kind(target) == TypeKind::Cv)
+		target = types_[target.value].child;
+	if (!source.valid() || !target.valid() || type_kind(source) != type_kind(target))
+		return false;
+	const TypeKind kind = type_kind(source);
+	if (kind == TypeKind::LvalueReference ||
+		kind == TypeKind::RvalueReference)
+		// Reference identity is part of a function signature.  This helper
+		// strips cv wrappers only; unlike expression_object_type it never
+		// erases a nested reference while walking that signature.
+		return cv_cast_compatible_impl(types_[source.value].child,
+			types_[target.value].child);
+	if (kind == TypeKind::Pointer)
+		return cv_cast_compatible_impl(types_[source.value].child,
+			types_[target.value].child);
+	if (kind == TypeKind::MemberPointer)
+		return types_[source.value].named == types_[target.value].named &&
+			cv_cast_compatible_impl(types_[source.value].child,
+				types_[target.value].child);
+	if (kind == TypeKind::Array)
+		return types_[source.value].unknown_bound ==
+			types_[target.value].unknown_bound &&
+			(types_[source.value].unknown_bound ||
+				types_[source.value].bound == types_[target.value].bound) &&
+			cv_cast_compatible_impl(types_[source.value].child,
+				types_[target.value].child);
+	if (kind == TypeKind::Function)
+	{
+		const TypeKey& left = types_[source.value];
+		const TypeKey& right = types_[target.value];
+		if (left.variadic != right.variadic ||
+			left.parameters.size() != right.parameters.size() ||
+			!cv_cast_compatible_impl(left.result, right.result))
+			return false;
+		for (std::size_t i = 0; i < left.parameters.size(); ++i)
+			if (!cv_cast_compatible_impl(left.parameters[i], right.parameters[i]))
+				return false;
+		return true;
+	}
+	return source == target;
+}
+bool PA11SemanticModel::reinterpret_reference_compatible(TypeId source,
+	TypeId target) const
+{
+	if (cv_cast_compatible(source, target))
+		return true;
+	const TypeId source_object = strip_cv_type(source);
+	const TypeId target_object = strip_cv_type(target);
+	const bool source_supported = integral_id(source_object) ||
+		floating_id(source_object) || enumeration_id(source_object) ||
+		pointer_id(source_object);
+	const bool target_supported = integral_id(target_object) ||
+		floating_id(target_object) || enumeration_id(target_object) ||
+		pointer_id(target_object);
+	// The PA15 reinterpret-reference subset is defined by the typed scalar
+	// owner, not by an incidental equal-size fixture.  Reference formation is
+	// accepted for the supported scalar object kinds; unsupported class,
+	// array, function, and member-pointer objects remain rejected here.
+	return source_supported && target_supported;
+}
+ExplicitCastKind PA11SemanticModel::explicit_cast_kind(
+	const PA10AstNode& node) const
+{
+	if (node.kind == PA10NodeKind::CallExpression)
+		return ExplicitCastKind::Functional;
+	switch (node.token)
+	{
+	case SimpleTokenType::OP_LPAREN: return ExplicitCastKind::CStyle;
+	case SimpleTokenType::KW_STATIC_CAST: return ExplicitCastKind::Static;
+	case SimpleTokenType::KW_CONST_CAST: return ExplicitCastKind::Const;
+	case SimpleTokenType::KW_REINTERPET_CAST:
+		return ExplicitCastKind::Reinterpret;
+	default: return ExplicitCastKind::None;
+	}
 }
 ExprInfo PA11SemanticModel::semantic_id_expression_selected(
 	const PA10AstNode& node, ScopeId scope,
@@ -560,26 +653,65 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 {
 	const TypeId source = expression_object_type(operand.type);
 	const TypeKind target_kind = type_kind(target);
+	const ExplicitCastKind cast_kind = explicit_cast_kind(node);
 	if (target_kind == TypeKind::LvalueReference ||
 		target_kind == TypeKind::RvalueReference)
 	{
 		const TypeId referred = types_[target.value].child;
-		if (!qualification_convertible(source, referred))
+		bool valid = qualification_convertible(source, referred);
+		if (cast_kind == ExplicitCastKind::Const ||
+			cast_kind == ExplicitCastKind::Functional)
+			valid = cv_cast_compatible(source, referred);
+		else if (cast_kind == ExplicitCastKind::Reinterpret)
+			valid = reinterpret_reference_compatible(source, referred);
+		else if (cast_kind == ExplicitCastKind::Static &&
+			cv_cast_compatible(source, referred))
+			valid = true;
+		if (!valid)
 			throw std::runtime_error("PA12 invalid reference cast");
-		if (operand.category == SemanticValueCategory::Lvalue)
+		if (target_kind == TypeKind::LvalueReference &&
+			operand.category != SemanticValueCategory::Lvalue)
+			throw std::runtime_error("PA12 invalid reference cast category");
+		const SemanticValueCategory category = target_kind ==
+			TypeKind::RvalueReference ? SemanticValueCategory::Xvalue :
+			SemanticValueCategory::Lvalue;
+		// A cv-compatible static reference cast preserves the historical PA12
+		// identity fact.  This keeps reference result ownership stable for
+		// earlier semantic dumps while the non-identity reference families
+		// retain an explicit typed cast boundary for PA15 lowering.
+		if (cast_kind == ExplicitCastKind::Static &&
+			cv_cast_compatible(source, referred))
 		{
-			const SemanticValueCategory category =
-				target_kind == TypeKind::RvalueReference ?
-				SemanticValueCategory::Xvalue : SemanticValueCategory::Lvalue;
 			semantic_facts_[operand.fact.value].type = target;
 			semantic_facts_[operand.fact.value].category = category;
 			return ExprInfo(operand.fact, target, category, false);
 		}
-		throw std::runtime_error("PA12 invalid reference cast category");
+		SemanticFact fact(SemanticFactKind::CastExpression, target,
+			category, &node);
+		fact.token = node.token;
+		const SemanticFactId result = make_semantic_fact(fact);
+		set_semantic_children(result,
+			std::vector<SemanticFactId>(1, operand.fact));
+		return ExprInfo(result, target, category, false);
 	}
 	bool valid = false;
 	ConversionKind kind = ConversionKind::Integral;
-	if (void_id(target))
+	if (cast_kind == ExplicitCastKind::Const)
+	{
+		valid = pointer_id(source) && pointer_id(target) &&
+			cv_cast_compatible(source, target);
+		kind = ConversionKind::PointerQualification;
+	}
+	else if (cast_kind == ExplicitCastKind::Reinterpret)
+	{
+		const bool source_pointer = pointer_id(source);
+		const bool target_pointer = pointer_id(target);
+		valid = (target_pointer && (source_pointer || integral_id(source) ||
+			enumeration_id(source) || nullptr_id(source))) ||
+			(integral_id(target) && source_pointer);
+		kind = ConversionKind::Reinterpret;
+	}
+	else if (void_id(target))
 		valid = scalar_id(source) || type_kind(source) == TypeKind::Function;
 	else if (integral_id(target))
 	{
@@ -598,6 +730,14 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 				nullptr_id(source);
 			kind = ConversionKind::Integral;
 		}
+	}
+	else if (pointer_id(target) && cast_kind == ExplicitCastKind::CStyle &&
+		(integral_id(source) || enumeration_id(source) || nullptr_id(source)))
+	{
+		// The supported C-style scalar-to-pointer form is represented at
+		// PA12 as the same typed reinterpret boundary used by reinterpret_cast.
+		valid = true;
+		kind = ConversionKind::Reinterpret;
 	}
 	else if (floating_id(target) || pointer_id(target))
 	{

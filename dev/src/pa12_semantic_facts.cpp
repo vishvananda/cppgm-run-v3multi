@@ -687,6 +687,27 @@ void PA11SemanticModel::record_constant_initializer(SemanticFactId fact_id,
 	record_constant_address(fact_id, scope);
 }
 
+std::size_t PA11SemanticModel::add_floating_literal(const LiteralData& literal)
+{
+	std::size_t expected = 0;
+	switch (literal.type)
+	{
+	case FundamentalType::Float: expected = sizeof(float); break;
+	case FundamentalType::Double: expected = sizeof(double); break;
+	case FundamentalType::LongDouble: expected = sizeof(long double); break;
+	default: throw std::runtime_error("PA12 invalid floating literal type");
+	}
+	if (literal.bytes.size() != expected)
+		throw std::runtime_error("PA12 invalid floating literal bytes");
+	const std::size_t byte_begin = floating_literal_bytes_.size();
+	floating_literal_bytes_.insert(floating_literal_bytes_.end(),
+		literal.bytes.begin(), literal.bytes.end());
+	const std::size_t result = floating_literal_facts_.size();
+	floating_literal_facts_.push_back(FloatingLiteralFact(literal.type,
+		byte_begin, literal.bytes.size()));
+	return result;
+}
+
 SemanticFactId PA11SemanticModel::semantic_literal(const PA10AstNode& node)
 {
 	TypeId type;
@@ -726,6 +747,15 @@ SemanticFactId PA11SemanticModel::semantic_literal(const PA10AstNode& node)
 		fact.constant_value = value.value;
 		fact.constant_value_unsigned = value.is_unsigned;
 		fact.constant_value_evaluated = true;
+	}
+	if (element_count == 0 && node.kind == PA10NodeKind::Literal &&
+		(node.literal.type == FundamentalType::Float ||
+			node.literal.type == FundamentalType::Double ||
+			node.literal.type == FundamentalType::LongDouble))
+	{
+		// PA2 already decoded the literal into typed bytes.  Publish an index
+		// into the sparse payload so PA15 never consults or reparses text.
+		fact.literal_float = add_floating_literal(node.literal);
 	}
 	return make_semantic_fact(fact);
 }

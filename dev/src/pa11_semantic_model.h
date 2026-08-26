@@ -710,7 +710,20 @@ enum class ConversionKind
 	FunctionToPointer,
 	ReferenceBinding,
 	PointerToBool,
-	Floating
+	Floating,
+	Reinterpret
+};
+
+// PA12 uses this local discriminator while validating the source-level cast
+// family.  It is not stored in SemanticFact and has no PA15 presentation role.
+enum class ExplicitCastKind
+{
+	None,
+	CStyle,
+	Static,
+	Const,
+	Reinterpret,
+	Functional
 };
 
 struct ConversionFact
@@ -818,6 +831,22 @@ struct ConstantAddressFact
 	{}
 };
 
+// Floating literal bytes are already typed by PA2.  Keep them in a sparse
+// sidecar because only floating literal facts need the payload and the
+// payload must retain the source f32/f64/f80 representation exactly.
+struct FloatingLiteralFact
+{
+	FundamentalType type;
+	std::size_t byte_begin;
+	std::size_t byte_count;
+
+	FloatingLiteralFact(FundamentalType type = FundamentalType::Float,
+		std::size_t byte_begin = InvalidIdentityValue,
+		std::size_t byte_count = 0)
+		: type(type), byte_begin(byte_begin), byte_count(byte_count)
+	{}
+};
+
 struct SemanticFact
 {
 	SemanticFactKind kind;
@@ -826,6 +855,9 @@ struct SemanticFact
 	BindingId binding;
 	BindingId selected_binding;
 	ScopeId selected_scope;
+	// A call publishes the canonical function TypeId selected for its boundary
+	// so lowering never rediscovers a signature from a child fact.
+	TypeId callable_type;
 	SimpleTokenType token;
 	const PA10AstNode* source;
 	std::size_t name_begin;
@@ -840,6 +872,7 @@ struct SemanticFact
 	bool has_literal_value;
 	bool literal_value_unsigned;
 	bool literal_value_negative;
+	std::size_t literal_float;
 	// PA12-owned result for a constant initializer expression.  PA15 consumes
 	// this typed fact rather than recomputing semantic state while lowering.
 	bool has_constant_value;
@@ -863,12 +896,14 @@ struct SemanticFact
 		const PA10AstNode* source = NULL)
 		: kind(kind), category(category), type(type), binding(),
 		  selected_binding(), selected_scope(),
+		  callable_type(),
 		  token(SimpleTokenType::OP_SEMICOLON), source(source),
 		  name_begin(0), name_count(0), name_global(false),
 		  child_begin(InvalidIdentityValue), child_count(0),
 		  conversion_begin(InvalidIdentityValue), conversion_count(0),
 			literal_element_count(0), literal_value(0), has_literal_value(false),
 			literal_value_unsigned(false), literal_value_negative(false),
+			literal_float(InvalidIdentityValue),
 			has_constant_value(false), constant_value(0),
 			constant_value_unsigned(false), constant_value_evaluated(false),
 			constant_address(),
@@ -1122,6 +1157,8 @@ private:
 		substatement_scope_index_;
 	std::vector<SemanticFact> semantic_facts_;
 	std::vector<SemanticFactId> semantic_children_;
+	std::vector<FloatingLiteralFact> floating_literal_facts_;
+	std::vector<std::uint8_t> floating_literal_bytes_;
 	std::vector<ConstantAddressFact> constant_address_facts_;
 	std::vector<std::uint8_t> constant_address_literal_bytes_;
 	std::vector<ConversionFact> conversion_facts_;
@@ -1649,6 +1686,8 @@ private:
 		PA11SemanticModel& model_;
 		std::size_t semantic_begin_;
 		std::size_t children_begin_;
+		std::size_t floating_literal_begin_;
+		std::size_t floating_literal_bytes_begin_;
 		std::size_t constant_address_begin_;
 		std::size_t constant_address_bytes_begin_;
 		std::size_t conversion_begin_;
@@ -1753,6 +1792,8 @@ private:
 	;
 	SemanticFactId semantic_literal(const PA10AstNode& node)
 	;
+	std::size_t add_floating_literal(const LiteralData& literal)
+	;
 	ExprInfo semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 	;
 	ExprInfo semantic_unary_expression(const PA10AstNode& node, ScopeId scope)
@@ -1773,6 +1814,14 @@ private:
 	TypeId* target)
 	;
 	bool functional_cast_target_supported(TypeId target) const
+	;
+	bool cv_cast_compatible(TypeId source, TypeId target) const
+	;
+	bool cv_cast_compatible_impl(TypeId source, TypeId target) const
+	;
+	bool reinterpret_reference_compatible(TypeId source, TypeId target) const
+	;
+	ExplicitCastKind explicit_cast_kind(const PA10AstNode& node) const
 	;
 	ExprInfo semantic_cast_to_target(const PA10AstNode& node, TypeId target,
 	const ExprInfo& operand)

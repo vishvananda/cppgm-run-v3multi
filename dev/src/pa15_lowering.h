@@ -180,6 +180,7 @@ private:
 	std::string abi_symbol(const FunctionFact& fact) const;
 	std::string abi_function_symbol(BindingId binding_id, ScopeId owner) const;
 	LowType low_type(TypeId type) const;
+	LowType low_reference_value_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
 	bool typed_pointer_zero(SemanticFactId id, TypeId destination) const;
@@ -255,6 +256,8 @@ private:
 	LowType size_low_type() const;
 	LoweredValue lower_sizeof(const SemanticFact& fact);
 	LoweredValue literal(const SemanticFact& fact);
+	LoweredValue apply_reinterpret_conversion(LoweredValue result,
+		const LowType& target);
 	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context = false, bool materialize_lvalue = true,
 		bool force_integral_literal_conversion = false);

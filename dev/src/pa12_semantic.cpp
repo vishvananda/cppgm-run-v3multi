@@ -422,6 +422,8 @@ BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
 PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
 	: model_(model), semantic_begin_(model.semantic_facts_.size()),
 	  children_begin_(model.semantic_children_.size()),
+	  floating_literal_begin_(model.floating_literal_facts_.size()),
+	  floating_literal_bytes_begin_(model.floating_literal_bytes_.size()),
 	  constant_address_begin_(model.constant_address_facts_.size()),
 	  constant_address_bytes_begin_(model.constant_address_literal_bytes_.size()),
 	  conversion_begin_(model.conversion_facts_.size()),
@@ -437,6 +439,8 @@ void PA11SemanticModel::SemanticTailGuard::discard()
 		return;
 	model_.semantic_facts_.resize(semantic_begin_);
 	model_.semantic_children_.resize(children_begin_);
+	model_.floating_literal_facts_.resize(floating_literal_begin_);
+	model_.floating_literal_bytes_.resize(floating_literal_bytes_begin_);
 	model_.constant_address_facts_.resize(constant_address_begin_);
 	model_.constant_address_literal_bytes_.resize(constant_address_bytes_begin_);
 	model_.conversion_facts_.resize(conversion_begin_);
@@ -1793,7 +1797,6 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 					argument_node);
 		}
 	}
-
 	std::vector<ValueRef> candidates;
 	bool direct = false;
 	ExprInfo indirect_callee;
@@ -1829,6 +1832,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (!direct)
 	{
 		const TypeKey& function = types_[indirect_type.value];
+		record_builtin_conversion(indirect_callee, make_pointer(indirect_type));
 		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
 		{
 			if (i < function.parameters.size())
@@ -1992,6 +1996,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
 	fact.has_callee = direct;
+	fact.callable_type = selected_type;
 	if (direct)
 	{
 		fact.selected_binding = selected.binding;

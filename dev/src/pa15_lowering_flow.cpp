@@ -150,8 +150,12 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			else
 			{
 				left = lower_expression_impl(operands[0], false, true,
+					force_size_operands, true);
+				right = lower_expression_impl(operands[1], false, true,
+					force_size_operands, true);
+				left = apply_conversions(operands[0], left, false, true,
 					force_size_operands);
-					right = lower_expression_impl(operands[1], false, true,
+				right = apply_conversions(operands[1], right, false, true,
 					force_size_operands);
 			}
 			if ((fact.token == SimpleTokenType::OP_PLUS ||
@@ -260,10 +264,26 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			result = lower_call(id);
 			break;
 		case SemanticFactKind::CastExpression:
+		{
 			if (children(id).size() != 1)
 				throw std::runtime_error("PA15 unsupported cast expression");
-			result = lower_expression(children(id).front());
+			const TypeKind target_kind = model_.type_kind(
+				model_.strip_cv_type(fact.type));
+			if (target_kind == TypeKind::LvalueReference ||
+				target_kind == TypeKind::RvalueReference)
+			{
+				// PA12 owns reference-cast validity and keeps the typed source
+				// fact.  Preserve the address here; materialization and any
+				// contextual reference binding remain ordinary typed conversions.
+				const LoweredValue address = lower_address(children(id).front());
+				result = LoweredValue(address.value,
+					low_reference_value_type(fact.type), true,
+					address.physical_type);
+			}
+			else
+				result = lower_expression(children(id).front());
 			break;
+		}
 		default:
 			throw std::runtime_error("PA15 unsupported scalar expression fact");
 		}
@@ -1157,12 +1177,24 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			}
 			else
 			{
-				if (!target.return_type.is_void())
+				if (target.metadata.role == lowir_model::SR_ENTRY &&
+					!target.return_type.is_void())
+				{
+					Instruction instruction;
+					instruction.kind = Instruction::IK_RETURN;
+					instruction.type = target.return_type;
+					instruction.first = integer_operand(0, target.return_type);
+					block().instructions.push_back(instruction);
+				}
+				else if (!target.return_type.is_void())
 					throw std::runtime_error("PA15 function falls through without return");
-				Instruction instruction;
-				instruction.kind = Instruction::IK_RETURN;
-				instruction.type = target.return_type;
-				block().instructions.push_back(instruction);
+				else
+				{
+					Instruction instruction;
+					instruction.kind = Instruction::IK_RETURN;
+					instruction.type = target.return_type;
+					block().instructions.push_back(instruction);
+				}
 			}
 		}
 		target.value_count = next_value_ - value_begin;

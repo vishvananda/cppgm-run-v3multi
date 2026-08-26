@@ -1,12 +1,53 @@
 #pragma once
 
 #include <cstddef>
+#include <unordered_map>
 #include <vector>
 
 #include "pa10_ast.h"
 
 namespace PA10ParserSupport
 {
+
+std::size_t parser_work_limit_for(std::size_t token_count);
+bool advance_token_position(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t amount, std::size_t* result);
+bool token_identifier_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset = 0);
+bool token_fixed_at(const std::vector<PA10Token>& tokens,
+	std::size_t absolute, std::size_t offset, SimpleTokenType type);
+
+enum class PA10NameKind : unsigned char
+{
+	Type,
+	Value
+};
+
+class PA10NameScopes
+{
+public:
+	PA10NameScopes();
+	void enter();
+	void leave();
+	void declare_type(PPSpellingId spelling);
+	void declare_value(PPSpellingId spelling);
+	bool is_type(PPSpellingId spelling) const;
+	void begin_parameter_collection();
+	void finish_parameter_collection(bool publish_on_next_scope);
+	void enter_parameter_clause();
+	void leave_parameter_clause(const PA10AstNode& clause);
+
+private:
+	std::vector<std::unordered_map<PPSpellingId, PA10NameKind> > scopes_;
+	bool collecting_parameter_names_;
+	std::size_t parameter_clause_depth_;
+	std::vector<PPSpellingId> pending_parameter_names_;
+	bool publish_parameters_on_enter_;
+};
+
+void record_declarator_name(PA10NameScopes& scopes,
+	const PA10AstNode& node, bool is_type);
+bool is_typedef_specifier(const PA10AstNode& spec);
 
 bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens);
 bool is_cv(SimpleTokenType type);
@@ -94,6 +135,12 @@ enum class PA10ParenthesizedGroupKind : unsigned char
 	// A pointer-led group with a named declarator-id.
 	NamedDeclarator
 };
+
+bool parenthesized_declaration_start_at(
+	const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	const std::vector<PA10ParenthesizedGroupKind>& parenthesized_group_kind,
+	std::size_t open);
 
 // Classify a global-qualified declaration prefix using the parser's indexed
 // delimiter facts.  The parser charges the published bounded lookahead once.

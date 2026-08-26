@@ -58,7 +58,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
-	semantic_children_(),
+	semantic_children_(), floating_literal_facts_(), floating_literal_bytes_(),
 	conversion_facts_(), declaration_semantic_ids_(),
 	semantic_name_components_(), anonymous_union_fact_index_(),
 	builtin_constant_p_name_(), builtin_abort_name_(),
