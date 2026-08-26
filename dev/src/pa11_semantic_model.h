@@ -678,7 +678,9 @@ enum class SemanticFactKind
 	DefaultStatement,
 	BreakStatement,
 	ContinueStatement,
-	ConstructorAction
+	ConstructorAction,
+	LabeledStatement,
+	GotoStatement
 };
 
 enum class BuiltinKind
@@ -856,6 +858,7 @@ struct SemanticFact
 	BindingId binding;
 	BindingId selected_binding;
 	ScopeId selected_scope;
+	LabelId label;
 	// A call publishes the canonical function TypeId selected for its boundary
 	// so lowering never rediscovers a signature from a child fact.
 	TypeId callable_type;
@@ -897,6 +900,7 @@ struct SemanticFact
 		const PA10AstNode* source = NULL)
 		: kind(kind), category(category), type(type), binding(),
 		  selected_binding(), selected_scope(),
+		  label(),
 		  callable_type(),
 		  token(SimpleTokenType::OP_SEMICOLON), source(source),
 		  name_begin(0), name_count(0), name_global(false),
@@ -944,6 +948,7 @@ struct FunctionFact
 	ScopeId function_scope;
 	ScopeId body_scope;
 	SemanticFactId body_fact;
+	LabelTableId label_table;
 	std::size_t default_argument_begin;
 	std::size_t default_argument_count;
 
@@ -952,9 +957,27 @@ struct FunctionFact
 		ScopeId body_scope = ScopeId())
 		: node(node), owner(owner), binding(binding),
 		  function_scope(function_scope), body_scope(body_scope), body_fact(),
+		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
 		  default_argument_count(0)
 	{}
+};
+
+struct LabelFact
+{
+	NameId name;
+	const PA10AstNode* node;
+
+	LabelFact(NameId name = NameId(), const PA10AstNode* node = NULL)
+		: name(name), node(node)
+	{}
+};
+
+struct FunctionLabelTable
+{
+	FlatIndex<NameId, LabelId, IdentityHash<NameId> > by_name;
+
+	FunctionLabelTable() : by_name() {}
 };
 
 struct SyntheticFunctionFact
@@ -1143,6 +1166,8 @@ private:
 	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> >
 		function_binding_fact_index_;
 	std::vector<SemanticFactId> function_default_arguments_;
+	std::vector<LabelFact> label_facts_;
+	std::vector<FunctionLabelTable> label_tables_;
 	std::vector<FunctionFactId> class_function_facts_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
@@ -1576,6 +1601,13 @@ private:
 	;
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
 	;
+	void prepare_pa12_labels(const PA10AstNode& body, FunctionFact& function)
+	;
+	void collect_pa12_labels(const PA10AstNode& node,
+		FunctionLabelTable& table)
+	;
+	LabelId label_for_name(const FunctionFact& function, NameId name) const
+	;
 	bool simple_declaration_has_initializer(const PA10AstNode& node) const
 	;
 	void collect_switch_transfer_points(const PA10AstNode& node,
@@ -1888,7 +1920,12 @@ private:
 		unsigned int switch_depth, SwitchValidationContext* switch_context)
 	;
 	SemanticFactId semantic_jump_statement(const PA10AstNode& node,
-		unsigned int loop_depth, unsigned int switch_depth)
+		const FunctionFact& function, unsigned int loop_depth,
+		unsigned int switch_depth)
+	;
+	SemanticFactId semantic_label_statement(const PA10AstNode& node,
+		ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
+		unsigned int switch_depth, SwitchValidationContext* switch_context)
 	;
 	SemanticFactId semantic_statement(const PA10AstNode& node, ScopeId scope,
 	const FunctionFact& function, unsigned int loop_depth,

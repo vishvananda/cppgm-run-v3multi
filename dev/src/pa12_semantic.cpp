@@ -2616,24 +2616,6 @@ SemanticFactId PA11SemanticModel::semantic_compound(const PA10AstNode& node,
 	return result;
 }
 
-SemanticFactId PA11SemanticModel::semantic_jump_statement(
-	const PA10AstNode& node, unsigned int loop_depth, unsigned int switch_depth)
-{
-	if (node.kind == PA10NodeKind::BreakStatement)
-	{
-		if (loop_depth == 0 && switch_depth == 0)
-			throw std::runtime_error("PA12 break outside loop or switch");
-		return make_expression_fact(SemanticFactKind::BreakStatement, TypeId(),
-			SemanticValueCategory::Prvalue, node,
-			std::vector<SemanticFactId>());
-	}
-	if (loop_depth == 0)
-		throw std::runtime_error("PA12 continue outside loop");
-	return make_expression_fact(SemanticFactKind::ContinueStatement, TypeId(),
-		SemanticValueCategory::Prvalue, node,
-		std::vector<SemanticFactId>());
-}
-
 SemanticFactId PA11SemanticModel::semantic_declaration_statement(
 	const PA10AstNode& node, ScopeId scope)
 {
@@ -2895,9 +2877,13 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 		return make_expression_fact(SemanticFactKind::DefaultStatement,
 			TypeId(), SemanticValueCategory::Prvalue, node, children);
 	}
+	case PA10NodeKind::LabeledStatement:
+		return semantic_label_statement(node, scope, function, loop_depth,
+			switch_depth, switch_context);
+	case PA10NodeKind::GotoStatement:
 	case PA10NodeKind::BreakStatement:
 	case PA10NodeKind::ContinueStatement:
-		return semantic_jump_statement(node, loop_depth, switch_depth);
+		return semantic_jump_statement(node, function, loop_depth, switch_depth);
 	default:
 		throw std::runtime_error("PA12 unsupported statement form");
 	}
@@ -2956,6 +2942,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 			throw std::runtime_error("PA12 function fact is missing");
 		prepare_pa12_member_parameter(*function);
 		record_function_default_arguments(*function, node, 0);
+		prepare_pa12_labels(node.children.back(), *function);
 		function->body_fact = semantic_compound(node.children.back(),
 			function->function_scope, *function, 0, 0, NULL);
 		break;

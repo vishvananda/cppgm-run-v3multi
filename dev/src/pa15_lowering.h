@@ -148,6 +148,12 @@ private:
 	std::map<std::size_t, SpellingId> global_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
 	std::map<std::size_t, SymbolId> literal_address_symbols_;
+	std::vector<BlockId> label_blocks_;
+	std::vector<unsigned char> label_referenced_;
+	std::vector<unsigned char> label_subtrees_;
+	std::vector<unsigned char> label_index_states_;
+	std::vector<unsigned char> label_subtree_states_;
+	std::vector<unsigned char> label_lowered_;
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
@@ -320,6 +326,12 @@ private:
 	void emit_jump(BlockId target);
 	void emit_branch(const Operand& condition, BlockId true_target,
 		BlockId false_target);
+	BlockId label_target(LabelId label);
+	void initialize_label_flow(SemanticFactId body);
+	void collect_label_flow(SemanticFactId id);
+	bool compute_label_subtree(SemanticFactId id);
+	bool referenced_label_subtree(SemanticFactId id) const;
+	void lower_referenced_label_subtree(SemanticFactId id);
 	bool condition_is_empty(SemanticFactId id) const;
 	bool constant_truth(SemanticFactId id, bool* value);
 	bool has_direct_short_circuit(SemanticFactId id) const;

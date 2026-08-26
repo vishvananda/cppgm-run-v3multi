@@ -1809,6 +1809,12 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 		output << "constructor-action " << qualified_binding_name(
 			fact.selected_scope, fact.selected_binding) << '\n';
 		break;
+	case SemanticFactKind::LabeledStatement:
+		output << "labeled-statement " << semantic_name(fact) << '\n';
+		break;
+	case SemanticFactKind::GotoStatement:
+		output << "goto-statement " << semantic_name(fact) << '\n';
+		break;
 	}
 	for (std::size_t i = 0; i < fact.child_count; ++i)
 		dump_pa12_fact(output, semantic_children_[fact.child_begin + i],

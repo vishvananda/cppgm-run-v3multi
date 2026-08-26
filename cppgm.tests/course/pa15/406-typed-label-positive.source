@@ -1,0 +1,25 @@
+int forward_nested(int value)
+{
+  goto target;
+  value = 99;
+  {
+    value = 88;
+target:
+    return value;
+  }
+}
+
+int backward_label(int limit)
+{
+  int value = 0;
+target:
+  value = value + 1;
+  if (value < limit)
+    goto target;
+  return value;
+}
+
+int main()
+{
+  return forward_nested(7) == 7 && backward_label(3) == 3 ? 0 : 1;
+}

@@ -1101,7 +1101,10 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		if (current_block_ == InvalidIdentityValue &&
 			fact.kind != SemanticFactKind::CaseStatement &&
-			fact.kind != SemanticFactKind::DefaultStatement)
+			fact.kind != SemanticFactKind::DefaultStatement &&
+			!(fact.kind == SemanticFactKind::LabeledStatement &&
+				fact.label.valid() && fact.label.value < label_blocks_.size() &&
+				label_blocks_[fact.label.value].valid()))
 			return;
 		const std::vector<SemanticFactId> facts = children(id);
 		switch (fact.kind)
@@ -1109,7 +1112,12 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 		case SemanticFactKind::CompoundStatement:
 			for (std::size_t i = 0; i < facts.size(); ++i)
 			{
-				if (current_block_ == InvalidIdentityValue) break;
+				if (current_block_ == InvalidIdentityValue)
+				{
+					if (referenced_label_subtree(facts[i]))
+						lower_referenced_label_subtree(facts[i]);
+					continue;
+				}
 				lower_statement(facts[i]);
 			}
 			break;
@@ -1216,6 +1224,29 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			lower_statement(facts.front());
 			break;
 		}
+		case SemanticFactKind::LabeledStatement:
+		{
+			if (!fact.label.valid() || fact.label.value >= label_lowered_.size() ||
+				facts.size() > 1)
+				throw std::runtime_error("PA15 invalid labeled statement");
+			if (label_lowered_[fact.label.value] != 0)
+				return;
+			label_lowered_[fact.label.value] = 1;
+			const BlockId target = label_target(fact.label);
+			if (current_block_ != InvalidIdentityValue &&
+				current_block_id() != target && !terminated(block()))
+				emit_jump(target);
+			set_current(target);
+			if (facts.size() == 1)
+				lower_statement(facts.front());
+			break;
+		}
+		case SemanticFactKind::GotoStatement:
+			if (!fact.label.valid() || !facts.empty())
+				throw std::runtime_error("PA15 invalid goto statement");
+			emit_jump(label_target(fact.label));
+			current_block_ = InvalidIdentityValue;
+			break;
 		case SemanticFactKind::ThenBranch:
 		case SemanticFactKind::ElseBranch:
 			if (facts.size() == 1) lower_statement(facts.front());
@@ -1322,6 +1353,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		block_indexes_.clear();
 		control_stack_.clear();
 		switch_stack_.clear();
+		label_blocks_.clear();
 		block_order_.clear();
 		ordered_block_ids_.clear();
 		reachability_base_ = next_block_;
@@ -1358,6 +1390,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
 		if (!fact.body_fact.valid())
 			throw std::runtime_error("PA15 function body fact is missing");
+		initialize_label_flow(fact.body_fact);
 		lower_statement(fact.body_fact);
 		if (current_block_ != InvalidIdentityValue &&
 			!terminated(block()))

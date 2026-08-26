@@ -1,0 +1,9 @@
+int duplicate_label()
+{
+target:
+  return 0;
+target:
+  return 1;
+}
+
+int main() { return 0; }

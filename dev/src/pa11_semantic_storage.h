@@ -38,6 +38,8 @@ struct CompoundFactDomain;
 struct StatementFactDomain;
 struct SemanticFactDomain;
 struct ConversionFactDomain;
+struct LabelDomain;
+struct LabelTableDomain;
 struct TemplateFunctionDomain;
 struct TemplateSpecializationDomain;
 
@@ -55,6 +57,8 @@ typedef DomainId<CompoundFactDomain> CompoundFactId;
 typedef DomainId<StatementFactDomain> StatementFactId;
 typedef DomainId<SemanticFactDomain> SemanticFactId;
 typedef DomainId<ConversionFactDomain> ConversionFactId;
+typedef DomainId<LabelDomain> LabelId;
+typedef DomainId<LabelTableDomain> LabelTableId;
 typedef DomainId<TemplateFunctionDomain> TemplateFunctionId;
 typedef DomainId<TemplateSpecializationDomain> TemplateSpecializationId;
 
