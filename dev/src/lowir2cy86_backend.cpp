@@ -378,6 +378,8 @@ private:
     } else if (global.init_kind == GlobalDefinition::INIT_ADDR) {
       if (!global.type.is_pointer()) throw LowirError("address global must have ptr type");
       if (!global.init_operand.symbol_id.valid()) throw LowirError("undefined global address initializer");
+    } else if (global.init_kind == GlobalDefinition::INIT_ZERO) {
+      if (!global.type.is_scalar()) throw LowirError("invalid zero global type");
     } else {
       if (!global.type.is_scalar()) throw LowirError("invalid scalar global type");
       if (global.init_operand.kind != Operand::OP_INTEGER && global.init_operand.kind != Operand::OP_FLOAT)
@@ -434,6 +436,18 @@ private:
     }
     if (operand.kind == Operand::OP_FLOAT) return expected.is_float();
     return actual.type == expected;
+  }
+
+  bool copy_operand_matches(const Operand &operand, const LowType &expected) const {
+    if (operand_matches(operand, expected)) return true;
+    const Value actual = operand_value(operand);
+    // LowIR's signed and unsigned integer spellings share the same bit
+    // representation.  PA15 uses copy for a same-width semantic signedness
+    // retag when no widening or truncation is required; keep real width and
+    // kind mismatches rejected by limiting this relaxation to integers with
+    // equal storage width.
+    return actual.known && actual.type.is_integer() && expected.is_integer() &&
+           actual.type.integer_width() == expected.integer_width();
   }
 
   void require_operand_type(const Operand &operand, const LowType &expected, const std::string &what) const {
@@ -652,7 +666,8 @@ private:
       break;
     case Instruction::IK_COPY:
       require(instruction.first);
-      require_operand_type(instruction.first, instruction.type, "copy source");
+      if (!copy_operand_matches(instruction.first, instruction.type))
+        throw LowirError("copy source type mismatch");
       define_value(&instruction, instruction.type, &values);
       break;
     case Instruction::IK_ADDR:
@@ -697,6 +712,14 @@ private:
       break;
     case Instruction::IK_BINARY:
       if (instruction.binary_operator == lowir_model::BOP_INVALID) throw LowirError("unknown binary operator");
+      if (instruction.type.is_pointer() && instruction.binary_operator == lowir_model::BOP_SUB) {
+        require_operand_type(instruction.first, instruction.type, "left pointer-difference operand");
+        require_operand_type(instruction.second, instruction.type, "right pointer-difference operand");
+        // PA15 represents pointer difference as a 64-bit byte distance while
+        // retaining ptr as the operation type for the typed pointer operands.
+        define_value(&instruction, i64_type(), &values);
+        break;
+      }
       require_operand_type(instruction.first, instruction.type, "left binary operand");
       require_operand_type(instruction.second, instruction.type, "right binary operand");
       if (!instruction.type.is_integer() && !instruction.type.is_float()) throw LowirError("invalid binary type");

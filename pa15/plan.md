@@ -1,105 +1,145 @@
-# PA15 typed declaration and literal-address checkpoint
+# PA15 final typed-boundary audit
 
-## Stage Design
+## Status and scope
 
-The production path is source -> PA10 typed syntax -> PA11 canonical
-bindings/types -> PA12 semantic facts and conversions -> PA15 typed LowIR ->
-PA13 serialization/validation.  Each residual fact is retained and consumed
-at its owning boundary:
+This record covers the complete PA15 implementation checkpoint at
+`fc9f7ffbd6604f579a7734390ef822d786085794` (`PA15 complete typed boundary
+checkpoint`) and the approved audit/repair change set on top of that commit.
+The supplied clean baseline was `1167/1167` through PA15. The final required
+validation run also passed `1167/1167` across the fifteen stages; the exact
+commands and warnings are recorded below.
 
-- PA10 keeps the operator enum/token on `OperatorFunction` identifiers and
-  routes C-style casts by scanning only the local parenthesized token range;
-  `parse_type_id` remains the validity check.  String code units continue to
-  come only from decoded `LiteralData`.
-- PA11 stores operator kind/token, bare `noexcept`, and the
-  `Normal`/`Defaulted`/`Deleted` `FunctionDeclarationKind` in the binding
-  sidecar.  Special forms are inserted as definitions, so a deleted or
-  supported defaulted form must be first and cannot be repeated; an ordinary
-  compatible redeclaration preserves the canonical special state.  A
-  fixed-vocabulary `NameId` string is only a one-way lookup/presentation
-  adapter derived from the PA10 enum/token, never a canonical semantic key.
-- PA12 treats special function initializers as declaration properties, lets a
-  deleted candidate participate in overload ranking, then rejects a call that
-  selects it.  Array-to-pointer semantic context publishes the typed literal
-  constant-address relation.
-- PA15 maps the typed operator sidecar directly to the centralized PA14 ABI
-  terminal, carries nonthrowing to `unwind=no`, preserves generated ordinal
-  names for unnamed parameters, and consumes a literal array address through
-  the normal cached global/index/load path exactly once.
+The final source-to-LowIR contract is:
 
-The ordinary work is bounded by local declarator/token ranges, semantic-fact
-children, and emitted IR: there is no textual reparsing, rendered-name ABI
-reconstruction, body rescan, or fixture-specific branch.  The scale samples
-below support deterministic, linear-looking growth for these paths but do not
-prove an asymptotic bound.
+```text
+source -> PA10 typed syntax -> PA11 canonical bindings/types
+       -> PA12 semantic facts/conversions -> PA15 typed LowIR
+       -> PA13 serialization and validation
+```
 
-## Failure Map
+There is one production producer for this path. Text is used only at source,
+diagnostic/dump, external-name, and LowIR serialization/input boundaries.
 
-The clean turn-start baseline at `83d60e96` was `106/109`, with all `109`
-tests covered.  The complete residual map is now resolved:
+## Final change-set file list
 
-| test | owning repair | final disposition |
+The final change set contains exactly:
+
+- `dev/src/lowir2cy86_backend.cpp` — three narrow PA13 validator repairs;
+- `cppgm.tests/course/pa13/400-lowir2cy86-typed-boundary-regression.sh` — a
+  durable direct validator regression with temporary inputs and outputs;
+- `pa15/plan.md` and `pa15/audit.md` — the consolidated final-stage records.
+
+No PA13 `.t`/`.ref` fixture or PA15 handout file was changed; the regression
+cleans its `mktemp` directory and commits no generated output.
+
+## Ownership trace
+
+| first typed owner | semantic owner | PA15/PA13 terminal evidence |
 |---|---|---|
-| `100-const-integral-lvalue-overload-category` | PA11 inserts `= delete` as a typed definition with `Binding.has_definition`; PA12 skips it as an expression and rejects a selected deleted overload | PASS |
-| `100-string-hex-escape-code-unit` | PA10 accepts the multi-token cast; PA12 carries typed decoded bytes/address; PA15 lowers one cached string global and its ordinary subscript | PASS |
-| `100-unnamed-parameter-storage` | PA10 operator identity reaches the PA11 sidecar; PA15 emits typed delete ABI, two generated parameter/slot identities, and `unwind=no` | PASS |
+| PA10 operator enum/token and bounded C-style-cast scan | PA11 `Binding`/`BindingSidecar` declaration kind, operator identity, nonthrowing state, and definition/redeclaration state; PA12 overload selection and deleted rejection | PA15 maps the typed sidecar through the centralized PA14 ABI terminal, emits `unwind=no` and ordinal parameter names, and PA13 validates the serialized function; no ABI reconstruction from rendered names |
+| PA10 decoded `LiteralData` and array `TypeId`/value category | PA12 owns decoded bytes, `ConstantAddressFact`, common conditional type/category, and fact-local array/reference conversions | PA15 publishes one cached literal global/address/index/load path and applies each conversion once; PA13 validates typed decay and loads |
+| PA10 label/goto spelling | PA12 owns `NameId`, dense function-local `LabelId`/`LabelTableId`, duplicate checks, and resolved semantic facts | PA15 lowers typed `BlockId` CFG edges with sparse fact-indexed flow arenas, canonical continuations, persistent control context, and generation-stamped scratch; PA13 validates the resulting blocks |
 
-PA15 coverage is `109/109`.
+The reviewed paths preserve one typed value through lowering. No source
+reparsing, rendered-name ABI reconstruction, parallel semantic/IR model,
+fixture-specific branch, reference/host compiler shell-out,
+retry-until-stable loop, broad invalidation, stale generation state, or
+unbounded recovery was found.
 
-## Active Checkpoint
+## Audit repairs in the final change set
 
-The implementation is complete in `dev/src/pa10_ast.cpp`,
-`dev/src/pa11_semantic_model.h`, `dev/src/pa11_semantic_core.cpp`,
-`dev/src/pa11_semantic.cpp`, `dev/src/pa12_semantic.cpp`,
-`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering.cpp`,
-`dev/src/pa15_operator_abi.cpp`, and `dev/frontend_source_sets.mk`.
-`pa15/plan.md` records this checkpoint and its evidence; no tests or reference
-fixtures were changed.
+The focused cross-stage audit found three PA13 validator omissions exposed by
+valid PA15 output. They are repaired in `dev/src/lowir2cy86_backend.cpp`:
 
-Focused validation passed with normal harnesses:
+1. `copy` accepts a named integer source with the same storage width when the
+   signedness spelling changes. PA15 uses this bit-preserving typed retag for
+   conversions such as `i8` to `u8`; different widths and non-integer types
+   remain rejected.
+2. A scalar `global : <type> = zero`, including `ptr`, is accepted as the
+   typed zero initializer required by the LowIR contract.
+3. PA15's `binary sub ptr` pointer-difference form validates its two pointer
+   operands and publishes an `i64` result consumed by the following element
+   distance arithmetic. Other pointer binary operators remain rejected.
 
-- `make -C pa15 check TEST='tests/general/100-const-integral-lvalue-overload-category.t tests/general/100-string-hex-escape-code-unit.t tests/general/100-unnamed-parameter-storage.t tests/general/100-subscript-sizeof.t tests/general/200-global-array-element-address-initializer.t tests/general/200-const-cast-reference-array-subscript.t tests/general/200-address-of-local-const-integral-uses-storage.t'` -> `PASS (7/7)`.
-- `make -C pa10 check TEST='tests/general/100-c-style-cast-expression.t tests/general/200-cast-parenthesized-identifier-shift.t tests/general/200-cast-parenthesized-identifier-shift-or.t tests/general/200-sys-types-minor-cast-expression.t'` -> `PASS (4/4)`.
-- Ephemeral declaration probes show: first deleted definition `rc=0`; deleted
-  then ordinary compatible redeclaration `rc=0`; its call fails with `PA12
-  call selects deleted function`; ordinary then deleted fails with `deleted/defaulted
-  function must be first declaration`; duplicate deleted definitions and a body
-  after deleted fail with `duplicate function definition`.  A competing
-  nondeleted lvalue overload exits `0` and is selected.  Repeated compatible
-  operator declarations merge to one `_ZdlPvS_` symbol with `unwind=no`.
-- The parser matrix has two typed casts (including cv-qualified/multi-token
-  scalars) and two ambiguous parenthesized-expression nodes; AST emission
-  succeeds and the adjacent PA10 cases pass.
+`dev/frontend_source_sets.mk` already registers
+`dev/src/pa15_operator_abi.cpp` in the `cppgm++` source set; no new source
+file was added. The durable PA13 shell regression is listed in the final
+change-set file list above.
 
-## Performance Evidence
+## Focused evidence
 
-Recipe: `/tmp/pa15_perf_input.pl COUNT` emits `COUNT` repeated functions with
-`(const unsigned long)` casts and `COUNT` string subscripts of
-`(unsigned char)"\\xab"[0]`, plus one deleted definition followed by one
-ordinary compatible redeclaration per generated signature and repeated
-compatible operator declarations.  It was run at `COUNT=32` and `COUNT=256`; each generated
-LowIR output was checked by the normal PA15 harness from
-`/tmp/pa15-perf-check` (`PASS (2/2)`, successful exit sidecars).
+- `make -C dev lowir2cy86` passed after the validator repair.
+- The PA15 residual/adjacent source matrix passed `7/7`; the PA10 cast matrix
+  passed `4/4`.
+- The direct PA13 validator matrix passed `7/7`, including the standalone
+  unnamed-parameter function combined with a synthetic entry function.
+  The conditional-array and label validator matrix passed `4/4`.
+- Positive and negative boundary probes passed: equal-width `i8` to `u8`
+  copy accepted; `i8` to `u16` copy rejected; `global ptr = zero` and
+  pointer-difference LowIR accepted; pointer addition remained rejected.
+- `./cppgm.tests/course/pa13/400-lowir2cy86-typed-boundary-regression.sh`
+  exited `0`: its one positive LowIR input exited `0`, while unequal-width
+  copy, `void` zero global, and pointer addition exited `1`. This is a direct
+  PA13 validator regression, separate from the root through-stage gate.
+- `perl scripts/cppgm_file_audit.pl --stage pa15 --paths dev/src` exited `0`.
+  It reported five existing `bad-division` warnings for
+  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+  `pa11_semantic_model.h`, and `pa15_lowering.h`.
+- `make test-report-through-pa15` exited `0`. Its output enumerated `pa1`
+  through `pa15` (15 stages) and ended `ALL TESTS PASSED SUCCESSFULLY!
+  (1167 / 1167)`.
+- The stage-boundary counts represented by that run are PA13 `96/96` and
+  through-PA13 `947/947`, PA14 `111/111` and through-PA14 `1058/1058`, and
+  PA15 `109/109`, yielding through-PA15 `1167/1167` across `15/15` stages.
+- The final `git diff --check` exited `0` after the documentation update.
 
-| count | input bytes / lines | LowIR bytes / lines | globals / functions / instructions / slots | SHA-256 of LowIR | time/RSS samples (s/KB) |
-|---:|---:|---:|---:|---|---|
-| 32 | 6,000 / 356 | 16,753 / 741 | 32 / 65 / 192 / 32 | `f4c89127448b65d0e939aa7c257992cf5ee1eec771dc70782314e551d946cba3` | `0.01/6652`, `0.00/6820`, `0.00/6636` |
-| 256 | 48,064 / 2,820 | 134,775 / 5,893 | 256 / 513 / 1,536 / 256 | `42242a80f56f8c28943ca5f2661dd07000e1c90b582af56b886a2db0bf647b55` | `0.05/17884`, `0.05/18152`, `0.05/17888` |
+## Bounded measurement
 
-The structural counts and output hashes are stable for each recipe.  These
-two runs are representative evidence of deterministic growth with the
-number of typed facts and emitted IR; the coarse timings and RSS samples are
-not a proof of asymptotic complexity.
+The previous `/tmp` artifacts named by the older record were unavailable, so
+the old performance numbers are not treated as current proof. A fresh
+immutable-candidate sample is in
+`/tmp/pa15-final-measure.Wl9uud`. The candidate and validator were mode `0555`
+with SHA-256 values:
 
-## Checkpoint Ledger
+- `cppgm++`: `10de97087b997429732fded8424fdc47742680b8f19cc22f9042f54366eee4fe`
+- `lowir2cy86`: `7f5d1d67d55289f8cebc39022410ceb57093287ad66c35d950fa136814c85d85`
 
-| checkpoint | result | durable value |
-|---|---|---|
-| prior typed conditional-array checkpoint `b7eaf9d8` | retained; supplied baseline `106/109` | typed PA12 category/conversion ownership through PA15 address lowering |
-| current typed declaration/literal-address boundary checkpoint | complete; all focused and full gates green; no test/ref changes | typed declaration status, operator identity/ABI, bounded cast routing, and decoded string-address continuity through LowIR |
+Each generated input contains an ordinary and a deleted-compatible operator
+declaration path, `N` functions with a bounded `(const unsigned long)` cast
+and decoded `"\\xab"` byte subscript, and one entry function. Five rounds
+alternated the 32 and 256 inputs. Every compile and validator invocation used
+`timeout 60s`; all outputs validated and each size produced one LowIR hash.
 
-## Final State
+| N | input lines/bytes | LowIR lines/bytes | globals/functions/instructions/slots | addr/index/load/copy/convert | compile median wall/user/sys/RSS | validate median wall/user/sys/RSS | LowIR SHA-256 |
+|---:|---:|---:|---:|---:|---|---|---|
+| 32 | 132 / 3,629 | 879 / 21,135 | 32 / 34 / 516 / 66 | 32 / 32 / 128 / 32 / 128 | 0.10 / 0.00 / 0.00 / 6,948 KiB | 0.10 / 0.00 / 0.00 / 7,032 KiB | `7ca749cf309749486335207dbdf2decccd2292c62bd089435f39bed65716a867` |
+| 256 | 1,028 / 27,977 | 6,927 / 167,361 | 256 / 258 / 4,100 / 514 | 256 / 256 / 1,024 / 256 / 1,024 | 0.10 / 0.02 / 0.01 / 14,272 KiB | 0.10 / 0.02 / 0.01 / 8,260 KiB | `5489bc8a911bcfe15c95ffba50ac0591645ebeb1adb2900f3b20c19c9aef7829` |
 
-PA15 is complete at `109/109`; through PA14 is `1058/1058` and through PA15
-is `1167/1167`.  The source audit passes with five pre-existing header
-warnings, `git diff --check` passes, and the committed worktree is clean.
+These are bounded structural and timing observations for this recipe, not
+an asymptotic or machine-independent claim. No unexplained timing jump was
+observed; the structural counters and stable hashes corroborate the measured
+growth. Phase/allocation instrumentation is not exposed by the current
+frontend executable, so no stronger allocation claim is made.
+
+## Final ledger
+
+The earlier PA15 commits were reviewed in order as the scalar/linkage,
+structured-control, typed address/relocation/null, enum/evaluator/relational,
+callable/reinterpret/floating, discard/return, label/CFG, and conditional-array
+ownership increments. The durable stage sequence is:
+
+| checkpoint | disposition |
+|---|---|
+| `f77219af` through `c2917518` | historical typed scalar/linkage and structured-control foundations |
+| `3a7267fa` through `eba262f5` | historical typed address, relocation, and null ownership foundations |
+| `3bf82dbe` through `ca3c38ca` | historical enum, evaluator, and relational typed facts |
+| `fbc3cce7` through `2a10382f` | historical callable/reference, reinterpret, and floating conversion paths |
+| `98e75ff9` through `959f9481` | historical discarded/returned-expression ownership |
+| `a2f33047` through `f038141d` | historical typed label CFG, sparse flow, continuation, and generation repair |
+| `b7eaf9d8` and `83d60e96` | historical conditional-array checkpoint; prior audit reported `106/109` and is not current |
+| `fc9f7ffb` plus final change set | current final audit state: the implementation checkpoint reported `109/109` PA15 tests, and final validation passed `1167/1167` across `pa1` through `pa15`, with five existing file-audit warnings, three validator repairs, the durable PA13 shell regression, and truthful plan/audit consolidation |
+
+The prior `b7eaf9d8`/`106/109` row is retained only as history. The current
+audited state is the fc9f implementation plus the explicitly listed final
+validator repair, durable regression, and records; no stale residual map is
+presented as final.
