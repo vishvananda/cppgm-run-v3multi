@@ -308,7 +308,14 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			if (conditional_address_result(id))
 			{
 				const LoweredValue address = lower_conditional_address(id);
-				if (fact.category == SemanticValueCategory::Prvalue)
+				bool array_to_pointer = false;
+				if (fact.conversion_begin != InvalidIdentityValue)
+					for (std::size_t i = 0; i < fact.conversion_count; ++i)
+						if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
+							ConversionKind::ArrayToPointer)
+							array_to_pointer = true;
+				if (fact.category == SemanticValueCategory::Prvalue ||
+					array_to_pointer)
 					result = address;
 				else
 					result = LoweredValue(address.value, lvalue_type(id), true,

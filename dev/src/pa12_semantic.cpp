@@ -1658,8 +1658,10 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 		types_[true_unqualified.value].child) : strip_top_cv_type(when_true.type);
 	const TypeId false_pointer_type = false_array ? make_pointer(
 		types_[false_unqualified.value].child) : strip_top_cv_type(when_false.type);
-	if (!true_array && !false_array &&
-		strip_top_cv_type(true_object) == strip_top_cv_type(false_object))
+	const bool same_value_category = when_true.category == when_false.category &&
+		when_true.category != SemanticValueCategory::Prvalue;
+	if (strip_top_cv_type(true_object) == strip_top_cv_type(false_object) &&
+		((!true_array && !false_array) || same_value_category))
 	{
 		type = (when_true.category == SemanticValueCategory::Lvalue ||
 			when_true.category == SemanticValueCategory::Xvalue) ?

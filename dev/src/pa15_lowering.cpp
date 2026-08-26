@@ -2594,28 +2594,20 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 
 bool Pa15Lowerer::conditional_address_result(SemanticFactId id) const{
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (fact.category != SemanticValueCategory::Prvalue)
-		{
-			if (fact.conversion_begin != InvalidIdentityValue)
-				for (std::size_t i = 0; i < fact.conversion_count; ++i)
-					if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
-						ConversionKind::ReferenceBinding)
-						return true;
+		if (fact.category == SemanticValueCategory::Prvalue)
 			return false;
-		}
-		if (fact.child_count != 3) return false;
-		const std::vector<SemanticFactId> facts = children(id);
-		bool all_arrays = true;
-		for (std::size_t i = 1; i < facts.size(); ++i)
-		{
-			TypeId type = model_.expression_object_type(
-				model_.semantic_facts_[facts[i].value].type);
-			type = model_.strip_cv_type(type);
-			if (!type.valid() || model_.type_kind(type) != TypeKind::Array)
-				all_arrays = false;
-		}
-		return all_arrays;
-	}
+		const TypeId result_type = model_.strip_cv_type(
+			model_.expression_object_type(fact.type));
+		if (result_type.valid() && model_.type_kind(result_type) == TypeKind::Array)
+			return true;
+		if (fact.conversion_begin == InvalidIdentityValue)
+			return false;
+		for (std::size_t i = 0; i < fact.conversion_count; ++i)
+			if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
+				ConversionKind::ReferenceBinding)
+				return true;
+		return false;
+}
 
 LoweredValue Pa15Lowerer::lower_conditional_address(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);
