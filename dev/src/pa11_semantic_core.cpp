@@ -135,7 +135,7 @@ bool append_lookup_candidate(std::vector<Identity>* candidates,
 }
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  named_record_sidecars_(), template_function_facts_(),
+	  record_layouts_(), named_record_sidecars_(), template_function_facts_(),
 	  template_function_index_(), template_specialization_facts_(),
 	  template_specialization_index_(), scopes_(),
 	  unnamed_namespace_index_(),
@@ -240,6 +240,14 @@ TypeKind PA11SemanticModel::type_kind(TypeId type) const
 	if (!type.valid() || type.value >= types_.size())
 		throw std::runtime_error("invalid PA11 type identity");
 	return types_[type.value].kind;
+}
+NamedRecordId PA11SemanticModel::append_named_record(
+	const NamedRecord& record)
+{
+	const NamedRecordId result(named_.size());
+	named_.push_back(record);
+	record_layouts_.push_back(RecordLayout());
+	return result;
 }
 ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId name,
 	NamedRecordId record ,
@@ -440,7 +448,9 @@ bool PA11SemanticModel::complete_object_type(TypeId type) const
 			return false;
 		return named_[record.value].kind == NamedKind::Enum ||
 			(named_[record.value].kind == NamedKind::Class &&
-				named_[record.value].defined);
+				record.value < record_layouts_.size() &&
+				record_layouts_[record.value].state ==
+				RecordLayoutState::Complete);
 	}
 	case TypeKind::Fundamental:
 	case TypeKind::Pointer:
@@ -1347,8 +1357,7 @@ TypeId PA11SemanticModel::ensure_named_class(ScopeId owner, NameId name, ClassTa
 			throw std::runtime_error("class name conflicts with namespace");
 		NamedRecord record(NamedKind::Class, name, owner);
 		record.class_tag = tag;
-		record_id = NamedRecordId(named_.size());
-		named_.push_back(record);
+		record_id = append_named_record(record);
 		const TypeId type = named_type(record_id);
 		current.types.set(name, type);
 	}
@@ -1368,6 +1377,7 @@ TypeId PA11SemanticModel::create_anonymous_class(ScopeId owner, ClassTag tag,
 {
 	NamedRecord record(NamedKind::Class, NameId(), owner);
 	record.class_tag = tag;
+	record.defined = true;
 	if (tag == ClassTag::Union)
 	{
 		const std::size_t ordinal = anonymous_union_count_++;
@@ -1383,8 +1393,7 @@ TypeId PA11SemanticModel::create_anonymous_class(ScopeId owner, ClassTag tag,
 			GeneratedEntityKind::AnonymousUnion, owner,
 			SourceInterval(begin, end), GeneratedOrdinal(ordinal));
 	}
-	const NamedRecordId record_id(named_.size());
-	named_.push_back(record);
+	const NamedRecordId record_id = append_named_record(record);
 	named_[record_id.value].scope = create_scope(ScopeKind::Class, owner,
 		NameId(), record_id, false, tag != ClassTag::Union);
 	return named_type(record_id);
@@ -1424,8 +1433,7 @@ TypeId PA11SemanticModel::ensure_named_enum(ScopeId owner, NameId name, bool sco
 		record.scoped_enum = scoped;
 		record.has_underlying = has_underlying;
 		record.underlying = underlying;
-		record_id = NamedRecordId(named_.size());
-		named_.push_back(record);
+		record_id = append_named_record(record);
 		current.types.set(name, named_type(record_id));
 	}
 	if (definition)
@@ -1451,8 +1459,7 @@ TypeId PA11SemanticModel::create_anonymous_enum(ScopeId owner, bool scoped, bool
 	record.generated_identity = GeneratedIdentity(
 		GeneratedEntityKind::AnonymousEnum, owner, SourceInterval(),
 		GeneratedOrdinal(anonymous_enum_count_++));
-	const NamedRecordId record_id(named_.size());
-	named_.push_back(record);
+	const NamedRecordId record_id = append_named_record(record);
 	if (scoped)
 		named_[record_id.value].scope = create_scope(ScopeKind::Enum, owner,
 		NameId(), record_id);
@@ -1640,74 +1647,6 @@ void PA11SemanticModel::check_constant_range(const ConstValue& value) const
 	else if (value.value < static_cast<__int128>(std::numeric_limits<std::int64_t>::min()) ||
 		value.value > static_cast<__int128>(std::numeric_limits<std::int64_t>::max()))
 		throw NonConstantExpression("constant expression overflow");
-}
-std::size_t PA11SemanticModel::type_size(TypeId type) const
-{
-	if (!type.valid() || type.value >= types_.size())
-		throw std::runtime_error("invalid sizeof type");
-	const TypeKey& key = types_[type.value];
-	switch (key.kind)
-	{
-	case TypeKind::Cv:
-		return type_size(key.child);
-	case TypeKind::Fundamental:
-		switch (key.fundamental)
-		{
-		case FundamentalType::SignedChar:
-		case FundamentalType::UnsignedChar:
-		case FundamentalType::Char:
-		case FundamentalType::Bool:
-			return 1;
-		case FundamentalType::ShortInt:
-		case FundamentalType::UnsignedShortInt:
-		case FundamentalType::Char16T:
-			return 2;
-		case FundamentalType::Int:
-		case FundamentalType::UnsignedInt:
-		case FundamentalType::Float:
-			return 4;
-		case FundamentalType::LongInt:
-		case FundamentalType::LongLongInt:
-		case FundamentalType::UnsignedLongInt:
-		case FundamentalType::UnsignedLongLongInt:
-		case FundamentalType::Double:
-			return 8;
-		case FundamentalType::WcharT:
-		case FundamentalType::Char32T:
-			return 4;
-		case FundamentalType::LongDouble:
-			return 16;
-		default:
-			throw std::runtime_error("sizeof void type");
-		}
-	case TypeKind::Pointer:
-	case TypeKind::MemberPointer:
-	case TypeKind::LvalueReference:
-	case TypeKind::RvalueReference:
-		return 8;
-	case TypeKind::Array:
-		if (key.unknown_bound)
-			throw std::runtime_error("sizeof incomplete array");
-		return key.bound.value * type_size(key.child);
-	case TypeKind::Function:
-		throw std::runtime_error("sizeof function type");
-	case TypeKind::Named:
-	{
-		const NamedRecordId record_id = key.named;
-		if (!record_id.valid() || record_id.value >= named_.size())
-			throw std::runtime_error("invalid named sizeof type");
-		const NamedRecord& record = named_[record_id.value];
-		if (record.kind == NamedKind::Enum)
-			return type_size(record.has_underlying ? record.underlying :
-				fundamental(FundamentalType::Int));
-		if (record.kind == NamedKind::TemplateParameter)
-			throw std::runtime_error("sizeof template parameter");
-		if (!record.defined)
-			throw std::runtime_error("sizeof incomplete class");
-		return 1;
-	}
-	}
-	throw std::runtime_error("unhandled sizeof type");
 }
 TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope)
 {
@@ -2258,6 +2197,7 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 			continue;
 		process_declaration(node.children[i], class_scope);
 	}
+	complete_record_layout(named_record_for_type(type));
 	(void)owner;
 }
 ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
@@ -2498,8 +2438,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			}
 		}
 		if (spec.is_static && target.value < scopes_.size() &&
-			scopes_[target.value].kind == ScopeKind::Class &&
-			type_kind(type) == TypeKind::Function)
+			scopes_[target.value].kind == ScopeKind::Class)
 			mark_static_member(binding_id);
 		declaration_bindings_.push_back(binding_id);
 	}
@@ -2531,8 +2470,7 @@ void PA11SemanticModel::process_template_parameter(const PA10AstNode& node, Scop
 		throw std::runtime_error("template parameter conflicts with binding");
 	NamedRecord record(NamedKind::TemplateParameter, name, scope);
 	record.template_template = template_template;
-	const NamedRecordId record_id(named_.size());
-	named_.push_back(record);
+	const NamedRecordId record_id = append_named_record(record);
 	const TypeId type = named_type(record_id);
 	current.types.set(name, type);
 	add_type_binding(scope, name, type, ClassTag::Struct, false,

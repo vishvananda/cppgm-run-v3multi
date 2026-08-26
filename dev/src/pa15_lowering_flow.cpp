@@ -3,6 +3,49 @@
 namespace pa11_semantic_internal
 {
 
+bool Pa15Lowerer::class_object_type(TypeId type) const{
+	type = model_.strip_cv_type(model_.expression_object_type(type));
+	if (!type.valid() || model_.type_kind(type) != TypeKind::Named)
+		return false;
+	const NamedRecordId record = model_.types_[type.value].named;
+	return record.valid() && record.value < model_.named_.size() &&
+		model_.named_[record.value].kind == NamedKind::Class;
+}
+
+LowType Pa15Lowerer::function_result_low_type(TypeId type) const{
+	const TypeId object = model_.strip_cv_type(type);
+	if (object.valid() && model_.type_kind(object) == TypeKind::Named)
+	{
+		const NamedRecordId record = model_.types_[object.value].named;
+		if (record.valid() && record.value < model_.named_.size() &&
+			model_.named_[record.value].kind == NamedKind::Class)
+		{
+			const RecordLayout& layout = model_.record_layout(record);
+			if (layout.state == RecordLayoutState::Incomplete)
+			{
+				// A declaration may mention an incomplete class even though
+				// this checkpoint has no object representation for it yet.
+				LowType result;
+				result.kind = LowType::TYPE_VOID;
+				return result;
+			}
+		}
+	}
+	return low_type(type);
+}
+
+LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
+	const TypeId object = model_.expression_object_type(type);
+	if (object.valid() && model_.type_kind(model_.strip_cv_type(object)) ==
+		TypeKind::Function)
+	{
+		LowType pointer;
+		pointer.kind = LowType::TYPE_POINTER;
+		return pointer;
+	}
+	return low_type(object);
+}
+
 void Pa15Lowerer::demand_function_declaration(BindingId binding){
 		if (!binding.valid()) return;
 		if (function_declaration_plans_.find(binding.value) !=
@@ -1199,6 +1242,14 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					const LoweredValue value = lower_expression(facts.front());
 					emit_store(storage.type, value.value, storage.value);
 				}
+			}
+			else if (fact.binding.valid() &&
+				model_.binding(fact.binding).kind == BindingKind::Variable)
+			{
+				const LoweredValue storage = storage_for(fact.binding);
+				if (storage.type.is_object() && class_object_type(
+					model_.binding(fact.binding).type))
+					(void)address_of_storage(storage);
 			}
 			break;
 		case SemanticFactKind::ExpressionStatement:

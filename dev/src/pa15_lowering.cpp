@@ -31,6 +31,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
+		  needs_trivial_namespace_object_init_(false),
 		  function_scope_variables_(), next_symbol_(0),
 		  literal_backing_ordinal_(0), next_value_(program.values.size()),
 		  next_slot_(0), next_block_(0), current_function_(0),
@@ -415,6 +416,20 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 				return low_type(named.has_underlying ? named.underlying :
 					model_.fundamental(FundamentalType::Int));
 			}
+			if (record.valid() && record.value < model_.named_.size() &&
+				model_.named_[record.value].kind == NamedKind::Class)
+			{
+				const RecordLayout& layout = model_.record_layout(record);
+				if (layout.state != RecordLayoutState::Complete ||
+					layout.size == 0 || layout.alignment == 0)
+					throw std::runtime_error(
+						"PA15 class storage requires a complete record layout");
+				LowType result;
+				result.kind = LowType::TYPE_OBJECT;
+				result.object_bytes = layout.size;
+				result.object_alignment = layout.alignment;
+				return result;
+			}
 			throw std::runtime_error("PA15 unsupported named scalar type");
 		}
 		if (kind != TypeKind::Fundamental)
@@ -463,18 +478,6 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 		default:
 			throw std::runtime_error("PA15 unsupported fundamental type");
 	}
-}
-
-LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
-	const TypeId object = model_.expression_object_type(type);
-	if (object.valid() && model_.type_kind(model_.strip_cv_type(object)) ==
-		TypeKind::Function)
-	{
-		LowType pointer;
-		pointer.kind = LowType::TYPE_POINTER;
-		return pointer;
-	}
-	return low_type(object);
 }
 
 void Pa15Lowerer::index_binding_facts(){
@@ -828,7 +831,23 @@ void Pa15Lowerer::collect_globals(){
 				else
 				{
 					entry.type = low_type(binding.type);
-					if (initializers.empty())
+					if (entry.type.is_object())
+					{
+						// A class object with no source initializer has one coherent
+						// storage representation at this checkpoint: its canonical
+						// layout-sized zero region.  Construction/lifetime actions are
+						// deliberately left to the later object-model checkpoints.
+						if (!initializers.empty())
+							throw std::runtime_error(
+								"PA15 initialized class global is outside layout checkpoint");
+						entry.structured = true;
+						GlobalDefinition::DataItem zero;
+						zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
+						zero.zero_bytes = entry.type.object_bytes;
+						entry.data_items.push_back(zero);
+						needs_trivial_namespace_object_init_ = true;
+					}
+					else if (initializers.empty())
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
 					else if (entry.type.is_pointer() && typed_pointer_zero(
 						initializers.front(), binding.type))
@@ -890,7 +909,9 @@ void Pa15Lowerer::collect_globals(){
 	}
 
 void Pa15Lowerer::materialize_pending_global_initializers(){
-		if (pending_global_initializers_.empty()) return;
+		if (pending_global_initializers_.empty() &&
+			!needs_trivial_namespace_object_init_)
+			return;
 		Function init;
 		init.symbol_id = SymbolId(next_symbol_++);
 		init.name_id = symbol_spelling("__cppgm_init");
@@ -1012,7 +1033,8 @@ void Pa15Lowerer::collect_functions(){
 			Function function;
 			function.symbol_id = SymbolId(next_symbol_++);
 			function.name_id = name_id;
-			function.return_type = low_type(model_.types_[binding.type.value].result);
+			function.return_type = function_result_low_type(
+				model_.types_[binding.type.value].result);
 			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
 			if (sidecar != NULL && sidecar->nonthrowing)
 				function.boundary.unwind = lowir_model::CUM_NO;
@@ -1107,7 +1129,8 @@ void Pa15Lowerer::collect_function_declarations(){
 				declaration.symbol_id = SymbolId(next_symbol_++);
 				declaration.name_id = symbol_spelling(internal_value_name(
 					ScopeId(scope_index), binding.name));
-				declaration.return_type = low_type(type.result);
+				declaration.return_type = function_result_low_type(
+					type.result);
 				const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
 				if (sidecar != NULL && sidecar->nonthrowing)
 					declaration.boundary.unwind = lowir_model::CUM_NO;

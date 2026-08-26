@@ -270,6 +270,7 @@ private:
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
 	std::vector<PendingGlobalInitializer> pending_global_initializers_;
+	bool needs_trivial_namespace_object_init_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
 	std::size_t literal_backing_ordinal_;
@@ -323,6 +324,8 @@ private:
 	std::string abi_symbol(const FunctionFact& fact) const;
 	std::string abi_function_symbol(BindingId binding_id, ScopeId owner) const;
 	LowType low_type(TypeId type) const;
+	LowType function_result_low_type(TypeId type) const;
+	bool class_object_type(TypeId type) const;
 	LowType low_reference_value_type(TypeId type) const;
 	void index_binding_facts();
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
