@@ -19,7 +19,181 @@ target:
   return value;
 }
 
+int chained_goto()
+{
+  goto second;
+first:
+  return 1;
+second:
+  goto first;
+}
+
+int chained_fallthrough()
+{
+  int value = 0;
+  goto second;
+first:
+  value = 1;
+  value = value + 2;
+second:
+  if (value == 0) goto first;
+  return value;
+}
+
+int deferred_branch(int value)
+{
+  goto second;
+first:
+  return 1;
+second:
+  if (value) goto first;
+  return 2;
+}
+
+int nested_fallthrough()
+{
+  int value = 0;
+  goto second;
+  {
+first:
+    value = 1;
+    value = value + 2;
+  }
+second:
+  if (value == 0) goto first;
+  return value;
+}
+
+int loop_entry(int limit)
+{
+  int value = 0;
+  goto body;
+  while (value < limit)
+  {
+body:
+    value = value + 1;
+  }
+  return value;
+}
+
+int nested_control(int outer, int inner)
+{
+  int value = 0;
+  goto target;
+  while (outer)
+  {
+    while (inner)
+    {
+target:
+      value = value + 1;
+      inner = 0;
+    }
+    break;
+  }
+  return value;
+}
+
+int switch_loop_context(int outer, int selector)
+{
+  int value = 0;
+  goto target;
+  while (outer)
+  {
+    switch (selector)
+    {
+    case 0:
+target:
+      value = value + 1;
+      break;
+    default:
+      value = value + 2;
+      break;
+    }
+    if (selector == 0)
+    {
+      outer = 0;
+      continue;
+    }
+    break;
+  }
+  return value;
+}
+
+int switch_ordinary_deferred(int selector)
+{
+  int value = 0;
+  switch (selector)
+  {
+  case 0:
+    goto after;
+inside:
+    value = 1;
+  case 1:
+    value = value + 2;
+    break;
+  default:
+    value = value + 3;
+    break;
+  }
+after:
+  if (value == 0) goto inside;
+  return value;
+}
+
+int switch_deferred(int selector)
+{
+  int value = 0;
+  goto after;
+first:
+  value = 1;
+  switch (selector)
+  {
+  case 0:
+inside:
+    value = value + 2;
+    break;
+  default:
+    value = value + 3;
+    break;
+  }
+after:
+  if (value == 0) goto first;
+  if (value == 0) goto inside;
+  return value;
+}
+
+int shared_recovery_tail(int selector)
+{
+  int value = 0;
+  goto start;
+  {
+left:
+    value = value + 1;
+  }
+  {
+right:
+    value = value + 2;
+    goto done;
+  }
+start:
+  if (selector == 0) goto left;
+  if (selector == 1) goto right;
+done:
+  return value;
+}
+
 int main()
 {
-  return forward_nested(7) == 7 && backward_label(3) == 3 ? 0 : 1;
+  return forward_nested(7) == 7 && backward_label(3) == 3 &&
+    chained_goto() == 1 && chained_fallthrough() == 3 &&
+    deferred_branch(1) == 1 && deferred_branch(0) == 2 &&
+    nested_fallthrough() == 3 && loop_entry(3) == 3 &&
+    loop_entry(0) == 1 && switch_deferred(0) == 3 &&
+    switch_deferred(1) == 4 && switch_ordinary_deferred(0) == 3 &&
+    switch_ordinary_deferred(1) == 2 && switch_ordinary_deferred(2) == 3 &&
+    nested_control(1, 1) == 1 && nested_control(0, 0) == 1 &&
+    switch_loop_context(1, 0) == 1 && switch_loop_context(1, 1) == 1 &&
+    shared_recovery_tail(0) == 3 && shared_recovery_tail(1) == 2 &&
+    shared_recovery_tail(2) == 0 ?
+    0 : 1;
 }

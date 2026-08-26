@@ -77,6 +77,20 @@ struct PendingGlobalInitializer
 		: global(global), target(target), index(index), element_type(element_type) {}
 };
 
+struct LabelRecoveryWork
+{
+	// The parent/index ancestry is shared by fact identity.  Keeping only
+	// typed cursors here avoids copying one vector for every deferred label.
+	LabelId label;
+	SemanticFactId label_fact;
+	SemanticFactId queue_boundary;
+
+	LabelRecoveryWork(LabelId label = LabelId(),
+		SemanticFactId label_fact = SemanticFactId(),
+		SemanticFactId queue_boundary = SemanticFactId())
+		: label(label), label_fact(label_fact), queue_boundary(queue_boundary) {}
+};
+
 struct ControlTarget
 {
 	bool loop;
@@ -88,16 +102,82 @@ struct ControlTarget
 		: loop(loop), break_target(break_target), continue_target(continue_target) {}
 };
 
-struct LoopTarget
+struct LoopFlowIndexTag {};
+struct IfFlowIndexTag {};
+struct SwitchFlowIndexTag {};
+struct ContinuationIndexTag {};
+struct RecoveryControlIndexTag {};
+
+template <typename Tag>
+struct FlowArenaIndex
+{
+	std::size_t value;
+
+	explicit FlowArenaIndex(
+		std::size_t value = pa11_semantic_storage::InvalidIdentityValue)
+		: value(value) {}
+	bool valid() const{
+		return value != pa11_semantic_storage::InvalidIdentityValue;
+	}
+};
+
+typedef FlowArenaIndex<LoopFlowIndexTag> LoopFlowIndex;
+typedef FlowArenaIndex<IfFlowIndexTag> IfFlowIndex;
+typedef FlowArenaIndex<SwitchFlowIndexTag> SwitchFlowIndex;
+typedef FlowArenaIndex<ContinuationIndexTag> ContinuationIndex;
+typedef FlowArenaIndex<RecoveryControlIndexTag> RecoveryControlIndex;
+
+// Persistent typed control ancestry for a recovered label.  The parent link
+// points toward the enclosing control, so labels in the same structural
+// region share the already-built suffix instead of copying an ancestry path.
+struct RecoveryControlNode
+{
+	SemanticFactId fact;
+	RecoveryControlIndex parent;
+	RecoveryControlIndex continue_frame;
+
+	RecoveryControlNode(SemanticFactId fact = SemanticFactId(),
+		RecoveryControlIndex parent = RecoveryControlIndex(),
+		RecoveryControlIndex continue_frame = RecoveryControlIndex())
+		: fact(fact), parent(parent), continue_frame(continue_frame) {}
+};
+
+struct CompoundContinuation
+{
+	BlockId entry;
+	unsigned char state;
+
+	CompoundContinuation(BlockId entry = BlockId(), unsigned char state = 0)
+		: entry(entry), state(state) {}
+};
+
+struct LoopFlow
 {
 	bool valid;
-	BlockId break_target;
-	BlockId continue_target;
+	SemanticFactKind kind;
+	BlockId condition;
+	BlockId body;
+	BlockId iteration;
+	BlockId end;
 
-	LoopTarget(BlockId break_target = BlockId(),
-		BlockId continue_target = BlockId())
-		: valid(break_target.valid() && continue_target.valid()),
-		  break_target(break_target), continue_target(continue_target) {}
+	LoopFlow(SemanticFactKind kind = SemanticFactKind::WhileStatement,
+		BlockId condition = BlockId(), BlockId body = BlockId(),
+		BlockId iteration = BlockId(), BlockId end = BlockId())
+		: valid(condition.valid() && body.valid() && end.valid()), kind(kind),
+		  condition(condition), body(body), iteration(iteration), end(end) {}
+};
+
+struct IfFlow
+{
+	bool valid;
+	BlockId then_target;
+	BlockId else_target;
+	BlockId join;
+
+	IfFlow(BlockId then_target = BlockId(), BlockId else_target = BlockId(),
+		BlockId join = BlockId())
+		: valid(then_target.valid() && else_target.valid() && join.valid()),
+		  then_target(then_target), else_target(else_target), join(join) {}
 };
 
 struct SwitchArm
@@ -115,6 +195,7 @@ struct SwitchArm
 
 struct SwitchContext
 {
+	BlockId dispatch_target;
 	BlockId end_target;
 	BlockId default_target;
 	std::vector<SwitchArm> arms;
@@ -122,8 +203,9 @@ struct SwitchContext
 	std::set<std::size_t> lowered_labels;
 	std::set<std::size_t> label_subtrees;
 
-	SwitchContext(BlockId end_target = BlockId())
-		: end_target(end_target), default_target(end_target), arms(), labels(),
+	SwitchContext(BlockId end_target = BlockId(), BlockId dispatch_target = BlockId())
+		: dispatch_target(dispatch_target), end_target(end_target),
+		  default_target(end_target), arms(), labels(),
 		  lowered_labels(), label_subtrees() {}
 };
 
@@ -160,7 +242,28 @@ private:
 	std::vector<std::uint32_t> fact_index_generations_;
 	std::vector<std::uint32_t> fact_subtree_generations_;
 	std::vector<std::uint32_t> label_lowered_generations_;
+	std::vector<std::uint32_t> label_recovery_waiting_generations_;
+	std::vector<std::uint32_t> label_recovery_queued_generations_;
+	std::vector<SemanticFactId> label_statement_facts_;
+	std::vector<SemanticFactId> fact_parents_;
+	std::vector<std::size_t> fact_parent_indexes_;
+	std::vector<SemanticFactId> fact_recovery_frames_;
+	std::vector<SemanticFactId> fact_recovery_frame_children_;
+	std::vector<std::size_t> fact_recovery_frame_indexes_;
+	std::vector<std::size_t> fact_recovery_orders_;
+	std::vector<std::size_t> fact_recovery_ends_;
+	std::vector<SemanticFactId> fact_switch_ancestors_;
+	std::vector<RecoveryControlIndex> fact_recovery_control_heads_;
+	std::vector<RecoveryControlNode> recovery_control_arena_;
+	SemanticFactId label_recovery_root_;
+	std::size_t label_recovery_order_;
+	std::vector<SemanticFactId> label_recovery_boundaries_;
+	std::map<SemanticFactId, std::vector<LabelRecoveryWork> >
+		label_recovery_queue_;
 	std::uint32_t label_generation_;
+	RecoveryControlIndex recovery_control_head_;
+	std::size_t recovery_control_base_depth_;
+	bool recovery_control_active_;
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
@@ -181,9 +284,23 @@ private:
 	std::map<std::size_t, std::size_t> block_indexes_;
 	std::vector<ControlTarget> control_stack_;
 	std::vector<SwitchContext> switch_stack_;
+	// Fact-domain indexes stay compact; heavyweight flow records exist only
+	// for facts of the corresponding kind in their typed sparse arenas.
+	std::vector<LoopFlowIndex> loop_flow_indexes_;
+	std::vector<LoopFlow> loop_flow_arena_;
+	std::vector<IfFlowIndex> if_flow_indexes_;
+	std::vector<IfFlow> if_flow_arena_;
+	std::vector<SwitchFlowIndex> switch_flow_indexes_;
+	std::vector<SwitchContext> switch_flow_arena_;
+	// A continuation is keyed by the typed fact at the cursor's first child;
+	// no source spelling or per-label ancestry copy participates in lookup.
+	std::vector<ContinuationIndex> continuation_indexes_;
+	std::vector<CompoundContinuation> continuation_arena_;
+	// Structural exits use the same typed continuation arena.  A frame's
+	// entry is installed once, then later label paths jump to it directly.
+	std::vector<ContinuationIndex> fact_recovery_exit_indexes_;
 	std::vector<BlockId> block_order_;
 	std::set<std::size_t> ordered_block_ids_;
-	std::vector<LoopTarget> loop_targets_;
 	std::size_t reachability_base_;
 	std::vector<unsigned char> reachable_blocks_;
 	std::vector<BlockId> reachability_work_;
@@ -249,9 +366,19 @@ private:
 	void propagate_existing_terminator_edges(BlockId source);
 	void mark_reachable(BlockId start);
 	void propagate_edge(BlockId source, BlockId target);
-	void remember_loop_target(SemanticFactId id, BlockId break_target,
-		BlockId continue_target);
-	const LoopTarget* remembered_loop_target(SemanticFactId id) const;
+	void store_loop_flow(SemanticFactId id, const LoopFlow& flow);
+	const LoopFlow* remembered_loop_flow(SemanticFactId id) const;
+	void store_if_flow(SemanticFactId id, const IfFlow& flow);
+	const IfFlow* remembered_if_flow(SemanticFactId id) const;
+	void store_switch_flow(SemanticFactId id, const SwitchContext& flow);
+	const SwitchContext* remembered_switch_flow(SemanticFactId id) const;
+	bool enter_shared_compound_cursor(SemanticFactId parent,
+		std::size_t child_index);
+	bool enter_recovery_frame_continuation(SemanticFactId frame);
+	void finish_shared_compound_cursor(SemanticFactId parent,
+		std::size_t child_index);
+	bool jump_to_cached_label_continuation(SemanticFactId label_fact);
+	SemanticFactId enclosing_switch_fact(SemanticFactId id) const;
 	BlockId block_id(std::size_t index) const;
 	std::size_t block_index(BlockId id) const;
 	void set_current(BlockId id);
@@ -338,8 +465,24 @@ private:
 	BlockId label_target(LabelId label);
 	bool current_label_target(LabelId label) const;
 	bool current_label_referenced(LabelId label) const;
+	void push_label_recovery_boundary(SemanticFactId boundary);
+	void pop_label_recovery_boundary();
+	SemanticFactId label_recovery_boundary() const;
+	void push_label_recovery_controls(const LabelRecoveryWork& work,
+		std::size_t* saved_depth);
+	void pop_label_recovery_control(SemanticFactId frame);
+	void queue_label_recovery(LabelId label);
+	void defer_label_recovery(LabelId label);
+	void drain_label_recovery_queue(SemanticFactId boundary,
+		std::size_t resume_child = InvalidIdentityValue);
+	void lower_label_recovery_continuation(const LabelRecoveryWork& work,
+		SemanticFactId boundary, std::size_t resume_child);
+	void lower_existing_switch_label(SemanticFactId id);
+	void lower_existing_label_control(SemanticFactId id);
 	void initialize_label_flow(SemanticFactId body);
-	void collect_label_flow(SemanticFactId id);
+	void collect_label_flow(SemanticFactId id,
+		SemanticFactId parent = SemanticFactId(),
+		std::size_t parent_index = InvalidIdentityValue);
 	bool compute_label_subtree(SemanticFactId id);
 	bool referenced_label_subtree(SemanticFactId id) const;
 	void lower_referenced_label_subtree(SemanticFactId id);
@@ -356,21 +499,23 @@ private:
 	bool lower_switch_label_recovery(SemanticFactId id);
 	bool collect_switch_labels(SemanticFactId id, SwitchContext* context);
 	bool switch_subtree_has_label(SemanticFactId id) const;
-	void finish_switch_loop(const LoopTarget& target);
+	void finish_switch_loop(const LoopFlow& target);
 	void recover_existing_switch_loop(SemanticFactId body_fact,
-		const LoopTarget& target);
+		const LoopFlow& target);
 	void lower_switch_while(SemanticFactId id);
 	void lower_switch_do(SemanticFactId id);
 	void lower_switch_for(SemanticFactId id);
 	bool lower_switch_body(SemanticFactId id);
 	void finish_switch_labels();
-	void lower_switch(const std::vector<SemanticFactId>& facts);
+	void lower_switch(SemanticFactId id,
+		const std::vector<SemanticFactId>& facts);
 	void lower_while(SemanticFactId id);
 	void lower_do(SemanticFactId id);
 	void lower_for(SemanticFactId id);
 	void lower_statement(SemanticFactId id);
 	LoweredValue lower_condition(SemanticFactId id);
-	void lower_if(const std::vector<SemanticFactId>& facts);
+	void lower_if(SemanticFactId id,
+		const std::vector<SemanticFactId>& facts);
 	void lower_function(const FunctionPlan& plan);
 };
 }

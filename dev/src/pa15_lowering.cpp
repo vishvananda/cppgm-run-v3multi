@@ -15,7 +15,20 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  label_subtree_states_(), label_lowered_(), label_block_generations_(),
 		  label_referenced_generations_(), fact_index_generations_(),
 		  fact_subtree_generations_(), label_lowered_generations_(),
-		  label_generation_(0), variable_facts_(),
+		  label_recovery_waiting_generations_(),
+		  label_recovery_queued_generations_(), label_statement_facts_(),
+		  fact_parents_(), fact_parent_indexes_(), fact_recovery_frames_(),
+		  fact_recovery_frame_children_(), fact_recovery_frame_indexes_(),
+		  fact_recovery_orders_(), fact_recovery_ends_(),
+		  fact_switch_ancestors_(), fact_recovery_control_heads_(),
+		  recovery_control_arena_(),
+		  label_recovery_root_(),
+		  label_recovery_order_(0),
+		  label_recovery_boundaries_(),
+		  label_recovery_queue_(),
+		  label_generation_(0), recovery_control_head_(),
+		  recovery_control_base_depth_(0), recovery_control_active_(false),
+		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
 		  function_scope_variables_(), next_symbol_(0),
@@ -23,8 +36,13 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), generated_slot_ordinal_(0), block_indexes_(), control_stack_(),
-		  switch_stack_(), block_order_(), ordered_block_ids_(),
-		  loop_targets_(), reachability_base_(0), reachable_blocks_(),
+		  switch_stack_(), loop_flow_indexes_(), loop_flow_arena_(),
+		  if_flow_indexes_(), if_flow_arena_(), switch_flow_indexes_(),
+		  switch_flow_arena_(),
+		  continuation_indexes_(), continuation_arena_(),
+		  fact_recovery_exit_indexes_(),
+		  block_order_(), ordered_block_ids_(),
+		  reachability_base_(0), reachable_blocks_(),
 		  reachability_work_(), constant_truth_cache_(){}
 
 void Pa15Lowerer::run(){
@@ -37,7 +55,18 @@ void Pa15Lowerer::run(){
 		collect_globals();
 		materialize_pending_global_initializers();
 		constant_truth_cache_.assign(model_.semantic_facts_.size(), 255);
-		loop_targets_.resize(model_.semantic_facts_.size());
+		const std::size_t fact_count = model_.semantic_facts_.size();
+		loop_flow_indexes_.assign(fact_count, LoopFlowIndex());
+		loop_flow_arena_.clear();
+		if_flow_indexes_.assign(fact_count, IfFlowIndex());
+		if_flow_arena_.clear();
+		switch_flow_indexes_.assign(fact_count, SwitchFlowIndex());
+		switch_flow_arena_.clear();
+		continuation_indexes_.assign(fact_count, ContinuationIndex());
+		continuation_arena_.clear();
+		fact_recovery_control_heads_.assign(fact_count,
+			RecoveryControlIndex());
+		recovery_control_arena_.clear();
 		initialize_label_storage();
 		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 			lower_function(function_plans_[i]);
@@ -1423,23 +1452,13 @@ void Pa15Lowerer::propagate_edge(BlockId source, BlockId target){
 		if (is_reachable(source)) mark_reachable(target);
 	}
 
-void Pa15Lowerer::remember_loop_target(SemanticFactId id, BlockId break_target,
-		BlockId continue_target){
-		if (!id.valid())
-			throw std::runtime_error("PA15 loop fact has no identity");
-		if (id.value >= loop_targets_.size())
-			throw std::runtime_error("PA15 loop fact is outside target table");
-		if (loop_targets_[id.value].valid)
-			throw std::runtime_error("PA15 loop was lowered twice");
-		loop_targets_[id.value] = LoopTarget(break_target, continue_target);
-	}
-
-const LoopTarget* Pa15Lowerer::remembered_loop_target(SemanticFactId id) const{
-		if (!id.valid() || id.value >= loop_targets_.size() ||
-			!loop_targets_[id.value].valid)
-			return NULL;
-		return &loop_targets_[id.value];
-	}
+SemanticFactId Pa15Lowerer::enclosing_switch_fact(SemanticFactId id) const{
+	if (!id.valid() || id.value >= fact_switch_ancestors_.size() ||
+		id.value >= fact_index_generations_.size() ||
+		fact_index_generations_[id.value] != label_generation_)
+		return SemanticFactId();
+	return fact_switch_ancestors_[id.value];
+}
 
 BlockId Pa15Lowerer::block_id(std::size_t index) const{
 		if (index >= function().blocks.size())
@@ -2890,19 +2909,6 @@ bool Pa15Lowerer::has_direct_short_circuit(SemanticFactId id) const{
 		return fact.kind == SemanticFactKind::BinaryExpression &&
 			(fact.token == SimpleTokenType::OP_LAND ||
 			 fact.token == SimpleTokenType::OP_LOR);
-	}
-
-BlockId Pa15Lowerer::control_target(bool continue_target) const{
-		for (std::size_t i = control_stack_.size(); i != 0; --i)
-		{
-			const ControlTarget& target = control_stack_[i - 1];
-			if (continue_target && !target.loop) continue;
-			const BlockId result = continue_target ? target.continue_target :
-				target.break_target;
-			if (result.valid()) return result;
-		}
-		throw std::runtime_error(continue_target ?
-			"PA15 continue target is missing" : "PA15 break target is missing");
 	}
 
 BlockId Pa15Lowerer::switch_label_target(SemanticFactId id){
