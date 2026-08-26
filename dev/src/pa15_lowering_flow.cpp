@@ -23,18 +23,7 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 					initialize_array(fact.binding, initializer.front(), storage);
 				else
 				{
-					FundamentalType storage_fundamental;
-					FundamentalType initializer_fundamental;
-					const bool bool_storage = model_.fundamental_of(
-						model_.expression_object_type(model_.binding(fact.binding).type),
-						&storage_fundamental) && storage_fundamental == FundamentalType::Bool;
-					const bool bool_initializer = model_.fundamental_of(
-						model_.expression_object_type(
-							model_.semantic_facts_[initializer.front().value].type),
-						&initializer_fundamental) && initializer_fundamental == FundamentalType::Bool;
-					const LoweredValue value = bool_storage && bool_initializer ?
-						lower_condition_expression(initializer.front()) :
-						lower_expression(initializer.front());
+					const LoweredValue value = lower_expression(initializer.front());
 					emit_store(storage.type, value.value, storage.value);
 				}
 			}
@@ -73,9 +62,7 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 				result = lower_incdec(id, false);
 			else
 			{
-				const LoweredValue operand = fact.token == SimpleTokenType::OP_LNOT ?
-					lower_condition_expression(operands.front()) :
-					lower_expression(operands.front());
+				const LoweredValue operand = lower_expression(operands.front());
 				if (fact.token == SimpleTokenType::OP_PLUS)
 					result = operand;
 				else if (fact.token == SimpleTokenType::OP_LNOT)
@@ -288,6 +275,9 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 		default:
 			throw std::runtime_error("PA15 unsupported scalar expression fact");
 		}
+		if (result.canonical_truth && fact.type.valid() &&
+			model_.bool_id(fact.type))
+			result.type = low_type(fact.type);
 		if (defer_conversions)
 		{
 			if (materialize_lvalue && result.lvalue && !result.type.is_object())
@@ -923,18 +913,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 						initialize_array(fact.binding, facts.front(), storage);
 				else
 				{
-					FundamentalType storage_fundamental;
-					FundamentalType initializer_fundamental;
-					const bool bool_storage = model_.fundamental_of(
-						model_.expression_object_type(model_.binding(fact.binding).type),
-						&storage_fundamental) && storage_fundamental == FundamentalType::Bool;
-					const bool bool_initializer = model_.fundamental_of(
-						model_.expression_object_type(
-							model_.semantic_facts_[facts.front().value].type),
-						&initializer_fundamental) && initializer_fundamental == FundamentalType::Bool;
-					const LoweredValue value = bool_storage && bool_initializer ?
-						lower_condition_expression(facts.front()) :
-						lower_expression(facts.front());
+					const LoweredValue value = lower_expression(facts.front());
 					emit_store(storage.type, value.value, storage.value);
 				}
 			}
@@ -949,14 +928,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			instruction.type = function().return_type;
 			if (facts.size() == 1)
 			{
-				const SemanticFact& value_fact = model_.semantic_facts_[
-					facts.front().value];
-				const bool direct_boolean_compare =
-					value_fact.kind == SemanticFactKind::BinaryExpression &&
-					is_comparison(value_fact.token);
-				instruction.first = (direct_boolean_compare ?
-					lower_condition_expression(facts.front()) :
-					lower_expression(facts.front())).value;
+				instruction.first = lower_expression(facts.front()).value;
 			}
 			else if (!instruction.type.is_void())
 				throw std::runtime_error("PA15 missing return operand");

@@ -1904,6 +1904,137 @@ LoweredValue Pa15Lowerer::apply_reinterpret_conversion(LoweredValue result,
 	result.lvalue = false;
 	return result;
 }
+bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
+	const ConversionFact& conversion, const LowType& target,
+	bool omit_boolean_context, bool materialize_lvalue){
+	if (result == NULL)
+		throw std::runtime_error("PA15 missing conversion result");
+	if (conversion.kind == ConversionKind::Identity)
+	{
+		FundamentalType target_fundamental;
+		if (model_.fundamental_of(conversion.target, &target_fundamental) &&
+			target_fundamental == FundamentalType::Bool)
+		{
+			if (result->canonical_truth)
+			{
+				if (!omit_boolean_context && result->physical_type != target)
+				{
+					if (!result->physical_type.is_integer() ||
+						!target.is_integer() ||
+						result->physical_type.integer_width() <= target.integer_width())
+						throw std::runtime_error(
+							"PA15 canonical truth cannot materialize as bool");
+					Instruction instruction;
+					instruction.kind = Instruction::IK_CONVERT;
+					instruction.source_type = result->physical_type;
+					instruction.first = result->value;
+					instruction.conversion_operator = lowir_model::COP_TRUNC;
+					const ValueId value = destination(target, &instruction);
+					block().instructions.push_back(instruction);
+					*result = LoweredValue(temporary_operand(value,
+						instruction.destination_name_id), target, false);
+				}
+				else
+					result->type = target;
+			}
+			else if (result->physical_type.is_integer() &&
+				result->physical_type != target)
+			{
+				const LowType physical = result->physical_type;
+				const LoweredValue zero(integer_operand(0, physical),
+					physical, false);
+				*result = emit_compare_value(lowir_model::CPP_NE, physical,
+					*result, zero);
+				result->type = target;
+				result->physical_type = physical;
+			}
+		}
+		return true;
+	}
+	if (conversion.kind == ConversionKind::LvalueToRvalue)
+	{
+		materialize_lvalue_value(result, target);
+		result->type = target;
+		result->physical_type = target;
+		result->lvalue = false;
+		return true;
+	}
+	if (conversion.kind == ConversionKind::ArrayToPointer)
+	{
+		// Literal arrays use their typed constant-address lowering.
+		if (result->lvalue)
+		{
+			const LoweredValue address = address_of_storage(*result);
+			*result = emit_decay(address);
+		}
+		else if (!result->type.is_pointer())
+			throw std::runtime_error("PA15 array decay lost its lvalue");
+		result->type = target;
+		result->physical_type = target;
+		result->lvalue = false;
+		return true;
+	}
+	if (conversion.kind == ConversionKind::ReferenceBinding)
+	{
+		const TypeId referred_type = model_.strip_cv_type(
+			model_.expression_object_type(conversion.target));
+		const bool reference_to_function = referred_type.valid() &&
+			model_.type_kind(referred_type) == TypeKind::Function;
+		if (result->lvalue)
+			*result = address_of_storage(*result);
+		else if (!reference_to_function)
+		{
+			// A converted prvalue owns a typed temporary in the called frame.
+			const LowType referred = low_reference_value_type(conversion.target);
+			const LoweredValue temporary = generated_slot(referred, "refarg");
+			emit_store(referred, result->value, temporary.value);
+			*result = address_of_storage(temporary);
+		}
+		result->type = target;
+		result->physical_type = target;
+		result->lvalue = false;
+		return true;
+	}
+	if (conversion.kind == ConversionKind::FunctionToPointer)
+	{
+		if (result->lvalue)
+			*result = address_of_storage(*result);
+		if (!result->type.is_pointer())
+			throw std::runtime_error("PA15 function conversion has no pointer");
+		*result = emit_decay(*result);
+		result->type = target;
+		result->physical_type = target;
+		result->lvalue = false;
+		return true;
+	}
+	if (conversion.kind == ConversionKind::Reinterpret)
+	{
+		*result = apply_reinterpret_conversion(*result, target);
+		return true;
+	}
+	if (conversion.kind == ConversionKind::PointerQualification ||
+		conversion.kind == ConversionKind::PointerToVoid ||
+		conversion.kind == ConversionKind::NullptrToPointer ||
+		conversion.kind == ConversionKind::NullIntegerToPointer ||
+		conversion.kind == ConversionKind::NullIntegerToNullptr)
+	{
+		*result = apply_pointer_conversion(*result, conversion, target);
+		return true;
+	}
+	if (conversion.kind == ConversionKind::PointerToBool ||
+		conversion.kind == ConversionKind::NullptrToBool)
+	{
+		materialize_lvalue_value(result, result->type);
+		const LowType pointer = result->physical_type;
+		if (!pointer.is_pointer())
+			throw std::runtime_error("PA15 pointer-to-bool source is not a pointer");
+		const LoweredValue zero(integer_operand(0, pointer), pointer, false);
+		*result = emit_compare_value(lowir_model::CPP_NE, pointer, *result, zero);
+		result->type = target;
+		return true;
+	}
+	return false;
+}
 LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context, bool materialize_lvalue,
 		bool force_integral_literal_conversion){
@@ -1925,116 +2056,48 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 		{
 			const ConversionFact& conversion = model_.conversion_facts_[
 				fact.conversion_begin + i];
+			const bool source_is_bool = model_.bool_id(conversion.source);
 			LowType source_type;
+			if (source_is_bool)
+				source_type = low_type(conversion.source);
 			LowType target = low_type(conversion.target);
 			if (force_integral_literal_conversion && target.is_integer() &&
 				target.integer_width() == 64)
 				target = size_low_type();
-			if (conversion.kind == ConversionKind::Identity)
+			// Comparisons and short-circuit expressions carry canonical truth as
+			// physical i64 until a value context asks for the semantic bool.  A
+			// following recorded bool conversion must consume that semantic u8;
+			// otherwise conversion_operator() would describe a u8 source while
+			// the emitted operand still has physical i64 type.  Keep this
+			// materialization separate from the recorded conversion so the latter
+			// remains visible and typed in LowIR.
+			if (result.canonical_truth && source_is_bool &&
+				conversion.kind != ConversionKind::Identity)
 			{
-				FundamentalType target_fundamental;
-				if (model_.fundamental_of(conversion.target, &target_fundamental) &&
-					target_fundamental == FundamentalType::Bool &&
-					!result.canonical_truth &&
-					result.physical_type.is_integer() &&
-					result.physical_type != target)
-				{
-					const LowType physical = result.physical_type;
-					const LoweredValue zero(integer_operand(0, physical),
-						physical, false);
-					result = emit_compare_value(lowir_model::CPP_NE, physical,
-						result, zero);
-					result.type = target;
-					result.physical_type = physical;
-				}
-				continue;
+				if (!result.physical_type.is_integer() ||
+					!source_type.is_integer() ||
+					result.physical_type.integer_width() <= source_type.integer_width())
+					throw std::runtime_error(
+						"PA15 canonical truth cannot feed bool conversion");
+				Instruction instruction;
+				instruction.kind = Instruction::IK_CONVERT;
+				instruction.source_type = result.physical_type;
+				instruction.first = result.value;
+				instruction.conversion_operator = lowir_model::COP_TRUNC;
+				const ValueId value = destination(source_type, &instruction);
+				block().instructions.push_back(instruction);
+				result = LoweredValue(temporary_operand(value,
+					instruction.destination_name_id), source_type, false);
 			}
-			if (conversion.kind == ConversionKind::LvalueToRvalue)
-			{
-				materialize_lvalue_value(&result, target);
-				result.type = target;
-				result.physical_type = target;
-				result.lvalue = false;
+			if (apply_structural_conversion(&result, conversion, target,
+				omit_boolean_context, materialize_lvalue))
 				continue;
-			}
-			if (conversion.kind == ConversionKind::ArrayToPointer)
-			{
-				// A literal array is lowered through its typed constant-address fact,
-				// so lower_address has already produced the decayed pointer.
-				if (result.lvalue)
-				{
-					const LoweredValue address = address_of_storage(result);
-					result = emit_decay(address);
-				}
-				else if (!result.type.is_pointer())
-					throw std::runtime_error("PA15 array decay lost its lvalue");
-				result.type = target;
-				result.physical_type = target;
-				result.lvalue = false;
-				continue;
-			}
-			if (conversion.kind == ConversionKind::ReferenceBinding)
-			{
-				if (result.lvalue)
-					result = address_of_storage(result);
-				else if (!result.type.is_pointer())
-				{
-					// A converted prvalue bound to a reference owns a temporary in the
-					// called function's frame.  The preceding typed conversion has
-					// already established the exact value type to store.
-					const LowType referred = low_reference_value_type(conversion.target);
-					const LoweredValue temporary = generated_slot(referred, "refarg");
-					emit_store(referred, result.value, temporary.value);
-					result = address_of_storage(temporary);
-				}
-				result.type = target;
-				result.physical_type = target;
-				result.lvalue = false;
-				continue;
-			}
-			if (conversion.kind == ConversionKind::FunctionToPointer)
-			{
-				if (result.lvalue)
-					result = address_of_storage(result);
-				if (!result.type.is_pointer())
-					throw std::runtime_error("PA15 function conversion has no pointer");
-				result = emit_decay(result);
-				result.type = target;
-				result.physical_type = target;
-				result.lvalue = false;
-				continue;
-			}
-			if (conversion.kind == ConversionKind::Reinterpret)
-			{
-				result = apply_reinterpret_conversion(result, target);
-				continue;
-			}
-			if (conversion.kind == ConversionKind::PointerQualification ||
-				conversion.kind == ConversionKind::PointerToVoid ||
-				conversion.kind == ConversionKind::NullptrToPointer ||
-				conversion.kind == ConversionKind::NullIntegerToPointer ||
-				conversion.kind == ConversionKind::NullIntegerToNullptr)
-			{
-				result = apply_pointer_conversion(result, conversion, target);
-				continue;
-			}
-			if (conversion.kind == ConversionKind::PointerToBool ||
-				conversion.kind == ConversionKind::NullptrToBool)
-			{
-				materialize_lvalue_value(&result, result.type);
-				const LowType pointer = result.physical_type;
-				if (!pointer.is_pointer())
-					throw std::runtime_error("PA15 pointer-to-bool source is not a pointer");
-				const LoweredValue zero(integer_operand(0, pointer), pointer, false);
-				result = emit_compare_value(lowir_model::CPP_NE, pointer, result, zero);
-				result.type = target;
-				continue;
-			}
+			if (!source_is_bool)
+				source_type = low_type(conversion.source);
 			FundamentalType target_fundamental;
 			const bool target_is_bool = model_.fundamental_of(
 				model_.expression_object_type(conversion.target), &target_fundamental) &&
 				target_fundamental == FundamentalType::Bool;
-			source_type = low_type(conversion.source);
 			if (source_type.is_float() && target_is_bool)
 			{
 				// PA13 branches consume integer truth values.  Compare against a
@@ -2078,15 +2141,12 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			if (target_is_bool && result.value.kind != Operand::OP_INTEGER &&
 				result.physical_type.is_integer())
 			{
-				LowType boolean_compare;
-				boolean_compare.kind = LowType::TYPE_INTEGER;
-				boolean_compare.integer_kind = LowType::INTEGER_I64;
+				const LowType boolean_compare = result.physical_type;
 				const LoweredValue zero(integer_operand(0, boolean_compare),
 					boolean_compare, false);
 				result = emit_compare_value(lowir_model::CPP_NE, boolean_compare,
 					result, zero);
 				result.type = target;
-				result.physical_type = boolean_compare;
 				continue;
 			}
 			if (conversion.kind != ConversionKind::Integral ||
@@ -2374,22 +2434,7 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 		const bool compound = fact.token != SimpleTokenType::OP_ASS;
 		if (fact.token == SimpleTokenType::OP_ASS)
 		{
-
-
-
-			FundamentalType left_fundamental;
-			const bool bool_target = model_.fundamental_of(
-				model_.expression_object_type(
-					model_.semantic_facts_[operands[0].value].type),
-				&left_fundamental) && left_fundamental == FundamentalType::Bool;
-			FundamentalType right_fundamental;
-			const bool bool_value = model_.fundamental_of(
-				model_.expression_object_type(
-					model_.semantic_facts_[operands[1].value].type),
-				&right_fundamental) && right_fundamental == FundamentalType::Bool;
-			right = bool_target && bool_value ?
-				lower_condition_expression(operands[1]) :
-				lower_expression(operands[1]);
+			right = lower_expression(operands[1]);
 			left = lower_lvalue(operands[0]);
 		}
 		else
@@ -2483,33 +2528,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id){
 		for (std::size_t i = 0; i < argument_count; ++i)
 		{
 			const SemanticFactId argument = facts[argument_begin + i];
-			if (i < function_type->parameters.size())
-			{
-				TypeId parameter_type = function_type->parameters[i];
-				while (model_.type_kind(parameter_type) == TypeKind::Cv)
-					parameter_type = model_.types_[parameter_type.value].child;
-				const TypeKind kind = model_.type_kind(parameter_type);
-				if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
-				{
-					const SemanticFact& argument_fact =
-						model_.semantic_facts_[argument.value];
-					const TypeId argument_type = model_.strip_cv_type(
-						model_.expression_object_type(argument_fact.type));
-					const bool scalar_reference_value =
-						model_.integral_id(argument_type) ||
-						model_.floating_id(argument_type);
-					const bool scalar_reference_temporary = scalar_reference_value &&
-						(argument_fact.category != SemanticValueCategory::Lvalue ||
-						 argument_type != model_.strip_cv_type(
-							model_.types_[function_type->parameters[i].value].child));
-					instruction.args.push_back((scalar_reference_temporary ?
-						lower_expression(argument) : lower_address(argument)).value);
-				}
-				else
-					instruction.args.push_back(lower_expression(argument).value);
-			}
-			else
-				instruction.args.push_back(lower_expression(argument).value);
+			instruction.args.push_back(lower_expression(argument).value);
 		}
 		if (!fact.has_callee)
 			instruction.first = lower_expression(facts.front()).value;
@@ -2757,12 +2776,8 @@ LoweredValue Pa15Lowerer::lower_logical(SemanticFactId id){
 		const LoweredValue right = lower_condition_expression(operands.back());
 		LowType compare_type = right.physical_type;
 		Operand compare_value = right.value;
-		if (compare_type.is_integer())
-		{
-			compare_type = result_type;
-			if (compare_value.kind == Operand::OP_INTEGER)
-				compare_value.literal_type = compare_type;
-		}
+		if (compare_value.kind == Operand::OP_INTEGER && compare_type.is_integer())
+			compare_value.literal_type = compare_type;
 		if (!compare_type.is_integer() && !compare_type.is_pointer())
 			throw std::runtime_error("PA15 logical RHS is not scalar");
 		const LoweredValue truth = emit_compare_value(lowir_model::CPP_NE,

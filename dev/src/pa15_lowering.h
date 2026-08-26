@@ -268,6 +268,9 @@ private:
 	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context = false, bool materialize_lvalue = true,
 		bool force_integral_literal_conversion = false);
+	bool apply_structural_conversion(LoweredValue* result,
+		const ConversionFact& conversion, const LowType& target,
+		bool omit_boolean_context, bool materialize_lvalue);
 	LoweredValue apply_pointer_conversion(LoweredValue result,
 		const ConversionFact& conversion, const LowType& target);
 	LoweredValue apply_integral_literal_conversion(

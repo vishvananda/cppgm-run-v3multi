@@ -72,10 +72,45 @@ int negative_zero_literal()
   return 0;
 }
 
+bool logical_bool_result(double value, int rhs)
+{
+  return value && rhs;
+}
+
+bool logical_integral_result(int lhs, int rhs)
+{
+  return lhs && rhs;
+}
+
+bool logical_bool_local_init(int lhs, int rhs)
+{
+  bool result = lhs && rhs;
+  return result;
+}
+
+bool logical_bool_assignment(int lhs, int rhs)
+{
+  bool result = false;
+  result = lhs && rhs;
+  return result;
+}
+
 double ref_target(const double& first, const double& second,
   const double& third)
 {
   return first + second + third;
+}
+
+bool const_bool_reference_result(int lhs, int rhs)
+{
+  const bool& result = lhs < rhs;
+  return result;
+}
+
+bool rvalue_bool_reference_result(int lhs, int rhs)
+{
+  bool&& result = lhs < rhs;
+  return result;
 }
 
 int refarg_collision()
@@ -89,6 +124,21 @@ int refarg_collision()
 }
 
 extern "C" int sink(const char *, ...);
+
+int logical_bool_to_int(int lhs, int rhs)
+{
+  return lhs && rhs;
+}
+
+double logical_bool_to_double(int lhs, int rhs)
+{
+  return lhs && rhs;
+}
+
+int logical_bool_variadic(int lhs, int rhs)
+{
+  return sink("", lhs && rhs);
+}
 
 enum NarrowEnum : unsigned char
 {
@@ -105,9 +155,34 @@ int variadic_promotions()
   unsigned short unsigned_short_value = 5;
   NarrowEnum enum_value = narrow_enum_value;
   float float_value = 1.0F;
+  int integer_value = 6;
+  double double_value = 7.0;
+  int *pointer_value = &integer_value;
   return sink("", boolean_value, character_value, signed_character_value,
     unsigned_character_value, short_value, unsigned_short_value,
-    enum_value, float_value);
+    enum_value, float_value, integer_value, double_value, pointer_value);
+}
+
+int reference_source()
+{
+  return 7;
+}
+
+int pointer_reference_target(int*&& value)
+{
+  return *value;
+}
+
+int function_reference_target(int (&value)())
+{
+  return value();
+}
+
+int reference_ownership()
+{
+  int value = 6;
+  return pointer_reference_target(&value) +
+    function_reference_target(reference_source);
 }
 
 int main()

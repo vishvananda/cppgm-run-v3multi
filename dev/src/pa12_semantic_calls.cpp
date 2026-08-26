@@ -48,17 +48,25 @@ void PA11SemanticModel::apply_call_argument_conversions(
 		else if (floating_id(source))
 		{
 			FundamentalType fundamental_type;
+			TypeId target = source;
 			if (fundamental_of(source, &fundamental_type) &&
 				fundamental_type == FundamentalType::Float)
-				arguments[arg] = apply_context_conversion(arguments[arg],
-					fundamental(FundamentalType::Double), fact.source);
+				target = fundamental(FundamentalType::Double);
+			arguments[arg] = apply_context_conversion(arguments[arg], target,
+				fact.source);
 		}
 		else if (integral_id(source))
 		{
 			const TypeId promoted = promote_integral_type(source);
-			if (promoted != source)
-				arguments[arg] = apply_context_conversion(arguments[arg], promoted,
-					fact.source);
+			arguments[arg] = apply_context_conversion(arguments[arg], promoted,
+				fact.source);
+		}
+		else if (pointer_id(source))
+		{
+			// The default argument conversion of a pointer lvalue is still
+			// lvalue-to-rvalue even when its pointer type is unchanged.
+			arguments[arg] = apply_context_conversion(arguments[arg], source,
+				fact.source);
 		}
 	}
 }
