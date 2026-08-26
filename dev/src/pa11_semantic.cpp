@@ -1,9 +1,159 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
 
+#include <limits>
+
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
+
+std::size_t PA11SemanticModel::alignment_specifier_value(
+	const PA10AlignmentSpecifier& spec, ScopeId scope)
+{
+	if (spec.argument_kind == PA10AlignmentArgumentKind::TypeId)
+	{
+		const TypeId type = type_from_type_id(spec.argument, scope);
+		if (!complete_object_type(type))
+			throw std::runtime_error("alignas type is not a complete object type");
+		const std::size_t alignment = type_alignment(type);
+		if (alignment == 0)
+			throw std::runtime_error("alignas type has invalid alignment");
+		return alignment;
+	}
+	if (spec.argument_kind != PA10AlignmentArgumentKind::Expression)
+		throw std::runtime_error("invalid PA11 alignment argument kind");
+	const ConstValue value = eval_constexpr(spec.argument, scope);
+	if (!value.valid || !value.type.valid())
+		throw std::runtime_error("alignas argument is not an integral constant");
+	const TypeId value_type = strip_cv_type(value.type);
+	bool integral = false;
+	if (type_kind(value_type) == TypeKind::Fundamental)
+		integral = integral_type(types_[value_type.value].fundamental);
+	else if (type_kind(value_type) == TypeKind::Named)
+	{
+		const NamedRecordId record = named_record_for_type(value_type);
+		integral = record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Enum;
+	}
+	if (!integral || value.value < 0 ||
+		value.value > static_cast<__int128>(
+			std::numeric_limits<std::size_t>::max()))
+		throw std::runtime_error("invalid alignas constant");
+	const std::size_t alignment = static_cast<std::size_t>(value.value);
+	if (alignment != 0 && (alignment & (alignment - 1)) != 0)
+		throw std::runtime_error("alignas is not a valid alignment");
+	return alignment;
+}
+
+std::size_t PA11SemanticModel::requested_alignment(const PA10AstNode& node,
+	ScopeId scope)
+{
+	if (node.alignment_specifier_begin > ast_.alignment_specifiers.size() ||
+		node.alignment_specifier_count > ast_.alignment_specifiers.size() -
+			node.alignment_specifier_begin)
+		throw std::runtime_error("invalid PA11 alignment specifier range");
+	std::size_t result = 0;
+	for (std::size_t i = 0; i < node.alignment_specifier_count; ++i)
+	{
+		const std::size_t alignment = alignment_specifier_value(
+			ast_.alignment_specifiers[node.alignment_specifier_begin + i], scope);
+		if (alignment > result)
+			result = alignment;
+	}
+	return result;
+}
+
+void PA11SemanticModel::apply_record_alignment(const PA10AstNode& node,
+	NamedRecordId record_id, ScopeId scope)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		throw std::runtime_error("alignment has no class owner");
+	const std::size_t alignment = requested_alignment(node, scope);
+	if (alignment == 0)
+		return;
+	NamedRecord& record = named_[record_id.value];
+	if (record.has_requested_alignment &&
+		record.requested_alignment >= alignment)
+		return;
+	if (record_id.value >= record_layouts_.size())
+		throw std::runtime_error("alignment has no record layout owner");
+	if (record_layouts_[record_id.value].state == RecordLayoutState::Complete)
+		throw std::runtime_error("class alignment changed after layout completion");
+	record.has_requested_alignment = true;
+	record.requested_alignment = alignment;
+}
+
+void PA11SemanticModel::apply_member_alignment(const PA10AstNode& node,
+	BindingId binding_id, ScopeId scope)
+{
+	const std::size_t alignment = requested_alignment(node, scope);
+	if (alignment == 0)
+		return;
+	BindingSidecar sidecar;
+	const BindingSidecar* existing = binding_sidecar(binding_id);
+	if (existing != NULL)
+		sidecar = *existing;
+	if (!sidecar.has_requested_alignment ||
+		sidecar.requested_alignment < alignment)
+	{
+		sidecar.has_requested_alignment = true;
+		sidecar.requested_alignment = alignment;
+		set_binding_sidecar(binding_id, sidecar);
+	}
+}
+
+void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
+	NamedRecordId record_id, ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::BaseClause || node.children.empty())
+		throw std::runtime_error("empty PA11 base clause");
+	if (node.children.size() != 1)
+		throw std::runtime_error("multiple inheritance is outside PA16");
+	const PA10AstNode& base_specifier = node.children.front();
+	if (base_specifier.kind != PA10NodeKind::BaseSpecifier)
+		throw std::runtime_error("invalid PA11 base specifier");
+	const PA10AstNode* base_name = NULL;
+	bool virtual_base = false;
+	for (std::size_t i = 0; i < base_specifier.children.size(); ++i)
+	{
+		const PA10AstNode& child = base_specifier.children[i];
+		if (child.kind == PA10NodeKind::VirtualSpecifier)
+			virtual_base = true;
+		else if (child.kind == PA10NodeKind::BaseName)
+		{
+			if (base_name != NULL)
+				throw std::runtime_error("base specifier has multiple names");
+			base_name = &child;
+		}
+	}
+	if (virtual_base)
+		throw std::runtime_error("virtual inheritance is outside PA16");
+	if (base_name == NULL)
+		throw std::runtime_error("base specifier has no name");
+	const TypeId base_type = lookup_type_path(name_path(*base_name), scope,
+		SourcePoint(node.source_begin));
+	if (!base_type.valid())
+		throw std::runtime_error("unknown PA11 direct base type");
+	const TypeId unqualified = strip_cv_type(base_type);
+	if (type_kind(unqualified) != TypeKind::Named)
+		throw std::runtime_error("direct base is not a class type");
+	const NamedRecordId base_record = named_record_for_type(unqualified);
+	if (!base_record.valid() || base_record.value >= named_.size() ||
+		named_[base_record.value].kind != NamedKind::Class ||
+		named_[base_record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("direct base is not a complete class");
+	if (base_record == record_id)
+		throw std::runtime_error("class cannot directly derive from itself");
+	if (!complete_object_type(unqualified))
+		throw std::runtime_error("direct base is incomplete");
+	NamedRecord& record = named_[record_id.value];
+	if (record.has_base && record.direct_base != base_record)
+		throw std::runtime_error("multiple inheritance is outside PA16");
+	record.has_base = true;
+	record.direct_base = base_record;
+	record.direct_base_virtual = false;
+}
 
 static bool is_constant_comparison_token(SimpleTokenType token)
 {
@@ -448,10 +598,15 @@ ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node,
 	}
 	if (node.kind == PA10NodeKind::SizeofExpression ||
 		node.kind == PA10NodeKind::TypeTraitExpression)
-		return ConstValue(true, static_cast<__int128>(type_size(
-			sizeof_operand_type(node, scope))), false,
+	{
+		const TypeId operand = sizeof_operand_type(node, scope);
+		const std::size_t value = node.kind == PA10NodeKind::TypeTraitExpression &&
+			node.has_token && node.token == SimpleTokenType::KW_ALIGNOF ?
+			type_alignment(operand) : type_size(operand);
+		return ConstValue(true, static_cast<__int128>(value), false,
 			fundamental(node.kind == PA10NodeKind::SizeofExpression ?
 				FundamentalType::UnsignedLongInt : FundamentalType::LongLongInt));
+	}
 	throw NonConstantExpression("unsupported constant expression");
 }
 

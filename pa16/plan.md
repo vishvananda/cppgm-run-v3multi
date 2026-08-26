@@ -1,115 +1,114 @@
 # PA16 implementation plan
 
-## Current checkpoint
+## Stage Design
 
-The target is `pa16` full-stage, phase `checkpointAudit`. The landed
-increment is `453d03a6` (`PA16: typed class-layout checkpoint`), parent
-`31f2d2af`. This checkpoint covers only its typed record-layout, complete-type,
-and PA15 class-storage path; PA16 is not complete.
-
-The production path is one forward flow:
+The implementation keeps one forward typed flow:
 
 ```text
-PA10 AST -> PA11 typed model -> PA12 semantic facts -> PA15 LowIR lowering
+PA10 typed AST -> PA11 canonical semantic owners -> PA11 RecordLayout -> PA15 LowIR
 ```
 
-`NamedRecordId` is the stable owner key for one `RecordLayout`. PA11 records
-declaration-owned class facts and completes ordinary natural layouts in
-declaration order. Complete-type queries, `sizeof`, and PA15 object/global
-storage consume that state; no source-text recovery, duplicate layout map, or
-whole-program retry is used.
+`PA10Ast` now owns sparse typed `alignas` argument facts. Each argument is
+classified as a type-id or expression and remains an AST node; no later stage
+recovers it from rendered text. `NamedRecordId` remains the sole canonical
+record identity. Its owner carries the strongest requested class alignment,
+one resolved direct-base `NamedRecordId`, and the rejected virtual flag. A
+member's requested alignment is a typed `BindingSidecar` fact.
 
-## Spec alignment and ownership
+PA11 resolves a `BaseName` once, requires one complete non-virtual class base,
+and records its subobject separately in `RecordLayout` at offset zero. Layout
+then consumes the completed base representation followed by ordinary fields,
+applies checked alignment/padding and `size_t` overflow checks, and publishes
+one explicit `Incomplete`/`Computing`/`Complete`/`Failed` state. PA15 consumes
+the resulting size/alignment through its existing LowIR object type. Its
+namespace zero-storage eligibility remains conservatively false for derived
+records; no lifetime behavior is fabricated.
 
-This slice follows the typed declaration/complete-type, natural layout, and
-LowIR object-representation boundaries in the applicable PA16/spec contract.
-It provides member offsets, natural padding/alignment, empty records, arrays,
-pointers, self-pointers, and completed member classes. Methods, types, and
-static data are skipped for non-static member layout.
+This follows `spec.md`'s single typed flow, fact continuity/ownership, stable
+semantic identity, and bounded-work requirements, and the N3485 [class.mem]
+complete-type/member-allocation and [class.derived] direct-base facts. Access
+lookup, constructors, destructors, calls, value semantics, virtual machinery,
+and multiple inheritance remain outside this checkpoint.
 
-| fact | owner and consumers |
+## Failure Map
+
+Turn-start full-stage baseline, before this diff: `32/243` passing, `211`
+failures, all `243/243` covered. Its category split was five generated-LowIR
+mismatches and 206 exit-status mismatches: 203 expected-success/actual-failure
+and three expected-failure/actual-success.
+
+Fresh full validation with `make test-pa16` (complete output captured outside
+the tree at `/tmp/v3multi-pa16-full-post-audit-fix.log`) reports `35/243`
+passing, `208` failures, all `243/243` covered, exit code `2`: a gain of three
+passes and removal of three failures. The residual split is four generated-
+LowIR mismatches (`200-unnamed-namespace-hidden-friend-single-definition`,
+`300-enum-operator-adl-selects-matching-overload`, `300-packed-class-layout`,
+and `300-pragma-pack-followed-by-endif`), 201 expected-success/actual-failure
+exit mismatches, and three expected-failure/actual-success mismatches.
+
+The current failure identity set is exactly the baseline set minus
+`300-alignas-class-layout.t`, `300-alignas-derived-base-layout.t`, and
+`300-member-alignas-layout.t`; there are no new identities and therefore no
+previously passing PA16 regression. Remaining failures are later lifetime,
+constructor/destructor, lookup/call, value-semantics, bit-field, aggregate,
+polymorphism, nested-parser, and other PA16 surfaces. PA16 is not complete.
+
+## Active Checkpoint
+
+Implemented and validated as the bounded PA16 foundation:
+
+- PA10 typed alignment sidecar capture at class-head and declaration-specifier
+  boundaries, with generic attribute skipping still bounded and presentation
+  output compatible with the existing PA10 fixture.
+- PA11 canonical class alignment and member-alignment facts; one semantic base
+  resolution with conservative rejection of incomplete, virtual, union, and
+  multiple bases.
+- Distinct `RecordLayout` direct-base subobject metadata at offset zero;
+  derived size/alignment starts after the occupied base representation and
+  preserves stronger requested alignment.
+- Conservative derived zero-storage eligibility and explicit failed-state
+  cleanup.
+
+Final focused evidence against the rebuilt `dev/cppgm++`: `make -C dev cppgm++`
+passed, and the exact three-test command
+`make -C pa16 check TEST='tests/general/300-alignas-class-layout.t tests/general/300-alignas-derived-base-layout.t tests/general/300-member-alignas-layout.t'`
+reported `pa16 check: PASS (3/3)` with exit code 0. The checked-in
+`make -C pa16 check TEST=tests/general/300-under-aligned-class-bad.t` also
+passed its expected failure. The exact PA10 regression command,
+`make -C pa10 check TEST=tests/general/100-class-alignas-after-class-key.t`,
+reported `pa10 check: PASS (1/1)` with exit code 0. The exact prior gate
+`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
+reported `ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)` with exit code 0.
+The exact file-audit command
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` passed with
+exit code 0 and five pre-existing warnings; there were no fatal findings.
+`git diff --check` passed. An additional
+out-of-class nested-type alignment probe still stops in the existing qualified
+class-declarator parser route (`expected declarator-id at token 24`), so it is
+not included in the checkpoint pass claim. The validated checkpoint is
+landed/committed and validated in this checkpoint; it does not claim broad
+PA16 completion.
+
+## Performance Evidence
+
+Alignment attributes are parsed in one forward pass and stored by compact
+ranges into a cold typed sidecar. Base identity is resolved once per class.
+Each completed record scans its binding vector once; the base chain contributes
+only its already-completed layout facts, and member layout uses checked
+constant-time arithmetic per member. Explicit layout states prevent retries
+and there is no whole-program rescan. No benchmark, RSS, or instrumentation
+counters were collected, and no timing/RSS claim is made. No material
+performance risk at this bounded checkpoint required representative
+measurement; the evidence is structural complexity plus the successful build,
+focused checks, and full-stage coverage.
+
+## Checkpoint Ledger
+
+| checkpoint/evidence | result and disposition |
 | --- | --- |
-| named record identity | PA11 `append_named_record` and its parallel `RecordLayout` |
-| size/alignment/offsets | PA11 typed completion and `FlatIndex<BindingId, size_t>` |
-| complete object type | PA15 `obj<bytesxalignment>` local/address lowering |
-| namespace class object | PA15 narrow typed zero-storage summary, one zero region and existing init boundary |
-
-The narrow owner fact is named `RecordLayout::checkpoint_zero_storage_eligible`;
-it is not a claim of full C++ triviality. PA11 publishes it while completing
-the record from typed default-member-initializer sidecars and already-completed
-member summaries. PA15 reads it in O(1), unwrapping only cv/array wrappers.
-Ordinary and static member functions do not invalidate it. References,
-member-pointers, unsupported unions, bases, and virtual records are
-conservative rejection cases.
-
-The new non-template implementation is out of the header. The typed summary
-and dependency fact remain in `pa11_semantic_core.cpp`; the complete PA11
-layout owner (`align_up_checked`, layout access/completion, checked alignment,
-size, and alignment definitions) is `pa11_record_layout.cpp`. It is registered
-only in `FRONTEND_OBJ_BASENAMES_cppgm++`; PA15 flow contains lowering behavior
-only. This is one PA11 model and one state, not a second layout implementation
-or an unregistered tool source.
-
-Direct bases and virtual members are recorded as typed boundary facts but are
-not flattened here. Their layout state becomes `Failed`, so complete-type,
-`sizeof`, and storage consumers reject rather than inventing base bytes,
-vpointers, or vtables. The broader PA16 inheritance/polymorphism and lifetime
-owners remain later checkpoints.
-
-## Fresh final evidence
-
-`make -C dev cppgm++` exited 0. `make test-pa16` exited 2 with
-`32 / 243` passing, `211` failing, and all `243/243` tests covered. This is
-within the bounded checkpoint criterion. Failure identities were extracted
-from the fresh log and compared with
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-both sets contain 211 identities, with no newly failing identity and no
-identity removed from the failure set. The fresh residual categories are:
-
-- 5 generated-LowIR mismatches:
-  `general/200-unnamed-namespace-hidden-friend-single-definition`,
-  `general/300-alignas-class-layout`,
-  `general/300-enum-operator-adl-selects-matching-overload`,
-  `general/300-packed-class-layout`, and
-  `general/300-pragma-pack-followed-by-endif`;
-- 206 exit-status mismatches: 203 expected-success/actual-failure and 3
-  expected-failure/actual-success.
-
-The supplied baseline category split was 6 LowIR and 205 status mismatches;
-`general/300-alignas-derived-base-layout` remains in the same failure identity
-set but is now a rejected-status case at this checkpoint boundary. No added
-pass compensates for a new failure.
-
-The requested through-PA15 command exited 0 with `1167 / 1167` passing. The
-final file audit exited 0 with five warnings: historical substantial-header
-implementation warnings for `abi_mangle.h`, `cpp_semantic_core.h`,
-`lowir_model.h`, `pa11_semantic_model.h`, and `pa15_lowering.h`; no fatal
-source-size issue remains. The durable regression exited 0, `sh -n` exited 0,
-and `git diff --check` exited 0.
-
-The durable regression checks statuses and the absence of fake zero/lifetime
-output, never diagnostic text. It covers the nested polymorphic boundary,
-direct-base boundary, ordinary/static-method global, DMI and destructor
-rejections, completed member summary, `long double[2]` as `obj<32x16>`, and
-the signed-range `sizeof` rejection.
-
-## Structural limits and next checkpoint
-
-Layout completion has bounded linear scans over one class binding vector and
-checked `size_t` arithmetic. The eligibility summary is computed once per
-completed record and recursively consumes typed member summaries; PA15 does
-not rescan class binding DAGs per namespace object. No timing, RSS, or
-benchmark evidence was collected, so no material performance number is
-claimed. `sizeof` range rejection is reachable because LowIR uses signed
-`INTEGER_I64` operands backed by `long long`.
-
-The next checkpoint must own direct-base layout, polymorphic representation,
-and constructor/destructor/initialization lifetime before this failed-state or
-zero-storage boundary is broadened. Alignas/packing, inheritance lookup,
-bit-fields, and other out-of-scope PA16 work remain deferred.
-
-## Current audit ledger
-
-| checkpoint | result and disposition |
-| --- | --- |
-| `453d03a6` typed class-layout checkpoint | Fresh final evidence: `32/243`, `211` residual failures, `243/243` covered; through-PA15 `1167/1167`; file audit exit 0 with 5 warnings; durable regression passed. Current bounded checkpoint; PA16 remains incomplete. |
+| Turn-start repository and baseline | Clean tree; PA16 `32/243`, `211` failures, all covered; baseline full log and stage-progress evidence recorded. |
+| Typed single-base/alignment foundation | Implemented in nine `dev/src/` implementation files plus `pa16/plan.md` (ten tracked files total); focused trio `3/3`, checked-in weak-alignment negative `1/1`, and PA10 regression `1/1`; derived zero-storage remains rejected conservatively. |
+| Full PA16 validation | `make test-pa16`: `35/243`, `208` failures, all `243/243` covered, exit `2`; three baseline failure identities removed and none added. |
+| Prior-stage gate | Exact through-PA15 command: `1167/1167`, exit `0`. |
+| File audit | Exact PA16 audit: passed, exit `0`; five warnings, zero fatal findings. |
+| Diff and disposition | `git diff --check` passed; the change comprises nine `dev/src/` implementation files plus `pa16/plan.md` (ten tracked files total), with no tests or refs. The checkpoint is landed/committed and validated in this checkpoint; later PA16 work remains deferred. |

@@ -279,6 +279,10 @@ struct BindingSidecar
 	// A default member initializer is a typed source fact.  Namespace object
 	// zero storage must not erase it at the layout-only boundary.
 	bool has_default_member_initializer;
+	// Non-static member alignment is retained on the canonical binding until
+	// RecordLayout consumes it; static members never participate in layout.
+	bool has_requested_alignment;
+	std::size_t requested_alignment;
 	// Operator identity and exception behavior are declaration facts.  Keep
 	// them beside the canonical binding so ABI/lowering consumers do not have
 	// to recover either fact from a rendered name or a declarator body.
@@ -295,6 +299,7 @@ struct BindingSidecar
 		: backing_storage(backing_storage), constructor_record(constructor_record),
 		  generated_name_record(generated_name_record), static_member(false),
 		  has_default_member_initializer(false),
+		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
 		  declaration_kind(FunctionDeclarationKind::Normal),
@@ -518,7 +523,13 @@ struct NamedRecord
 	// These typed boundary facts keep the natural-layout checkpoint from
 	// silently presenting an inheritance or polymorphic record as flat.
 	bool has_base;
+	NamedRecordId direct_base;
+	bool direct_base_virtual;
 	bool has_virtual_member;
+	// The strongest non-zero class alignment requested by an alignas
+	// declaration.  The layout owner validates it against natural alignment.
+	bool has_requested_alignment;
+	std::size_t requested_alignment;
 	bool scoped_enum;
 	bool has_underlying;
 	TypeId underlying;
@@ -532,7 +543,9 @@ struct NamedRecord
 		ScopeId owner = ScopeId())
 		: kind(kind), name(name), owner(owner), defined(false),
 		  class_tag(ClassTag::Struct), has_base(false),
-		  has_virtual_member(false), scoped_enum(false),
+		  direct_base(), direct_base_virtual(false), has_virtual_member(false),
+		  has_requested_alignment(false), requested_alignment(0),
+		  scoped_enum(false),
 		  has_underlying(false), underlying(), template_template(false), scope(),
 		  has_generated_identity(false), generated_identity(), dump_scope_view()
 	{}
@@ -561,11 +574,26 @@ struct RecordLayoutMember
 	{}
 };
 
+struct RecordLayoutBase
+{
+	NamedRecordId record;
+	std::size_t offset;
+
+	RecordLayoutBase(NamedRecordId record = NamedRecordId(),
+		std::size_t offset = 0)
+		: record(record), offset(offset)
+	{}
+};
+
 struct RecordLayout
 {
 	RecordLayoutState state;
 	std::size_t size;
 	std::size_t alignment;
+	// A direct base is a distinct subobject, not an ordinary field.  PA16
+	// supports exactly one non-virtual base at offset zero.
+	bool has_direct_base;
+	RecordLayoutBase direct_base;
 	// Narrow PA15 checkpoint fact; this is not a full C++ triviality claim.
 	// It is meaningful only for a Complete layout and is reset on failure.
 	bool checkpoint_zero_storage_eligible;
@@ -574,6 +602,7 @@ struct RecordLayout
 
 	RecordLayout()
 		: state(RecordLayoutState::Incomplete), size(0), alignment(0),
+		  has_direct_base(false), direct_base(),
 		  checkpoint_zero_storage_eligible(false), members(), member_offsets()
 	{}
 };
@@ -1616,6 +1645,20 @@ private:
 	SpecFact spec_fact(const PA10AstNode& node, ScopeId scope)
 	;
 	NamePath class_name(const PA10AstNode& node)
+	;
+	std::size_t alignment_specifier_value(
+		const PA10AlignmentSpecifier& spec, ScopeId scope)
+	;
+	std::size_t requested_alignment(const PA10AstNode& node, ScopeId scope)
+	;
+	void apply_record_alignment(const PA10AstNode& node,
+		NamedRecordId record, ScopeId scope)
+	;
+	void apply_member_alignment(const PA10AstNode& node,
+		BindingId binding, ScopeId scope)
+	;
+	void process_base_clause(const PA10AstNode& node,
+		NamedRecordId record, ScopeId scope)
 	;
 	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner)
 	;

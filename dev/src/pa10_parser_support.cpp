@@ -1801,6 +1801,92 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 	}
 }
 
+bool skip_attribute_specifier(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position, std::size_t* after, std::size_t* consumed)
+{
+	if (after != NULL)
+		*after = position;
+	if (consumed != NULL)
+		*consumed = 0;
+	std::size_t cursor = position;
+	std::size_t count = 0;
+	const auto publish = [&after, &consumed, &cursor, &count]() {
+		if (after != NULL)
+			*after = cursor;
+		if (consumed != NULL)
+			*consumed = count;
+	};
+	if (!attribute_start_at(tokens, cursor))
+	{
+		publish();
+		return true;
+	}
+	if (token_identifier_at(tokens, cursor) ||
+		token_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_ALIGNAS))
+	{
+		++cursor;
+		++count;
+		if (!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN))
+		{
+			if (cursor < tokens.size())
+				++count;
+			publish();
+			return false;
+		}
+	}
+	else if (!standard_attribute_wrapper_at(tokens, delimiter_close_index,
+		cursor))
+	{
+		std::size_t next = 0;
+		std::size_t nested = 0;
+		if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
+		{
+			cursor = next;
+			count += nested;
+			publish();
+			return false;
+		}
+		cursor = next;
+		count += nested;
+		publish();
+		return false;
+	}
+	std::size_t next = 0;
+	std::size_t nested = 0;
+	if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
+	{
+		cursor = next;
+		count += nested;
+		publish();
+		return false;
+	}
+	cursor = next;
+	count += nested;
+	publish();
+	return true;
+}
+
+bool alignment_argument_starts_type(const std::vector<PA10Token>& tokens,
+	const PA10NameScopes& scopes, std::size_t position)
+{
+	if (position < tokens.size() && tokens[position].kind == PA10TokenKind::Fixed)
+	{
+		const SimpleTokenType type = tokens[position].fixed;
+		if (is_type_keyword(type) || is_cv(type) ||
+			type == SimpleTokenType::KW_CLASS ||
+			type == SimpleTokenType::KW_STRUCT ||
+			type == SimpleTokenType::KW_UNION ||
+			type == SimpleTokenType::KW_ENUM ||
+			type == SimpleTokenType::KW_DECLTYPE ||
+			type == SimpleTokenType::KW_TYPENAME ||
+			type == SimpleTokenType::OP_COLON2)
+			return true;
+	}
+	return token_identifier_at(tokens, position) &&
+		scopes.is_type(tokens[position].spelling);
+}
+
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, std::size_t* after, std::size_t* consumed)
@@ -1819,47 +1905,18 @@ bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	};
 	while (attribute_start_at(tokens, cursor))
 	{
-		if (token_identifier_at(tokens, cursor) ||
-			token_fixed_at(tokens, cursor, 0, SimpleTokenType::KW_ALIGNAS))
-		{
-			++cursor;
-			++count;
-			if (!token_fixed_at(tokens, cursor, 0, SimpleTokenType::OP_LPAREN))
-			{
-				if (cursor < tokens.size())
-					++count;
-				publish();
-				return false;
-			}
-		}
-		else if (!standard_attribute_wrapper_at(tokens, delimiter_close_index,
-			cursor))
-		{
-			std::size_t next = 0;
-			std::size_t nested = 0;
-			if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
-			{
-				cursor = next;
-				count += nested;
-				publish();
-				return false;
-			}
-			cursor = next;
-			count += nested;
-			publish();
-			return false;
-		}
-		std::size_t next = 0;
-		std::size_t nested = 0;
-		if (!skip_balanced_delimiters(tokens, cursor, &next, &nested))
+		std::size_t next = cursor;
+		std::size_t one = 0;
+		if (!skip_attribute_specifier(tokens, delimiter_close_index, cursor,
+			&next, &one))
 		{
 			cursor = next;
-			count += nested;
+			count += one;
 			publish();
 			return false;
 		}
 		cursor = next;
-		count += nested;
+		count += one;
 	}
 	publish();
 	return true;

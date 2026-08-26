@@ -148,11 +148,15 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		layout.state = RecordLayoutState::Failed;
 		throw std::runtime_error("record definition is incomplete");
 	}
-	if (record.has_base || record.has_virtual_member)
+	if (record.has_virtual_member || record.direct_base_virtual ||
+		(record.has_base && (!record.direct_base.valid() ||
+			record.direct_base.value >= named_.size())))
 	{
 		layout.state = RecordLayoutState::Failed;
 		layout.size = 0;
 		layout.alignment = 0;
+		layout.has_direct_base = false;
+		layout.direct_base = RecordLayoutBase();
 		layout.members.clear();
 		layout.member_offsets = FlatIndex<BindingId, std::size_t,
 			IdentityHash<BindingId> >();
@@ -162,6 +166,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 	layout.state = RecordLayoutState::Computing;
 	layout.size = 0;
 	layout.alignment = 0;
+	layout.has_direct_base = false;
+	layout.direct_base = RecordLayoutBase();
 	layout.members.clear();
 	layout.member_offsets = FlatIndex<BindingId, std::size_t,
 		IdentityHash<BindingId> >();
@@ -181,10 +187,21 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			}
 		}
 		const bool is_union = record.class_tag == ClassTag::Union;
-		bool checkpoint_zero_storage_eligible = !is_union;
+		bool checkpoint_zero_storage_eligible = !is_union && !record.has_base;
 		std::size_t offset = 0;
 		std::size_t largest_member = 0;
 		std::size_t record_alignment = 1;
+		if (record.has_base)
+		{
+			const RecordLayout& base_layout = record_layout(record.direct_base);
+			if (base_layout.state != RecordLayoutState::Complete ||
+				base_layout.size == 0 || base_layout.alignment == 0)
+				throw std::runtime_error("direct base has no complete layout");
+			layout.has_direct_base = true;
+			layout.direct_base = RecordLayoutBase(record.direct_base, 0);
+			offset = base_layout.size;
+			record_alignment = base_layout.alignment;
+		}
 		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
 		{
 			const BindingId member_id = scope.bindings[i];
@@ -200,8 +217,16 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			const TypeLayout member_layout = type_layout(member.type);
 			if (member_layout.size == 0 || member_layout.alignment == 0)
 				throw std::runtime_error("record member has invalid layout");
-			if (member_layout.alignment > record_alignment)
-				record_alignment = member_layout.alignment;
+			std::size_t member_alignment = member_layout.alignment;
+			if (sidecar != NULL && sidecar->has_requested_alignment)
+			{
+				if (sidecar->requested_alignment == 0 ||
+					sidecar->requested_alignment < member_alignment)
+					throw std::runtime_error("member alignment is weaker than natural alignment");
+				member_alignment = sidecar->requested_alignment;
+			}
+			if (member_alignment > record_alignment)
+				record_alignment = member_alignment;
 			std::size_t member_offset = 0;
 			if (is_union)
 			{
@@ -210,7 +235,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			}
 			else
 			{
-				if (!align_up_checked(offset, member_layout.alignment,
+				if (!align_up_checked(offset, member_alignment,
 					&member_offset) ||
 					member_offset > std::numeric_limits<std::size_t>::max() -
 					member_layout.size)
@@ -222,17 +247,20 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			layout.member_offsets.set(member_id, member_offset);
 		}
 
-		const std::size_t unrounded_size = is_union ? largest_member : offset;
-		if (unrounded_size == 0)
+		if (record.has_requested_alignment)
 		{
-			layout.size = 1;
-			layout.alignment = 1;
+			if (record.requested_alignment == 0 ||
+				record.requested_alignment < record_alignment)
+				throw std::runtime_error("class alignment is weaker than natural alignment");
+			record_alignment = record.requested_alignment;
 		}
-		else if (!align_up_checked(unrounded_size, record_alignment,
+		std::size_t unrounded_size = is_union ? largest_member : offset;
+		if (unrounded_size == 0)
+			unrounded_size = 1;
+		if (!align_up_checked(unrounded_size, record_alignment,
 			&layout.size))
 			throw std::runtime_error("record layout size overflow");
-		else
-			layout.alignment = record_alignment;
+		layout.alignment = record_alignment;
 		layout.checkpoint_zero_storage_eligible =
 			checkpoint_zero_storage_eligible;
 		layout.state = RecordLayoutState::Complete;
@@ -243,6 +271,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		layout.checkpoint_zero_storage_eligible = false;
 		layout.size = 0;
 		layout.alignment = 0;
+		layout.has_direct_base = false;
+		layout.direct_base = RecordLayoutBase();
 		layout.members.clear();
 		layout.member_offsets = FlatIndex<BindingId, std::size_t,
 			IdentityHash<BindingId> >();

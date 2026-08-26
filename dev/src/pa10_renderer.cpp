@@ -177,6 +177,8 @@ bool has_non_token_payload(const PA10AstNode& node)
 		node.lambda_capture_begin != 0 || node.lambda_capture_count != 0 ||
 		node.default_template_argument_form !=
 			PA10DefaultTemplateArgumentForm::Normal ||
+		node.alignment_specifier_begin != 0 ||
+		node.alignment_specifier_count != 0 ||
 		node.has_literal;
 }
 
@@ -248,6 +250,10 @@ void validate_node_sidecar_ranges(const PA10Ast& ast,
 		node.lambda_capture_count > ast.lambda_captures.size() -
 			node.lambda_capture_begin)
 		throw std::runtime_error("invalid PA10 lambda capture range");
+	if (node.alignment_specifier_begin > ast.alignment_specifiers.size() ||
+		node.alignment_specifier_count > ast.alignment_specifiers.size() -
+			node.alignment_specifier_begin)
+		throw std::runtime_error("invalid PA10 alignment specifier range");
 	if (node.default_template_argument_form !=
 		PA10DefaultTemplateArgumentForm::Normal &&
 		(node.kind != PA10NodeKind::DefaultTemplateArgument ||

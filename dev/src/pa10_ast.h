@@ -81,6 +81,15 @@ enum class PA10DefaultTemplateArgumentForm : unsigned char
 	AnonymousNonTypeLiteral
 };
 
+// `alignas` keeps its argument as typed syntax in a cold AST sidecar.  The
+// semantic owner resolves a TypeId or evaluates an expression; no consumer
+// needs to recover the argument from source spelling.
+enum class PA10AlignmentArgumentKind : unsigned char
+{
+	TypeId,
+	Expression
+};
+
 // Lambda capture syntax is a typed fact owned by the lambda introducer.  The
 // renderer derives its cold spelling from this side arena on demand.
 struct PA10LambdaCapture
@@ -324,6 +333,8 @@ struct PA10AstNode
 	std::size_t lambda_capture_begin;
 	std::size_t lambda_capture_count;
 	PA10DefaultTemplateArgumentForm default_template_argument_form;
+	std::size_t alignment_specifier_begin;
+	std::size_t alignment_specifier_count;
 	bool has_literal;
 	LiteralData literal;
 	std::vector<PA10AstNode> children;
@@ -345,8 +356,26 @@ struct PA10AstNode
 		  lambda_capture_default(PA10LambdaCaptureDefault::None),
 		  lambda_capture_begin(0), lambda_capture_count(0),
 		  default_template_argument_form(PA10DefaultTemplateArgumentForm::Normal),
+		  alignment_specifier_begin(0), alignment_specifier_count(0),
 		  has_literal(false), literal(),
 		  children()
+	{}
+};
+
+struct PA10AlignmentSpecifier
+{
+	PA10AlignmentArgumentKind argument_kind;
+	std::size_t source_begin;
+	std::size_t source_end;
+	PA10AstNode argument;
+
+	PA10AlignmentSpecifier(
+		PA10AlignmentArgumentKind argument_kind =
+			PA10AlignmentArgumentKind::Expression,
+		std::size_t source_begin = 0, std::size_t source_end = 0,
+		const PA10AstNode& argument = PA10AstNode())
+		: argument_kind(argument_kind), source_begin(source_begin),
+		  source_end(source_end), argument(argument)
 	{}
 };
 
@@ -376,6 +405,10 @@ struct PA10Ast
 	std::vector<PA10StringId> operator_presentation_spellings;
 	std::vector<PA10AstNode> semantic_child_nodes;
 	std::vector<PA10LambdaCapture> lambda_captures;
+	// Alignment arguments are sparse typed syntax facts owned by the
+	// declaration/class node through its range.  Keeping them out of the
+	// rendered hot tree preserves the PA10 presentation boundary.
+	std::vector<PA10AlignmentSpecifier> alignment_specifiers;
 	// Template arguments are structured syntax owners. Name components refer
 	// to this vector by range instead of retaining a flattened spelling.
 	std::vector<PA10TemplateArgument> template_arguments;
@@ -387,6 +420,7 @@ struct PA10Ast
 		  presentation_spellings(1, std::string()),
 		  operator_presentation_spellings(), semantic_child_nodes(),
 		  lambda_captures(),
+		  alignment_specifiers(),
 		  template_arguments(),
 		  name_prefix_nodes(),
 		  root(PA10NodeKind::TranslationUnit)

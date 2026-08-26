@@ -198,6 +198,11 @@ bool special_member_definition_start(const std::vector<PA10Token>& tokens,
 // bounded attribute scan, including a present failing token.  Standard
 // attributes must have a delimiter-indexed [[...]] wrapper; GNU and alignas
 // retain their existing parenthesis-owned paths.
+bool skip_attribute_specifier(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position, std::size_t* after, std::size_t* consumed);
+bool alignment_argument_starts_type(const std::vector<PA10Token>& tokens,
+	const PA10NameScopes& scopes, std::size_t position);
 bool skip_attribute_specifiers(const std::vector<PA10Token>& tokens,
 	const std::vector<std::size_t>& delimiter_close_index,
 	std::size_t position, std::size_t* after, std::size_t* consumed);

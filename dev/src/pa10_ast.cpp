@@ -370,10 +370,13 @@ private:
 	PA10AstNode parse_static_assert();
 	PA10AstNode parse_template_declaration(bool in_class_member = false);
 	PA10AstNode parse_class_declaration(bool in_decl_specifier = false);
+	void parse_class_name(PA10AstNode& result);
 	PA10AstNode parse_enum_declaration(bool in_decl_specifier = false);
 	PA10AstNode parse_class_specifier();
 	PA10AstNode parse_enum_specifier();
 	PA10AstNode parse_base_specifier();
+	PA10AlignmentSpecifier parse_alignment_specifier();
+	bool alignment_argument_starts_type() const;
 	PA10AstNode parse_elaborated_declaration_or_function(
 		bool in_class_member);
 	PA10AstNode parse_decl_or_function(bool in_class_member = false);
@@ -440,6 +443,7 @@ private:
 	PA10AstNode parse_class_member();
 	PA10AstNode parse_template_parameter_clause();
 	PA10AstNode parse_template_parameter();
+	void parse_attribute_specifiers(PA10AstNode& owner);
 	void skip_attribute_specifiers();
 	bool special_member_definition_start(bool in_class_member = false);
 	bool parenthesized_group_is(std::size_t absolute, PA10ParserSupport::PA10ParenthesizedGroupKind kind) const
@@ -1175,6 +1179,7 @@ PA10AstNode PA10Parser::parse_decl_specifier_seq(bool type_context)
 {
 	PA10AstNode result = node(type_context ? PA10NodeKind::TypeSpecifierSeq :
 		PA10NodeKind::DeclSpecifierSeq);
+	parse_attribute_specifiers(result);
 	bool consumed = false;
 	bool saw_type = false;
 	while (true)
@@ -2502,112 +2507,112 @@ PA10AstNode PA10Parser::parse_try_block()
 }
 PA10AstNode PA10Parser::parse_class_declaration(bool in_decl_specifier)
 {
-	const PA10ParserSupport::PA10ElaboratedSpecifierClassification classification =
-		elaborated_specifier_classification();
-	const bool forward_declaration =
-		!classification.has_body && !classification.has_colon_clause;
-	if (forward_declaration)
-	{
-		PA10AstNode result = node(PA10NodeKind::ClassForwardDeclaration);
-		result.text = intern("<unnamed>");
-		result.children.push_back(fixed_node(PA10NodeKind::ClassKey));
-		skip_attribute_specifiers();
-		if (identifier())
-		{
-			const PA10Name name = parse_name(true);
-			if (!name.global && name.parts.size() == 1 &&
-				!name.parts.front().has_template_id)
-			{
-				result.producer_spelling = name.parts.front().spelling;
-			}
-			else
-			{
-				result.global_name = name.global;
-				result.name_parts = name.parts;
-			}
-		}
-		name_scopes_.declare_type(result.producer_spelling);
-		if (!in_decl_specifier)
-			consume_fixed(SimpleTokenType::OP_SEMICOLON);
+	const PA10ParserSupport::PA10ElaboratedSpecifierClassification classification = elaborated_specifier_classification();
+	const bool forward_declaration = !classification.has_body && !classification.has_colon_clause;
+	if (forward_declaration) {
+		PA10AstNode result = node(PA10NodeKind::ClassForwardDeclaration); result.text = intern("<unnamed>");
+		result.children.push_back(fixed_node(PA10NodeKind::ClassKey)); parse_attribute_specifiers(result);
+		parse_class_name(result); name_scopes_.declare_type(result.producer_spelling);
+		if (!in_decl_specifier) consume_fixed(SimpleTokenType::OP_SEMICOLON);
 		return result;
 	}
 	PA10AstNode result = parse_class_specifier();
-	if (!in_decl_specifier)
-	{
-		consume_fixed(SimpleTokenType::OP_SEMICOLON);
-		result.source_end = position_;
-	}
+	if (!in_decl_specifier) { consume_fixed(SimpleTokenType::OP_SEMICOLON); result.source_end = position_; }
 	return result;
 }
 PA10AstNode PA10Parser::parse_class_specifier()
 {
-	if (!(fixed(SimpleTokenType::KW_CLASS) ||
-		fixed(SimpleTokenType::KW_STRUCT) || fixed(SimpleTokenType::KW_UNION)))
-		fail("expected class-key");
-	PA10AstNode result = node(PA10NodeKind::ClassSpecifier);
-	PA10AstNode key = fixed_node(PA10NodeKind::ClassKey);
-	result.children.push_back(std::move(key));
-	skip_attribute_specifiers();
-	if (identifier())
-	{
-		const PA10Name name = parse_name(true);
-		if (!name.global && name.parts.size() == 1 &&
-			!name.parts.front().has_template_id)
-		{
-			result.producer_spelling = name.parts.front().spelling;
-		}
-		else
-		{
-			result.global_name = name.global;
-			result.name_parts = name.parts;
-		}
-	}
-	else
-		result.text = intern("<unnamed>");
-	name_scopes_.declare_type(result.producer_spelling);
-	if (fixed(SimpleTokenType::OP_COLON))
-	{
+	if (!(fixed(SimpleTokenType::KW_CLASS) || fixed(SimpleTokenType::KW_STRUCT) || fixed(SimpleTokenType::KW_UNION))) fail("expected class-key");
+	PA10AstNode result = node(PA10NodeKind::ClassSpecifier); PA10AstNode key = fixed_node(PA10NodeKind::ClassKey);
+	result.children.push_back(std::move(key)); parse_attribute_specifiers(result);
+	parse_class_name(result); name_scopes_.declare_type(result.producer_spelling);
+	if (fixed(SimpleTokenType::OP_COLON)) {
 		consume_fixed(SimpleTokenType::OP_COLON);
 		PA10AstNode base = node(PA10NodeKind::BaseClause);
 		base.children.push_back(parse_base_specifier());
-		while (fixed(SimpleTokenType::OP_COMMA))
-		{
-			consume_fixed(SimpleTokenType::OP_COMMA);
-			base.children.push_back(parse_base_specifier());
-		}
+		while (fixed(SimpleTokenType::OP_COMMA)) { consume_fixed(SimpleTokenType::OP_COMMA); base.children.push_back(parse_base_specifier()); }
 		result.children.push_back(std::move(base));
 	}
-	consume_fixed(SimpleTokenType::OP_LBRACE);
-	enter();
-	while (!fixed(SimpleTokenType::OP_RBRACE))
-	{
+	consume_fixed(SimpleTokenType::OP_LBRACE); enter();
+	while (!fixed(SimpleTokenType::OP_RBRACE)) {
 		if (at_end())
 			fail("unterminated class specifier");
 		result.children.push_back(parse_class_member());
 	}
-	consume_fixed(SimpleTokenType::OP_RBRACE);
-	leave();
+	consume_fixed(SimpleTokenType::OP_RBRACE); leave();
 	result.source_end = position_;
 	return result;
+}
+void PA10Parser::parse_class_name(PA10AstNode& result)
+{
+	if (!identifier())
+	{
+		result.text = intern("<unnamed>"); return;
+	}
+	const PA10Name name = parse_name(true);
+	if (!name.global && name.parts.size() == 1 && !name.parts.front().has_template_id)
+		result.producer_spelling = name.parts.front().spelling;
+	else
+	{
+		result.global_name = name.global; result.name_parts = name.parts;
+	}
 }
 PA10AstNode PA10Parser::parse_base_specifier()
 {
 	PA10AstNode result = node(PA10NodeKind::BaseSpecifier);
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
 		result.children.push_back(fixed_node(PA10NodeKind::VirtualSpecifier));
-	if (fixed(SimpleTokenType::KW_PUBLIC) ||
-		fixed(SimpleTokenType::KW_PROTECTED) ||
-		fixed(SimpleTokenType::KW_PRIVATE))
+	if (fixed(SimpleTokenType::KW_PUBLIC) || fixed(SimpleTokenType::KW_PROTECTED) || fixed(SimpleTokenType::KW_PRIVATE))
 		result.children.push_back(fixed_node(PA10NodeKind::AccessSpecifier));
 	if (fixed(SimpleTokenType::KW_VIRTUAL))
 		result.children.push_back(fixed_node(PA10NodeKind::VirtualSpecifier));
 	if (!name_start() && !fixed(SimpleTokenType::KW_DECLTYPE))
 		fail("expected base name");
-	result.children.push_back(name_node(PA10NodeKind::BaseName,
-		parse_name(true, true)));
+	result.children.push_back(name_node(PA10NodeKind::BaseName, parse_name(true, true)));
 	if (fixed(SimpleTokenType::OP_DOTS))
 		consume_fixed(SimpleTokenType::OP_DOTS);
 	return result;
+}
+bool PA10Parser::alignment_argument_starts_type() const { return PA10ParserSupport::alignment_argument_starts_type(tokens_, name_scopes_, position_); }
+
+PA10AlignmentSpecifier PA10Parser::parse_alignment_specifier()
+{
+	const std::size_t begin = position_;
+	consume_fixed(SimpleTokenType::KW_ALIGNAS); consume_fixed(SimpleTokenType::OP_LPAREN); begin_non_angle();
+	PA10AlignmentSpecifier result;
+	result.source_begin = begin;
+	result.argument_kind = alignment_argument_starts_type() ?
+		PA10AlignmentArgumentKind::TypeId : PA10AlignmentArgumentKind::Expression;
+	result.argument = result.argument_kind == PA10AlignmentArgumentKind::TypeId ?
+		parse_type_id() : parse_assignment_expression();
+	consume_fixed(SimpleTokenType::OP_RPAREN); end_non_angle();
+	result.source_end = position_;
+	return result;
+}
+void PA10Parser::parse_attribute_specifiers(PA10AstNode& owner)
+{
+	while (PA10ParserSupport::attribute_specifier_start(
+		tokens_, delimiter_close_index_, position_))
+	{
+		if (fixed(SimpleTokenType::KW_ALIGNAS))
+		{
+			const std::size_t begin = ast_.alignment_specifiers.size();
+			const PA10AlignmentSpecifier alignment = parse_alignment_specifier();
+			if (owner.alignment_specifier_count == 0)
+				owner.alignment_specifier_begin = begin;
+			ast_.alignment_specifiers.push_back(std::move(alignment));
+			++owner.alignment_specifier_count;
+			continue;
+		}
+		std::size_t after = position_, consumed = 0;
+		const bool valid = PA10ParserSupport::skip_attribute_specifier(
+			tokens_, delimiter_close_index_, position_, &after, &consumed);
+		for (std::size_t i = 0; i < consumed; ++i)
+			charge();
+		if (!valid)
+			fail("unterminated attribute");
+		position_ = after;
+	}
 }
 PA10AstNode PA10Parser::parse_operator_name()
 {
@@ -2738,14 +2743,11 @@ PA10AstNode PA10Parser::parse_ctor_initializer()
 }
 void PA10Parser::skip_attribute_specifiers()
 {
-	std::size_t after = 0;
-	std::size_t consumed = 0;
-	const bool valid = PA10ParserSupport::skip_attribute_specifiers(
-		tokens_, delimiter_close_index_, position_, &after, &consumed);
-	for (std::size_t i = 0; i < consumed; ++i)
-		charge();
-	if (!valid)
-		fail("unterminated attribute");
+	std::size_t after = 0, consumed = 0;
+	const bool valid = PA10ParserSupport::skip_attribute_specifiers(tokens_,
+		delimiter_close_index_, position_, &after, &consumed);
+	for (std::size_t i = 0; i < consumed; ++i) charge();
+	if (!valid) fail("unterminated attribute");
 	position_ = after;
 }
 PA10AstNode PA10Parser::parse_member_specifiers()
