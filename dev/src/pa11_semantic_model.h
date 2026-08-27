@@ -1907,6 +1907,15 @@ private:
 	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
 		NameId name) const
 	;
+	std::vector<ValueRef> static_member_function_candidates_in_scope(
+		ScopeId scope, NameId name) const
+	;
+	bool qualified_static_member_candidates(const PA10AstNode& node,
+		ScopeId scope, std::vector<ValueRef>* candidates, ScopeId* owner)
+	;
+	std::vector<ValueRef> direct_call_candidates(const PA10AstNode& node,
+		ScopeId scope, const std::vector<ValueRef>& qualified_static_candidates)
+	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope, TypeId object) const
 	;

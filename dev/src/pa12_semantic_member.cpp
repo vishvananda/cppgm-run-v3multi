@@ -414,6 +414,90 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	}
 	return result;
 }
+std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_scope(
+	ScopeId member_scope, NameId name) const
+{
+	std::vector<ValueRef> result;
+	if (!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class)
+		return result;
+	const ValueList* values = scopes_[member_scope.value].values.find(name);
+	if (values == NULL)
+		return result;
+	for (std::size_t i = 0; i < values->entries.size(); ++i)
+	{
+		const BindingId candidate_id = values->entries[i].binding;
+		const Binding& candidate = binding(candidate_id);
+		if (candidate.kind == BindingKind::Function &&
+			type_kind(candidate.type) == TypeKind::Function &&
+			is_static_member(candidate_id))
+			result.push_back(ValueRef(member_scope, candidate_id));
+	}
+	return result;
+}
+bool PA11SemanticModel::qualified_static_member_candidates(
+	const PA10AstNode& node, ScopeId scope, std::vector<ValueRef>* candidates,
+	ScopeId* owner)
+{
+	candidates->clear();
+	*owner = ScopeId();
+	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
+		has_template_id(node))
+		return false;
+	const NamePath path = name_path(node);
+	if (path.components.size() <= 1)
+		return false;
+	NamePath qualifier;
+	qualifier.global = path.global;
+	qualifier.components.assign(path.components.begin(), path.components.end() - 1);
+	const TypeId qualifier_type = lookup_type_path(qualifier, scope);
+	if (!qualifier_type.valid())
+		return false;
+	const ScopeId class_scope = class_scope_for_type(qualifier_type);
+	if (!class_scope.valid())
+		return false;
+	const MemberLookup selection = member_lookup(qualifier_type, path.last());
+	if (selection.kind != MemberLookupKind::Value || !selection.owner.valid())
+		return false;
+	*owner = selection.owner;
+	*candidates = static_member_function_candidates_in_scope(selection.owner,
+		path.last());
+	return !candidates->empty();
+}
+std::vector<ValueRef> PA11SemanticModel::direct_call_candidates(
+	const PA10AstNode& node, ScopeId scope,
+	const std::vector<ValueRef>& qualified_static_candidates)
+{
+	if (!qualified_static_candidates.empty())
+		return qualified_static_candidates;
+	if (node.kind != PA10NodeKind::IdExpression)
+		return std::vector<ValueRef>();
+	const NamePath path = name_path(node);
+	std::vector<ValueRef> candidates = lookup_value_path(path, scope);
+	if (path.components.size() == 1 && !path.global &&
+		!implicit_this_binding(scope).valid())
+	{
+		std::vector<ValueRef> static_candidates;
+		for (std::size_t i = 0; i < candidates.size(); ++i)
+		{
+			const ValueRef& candidate = candidates[i];
+			if (candidate.scope.valid() && candidate.scope.value < scopes_.size() &&
+				scopes_[candidate.scope.value].kind == ScopeKind::Class &&
+				!is_static_member(candidate.binding))
+				continue;
+			static_candidates.push_back(candidate);
+		}
+		candidates.swap(static_candidates);
+	}
+	for (std::size_t i = 0; i < candidates.size(); ++i)
+	{
+		const Binding& candidate = binding(candidates[i].binding);
+		if (candidate.kind != BindingKind::Function ||
+			type_kind(candidate.type) != TypeKind::Function)
+			return std::vector<ValueRef>();
+	}
+	return candidates;
+}
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	ScopeId member_scope, ScopeId access_scope, TypeId object) const
 {

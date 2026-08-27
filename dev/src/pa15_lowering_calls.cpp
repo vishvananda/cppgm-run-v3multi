@@ -108,6 +108,71 @@ void Pa15Lowerer::collect_demanded_member_functions(
 						fact.callable_type;
 				}
 			}
+			if (fact.kind == SemanticFactKind::CallExpression &&
+				fact.has_callee && !fact.has_implicit_object &&
+				fact.selected_binding.valid() && fact.selected_binding.value <
+				model_.bindings_.size())
+			{
+				const Binding& target = model_.binding(fact.selected_binding);
+				const FunctionFactId* target_id =
+					model_.function_binding_fact_index_.find(
+						fact.selected_binding);
+				const ScopeId target_owner = target_id != NULL && target_id->valid() &&
+					target_id->value < model_.function_facts_.size() ?
+					model_.function_facts_[target_id->value].owner :
+					fact.selected_scope;
+				const bool static_target = target.kind == BindingKind::Function &&
+					model_.type_kind(target.type) == TypeKind::Function &&
+					target_owner.valid() && target_owner.value <
+					model_.scopes_.size() && model_.scopes_[target_owner.value].kind ==
+					ScopeKind::Class && model_.is_static_member(
+						fact.selected_binding);
+				if (static_target)
+				{
+					if (!fact.selected_scope.valid() ||
+						fact.selected_scope != target_owner ||
+						model_.scopes_[fact.selected_scope.value].kind !=
+						ScopeKind::Class || !fact.callable_type.valid() ||
+						model_.type_kind(fact.callable_type) != TypeKind::Function ||
+						fact.callable_type != target.type)
+						throw std::runtime_error(
+							"PA15 static member demand is not typed");
+					if (target_id != NULL)
+					{
+						if (!target_id->valid() || target_id->value >=
+							model_.function_facts_.size())
+							throw std::runtime_error(
+								"PA15 static member demand function is invalid");
+						const FunctionFact& target_function =
+							model_.function_facts_[target_id->value];
+						if (target_function.owner != target_owner ||
+							!target_function.function_scope.valid() ||
+							target_function.function_scope.value >=
+							model_.scopes_.size() || !target_function.body_fact.valid())
+							throw std::runtime_error(
+								"PA15 static member definition is invalid");
+						if (!(*demanded)[target_id->value])
+						{
+							(*demanded)[target_id->value] = 1;
+							function_work.push_back(*target_id);
+						}
+					}
+					else
+					{
+						if (fact.selected_binding.value >= declarations->size())
+							throw std::runtime_error(
+								"PA15 static member declaration is invalid");
+						if ((*declaration_types)[fact.selected_binding.value].valid() &&
+							(*declaration_types)[fact.selected_binding.value] !=
+							fact.callable_type)
+							throw std::runtime_error(
+								"PA15 static member declaration signature changed");
+						(*declarations)[fact.selected_binding.value] = 1;
+						(*declaration_types)[fact.selected_binding.value] =
+							fact.callable_type;
+					}
+				}
+			}
 			if (fact.child_count == 0)
 				continue;
 			if (fact.child_begin == InvalidIdentityValue ||
@@ -138,14 +203,14 @@ void Pa15Lowerer::collect_function_declarations(){
 				model_.type_kind(binding.type) != TypeKind::Function ||
 				function_symbols_.find(binding_id.value) != function_symbols_.end())
 				continue;
-			if (member_scope && (model_.is_static_member(binding_id) ||
-				binding_id.value >= demanded_member_declarations_.size() ||
+			if (member_scope && (binding_id.value >=
+				demanded_member_declarations_.size() ||
 				demanded_member_declarations_[binding_id.value] == 0))
 				continue;
 			const ScopeId owner(scope_index);
 			const TypeKey& type = model_.types_[binding.type.value];
 			TypeId member_callable_type;
-			if (member_scope)
+			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				if (binding_id.value >= demanded_member_declaration_types_.size())
 					throw std::runtime_error(
@@ -170,6 +235,18 @@ void Pa15Lowerer::collect_function_declarations(){
 						throw std::runtime_error(
 							"PA15 member declaration parameter is invalid");
 			}
+			else if (member_scope)
+			{
+				if (binding_id.value >= demanded_member_declaration_types_.size())
+					throw std::runtime_error(
+						"PA15 static member declaration signature is missing");
+				member_callable_type =
+					demanded_member_declaration_types_[binding_id.value];
+				if (!member_callable_type.valid() || member_callable_type !=
+					binding.type)
+					throw std::runtime_error(
+						"PA15 static member declaration boundary is invalid");
+			}
 			FunctionDeclaration declaration;
 			declaration.symbol_id = SymbolId(next_symbol_++);
 			declaration.name_id = symbol_spelling(internal_value_name(
@@ -188,7 +265,7 @@ void Pa15Lowerer::collect_function_declarations(){
 				declaration.metadata.linkage = lowir_model::LLM_C;
 			declaration.boundary.arity = type.variadic ?
 				lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
-			if (member_scope)
+			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				Parameter parameter_record;
 				parameter_record.name_id = intern_spelling("%this");

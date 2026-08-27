@@ -1750,7 +1750,12 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	const BuiltinKind builtin = builtin_kind(callee_node);
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
-	const ExprInfo member_call = semantic_member_call_probe(node, scope);
+	std::vector<ValueRef> qualified_static_candidates;
+	ScopeId qualified_static_scope;
+	qualified_static_member_candidates(callee_node, scope,
+		&qualified_static_candidates, &qualified_static_scope);
+	const ExprInfo member_call = qualified_static_candidates.empty() ?
+		semantic_member_call_probe(node, scope) : ExprInfo();
 	if (member_call.fact.valid())
 		return member_call;
 	TypeId functional_target;
@@ -1769,23 +1774,11 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 					argument_node);
 		}
 	}
-	std::vector<ValueRef> candidates;
-	bool direct = false;
+	const std::vector<ValueRef> candidates = direct_call_candidates(callee_node,
+		scope, qualified_static_candidates);
+	const bool direct = !candidates.empty();
 	ExprInfo indirect_callee;
 	TypeId indirect_type;
-	if (callee_node.kind == PA10NodeKind::IdExpression)
-	{
-		const NamePath path = name_path(callee_node);
-		candidates = lookup_value_path(path, scope);
-		direct = !candidates.empty();
-		for (std::size_t i = 0; direct && i < candidates.size(); ++i)
-		{
-			const Binding& candidate = binding(candidates[i].binding);
-			if (candidate.kind != BindingKind::Function ||
-				type_kind(candidate.type) != TypeKind::Function)
-				direct = false;
-		}
-	}
 	if (!direct)
 	{
 		indirect_callee = semantic_expression(callee_node, scope);
@@ -1916,6 +1909,12 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 				throw std::runtime_error("PA12 ambiguous call");
 		selected = viable_candidates[best_index].value;
 		selected_type = viable_candidates[best_index].type;
+		if (!qualified_static_candidates.empty() &&
+			(selected.scope != qualified_static_scope ||
+				!is_static_member(selected.binding) ||
+				!member_accessible(selected.binding, qualified_static_scope,
+					scope, TypeId())))
+			throw std::runtime_error("PA12 static member call is inaccessible");
 		if (function_declaration_kind(selected.binding) ==
 			FunctionDeclarationKind::Deleted)
 			throw std::runtime_error("PA12 call selects deleted function");
