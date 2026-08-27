@@ -58,6 +58,10 @@ callable TypeId. In a static body, nearer lexical declarations are checked
 first, then the enclosing class/base member set is filtered to static
 functions. Parenthesized callees use these same branches; an inherited static
 keeps its declaring owner instead of reopening an outer namespace.
+The mixed comparator follows N3485 §13.3.1 and §13.3.3: static ICS1 matches any
+object but establishes no conversion sequence and is neither better nor worse
+than another candidate's ICS1, so object qualification ranks only two
+non-static candidates; explicit argument ranks remain active for every pair.
 
 PA12 checks access after the selected static or non-static member owner is
 known. PA15 builds one dense `BindingId -> class ScopeId` owner index from
@@ -109,9 +113,10 @@ Focused current evidence: the new course
 `406-typed-static-member-function-audit-regression.sh` exits 0 and covers
 parenthesized qualified/unqualified calls, class-qualified non-static
 rejection, mixed static/non-static overload ranking in both qualified and
-unqualified member-body spellings, inherited static-body owner/hiding,
-protected/private access, declaration-only emission, redeclaration identity,
-recursion, and the raw static ABI. Course 405 exits 0 and covers the prior protected field/method
+unqualified member-body spellings, tied-explicit-rank neutral-ICS ambiguity in
+both spellings, inherited static-body owner/hiding, protected/private access,
+declaration-only emission, redeclaration identity, recursion, and the raw
+static ABI. Course 405 exits 0 and covers the prior protected field/method
 matrix, nested `Derived&` access, `Base&` rejection, and the existing PA15
 static projection boundary. Courses 401--404 each exit 0; 402 retains the
 expected PA12 inherited-member negative diagnostic. The checked-in protected
@@ -185,10 +190,11 @@ size; all 15 compiler invocations exited 0. Elapsed times were 0.00s, 0.01s,
 and 0.03s per size; RSS ranges were 5,296--5,368 KB, 6,912--7,052 KB, and
 12,232--12,376 KB respectively. These are modest repeated observations, not a
 formal benchmark. In this audit, five runs of
-`406-typed-static-member-function-audit-regression.sh` (including its
-recursive/inherited static demand chain) took `0.17--0.18s`, with RSS
-`7,040--7,320KB`. These are representative smoke measurements, not a formal
-benchmark. The seven-test handout probe took `0.20s` and `9,824KB`. A separate
+`406-typed-static-member-function-audit-regression.sh` after the neutral-ICS
+repair (including its recursive/inherited static demand chain) took
+`0.31--0.34s`, with RSS `7,064--7,268KB`. These are representative smoke
+measurements, not a formal benchmark. The seven-test handout probe took
+`0.20s` and `9,824KB`. A separate
 temporary nested-access source with 256
 protected-field expressions in one out-of-class nested member used lexical
 depths `L=1`, `8`, and `32`, with three invocations per depth; all exited 0,

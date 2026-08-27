@@ -28,6 +28,23 @@ expect_failure()
   fi
 }
 
+expect_ambiguous_failure()
+{
+  source=$1
+  output=$build_dir/$(basename "$source").lowir
+  if "$app" --emit-lowir -O0 -o "$output" "$source" \
+      >"$output.stdout" 2>"$output.stderr"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -ne 1 ] ||
+     ! rg -Fq 'PA12 ambiguous member call' "$output.stderr"; then
+    echo "$(basename "$source") was not rejected as an ambiguous member call" >&2
+    exit 1
+  fi
+}
+
 qualified_source=$build_dir/qualified-parenthesized-static.cpp
 printf '%s\n' \
   'struct Qualified {' \
@@ -125,6 +142,28 @@ if [ -z "$mixed_nonstatic_symbol" ] || [ -z "$mixed_static_symbol" ] ||
   echo "mixed static/non-static overload ownership was not ranked as one set" >&2
   exit 1
 fi
+
+ambiguous_qualified_source=$build_dir/mixed-static-nonstatic-ambiguous-qualified.cpp
+printf '%s\n' \
+  'struct AmbiguousQualified {' \
+  '  static int f(long value) { return value + 10; }' \
+  '  int f(unsigned long value) const { return value + 20; }' \
+  '  int call() { return AmbiguousQualified::f(1); }' \
+  '};' \
+  'int main() { AmbiguousQualified value; return value.call(); }' \
+  >"$ambiguous_qualified_source"
+expect_ambiguous_failure "$ambiguous_qualified_source"
+
+ambiguous_unqualified_source=$build_dir/mixed-static-nonstatic-ambiguous-unqualified.cpp
+printf '%s\n' \
+  'struct AmbiguousUnqualified {' \
+  '  static int f(long value) { return value + 10; }' \
+  '  int f(unsigned long value) const { return value + 20; }' \
+  '  int call() { return f(1); }' \
+  '};' \
+  'int main() { AmbiguousUnqualified value; return value.call(); }' \
+  >"$ambiguous_unqualified_source"
+expect_ambiguous_failure "$ambiguous_unqualified_source"
 
 inherited_source=$build_dir/inherited-static-body.cpp
 printf '%s\n' \

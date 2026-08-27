@@ -46,6 +46,12 @@ PA10 qualified/unqualified IdExpression or parenthesized call
   `BindingId`.  PA15's `function_binding_fact_index_` then follows that same
   identity into a definition or declaration boundary, and
   `function_components`/`abi_function_symbol` retain the declaring owner.
+- The mixed-set comparator follows N3485 §13.3.1 and §13.3.3: a static
+  candidate's implicit-object ICS1 matches any object but establishes no
+  conversion sequence, so it is neither better nor worse than another
+  candidate on that dimension.  Object qualification is therefore compared
+  only between two non-static candidates; explicit argument conversion ranks
+  remain the common ranking criteria for static/non-static pairs.
 - The audit found a fail-open class-qualified case: if the selected class name
   had only a non-static function, a type, a blocked name, or no static
   candidate, the old boolean result could reopen ordinary value lookup and
@@ -84,7 +90,8 @@ PA10 qualified/unqualified IdExpression or parenthesized call
 - The added course regression covers parenthesized qualified and unqualified
   static calls, qualified non-static rejection, both directions of mixed
   static/non-static overload ranking in qualified and unqualified member
-  bodies, inherited static-body lookup against an outer same-spelled function,
+  bodies, tied-explicit-rank neutral-ICS ambiguity in each of those spellings,
+  inherited static-body lookup against an outer same-spelled function,
   protected/private access, an inherited declaration-only static call,
   same-binding redeclaration identity, recursive demand deduplication, and
   raw parameter-only static ABI.  The existing handout matrix covers
@@ -100,13 +107,16 @@ make -C pa16 check TEST='tests/general/100-static-member-qualified-call.t tests/
 
 exits `0` with `7/7` passing.  Course regressions 401--406 each exit `0`; 402's
 `PA12 inherited member name is not callable` line is from its expected
-negative case.  `sh -n` on the new script exits `0`.  No handout test,
-fixture, or `.ref` file changed.
+negative case.  Course 406 independently rejects the qualified and
+unqualified tied-explicit-rank mixed calls with `PA12 ambiguous member call`.
+`sh -n` on the new script exits `0`.  No handout test, fixture, or `.ref` file
+changed.
 
-Five measured invocations of the new bounded regression (including its
-recursive/inherited static demand chain) took `0.17--0.18s`, with RSS
-`7,040--7,320KB`; the seven-test handout probe took `0.20s` and `9,824KB`.
-These are representative smoke measurements, not a formal benchmark.  The
+Five measured invocations of the new bounded regression after the neutral-ICS
+repair (including its recursive/inherited static demand chain) took
+`0.31--0.34s`, with RSS `7,064--7,268KB`; the seven-test handout probe took
+`0.20s` and `9,824KB`.  These are representative smoke measurements, not a
+formal benchmark.  The
 new lookup performs only bounded lexical/class/base walks, and PA15 performs
 one class-binding owner-index setup followed by O(1) selected-owner checks
 and dense visited worklists; no whole-program retry, textual recovery, or

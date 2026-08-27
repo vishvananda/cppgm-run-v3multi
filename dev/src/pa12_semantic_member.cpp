@@ -990,10 +990,15 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		const CandidateScore& right) -> bool
 	{
 		bool strict = false;
-		// Qualification conversions form a subset ordering.  Thus an exact
-		// object match beats any added cv, const beats const volatile, and
-		// const and volatile remain incomparable.
-		if (left.object_cv != right.object_cv)
+		// N3485 [over.match.best] gives a static member no implicit-object
+		// conversion sequence: its ICS1 is neither better nor worse than
+		// another candidate's.  Compare qualification only between two
+		// non-static candidates; explicit argument ranks still compare for all
+		// candidates.  For non-static candidates, qualification conversions form
+		// a subset ordering: an exact object match beats added cv, const beats
+		// const volatile, and const and volatile remain incomparable.
+		if (!left.static_member && !right.static_member &&
+			left.object_cv != right.object_cv)
 		{
 			if ((left.object_cv & ~right.object_cv) != 0)
 				return false;
