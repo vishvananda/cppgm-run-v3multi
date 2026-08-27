@@ -527,6 +527,13 @@ bool PA11SemanticModel::functional_cast_target_supported(TypeId target) const
 		return true;
 	const TypeId object = strip_cv_type(expression_object_type(target));
 	const TypeKind kind = object.valid() ? type_kind(object) : TypeKind::Fundamental;
+	if (kind == TypeKind::Named)
+	{
+		const NamedRecordId record = named_record_for_type(object);
+		if (record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class)
+			return true;
+	}
 	return void_id(target) || scalar_id(target) || enumeration_id(target) ||
 		kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference;
 }
@@ -743,7 +750,24 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 				PA10NodeKind::BracedInitList;
 			const ExprInfo expression = semantic_expression_for_target(
 				node.children.front(), scope, result_type);
-			if (!braced)
+			const BindingSidecar* function_sidecar = binding_sidecar(function.binding);
+			const bool operator_bool_return = !braced && bool_id(result_type) &&
+				expression.category == SemanticValueCategory::Prvalue &&
+				expression.type == result_type && function_sidecar != NULL &&
+				function_sidecar->operator_function_kind !=
+					PA10OperatorFunctionKind::None;
+			const bool friend_bool_return = !braced && bool_id(result_type) &&
+				expression.category == SemanticValueCategory::Prvalue &&
+				expression.type == result_type && function_sidecar != NULL &&
+				!function_sidecar->friend_records.empty();
+			if (!braced && !operator_bool_return && !friend_bool_return &&
+				bool_id(result_type) && expression.category ==
+					SemanticValueCategory::Prvalue && expression.type == result_type)
+			{
+				set_fact_conversion(expression.fact, add_conversion(
+					expression.type, result_type, ConversionKind::Identity, 0));
+			}
+			else if (!operator_bool_return && !friend_bool_return && !braced)
 				apply_context_conversion(expression, result_type,
 					semantic_facts_[expression.fact.value].source);
 			children.push_back(expression.fact);
@@ -891,6 +915,38 @@ ExprInfo PA11SemanticModel::semantic_functional_cast(
 	{
 		if (void_id(target))
 			throw std::runtime_error("PA12 invalid zero-argument functional cast");
+		const TypeId object = strip_cv_type(expression_object_type(target));
+		const NamedRecordId record = named_record_for_type(object);
+		if (record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class)
+		{
+			const std::vector<const PA10AstNode*> no_arguments;
+			const ConstructorSelection selection = select_constructor(record, scope,
+				no_arguments, true, ConstructorInitializationContext::Direct);
+			if (!selection.valid())
+				throw std::runtime_error("PA12 functional constructor selection is incomplete");
+			SemanticFact call(SemanticFactKind::CallExpression,
+				fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue,
+				&node);
+			call.has_callee = true;
+			call.temporary_object = true;
+			call.selected_binding = selection.binding;
+			call.selected_scope = selection.scope;
+			call.callable_type = selection.callable_type;
+			const SemanticFactId call_id = make_semantic_fact(call);
+			set_semantic_children(call_id, selection.arguments);
+			SemanticFact temporary(SemanticFactKind::ConstructorAction, target,
+				SemanticValueCategory::Prvalue, &node);
+			temporary.has_callee = true;
+			temporary.temporary_object = true;
+			temporary.selected_binding = selection.binding;
+			temporary.selected_scope = selection.scope;
+			temporary.callable_type = selection.callable_type;
+			const SemanticFactId result = make_semantic_fact(temporary);
+			set_semantic_children(result,
+				std::vector<SemanticFactId>(1, call_id));
+			return ExprInfo(result, target, SemanticValueCategory::Prvalue, false);
+		}
 		SemanticFact fact(SemanticFactKind::Literal, target,
 			SemanticValueCategory::Prvalue, &node);
 		fact.has_literal_value = true;
@@ -903,6 +959,39 @@ ExprInfo PA11SemanticModel::semantic_functional_cast(
 	}
 	if (argument_node.children.size() != 1)
 		throw std::runtime_error("PA12 invalid functional cast arity");
+	const TypeId object = strip_cv_type(expression_object_type(target));
+	const NamedRecordId record = named_record_for_type(object);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Class)
+	{
+		std::vector<const PA10AstNode*> arguments(1,
+			&argument_node.children.front());
+		const ConstructorSelection selection = select_constructor(record, scope,
+			arguments, true, ConstructorInitializationContext::Direct);
+		if (!selection.valid())
+			throw std::runtime_error("PA12 functional constructor selection is incomplete");
+		SemanticFact call(SemanticFactKind::CallExpression,
+			fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue,
+			&node);
+		call.has_callee = true;
+		call.temporary_object = true;
+		call.selected_binding = selection.binding;
+		call.selected_scope = selection.scope;
+		call.callable_type = selection.callable_type;
+		const SemanticFactId call_id = make_semantic_fact(call);
+		set_semantic_children(call_id, selection.arguments);
+		SemanticFact temporary(SemanticFactKind::ConstructorAction, target,
+			SemanticValueCategory::Prvalue, &node);
+		temporary.has_callee = true;
+		temporary.temporary_object = true;
+		temporary.selected_binding = selection.binding;
+		temporary.selected_scope = selection.scope;
+		temporary.callable_type = selection.callable_type;
+		const SemanticFactId result = make_semantic_fact(temporary);
+		set_semantic_children(result,
+			std::vector<SemanticFactId>(1, call_id));
+		return ExprInfo(result, target, SemanticValueCategory::Prvalue, false);
+	}
 	const ExprInfo operand = semantic_expression(
 		argument_node.children.front(), scope);
 	return semantic_cast_to_target(node, target, operand);

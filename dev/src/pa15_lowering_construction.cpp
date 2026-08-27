@@ -100,6 +100,10 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 				throw std::runtime_error("PA15 reference call has no address");
 			return call.lvalue ? address_of_storage(call) : call;
 		}
+		case SemanticFactKind::ConstructorAction:
+			if (fact.temporary_object)
+				return address_of_storage(lower_constructor_expression(id));
+			break;
 		case SemanticFactKind::CastExpression:
 			if (facts.size() == 1) return lower_address(facts.front());
 			break;
@@ -1617,7 +1621,34 @@ bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 
 LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 {
+	const SemanticFact& action = model_.semantic_facts_[id.value];
 	const std::vector<SemanticFactId> action_facts = children(id);
+	if (action.temporary_object)
+	{
+		if (!action.has_callee || !action.selected_binding.valid() ||
+			!action.callable_type.valid() || action_facts.size() != 1)
+			throw std::runtime_error("PA15 temporary constructor fact is incomplete");
+		const SemanticFact& call = model_.semantic_facts_[action_facts.front().value];
+		if (call.kind != SemanticFactKind::CallExpression || !call.has_callee ||
+			call.selected_binding != action.selected_binding ||
+			call.callable_type != action.callable_type)
+			throw std::runtime_error("PA15 temporary constructor call is invalid");
+		const std::vector<SemanticFactId> constructor_arguments = children(
+			action_facts.front());
+		const char* storage_prefix = constructor_arguments.empty() ?
+			"tmpobj" : "arg";
+		const LoweredValue storage = generated_slot(low_type(action.type),
+			storage_prefix);
+		const LoweredValue address = address_of_storage(storage);
+		emit_constructor_call(action.selected_binding, address,
+			constructor_arguments);
+		// Preserve the already-materialized address as an lvalue object result.
+		// address_of_storage recognizes this typed temporary and does not emit a
+		// second address operation when the object is immediately used as a
+		// member-call receiver.
+		return LoweredValue(address.value, low_type(action.type), true,
+			address.physical_type);
+	}
 	if (action_facts.size() != 1)
 		throw std::runtime_error("PA15 constructor expression has no call fact");
 	const SemanticFact& call = model_.semantic_facts_[action_facts.front().value];

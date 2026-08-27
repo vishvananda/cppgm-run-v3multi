@@ -1517,7 +1517,13 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const DeclaratorName name = declarator_name(declarator);
 	if (!name.found)
 		throw std::runtime_error("unnamed PA11 function definition");
-	const ScopeId target = declaration_scope(name.path, scope);
+	const bool friend_declaration = has_friend_specifier(node.children[0]);
+	const NamedRecordId friend_record = friend_declaration ?
+		friend_record_for_scope(scope) : NamedRecordId();
+	const bool hidden_friend = friend_record.valid() &&
+		!name.path.global && name.path.components.size() == 1;
+	const ScopeId target = hidden_friend ? friend_namespace_scope(scope) :
+		declaration_scope(name.path, scope);
 	if (!target.valid())
 		throw std::runtime_error("unresolved PA11 function scope");
 	const SpecFact spec = spec_fact(node.children[0], target);
@@ -1528,14 +1534,21 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 		scopes_[target.value].kind == ScopeKind::Namespace;
 	const BindingId function_binding = add_value(target, name.path.last(),
 		type, true, true, true, BindingId(), SourcePoint(node.source_begin),
-		internal_linkage, current_language_linkage_);
+		internal_linkage, current_language_linkage_,
+		FunctionDeclarationKind::Normal, hidden_friend,
+		name.operator_function_kind, name.operator_token);
 	record_function_declarator(function_binding, name, declarator,
 		FunctionDeclarationKind::Normal);
+	if (friend_record.valid())
+		record_friend_function(function_binding, friend_record, hidden_friend,
+		SourcePoint(node.source_begin));
+	validate_nonmember_operator(function_binding);
 	if (spec.is_static && target.value < scopes_.size() &&
 		scopes_[target.value].kind == ScopeKind::Class)
 		mark_static_member(function_binding);
 	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
 		name.path.last());
+	function_bindings_.set(function_scope, function_binding);
 	FunctionFact function_fact(&node, target, function_binding,
 		function_scope, ScopeId());
 	function_definition_points_.set(function_scope,
@@ -1679,6 +1692,7 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	set_named_record_sidecar(record_id, record_sidecar);
 	const ScopeId function_scope = create_scope(ScopeKind::Function, scope,
 		record.name);
+	function_bindings_.set(function_scope, function_binding);
 	function_definition_points_.set(function_scope,
 		SourcePoint(node.source_begin));
 	for (std::size_t i = 0; i < parameters.size(); ++i)
@@ -2118,6 +2132,315 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		if (!have_view)
 			add_dump_binding_view(scope, additions[i].binding);
 	}
+}
+bool PA11SemanticModel::has_friend_specifier(const PA10AstNode& node) const
+{
+	if (node.kind != PA10NodeKind::DeclSpecifierSeq)
+		return false;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+		if (node.children[i].kind == PA10NodeKind::DeclSpecifier &&
+			node.children[i].has_token &&
+			node.children[i].token == SimpleTokenType::KW_FRIEND)
+			return true;
+	return false;
+}
+ScopeId PA11SemanticModel::friend_namespace_scope(ScopeId scope) const
+{
+	for (ScopeId cursor = scope; cursor.valid();)
+	{
+		if (cursor.value >= scopes_.size())
+			return ScopeId();
+		if (scopes_[cursor.value].kind == ScopeKind::Namespace)
+			return cursor;
+		cursor = scopes_[cursor.value].parent;
+	}
+	return ScopeId();
+}
+NamedRecordId PA11SemanticModel::friend_record_for_scope(ScopeId scope) const
+{
+	return scope.valid() && scope.value < scopes_.size() &&
+		scopes_[scope.value].kind == ScopeKind::Class ?
+		scopes_[scope.value].record : NamedRecordId();
+}
+void PA11SemanticModel::index_hidden_friend(NameId name,
+	ScopeId namespace_scope, BindingId binding_id)
+{
+	if (!name.valid() || !namespace_scope.valid() ||
+		namespace_scope.value >= scopes_.size() ||
+		scopes_[namespace_scope.value].kind != ScopeKind::Namespace ||
+		!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		binding_id.value >= binding_owners_.size() ||
+		binding_owners_[binding_id.value] != namespace_scope)
+		throw std::runtime_error("invalid PA11 hidden friend index relation");
+	std::vector<HiddenFriendBindingRelation>* relations =
+		hidden_friend_bindings_.find(name);
+	if (relations == NULL)
+	{
+		hidden_friend_bindings_.set(name,
+			std::vector<HiddenFriendBindingRelation>());
+		relations = hidden_friend_bindings_.find(name);
+	}
+	for (std::size_t i = 0; i < relations->size(); ++i)
+		if ((*relations)[i].namespace_scope == namespace_scope &&
+			(*relations)[i].binding == binding_id)
+			return;
+	relations->push_back(HiddenFriendBindingRelation(namespace_scope,
+		binding_id));
+}
+BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
+	bool function, bool definition, bool lexical_view, BindingId backing_storage,
+	SourcePoint declaration_point, bool internal_linkage,
+	LanguageLinkage language_linkage, FunctionDeclarationKind declaration_kind,
+	bool hidden_friend, PA10OperatorFunctionKind operator_function_kind,
+	SimpleTokenType operator_token)
+{
+	Scope& current = scopes_[scope.value];
+	if (direct_namespace_exists(scope, name))
+		throw std::runtime_error("value conflicts with namespace");
+	const TypeId* type_found = current.types.find(name);
+	if (type_found != NULL && type_kind(*type_found) != TypeKind::Named)
+		throw std::runtime_error("value conflicts with type alias");
+	const TypeId unadjusted_type = type;
+	type = normalize_embedded_function_types(type);
+	const ValueList* existing_values = current.values.find(name);
+	const std::vector<HiddenFriendBindingRelation>* hidden_candidates =
+		function ? hidden_friend_bindings_.find(name) : NULL;
+	if (function && hidden_candidates != NULL)
+	{
+		// Hidden friends are deliberately absent from the namespace value index.
+		// Redeclarations use only the sparse same-name relation.  A relation may
+		// already be visible because a namespace declaration preceded the friend;
+		// leave that case to the ordinary value-index merge below so it is not
+		// published twice.
+		for (std::size_t i = 0; i < hidden_candidates->size(); ++i)
+		{
+			const HiddenFriendBindingRelation& relation =
+				(*hidden_candidates)[i];
+			if (relation.namespace_scope != scope || !relation.binding.valid() ||
+				relation.binding.value >= bindings_.size() ||
+				relation.binding.value >= binding_owners_.size() ||
+				binding_owners_[relation.binding.value] != scope)
+				continue;
+			bool directly_visible = false;
+			if (existing_values != NULL)
+				for (std::size_t entry = 0; entry < existing_values->entries.size();
+					++entry)
+					if (existing_values->entries[entry].binding == relation.binding &&
+						existing_values->entries[entry].origin == scope)
+					{
+						directly_visible = true;
+						break;
+					}
+			if (directly_visible)
+				continue;
+			const Binding& existing = binding(relation.binding);
+			const BindingSidecar* existing_sidecar =
+				binding_sidecar(relation.binding);
+			if (operator_function_kind != PA10OperatorFunctionKind::None ||
+				(existing_sidecar != NULL &&
+					existing_sidecar->operator_function_kind !=
+						PA10OperatorFunctionKind::None))
+				if (existing_sidecar == NULL ||
+					existing_sidecar->operator_function_kind !=
+						operator_function_kind ||
+					existing_sidecar->operator_token != operator_token)
+					continue;
+			if (existing.kind != BindingKind::Function ||
+				existing.name != name ||
+				existing.language_linkage != language_linkage ||
+				existing.internal_linkage != internal_linkage ||
+				type_kind(existing.type) != TypeKind::Function ||
+				type_kind(type) != TypeKind::Function)
+				continue;
+			const TypeKey& existing_function = types_[existing.type.value];
+			const TypeKey& candidate_function = types_[type.value];
+			if (existing_function.cv != candidate_function.cv ||
+				existing_function.variadic != candidate_function.variadic ||
+				existing_function.parameters != candidate_function.parameters)
+				continue;
+			if (existing_function.result != candidate_function.result)
+				throw std::runtime_error("conflicting function return type");
+			if (declaration_kind != FunctionDeclarationKind::Normal &&
+				!existing.has_definition)
+				throw std::runtime_error(
+					"deleted/defaulted function must be first declaration");
+			if (definition && existing.has_definition)
+				throw std::runtime_error("duplicate function definition");
+			if (definition)
+				binding(relation.binding).has_definition = true;
+			if (hidden_friend)
+			{
+				if (lexical_view)
+					add_dump_binding_view(scope, relation.binding);
+			}
+			else
+				append_value_index(scope, name, relation.binding, ScopeId(),
+					declaration_point);
+			return relation.binding;
+		}
+	}
+	if (existing_values != NULL)
+	{
+		if (!function)
+		{
+			bool direct_other = false;
+			const BindingId direct_variable = direct_variable_binding(scope,
+				*existing_values, &direct_other);
+			if (direct_other)
+				throw std::runtime_error("ambiguous variable redeclaration");
+			if (direct_variable.valid())
+			{
+				const Binding& existing = binding(direct_variable);
+				if (existing.language_linkage != language_linkage ||
+					existing.internal_linkage != internal_linkage)
+					throw std::runtime_error("incompatible variable redeclaration");
+				if (existing.type != type)
+					throw std::runtime_error("conflicting variable type");
+				if (definition && existing.has_definition)
+					throw std::runtime_error("duplicate variable definition");
+				if (definition)
+					binding(direct_variable).has_definition = true;
+				if (lexical_view)
+					add_dump_binding_view(scope, direct_variable);
+				return direct_variable;
+			}
+			if (direct_other || !existing_values->entries.empty())
+				throw std::runtime_error("incompatible value redeclaration");
+		}
+		else
+		{
+			for (std::size_t i = 0; i < existing_values->entries.size(); ++i)
+			{
+				const BindingId existing_id = existing_values->entries[i].binding;
+				const Binding& existing = binding(existing_id);
+				const BindingSidecar* existing_sidecar =
+					binding_sidecar(existing_id);
+				if (operator_function_kind != PA10OperatorFunctionKind::None ||
+					(existing_sidecar != NULL &&
+						existing_sidecar->operator_function_kind !=
+							PA10OperatorFunctionKind::None))
+					if (existing_sidecar == NULL ||
+						existing_sidecar->operator_function_kind !=
+							operator_function_kind ||
+						existing_sidecar->operator_token != operator_token)
+						continue;
+				if (existing.language_linkage != language_linkage ||
+					existing.internal_linkage != internal_linkage)
+					continue;
+				if (existing.kind != BindingKind::Function)
+					throw std::runtime_error("incompatible value redeclaration");
+				if (type_kind(existing.type) != TypeKind::Function ||
+					type_kind(type) != TypeKind::Function)
+					throw std::runtime_error("invalid function redeclaration");
+				const TypeKey& existing_function = types_[existing.type.value];
+				const TypeKey& candidate_function = types_[type.value];
+				if (existing_function.cv != candidate_function.cv ||
+					existing_function.variadic != candidate_function.variadic ||
+					existing_function.parameters != candidate_function.parameters)
+					continue;
+				if (existing_function.result != candidate_function.result)
+					throw std::runtime_error("conflicting function return type");
+				if (declaration_kind != FunctionDeclarationKind::Normal &&
+					!existing.has_definition)
+					throw std::runtime_error(
+						"deleted/defaulted function must be first declaration");
+				if (definition && existing.has_definition)
+					throw std::runtime_error("duplicate function definition");
+				if (definition) binding(existing_id).has_definition = true;
+				if (lexical_view) add_dump_binding_view(scope, existing_id);
+				return existing_id;
+			}
+		}
+	}
+	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
+	value.has_definition = definition;
+	value.language_linkage = language_linkage;
+	value.internal_linkage = internal_linkage;
+	const BindingId binding_id = store_binding(scope, value);
+	if (backing_storage.valid() || unadjusted_type != type || hidden_friend)
+	{
+		BindingSidecar sidecar;
+		sidecar.backing_storage = backing_storage;
+		if (unadjusted_type != type)
+			sidecar.unadjusted_type = unadjusted_type;
+		sidecar.hidden_friend = hidden_friend;
+		sidecar.operator_function_kind = operator_function_kind;
+		sidecar.operator_token = operator_token;
+		set_binding_sidecar(binding_id, sidecar);
+	}
+	if (hidden_friend)
+		index_hidden_friend(name, scope, binding_id);
+	else
+		append_value_index(scope, name, binding_id, ScopeId(), declaration_point);
+	return binding_id;
+}
+void PA11SemanticModel::record_friend_function(BindingId binding_id,
+	NamedRecordId record, bool hidden, SourcePoint declaration_point)
+{
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		!record.valid() || record.value >= named_.size() ||
+		named_[record.value].kind != NamedKind::Class)
+		throw std::runtime_error("invalid PA11 friend function relation");
+	BindingSidecar binding_sidecar_value;
+	const BindingSidecar* existing_binding = binding_sidecar(binding_id);
+	if (existing_binding != NULL)
+		binding_sidecar_value = *existing_binding;
+	if (hidden)
+		binding_sidecar_value.hidden_friend = true;
+	bool have_record = false;
+	for (std::size_t i = 0; i < binding_sidecar_value.friend_records.size(); ++i)
+		if (binding_sidecar_value.friend_records[i] == record)
+			have_record = true;
+	if (!have_record)
+		binding_sidecar_value.friend_records.push_back(record);
+	set_binding_sidecar(binding_id, binding_sidecar_value);
+	if (!hidden)
+		return;
+	if (binding_id.value >= binding_owners_.size())
+		throw std::runtime_error("invalid PA11 hidden friend owner identity");
+	index_hidden_friend(binding(binding_id).name,
+		binding_owners_[binding_id.value], binding_id);
+	NamedRecordSidecar record_sidecar;
+	const NamedRecordSidecar* existing_record = named_record_sidecar(record);
+	if (existing_record != NULL)
+		record_sidecar = *existing_record;
+	for (std::size_t i = 0; i < record_sidecar.hidden_friend_functions.size(); ++i)
+		if (record_sidecar.hidden_friend_functions[i].binding == binding_id)
+			return;
+	record_sidecar.hidden_friend_functions.push_back(
+		HiddenFriendFunctionRelation(binding_id,
+			declaration_point));
+	set_named_record_sidecar(record, record_sidecar);
+}
+void PA11SemanticModel::validate_nonmember_operator(BindingId binding_id) const
+{
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		binding_id.value >= binding_owners_.size())
+		throw std::runtime_error("invalid PA11 operator binding");
+	const BindingSidecar* sidecar = binding_sidecar(binding_id);
+	if (sidecar == NULL ||
+		sidecar->operator_function_kind != PA10OperatorFunctionKind::Token)
+		return;
+	const ScopeId owner = binding_owners_[binding_id.value];
+	if (!owner.valid() || owner.value >= scopes_.size() ||
+		scopes_[owner.value].kind == ScopeKind::Class)
+		return;
+	const Binding& value = binding(binding_id);
+	if (value.kind != BindingKind::Function ||
+		type_kind(value.type) != TypeKind::Function)
+		throw std::runtime_error("PA11 nonmember operator is not a function");
+	const TypeKey& function = types_[value.type.value];
+	for (std::size_t i = 0; i < function.parameters.size(); ++i)
+	{
+		const TypeId object = strip_cv_type(expression_object_type(
+			function.parameters[i]));
+		const NamedRecordId record = named_record_for_type(object);
+		if (record.valid() && record.value < named_.size() &&
+			(named_[record.value].kind == NamedKind::Class ||
+				named_[record.value].kind == NamedKind::Enum))
+			return;
+	}
+	throw std::runtime_error("PA11 nonmember operator requires class or enum operand");
 }
 } // namespace pa11_semantic_internal
 

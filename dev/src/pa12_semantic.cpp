@@ -1002,6 +1002,21 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source_node, expression.integer_zero);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid conversion");
+	bool logical_value = false;
+	if (expression.fact.valid() && expression.fact.value < semantic_facts_.size())
+	{
+		const SemanticFact& fact = semantic_facts_[expression.fact.value];
+		logical_value = fact.kind == SemanticFactKind::BinaryExpression &&
+			(fact.token == SimpleTokenType::OP_LAND ||
+				fact.token == SimpleTokenType::OP_LOR);
+	}
+	// A typed scalar call/comparison already owns its exact bool boundary.  A
+	// built-in logical expression is different: PA15 deliberately materializes
+	// its canonical i64 truth when it is stored in a bool object.
+	if (choice.kind == ConversionKind::Identity &&
+		expression.category == SemanticValueCategory::Prvalue &&
+		expression.type == target && bool_id(target) && !logical_value)
+		return expression;
 	if (choice.kind == ConversionKind::ReferenceBinding &&
 		(type_kind(target) == TypeKind::LvalueReference ||
 			type_kind(target) == TypeKind::RvalueReference))
@@ -1321,9 +1336,49 @@ ExprInfo PA11SemanticModel::semantic_postfix_expression(const PA10AstNode& node,
 {
 	if (node.children.size() != 1 || !node.has_token ||
 		(node.token != SimpleTokenType::OP_INC &&
-		 node.token != SimpleTokenType::OP_DEC))
+			 node.token != SimpleTokenType::OP_DEC))
 		throw std::runtime_error("PA12 invalid postfix expression");
 	const ExprInfo operand = semantic_expression(node.children.front(), scope);
+	const TypeId operand_object = strip_cv_type(expression_object_type(operand.type));
+	const NamedRecordId operand_record = named_record_for_type(operand_object);
+	if (operand_record.valid() && operand_record.value < named_.size() &&
+		(named_[operand_record.value].kind == NamedKind::Class ||
+			named_[operand_record.value].kind == NamedKind::Enum))
+	{
+		// The postfix discriminator is a typed synthetic int argument.  It is
+		// owned by this bounded overload probe and is committed only if the
+		// selected operator call consumes it.
+		SemanticTailGuard overload_tail(*this);
+		SemanticFact tag(SemanticFactKind::Literal,
+			fundamental(FundamentalType::Int),
+			SemanticValueCategory::Prvalue, &node);
+		tag.has_literal_value = true;
+		const SemanticFactId tag_fact = make_semantic_fact(tag);
+		const ExprInfo tag_info(tag_fact, tag.type,
+			SemanticValueCategory::Prvalue, true);
+		std::vector<TypeId> associated_objects;
+		associated_objects.push_back(operand.type);
+		std::vector<const PA10AstNode*> member_nodes;
+		member_nodes.push_back(&node);
+		std::vector<ExprInfo> member_arguments;
+		member_arguments.push_back(tag_info);
+		std::vector<const PA10AstNode*> nonmember_nodes;
+		nonmember_nodes.push_back(&node.children.front());
+		nonmember_nodes.push_back(&node);
+		std::vector<ExprInfo> nonmember_arguments;
+		nonmember_arguments.push_back(operand);
+		nonmember_arguments.push_back(tag_info);
+		const ExprInfo overloaded = semantic_operator_call(node, scope,
+			PA10OperatorFunctionKind::Token, node.token, operand,
+			associated_objects, member_nodes, member_arguments,
+			nonmember_nodes, nonmember_arguments, true);
+		if (overloaded.fact.valid())
+		{
+			overload_tail.commit();
+			return overloaded;
+		}
+		overload_tail.discard();
+	}
 	if (operand.category != SemanticValueCategory::Lvalue ||
 		!modifiable_lvalue(operand.type) ||
 		(!integral_id(operand.type) && !floating_id(operand.type) &&
@@ -1370,6 +1425,25 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 		types_[left_object.value].child) : strip_top_cv_type(left.type);
 	const TypeId right_pointer_type = right_array ? make_pointer(
 		types_[right_object.value].child) : strip_top_cv_type(right.type);
+	std::vector<TypeId> associated_objects;
+	associated_objects.push_back(left.type);
+	associated_objects.push_back(right.type);
+	std::vector<const PA10AstNode*> member_nodes;
+	member_nodes.push_back(&node.children[1]);
+	std::vector<ExprInfo> member_arguments;
+	member_arguments.push_back(right);
+	std::vector<const PA10AstNode*> nonmember_nodes;
+	nonmember_nodes.push_back(&node.children[0]);
+	nonmember_nodes.push_back(&node.children[1]);
+	std::vector<ExprInfo> nonmember_arguments;
+	nonmember_arguments.push_back(left);
+	nonmember_arguments.push_back(right);
+	const ExprInfo overloaded = semantic_operator_call(node, scope,
+		PA10OperatorFunctionKind::Token, node.token, left,
+		associated_objects, member_nodes, member_arguments,
+		nonmember_nodes, nonmember_arguments, true);
+	if (overloaded.fact.valid())
+		return overloaded;
 	switch (node.token)
 	{
 	case SimpleTokenType::OP_COMMA:
@@ -1547,6 +1621,28 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 		apply_context_conversion(right, target, semantic_facts_[right.fact.value].source);
 	else
 	{
+		// Compound assignment operators have the same ordinary overloaded
+		// operator boundary as their corresponding binary token.  Keep the
+		// assignment target as the implicit object for a member candidate and
+		// retain the builtin compound path only when no typed overload is viable.
+		std::vector<TypeId> associated_objects;
+		associated_objects.push_back(left.type);
+		associated_objects.push_back(right.type);
+		std::vector<const PA10AstNode*> member_nodes(1, &node.children[1]);
+		std::vector<ExprInfo> member_arguments(1, right);
+		std::vector<const PA10AstNode*> nonmember_nodes;
+		nonmember_nodes.push_back(&node.children[0]);
+		nonmember_nodes.push_back(&node.children[1]);
+		std::vector<ExprInfo> nonmember_arguments;
+		nonmember_arguments.push_back(left);
+		nonmember_arguments.push_back(right);
+		const ExprInfo overloaded = semantic_operator_call(node, scope,
+			PA10OperatorFunctionKind::Token, node.token, left,
+			associated_objects, member_nodes, member_arguments,
+			nonmember_nodes, nonmember_arguments, true);
+		if (overloaded.fact.valid())
+			return overloaded;
+
 		const bool pointer_plus = pointer_id(target) &&
 			(node.token == SimpleTokenType::OP_PLUSASS || node.token == SimpleTokenType::OP_MINUSASS);
 		if (pointer_plus)
@@ -1735,145 +1831,6 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(
 		operand = semantic_expression(operand_node, scope);
 	return semantic_cast_to_target(node, target, operand);
 }
-ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, ScopeId scope)
-{
-	if (node.children.size() != 2)
-		throw std::runtime_error("PA12 invalid call expression");
-	const PA10AstNode& callee_node = node.children.front();
-	const PA10AstNode& argument_node = node.children.back();
-	if (argument_node.kind != PA10NodeKind::ArgumentList &&
-		argument_node.kind != PA10NodeKind::ParenArgumentList)
-		throw std::runtime_error("PA12 invalid argument list");
-	const BuiltinKind builtin = builtin_kind(callee_node);
-	if (builtin != BuiltinKind::None)
-		return semantic_builtin_call(node, scope, builtin, argument_node);
-	std::vector<ValueRef> qualified_static_candidates;
-	ScopeId qualified_static_scope;
-	const bool qualified_class_member = qualified_static_member_candidates(
-		callee_node, scope,
-		&qualified_static_candidates, &qualified_static_scope);
-	const ExprInfo member_call = !qualified_class_member ?
-		semantic_member_call_probe(node, scope) : ExprInfo();
-	if (member_call.fact.valid())
-		return member_call;
-	if (!qualified_class_member && qualified_static_scope.valid())
-		throw std::runtime_error("PA12 class-qualified static call has no target");
-	TypeId functional_target;
-	if (functional_cast_target(callee_node, scope, &functional_target))
-		return semantic_functional_cast(node, scope, functional_target,
-			argument_node);
-	if (callee_node.kind == PA10NodeKind::IdExpression &&
-		!has_template_id(callee_node))
-	{
-		const NamePath path = name_path(callee_node);
-		if (lookup_value_path(path, scope).empty())
-		{
-			const TemplateFunctionList* templates = template_functions(path, scope);
-			if (templates != NULL && !templates->entries.empty())
-				return semantic_template_call(node, scope, *templates,
-					argument_node);
-		}
-	}
-	if (qualified_class_member && qualified_static_candidates.empty())
-		throw std::runtime_error("PA12 class-qualified static call has no target");
-	const std::vector<ValueRef> candidates = direct_call_candidates(callee_node,
-		scope, qualified_class_member, qualified_static_candidates);
-	const bool direct = !candidates.empty();
-	ExprInfo indirect_callee;
-	TypeId indirect_type;
-	if (!direct)
-	{
-		indirect_callee = semantic_expression(callee_node, scope);
-		indirect_type = callable_function_type(indirect_callee.type);
-		if (!indirect_type.valid())
-			throw std::runtime_error("PA12 call target is not callable");
-		const TypeKey& function = types_[indirect_type.value];
-		if ((!function.variadic && argument_node.children.size() !=
-			function.parameters.size()) ||
-			(function.variadic && argument_node.children.size() <
-			function.parameters.size()))
-			throw std::runtime_error("PA12 indirect call arity mismatch");
-	}
-	std::vector<ExprInfo> arguments;
-	if (!direct)
-	{
-		const TypeKey& function = types_[indirect_type.value];
-		record_builtin_conversion(indirect_callee, make_pointer(indirect_type));
-		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
-		{
-			if (i < function.parameters.size())
-				arguments.push_back(semantic_expression_for_target(
-					argument_node.children[i], scope, function.parameters[i]));
-			else
-				arguments.push_back(semantic_expression(argument_node.children[i],
-					scope));
-		}
-	}
-	else
-	{
-		// An overloaded function ID has no expression type until a target
-		// function pointer/reference parameter is selected.  Keep it deferred;
-		// all ordinary arguments are still analyzed exactly once here.
-		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
-		{
-			if (target_function_id(argument_node.children[i], scope) != NULL)
-				arguments.push_back(ExprInfo());
-			else
-				arguments.push_back(semantic_expression(argument_node.children[i],
-					scope));
-		}
-	}
-	ValueRef selected;
-	TypeId selected_type;
-	if (direct)
-	{
-		std::vector<const PA10AstNode*> argument_nodes;
-		argument_nodes.reserve(argument_node.children.size());
-		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
-			argument_nodes.push_back(&argument_node.children[i]);
-		const TypedFunctionSelection selection = select_typed_function(
-			candidates, argument_nodes, arguments, scope);
-		selected = selection.selected;
-		selected_type = selection.type;
-		arguments = selection.arguments;
-		validate_direct_static_member_call(selected, qualified_class_member,
-			qualified_static_scope, scope);
-	}
-	else
-	{
-		selected_type = indirect_type;
-		const TypeKey function = types_[selected_type.value];
-		for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
-			arguments[arg] = apply_context_conversion(arguments[arg],
-				function.parameters[arg],
-				semantic_facts_[arguments[arg].fact.value].source);
-	}
-	if (!direct)
-		apply_call_argument_conversions(arguments, selected_type, scope);
-	const TypeId result_type = function_result_type(selected_type);
-	SemanticValueCategory result_category = SemanticValueCategory::Prvalue;
-	if (type_kind(result_type) == TypeKind::LvalueReference)
-		result_category = SemanticValueCategory::Lvalue;
-	else if (type_kind(result_type) == TypeKind::RvalueReference)
-		result_category = SemanticValueCategory::Xvalue;
-	std::vector<SemanticFactId> children;
-	if (!direct)
-		children.push_back(indirect_callee.fact);
-	for (std::size_t i = 0; i < arguments.size(); ++i)
-		children.push_back(arguments[i].fact);
-	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
-		result_category, &node);
-	fact.has_callee = direct;
-	fact.callable_type = selected_type;
-	if (direct)
-	{
-		fact.selected_binding = selected.binding;
-		fact.selected_scope = selected.scope;
-	}
-	const SemanticFactId result = make_semantic_fact(fact);
-	set_semantic_children(result, children);
-	return ExprInfo(result, result_type, result_category, false);
-}
 ExprInfo PA11SemanticModel::semantic_braced_init_list(
 	const PA10AstNode& node, TypeId target, ScopeId scope)
 {
@@ -2006,6 +1963,21 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 			throw std::runtime_error("PA12 invalid subscript expression");
 		ExprInfo sequence_expression = semantic_expression(node.children[0], scope);
 		ExprInfo index_expression = semantic_expression(node.children[1], scope);
+		std::vector<TypeId> associated_objects;
+		associated_objects.push_back(sequence_expression.type);
+		associated_objects.push_back(index_expression.type);
+		std::vector<const PA10AstNode*> member_nodes;
+		member_nodes.push_back(&node.children[1]);
+		std::vector<ExprInfo> member_arguments;
+		member_arguments.push_back(index_expression);
+		std::vector<const PA10AstNode*> no_nonmember_nodes;
+		std::vector<ExprInfo> no_nonmember_arguments;
+		const ExprInfo overloaded = semantic_operator_call(node, scope,
+			PA10OperatorFunctionKind::Subscript, node.token,
+			sequence_expression, associated_objects, member_nodes,
+			member_arguments, no_nonmember_nodes, no_nonmember_arguments, true);
+		if (overloaded.fact.valid())
+			return overloaded;
 		TypeId sequence = strip_cv_type(expression_object_type(sequence_expression.type));
 		if (type_kind(sequence) != TypeKind::Array &&
 			type_kind(sequence) != TypeKind::Pointer)
@@ -2357,6 +2329,8 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 	fact.has_callee = true;
 	fact.selected_binding = selected.binding;
 	fact.selected_scope = selected.scope;
+	fact.callable_type = selected.binding.valid() ?
+		binding(selected.binding).type : TypeId();
 	const SemanticFactId call = make_semantic_fact(fact);
 	set_semantic_children(call, std::vector<SemanticFactId>(1, converted.fact));
 	return ExprInfo(call, result_type, result_category, false);

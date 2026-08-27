@@ -8,6 +8,39 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+struct SourcePoint
+{
+	std::size_t value;
+
+	explicit SourcePoint(std::size_t value = InvalidIdentityValue)
+		: value(value)
+	{}
+
+	bool valid() const { return value != InvalidIdentityValue; }
+};
+
+struct HiddenFriendBindingRelation
+{
+	ScopeId namespace_scope;
+	BindingId binding;
+
+	HiddenFriendBindingRelation(ScopeId namespace_scope = ScopeId(),
+		BindingId binding = BindingId())
+		: namespace_scope(namespace_scope), binding(binding)
+	{}
+};
+
+struct HiddenFriendFunctionRelation
+{
+	BindingId binding;
+	SourcePoint declaration_point;
+
+	HiddenFriendFunctionRelation(BindingId binding = BindingId(),
+		SourcePoint declaration_point = SourcePoint())
+		: binding(binding), declaration_point(declaration_point)
+	{}
+};
+
 struct ValueRef
 {
 	ScopeId scope;
@@ -99,6 +132,26 @@ struct TypedFunctionSelection
 	TypedFunctionSelection(ValueRef selected = ValueRef(),
 		TypeId type = TypeId())
 		: selected(selected), type(type), arguments()
+	{}
+
+	bool valid() const { return selected.binding.valid() && type.valid(); }
+};
+
+// An overloaded operator has the same typed call boundary as an ordinary
+// direct call, with the additional fact that a member candidate consumes the
+// left/sole operand as its implicit object.  Keep that distinction explicit
+// until the CallExpression is formed; lowering must not infer it from the
+// operator's rendered name.
+struct TypedOperatorSelection
+{
+	ValueRef selected;
+	TypeId type;
+	bool member;
+	std::vector<ExprInfo> arguments;
+
+	TypedOperatorSelection(ValueRef selected = ValueRef(),
+		TypeId type = TypeId(), bool member = false)
+		: selected(selected), type(type), member(member), arguments()
 	{}
 
 	bool valid() const { return selected.binding.valid() && type.valid(); }

@@ -205,21 +205,6 @@ struct TemplateSpecializationFact
 	{}
 };
 
-// Source positions are semantic declaration-point facts, not rendered names.
-// An invalid point means that the relation is not subject to a namespace
-// declaration-point filter (for example, a local block relation formed by
-// the existing PA12 preparation pass).
-struct SourcePoint
-{
-	std::size_t value;
-
-	explicit SourcePoint(std::size_t value = InvalidIdentityValue)
-		: value(value)
-	{}
-
-	bool valid() const { return value != InvalidIdentityValue; }
-};
-
 enum class BindingKind
 {
 	Type,
@@ -282,6 +267,7 @@ struct BindingSidecar
 	BindingId backing_storage;
 	NamedRecordId constructor_record; NamedRecordId destructor_record;
 	NamedRecordId generated_name_record;
+	bool hidden_friend; std::vector<NamedRecordId> friend_records;
 	MemberAccess member_access;
 	bool static_member;
 	bool has_default_member_initializer;
@@ -306,6 +292,7 @@ struct BindingSidecar
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record), destructor_record(),
 		  generated_name_record(generated_name_record),
+		  hidden_friend(false), friend_records(),
 		  member_access(MemberAccess::Public), static_member(false),
 		  has_default_member_initializer(false),
 		  default_member_initializer(),
@@ -465,7 +452,8 @@ struct Scope
 		bool inline_namespace = false, std::size_t creation_order = 0,
 		std::size_t depth = 0)
 		: kind(kind), parent(parent), name(name), record(record),
-		  implicit_object_binding(), inline_namespace(inline_namespace),
+		  implicit_object_binding(),
+		  inline_namespace(inline_namespace),
 		  children(), bindings(),
 		  types(), namespaces(), namespace_aliases(), values(), using_types(),
 		  using_directives(), effective_using_directives(), binding_views(),
@@ -668,6 +656,7 @@ struct NamedRecordSidecar
 	bool has_constructor_declaration; bool has_destructor_declaration;
 	bool has_display_path;
 	NamePath display_path;
+	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions;
 
 	NamedRecordSidecar(bool local_object_name = false,
 		BindingId backing_storage = BindingId(),
@@ -679,7 +668,7 @@ struct NamedRecordSidecar
 		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
 		  has_destructor_declaration(false),
 		  has_display_path(false),
-		  display_path()
+		  display_path(), hidden_friend_functions()
 	{}
 };
 
@@ -994,6 +983,7 @@ struct SemanticFact
 	// A direct member call stores its typed implicit object as child zero.
 	// The remaining children are the already-converted explicit arguments.
 	bool has_implicit_object;
+	bool temporary_object;
 
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
 		TypeId type = TypeId(),
@@ -1017,7 +1007,7 @@ struct SemanticFact
 			size_type_derived(false),
 			has_callee(false),
 			value_initialize(false),
-			has_implicit_object(false)
+			has_implicit_object(false), temporary_object(false)
 	{}
 };
 
@@ -1303,12 +1293,15 @@ private:
 		scope_declaration_points_;
 	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
 		function_definition_points_;
+	FlatIndex<ScopeId, BindingId, IdentityHash<ScopeId> > function_bindings_;
 	std::vector<Binding> bindings_;
 	// BindingId is the canonical identity; retain its typed owning scope so
 	// ValueEntry ownership checks do not rescan a whole scope on redeclaration.
 	std::vector<ScopeId> binding_owners_;
 	FlatIndex<BindingId, BindingSidecar, IdentityHash<BindingId> >
 		binding_sidecars_;
+	FlatIndex<NameId, std::vector<HiddenFriendBindingRelation>,
+		IdentityHash<NameId> > hidden_friend_bindings_;
 	ScopeId global_;
 	std::vector<ScopeId> deferred_scopes_;
 	std::vector<DumpBindingView> dump_binding_views_;
@@ -1765,14 +1758,13 @@ private:
 	;
 	TypeId normalize_function_type(TypeId type)
 	;
-	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
-	bool definition = false, bool lexical_view = false,
-	BindingId backing_storage = BindingId(),
-	SourcePoint declaration_point = SourcePoint(),
-	bool internal_linkage = false,
-	LanguageLinkage language_linkage = LanguageLinkage::Cxx,
-	FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal)
-	;
+	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function, bool definition = false, bool lexical_view = false, BindingId backing_storage = BindingId(), SourcePoint declaration_point = SourcePoint(), bool internal_linkage = false, LanguageLinkage language_linkage = LanguageLinkage::Cxx, FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal, bool hidden_friend = false, PA10OperatorFunctionKind operator_function_kind = PA10OperatorFunctionKind::None, SimpleTokenType operator_token = SimpleTokenType::OP_SEMICOLON);
+	void index_hidden_friend(NameId name, ScopeId namespace_scope, BindingId binding);
+	bool has_friend_specifier(const PA10AstNode& node) const;
+	ScopeId friend_namespace_scope(ScopeId scope) const;
+	NamedRecordId friend_record_for_scope(ScopeId scope) const;
+	void record_friend_function(BindingId binding, NamedRecordId record, bool hidden, SourcePoint declaration_point);
+	void validate_nonmember_operator(BindingId binding) const;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;
 	SpecFact spec_fact(const PA10AstNode& node, ScopeId scope)
@@ -1999,6 +1991,9 @@ private:
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
 		bool reject_class_by_value = false)
 	;
+	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope, bool reject_class_by_value = false);
+	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
+	ExprInfo semantic_operator_call(const PA10AstNode& node, ScopeId scope, PA10OperatorFunctionKind kind, SimpleTokenType token, const ExprInfo& member_object, const std::vector<TypeId>& associated_objects, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, bool reject_class_by_value = false);
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope, TypeId object) const
 	;

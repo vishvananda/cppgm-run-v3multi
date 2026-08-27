@@ -1083,6 +1083,20 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	if (node.children.size() != 1 || !node.has_token)
 		throw std::runtime_error("PA12 invalid unary expression");
 	const ExprInfo operand = semantic_expression(node.children.front(), scope);
+	std::vector<TypeId> associated_objects;
+	associated_objects.push_back(operand.type);
+	std::vector<const PA10AstNode*> no_member_nodes;
+	std::vector<ExprInfo> no_member_arguments;
+	std::vector<const PA10AstNode*> nonmember_nodes;
+	nonmember_nodes.push_back(&node.children.front());
+	std::vector<ExprInfo> nonmember_arguments;
+	nonmember_arguments.push_back(operand);
+	const ExprInfo overloaded = semantic_operator_call(node, scope,
+		PA10OperatorFunctionKind::Token, node.token, operand,
+		associated_objects, no_member_nodes, no_member_arguments,
+		nonmember_nodes, nonmember_arguments, true);
+	if (overloaded.fact.valid())
+		return overloaded;
 	TypeId type = expression_object_type(operand.type);
 	SemanticValueCategory category = SemanticValueCategory::Prvalue;
 	switch (node.token)

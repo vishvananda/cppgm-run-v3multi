@@ -740,17 +740,16 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::member_lookup(
 			{
 				const ValueEntry& entry = values->entries[i];
 				if (!entry.binding.valid() || entry.binding.value >=
-					bindings_.size() || entry.origin != scope)
-				{
+					bindings_.size() || entry.binding.value >= binding_owners_.size())
+					throw std::runtime_error("PA12 member value owner is invalid");
+				if (entry.origin != scope)
 					imported = true;
-					continue;
-				}
 				const Binding& candidate = binding(entry.binding);
 				all_functions = all_functions &&
 					candidate.kind == BindingKind::Function &&
 					type_kind(candidate.type) == TypeKind::Function;
 			}
-			if (imported || (values->entries.size() != 1 && !all_functions))
+			if (!all_functions && (imported || values->entries.size() != 1))
 			{
 				found.kind = MemberLookupKind::Blocked;
 				found.owner = scope;
@@ -974,7 +973,16 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 		if (candidate.kind == BindingKind::Function &&
 			type_kind(candidate.type) == TypeKind::Function &&
 			!is_static_member(candidate_id))
-			result.push_back(ValueRef(member_scope, candidate_id));
+		{
+			const ScopeId owner = values->entries[i].origin.valid() ?
+				values->entries[i].origin : member_scope;
+			if (!owner.valid() || owner.value >= scopes_.size() ||
+				scopes_[owner.value].kind != ScopeKind::Class ||
+				candidate_id.value >= binding_owners_.size() ||
+				binding_owners_[candidate_id.value] != owner)
+				throw std::runtime_error("PA12 member candidate owner is invalid");
+			result.push_back(ValueRef(owner, candidate_id));
+		}
 	}
 	return result;
 }
@@ -995,7 +1003,16 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 		if (candidate.kind == BindingKind::Function &&
 			type_kind(candidate.type) == TypeKind::Function &&
 			is_static_member(candidate_id))
-			result.push_back(ValueRef(member_scope, candidate_id));
+		{
+			const ScopeId owner = values->entries[i].origin.valid() ?
+				values->entries[i].origin : member_scope;
+			if (!owner.valid() || owner.value >= scopes_.size() ||
+				scopes_[owner.value].kind != ScopeKind::Class ||
+				candidate_id.value >= binding_owners_.size() ||
+				binding_owners_[candidate_id.value] != owner)
+				throw std::runtime_error("PA12 static member candidate owner is invalid");
+			result.push_back(ValueRef(owner, candidate_id));
+		}
 	}
 	return result;
 }
@@ -1213,6 +1230,26 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	{
 		if (cursor == member_scope)
 			return true;
+		if (scopes_[cursor.value].kind == ScopeKind::Function)
+		{
+			const BindingId* function_binding = function_bindings_.find(cursor);
+			if (function_binding != NULL)
+			{
+				const BindingSidecar* function_sidecar =
+					binding_sidecar(*function_binding);
+				if (function_sidecar != NULL)
+					for (std::size_t i = 0;
+						i < function_sidecar->friend_records.size(); ++i)
+					{
+						const NamedRecordId friend_record =
+							function_sidecar->friend_records[i];
+						if (friend_record.valid() && friend_record.value < named_.size() &&
+							named_[friend_record.value].kind == NamedKind::Class &&
+							named_[friend_record.value].scope == member_scope)
+							return true;
+					}
+			}
+		}
 		if (scopes_[cursor.value].kind == ScopeKind::Class)
 			access_classes.push_back(cursor);
 		cursor = scopes_[cursor.value].parent;
@@ -1438,9 +1475,6 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		throw std::runtime_error("PA12 implicit member object is missing");
 	if (!allow_static && !object.fact.valid())
 		throw std::runtime_error("PA12 member call object is missing");
-	if (!allow_static && member_token == SimpleTokenType::OP_DOT &&
-		object.category != SemanticValueCategory::Lvalue)
-		throw std::runtime_error("PA12 member call needs an lvalue object");
 	if (!allow_static && member_token == SimpleTokenType::OP_ARROW)
 	{
 		const TypeId pointer = strip_cv_type(expression_object_type(object.type));
@@ -1469,6 +1503,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		ValueRef value;
 		TypeId type;
 		bool static_member;
+		std::size_t object_base_distance;
 		unsigned int object_cv;
 		std::vector<unsigned int> ranks;
 	};
@@ -1478,8 +1513,10 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 	{
 		const ValueRef& candidate_ref = candidates[i];
 		if (!candidate_ref.binding.valid() || candidate_ref.binding.value >=
-			bindings_.size() || !candidate_ref.scope.valid() ||
-			candidate_ref.scope != member_scope)
+			bindings_.size() || candidate_ref.binding.value >= binding_owners_.size() ||
+			!candidate_ref.scope.valid() || candidate_ref.scope.value >= scopes_.size() ||
+			scopes_[candidate_ref.scope.value].kind != ScopeKind::Class ||
+			binding_owners_[candidate_ref.binding.value] != candidate_ref.scope)
 			throw std::runtime_error("PA12 member candidate ownership is invalid");
 		const Binding& candidate = binding(candidate_ref.binding);
 		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
@@ -1491,14 +1528,15 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		if (static_member && !allow_static)
 			continue;
 		TypeId required_object;
+		std::vector<NamedRecordId> object_path;
 		if (!static_member)
 		{
 			required_object = member_object_type(candidate.type,
 				candidate_ref.scope);
 			if (!required_object.valid() ||
 				class_scope_for_type(required_object) != candidate_ref.scope ||
-				!member_object_qualification_convertible(actual_object,
-					required_object))
+				!member_object_convertible(actual_object, required_object,
+					candidate_ref.scope, &object_path))
 				continue;
 		}
 		std::size_t required = function.parameters.size();
@@ -1512,6 +1550,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		score.value = candidate_ref;
 		score.type = candidate.type;
 		score.static_member = static_member;
+		score.object_base_distance = static_member ? 0 : object_path.size();
 		score.object_cv = static_member ? 0 : cv_qualifiers(required_object) &
 			~cv_qualifiers(actual_object);
 		score.ranks.reserve(arguments.size());
@@ -1568,6 +1607,13 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		// candidates.  For non-static candidates, qualification conversions form
 		// a subset ordering: an exact object match beats added cv, const beats
 		// const volatile, and const and volatile remain incomparable.
+		if (!left.static_member && !right.static_member &&
+			left.object_base_distance != right.object_base_distance)
+		{
+			if (left.object_base_distance > right.object_base_distance)
+				return false;
+			strict = true;
+		}
 		if (!left.static_member && !right.static_member &&
 			left.object_cv != right.object_cv)
 		{

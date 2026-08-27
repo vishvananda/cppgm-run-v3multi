@@ -324,7 +324,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 								checked_constructor_function(fact.selected_binding,
 									constructor_sidecar->constructor_record);
 							no_op = target_function.synthetic &&
-								target_function.constructor_action_count == 0;
+								target_function.constructor_action_count == 0 &&
+								!fact.temporary_object;
 						}
 					}
 					if (!no_op && !(*demanded)[target_id->value])
