@@ -1600,6 +1600,12 @@ private:
 	void inject_anonymous_union(TypeId type, ScopeId owner,
 		bool create_storage = false, const PA10AstNode* origin = NULL)
 	;
+	bool implicit_default_type_empty(TypeId type,
+		std::vector<NamedRecordId>& active) const
+	;
+	bool implicit_default_record_empty(NamedRecordId record,
+		std::vector<NamedRecordId>& active) const
+	;
 	bool implicit_default_constructor_supported(NamedRecordId record) const
 	;
 	BindingId ensure_implicit_default_constructor(NamedRecordId record)
@@ -1874,25 +1880,32 @@ private:
 	;
 	TypeId member_access_type(TypeId object, TypeId member)
 	;
-	BindingId member_binding(TypeId object, NameId name) const
-	;
-	std::vector<ValueRef> member_function_candidates(TypeId object,
-		NameId name) const
-	;
-	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
-		NameId name) const
-	;
-	enum class UnqualifiedMemberDeclarationKind
+	enum class MemberLookupKind
 	{
 		None,
 		Value,
 		Type,
 		Blocked
 	};
-	UnqualifiedMemberDeclarationKind unqualified_member_scope(TypeId object,
-		NameId name, ScopeId start, ScopeId* declaration_scope,
-		TypeId* declaration_type,
-		std::vector<NamedRecordId>* base_path = NULL) const
+	struct MemberLookup
+	{
+		MemberLookupKind kind;
+		BindingId binding;
+		ScopeId owner;
+		TypeId type;
+		std::vector<NamedRecordId> base_path;
+
+		MemberLookup(MemberLookupKind kind = MemberLookupKind::None)
+			: kind(kind), binding(), owner(), type(), base_path()
+		{}
+	};
+	MemberLookup member_lookup(TypeId object, NameId name) const
+	;
+	MemberLookup unqualified_member_lookup(TypeId object, NameId name,
+		ScopeId start) const
+	;
+	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
+		NameId name) const
 	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope) const

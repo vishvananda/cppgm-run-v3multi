@@ -1,157 +1,115 @@
 # PA16 implementation plan
 
-## Stage design/spec alignment and owner/data flow
+## Stage Design/spec alignment and owner/data flow
 
-This checkpoint keeps one typed production path from PA10 call syntax through
-PA12 semantic facts, PA15, and LowIR.  The member-call probe handles both the
-existing `CallExpression(MemberExpression)` form and an unqualified `id(...)`
-inside a non-static member body.  For the latter, typed lookup checks nearer
-block/function declarations, type declarations, the direct class scope, and
-then the ordered single direct-base chain before ordinary enclosing lookup can
-see a namespace value.  At each scope the value declaration set is probed
-before the tag/type set, so a same-scope ordinary method hides a same-spelled
-class or enum tag.  A type-only first declaration set returns its owning
-`TypeId` as an explicit outcome and is consumed by the existing functional-cast
-producer; it cannot reopen enclosing namespace/ADL value lookup.  A found
-class/base declaration set suppresses unrelated namespace/ADL candidates; a
-base-owned value set with no supported non-static method is rejected by its
-nonempty typed base path, while an unsupported imported origin is an explicit
-`Blocked` outcome.  Both cases fail closed.
-Nearer lexical/direct-class values retain the ordinary resolver's existing
-fallback.  No declaration is recovered from text.
+PA12 owns one typed MemberLookup boundary. It inspects the actual class
+scope, then the ordered non-virtual direct-base chain; the first declaration
+set hides all bases. The result carries the lookup kind, canonical BindingId,
+owning class ScopeId, selected type, and typed NamedRecordId base path. Values
+precede types; ambiguous declaration sets and imported/unsupported ownership
+are blocked.
 
-`prepare_pa12_member_parameter` owns the exact synthetic first `this`
-parameter in the member Function `Scope`.  A successful call publishes the
-typed `this` value as semantic child zero with `OP_ARROW`, followed by
-converted/defaulted explicit arguments in source order.  Its callable Function
-type has the hidden object pointer first, while the original member Function
-type remains the ABI/signature owner.  The unqualified helper reuses the
-already-selected `BindingId` when creating child zero, so semantic lookup is
-performed once and no name/text recovery is needed.
+Explicit dot/arrow fields and non-static member calls consume that result.
+Unqualified and parser-supported qualified inherited fields and calls in
+member bodies use the exact synthetic this binding. Calls retain the selected
+owner/path through the shared call selector, including cv and argument ranking.
+Access is checked at the selected owner; protected access is admitted only
+from a typed derived-class body, while private and unrelated access remain
+rejected.
 
-`direct_base_chain` is keyed by `NamedRecordId`, validates class-scope
-back-references and consistent direct-base metadata, and checks
-invalid/virtual/cyclic relations with a bounded walk.  It supplies the
-ordered lookup path.  The unqualified lookup passes that path to the shared
-member selector, so an inherited call does not re-walk it during semantic
-candidate selection.  The same-owner path returns before chain allocation;
-inherited selection uses the one typed path produced by lookup.  Value/type
-ownership is represented by an explicit outcome (`None`, `Value`, `Type`, or
-`Blocked`) plus the selected scope/type, not by an invalid `ScopeId` sentinel.
-A base-owned value set with no supported ordinary non-static method is blocked
-by the nonempty typed base path, while a value origin from an unsupported
-import is `Blocked`; ordinary enclosing lookup cannot reopen in either case.
-Nearer lexical/direct-class values keep their existing ordinary-resolver
-fallback.  The selector admits only ordinary non-static
-methods from the owner scope, performs
-the existing implicit-object
-cv ranking and explicit argument/default handling, and publishes one canonical
-fact.  Its child zero is the synthetic `this` value, with `OP_ARROW`; later
-children are converted/defaulted explicit arguments.  The selected owner
-remains canonical: an inherited `B::f` has selected scope `B` and a callable
-Function type whose hidden pointer is `B*` (with the selected cv).
+PA15 consumes the selected owner for member addresses, validates the actual
+object-to-owner direct-base path and every complete RecordLayout edge at
+offset zero, emits one projection=base_subobject per edge, and then uses the
+owner layout's member_offsets for projection=field. Dot/arrow objects are
+evaluated once. The ownerless semantic_injected_member producer remains the
+separate storage-backed anonymous-union path; PA15 checks that backing marker
+before requiring a selected owner.
 
-The only member emission-demand edge is a successful typed member
-`CallExpression` with its selected `BindingId` in a reachable emitted
-FunctionFact body.  PA15 follows that existing typed binding-to-FunctionFact
-edge, validates the hidden-object ABI and direct symbol, and in `lower_call`
-projects a `D*` through each validated direct-base `NamedRecordId`/complete
-`RecordLayout` pair at offset zero before passing the owner pointer.  Dot uses
-one object address and arrow uses one object expression before explicit
-arguments.  Parenthesized unqualified ids use the already-unwrapped probe
-node, so the semantic helper does not re-read source spelling.
+Ordinary local implicit default construction now validates a bounded typed
+walk over direct bases and non-static member TypeKey/sidecar facts, with an
+active-record cycle guard. A state-free inherited chain publishes no
+constructor action, synthetic helper, or demand edge; a base/member/default
+initializer or unsupported subobject fails closed. Anonymous-union storage
+keeps its separate constructor action. The pre-existing no-base empty-class
+constructor fact is retained for the PA12 semantic contract
+(300-reference-binding-pointee-const-pointer.t); this is not a blanket
+derived-construction restriction.
 
-This matches the root specification's one production pipeline, typed fact
-continuity, canonical semantic owners, typed demand roots/edges, bounded
-worklists, and typed lowering.  There is no parallel textual lookup/demand
-model or second canonical member-call selector.
+## Failure Map and coverage identity
 
-## Failure map and coverage identity
+Baseline is the turn-start log
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log:
+PA16 48/243, 195 failures, 243/243 covered. Final command
+make test-pa16 >/tmp/pa16-final-final.log 2>&1 exits 2 with 49/243,
+194 failures, and 243/243 covered. Exact sorted identity delta:
 
-The supervisor-supplied turn-start evidence at assignment HEAD `b1a9e589` is
-`48/243` passing, `195` failing, `243/243` covered, and `make test-pa16` exit
-`2`.  Its complete failure map is preserved in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+- removed: pa16/tests/general/200-protected-base-method.t
+- added: empty set
 
-The required through-PA15 command
-`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
-exits `0` with `1167/1167` passing.  The PA16 file audit exits `0` with five
-pre-existing `bad-division` warnings.  `make test-pa16` exits `2` with
-`48/243` passing, `195` failures, and `243/243` coverage.  Comparing its exact
-failure identities with the turn-start `195`-failure map in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` gives
-added set `∅` and removed set `∅`; the complete failure identity set is
-unchanged.  No fixture or reference was changed.
+The overload primary remains out of this boundary: its exact current error is
+PA15 unsupported address expression. A debug lowering breakpoint showed the
+first failing address fact is SemanticFactKind::Literal, fact id 9,
+array/string literal element count 2, type id 29, with invalid
+constant_address; no lower_expression_impl scalar-default breakpoint was hit.
+The local string-literal address issue is therefore not a scalar member-call
+fact.
 
-## Active checkpoint
+Final focused PA16 check command (exit 2) ran nine tests and passed 5/9:
+protected, direct member methods/calls, and direct field controls passed; the
+overload literal-address case and the three explicit-constructor field
+fixtures failed. The latter remain
+PA11 semantic feature not implemented: declaration form. Courses 401, 402,
+403, and 404 each exit 0; 402 retains the expected
+PA12 inherited member name is not callable negative diagnostic. The PA12
+constructor-contract control passes 1/1. A constructor-free inherited
+overload probe also exits 0 and lowers to Base__select through one typed
+base-subobject projection. No handout fixture or .ref file changed.
 
-The active selector checks implicit-object qualification compatibility before
-ranking and reuses the existing explicit-argument conversion/default logic.
-The unqualified probe searches nearer lexical scopes, probing values before
-types, then the direct class and the first matching declaration set in the
-direct-base chain.  It admits only ordinary non-static methods and then
-publishes the selected `BindingId`, its owner `ScopeId`, the hidden-object
-callable `Function TypeId`, and typed children consumed by the existing PA15
-`lower_call`.  A type-only result instead carries its selected `TypeId` into
-the existing functional-cast producer, including the focused direct and
-inherited scalar cases, and unsupported targets fail closed.  A base-owned
-non-callable value or unsupported imported value is likewise `Blocked` and
-fails closed; nearer lexical/direct-class values still use the existing
-ordinary fallback.  A successful
-inherited call therefore carries actual `D*` in child zero while its selected
-callable requires owner `B*`; PA15 validates and emits the typed
-base-subobject projection between them.  The semantic tail guard rolls back
-an unsuccessful probe, so no failed speculation can publish a call fact or
-demand edge.
+## Active Checkpoint
 
-This checkpoint intentionally does not add inherited fields, qualified base
-calls, protected/friend/using-imported access, constructors/lifetime, aggregate
-initialization, ADL or operators, static calls, virtual/ref-qualified methods,
-or broader user-defined conversions.  The supported relation remains one
-non-virtual direct base per class.  The bounded three-level reduction emitted
-two ordered offset-zero base projections before `@A__f`, while multiple
-inheritance and virtual inheritance remain outside this checkpoint.
+The coherent checkpoint is complete and ready for commit: typed inherited
+field selection/lowering, explicit and qualified/unqualified inherited
+non-static calls, protected derived-body access, owner-path validation, the
+owner invariant audit, and demand-truth for state-free inherited construction
+are implemented. Stage progress is proven by one removed checked-in PA16
+failure with no added identity. The overload local string address gap,
+explicit-constructor parsing/lifetime, broader initialization, friend/using
+re-exposure, multiple/virtual inheritance, static members, and full PA16
+success remain out of scope.
 
 ## Performance evidence and uncertainties
 
-Same-owner object validation returns in `O(1)` before allocating or walking a
-base vector.  For an inherited unqualified call, lookup performs one bounded
-`O(depth)` `NamedRecordId` walk and passes its typed path to the shared
-selector; candidate viability/ranking remains `O(C * (P + A))` for `C`
-candidates, `P` parameters, and `A` explicit arguments.  PA15 cannot reuse a
-semantic lookup vector, so it independently constructs/validates one bounded
-`O(depth)` path from the actual object to the selected owner and then performs
-the corresponding bounded projection/layout checks.  Thus semantic lookup and
-lowering retain separate safety validation; no exactly-once cross-phase walk
-is claimed.  The three-level reduction is structural evidence of two ordered
-projection steps, not a benchmark.  No whole-program scan or repeated class
-completion was added.
+Same-owner member selection is an immediate scope lookup. Inherited lookup is
+bounded by O(depth + candidates); member field/call lowering validates a typed
+O(depth) path and layout sequence, with no whole-program scan, retry, or
+rendered-name recovery. The implicit-default predicate walks only the
+reachable typed base/member graph per declaration; its active vector is
+bounded by the supported record depth and protects cycles. No cache was
+needed for this checkpoint.
 
-Measured evidence is the focused six-test command (`1/6`, exit `2`), the
-three direct/inherited controls (`3/3`, exit `0`), course regressions 400, 401,
-and 402 (each exit `0`), the new 402 typed tag/method and direct/base type-only
-LowIR assertions plus the rejected inherited-field/outer-call regression, the
-successful bounded reductions, through-PA15
-`1167/1167`, the full PA16 `48/243` with `243/243` coverage, and the five
-file-audit warnings listed in the audit record.  No timing, RSS, allocation,
-or structural-counter measurement is claimed; the performance evidence is
-the bounded structural work and these exact control results.
+Representative command, using temporary non-repository sources with identical
+state-free three-level chains and 1, 128, and 512 local declarations, ran five
+times per size; all compiler invocations exited 0. On this workspace, 1 and
+128 declarations each measured 0.00s elapsed in all five runs; 512 measured
+0.01s elapsed in all five runs (user time 0.00-0.01s). This is measured
+bounded behavior, not a formal benchmark. The final audit also reports
+dev/src/pa12_semantic.cpp at 2975 lines and only the five pre-existing
+bad-division warnings.
 
-## Next checkpoint
-
-The next bounded checkpoint should own the separately deferred inherited-field
-semantics and qualified-base boundaries if supervisor review confirms their
-scope.  This checkpoint only makes inherited non-callable value sets fail
-closed; it does not implement inherited fields.
-Protected/friend/using access, operators/ADL, constructors/lifetime, virtual
-dispatch, and broader conversion expansion remain separate checkpoints; this
-record does not claim full PA16 completion.
+Mandatory gates after the corrections:
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+exits 0 with 1167/1167, and
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src exits 0 with
+five warnings.
 
 ## Checkpoint ledger
 
 | checkpoint | status |
 | --- | --- |
-| `b1a9e589` direct + inherited unqualified member-call checkpointAudit | Completed bounded audit and narrow repairs for canonical owner/hidden-`this` facts, value-before-type lookup with explicit `Type`/`Blocked` outcomes, fail-closed base metadata and inherited value-set ownership, shared selection, and PA15 base-subobject validation. Focused six-test result is `1/6` on the same five prerequisite identities; through-PA15 is `1167/1167`, file audit exits `0` with five pre-existing warnings, and full PA16 is `48/243` with `195` failures and `243/243` coverage, with zero failure-identity additions or removals. |
-| `37265733` typed member projection audit/repair | Completed bounded audit/repair; direct/nested dot and arrow ownership remains traced through PA12, PA11 `RecordLayout::member_offsets`, and PA15 LowIR, with PA16 still incomplete at that checkpoint's existing failure baseline. |
-| `b1e8272d` + PA16 typed implicit-object boundary | Prior landed checkpoint record preserved: canonical Function-scope hidden-object ownership, fail-closed viability, typed demand indexing, direct PA15 lowering, focused `6/6` + `2/2`, and reported final `47/243` with `243/243` coverage. |
-| `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed PA15 reachability, dense FunctionFact/fact metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused controls and course regressions pass; broad gates record through-PA15 `1167/1167`, final PA16 `47/243` with `196` failures and `243/243` coverage, zero failure-identity additions/removals, and PA16 still incomplete. |
+| d0470e94 + working tree | Current, ready to commit: final PA16 49/243, 194 failures versus baseline 48/243, 195; removed protected identity, added empty set, coverage 243/243; through-PA15 1167/1167; audit exit 0 with five pre-existing warnings; all focused/course/constructor controls recorded above. |
+| 0b534f2f typed direct member-call checkpoint | Landed implicit-object cv subset ranking, N3485 variadic comparison, typed PA15 member reachability, dense FunctionFact/fact metadata, declaration-only member ABI boundaries, hidden-object call formation, and source-file sizing. |
+| b1e8272d + PA16 typed implicit-object boundary | Landed canonical Function-scope hidden-object ownership, fail-closed viability, typed demand indexing, direct PA15 lowering, and focused direct/member-call controls. |
+| 37265733 typed member projection audit/repair | Landed direct/nested dot and arrow ownership tracing through PA12, PA11 RecordLayout::member_offsets, and PA15 LowIR. |
+
+This increment is ready for the authorized commit after the final diff,
+fixture-immutability, and status checks complete.

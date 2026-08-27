@@ -508,60 +508,6 @@ void PA11SemanticModel::dump_pa12(std::ostream& output) const
 	for (std::size_t i = 0; i < synthetic_function_facts_.size(); ++i)
 		dump_pa12_synthetic_function(output, synthetic_function_facts_[i], 1);
 }
-bool PA11SemanticModel::implicit_default_constructor_supported(
-	NamedRecordId record_id) const
-{
-	if (!record_id.valid() || record_id.value >= named_.size() ||
-		named_[record_id.value].kind != NamedKind::Class ||
-		named_[record_id.value].class_tag == ClassTag::Union ||
-		!named_[record_id.value].defined ||
-		!named_[record_id.value].scope.valid() ||
-		named_[record_id.value].scope.value >= scopes_.size())
-		return false;
-	return scopes_[named_[record_id.value].scope.value].bindings.empty();
-}
-BindingId PA11SemanticModel::ensure_implicit_default_constructor(
-	NamedRecordId record_id)
-{
-	if (!record_id.valid() || record_id.value >= named_.size() ||
-		named_[record_id.value].kind != NamedKind::Class)
-		throw std::runtime_error("invalid implicit constructor record");
-	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
-	if (existing != NULL && existing->constructor_binding.valid())
-		return existing->constructor_binding;
-	const TypeId object = named_type(record_id);
-	const TypeId constructor_type = make_function(
-		std::vector<TypeId>(1, make_pointer(object)), false,
-		fundamental(FundamentalType::Void));
-	Binding constructor(BindingKind::Function, NameId(), constructor_type);
-	const BindingId binding_id(bindings_.size());
-	bindings_.push_back(constructor);
-	NamedRecordSidecar record_sidecar;
-	if (existing != NULL)
-		record_sidecar = *existing;
-	record_sidecar.constructor_binding = binding_id;
-	set_named_record_sidecar(record_id, record_sidecar);
-	BindingSidecar binding_sidecar;
-	binding_sidecar.constructor_record = record_id;
-	set_binding_sidecar(binding_id, binding_sidecar);
-	synthetic_function_facts_.push_back(
-		SyntheticFunctionFact(record_id, binding_id));
-	return binding_id;
-}
-BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
-	NamedRecordId record_id)
-{
-	if (!record_id.valid() || record_id.value >= named_.size() ||
-		named_[record_id.value].kind != NamedKind::Class ||
-		named_[record_id.value].class_tag != ClassTag::Union)
-		throw std::runtime_error("invalid anonymous union constructor record");
-	return ensure_implicit_default_constructor(record_id);
-}
-const AnonymousUnionFact* PA11SemanticModel::anonymous_union_fact(
-	const PA10AstNode& node) const
-{
-	return anonymous_union_fact_index_.find(&node);
-}
 const DeclarationFact* PA11SemanticModel::declaration_fact(const PA10AstNode& node) const
 {
 	const DeclarationFactId* found = declaration_fact_index_.find(&node);
@@ -674,6 +620,11 @@ ExprInfo PA11SemanticModel::semantic_injected_member(
 	const PA10AstNode& node, ScopeId scope, BindingId member_id)
 {
 	(void)scope;
+	// This is a storage-backed anonymous-union view rather than a
+	// class-owned member selection.  It deliberately has no selected owner;
+	// PA15 checks the backing-storage marker before applying the typed
+	// class-member projection invariant and preserves its existing unsupported
+	// boundary.
 	const Binding& member = binding(member_id);
 	const BindingSidecar* sidecar = binding_sidecar(member_id);
 	if (sidecar == NULL || !sidecar->backing_storage.valid())
@@ -1244,6 +1195,79 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 	if (has_template_id(node))
 		throw std::runtime_error("PA12 template-id requires a target");
 	const NamePath path = name_path(node);
+	// An unqualified member expression is selected against the exact
+	// synthetic object binding before ordinary value lookup.  Qualified base
+	// names use the same typed selector after resolving only the qualifier;
+	// this keeps inherited fields from falling back to an untyped IdExpression.
+	const BindingId this_id = implicit_this_binding(scope);
+	if (this_id.valid() && !path.components.empty())
+	{
+		const Binding& this_binding = binding(this_id);
+		const TypeId this_pointer = strip_cv_type(expression_object_type(
+			this_binding.type));
+		if (this_binding.kind != BindingKind::Parameter ||
+			type_kind(this_pointer) != TypeKind::Pointer)
+			throw std::runtime_error("PA12 implicit this binding is invalid");
+		const TypeId this_record = types_[this_pointer.value].child;
+		MemberLookup selection;
+		bool member_candidate = false;
+		if (!path.global && path.components.size() == 1)
+		{
+			selection = unqualified_member_lookup(this_record, path.last(),
+				scope);
+			member_candidate = selection.owner.valid() &&
+				selection.owner.value < scopes_.size() &&
+				scopes_[selection.owner.value].kind == ScopeKind::Class;
+		}
+		else if (path.components.size() > 1)
+		{
+			NamePath qualifier;
+			qualifier.global = path.global;
+			qualifier.components.assign(path.components.begin(),
+				path.components.end() - 1);
+			const TypeId qualifier_type = lookup_type_path(qualifier, scope);
+			const ScopeId qualifier_scope = class_scope_for_type(qualifier_type);
+			if (qualifier_scope.valid() && member_base_path(this_record,
+				qualifier_scope, NULL))
+			{
+				selection = member_lookup(qualifier_type, path.last());
+				member_candidate = selection.owner.valid() &&
+					selection.owner.value < scopes_.size() &&
+					scopes_[selection.owner.value].kind == ScopeKind::Class;
+			}
+		}
+		if (member_candidate && (selection.kind == MemberLookupKind::Type ||
+			selection.kind == MemberLookupKind::Blocked))
+			throw std::runtime_error("PA12 inherited member name is unsupported");
+		if (member_candidate && selection.kind == MemberLookupKind::Value &&
+			selection.binding.valid())
+		{
+			const Binding& member = binding(selection.binding);
+			const BindingSidecar* sidecar = binding_sidecar(selection.binding);
+			if (member.kind == BindingKind::Variable &&
+				!is_static_member(selection.binding) &&
+				(sidecar == NULL || !sidecar->backing_storage.valid()))
+			{
+				if (!member_accessible(selection.binding, selection.owner, scope))
+					throw std::runtime_error("PA12 record member is inaccessible");
+				const ExprInfo object = semantic_this_expression(node, this_id);
+				const TypeId member_type = member_access_type(this_record,
+					member.type);
+				SemanticFact fact(SemanticFactKind::MemberExpression,
+					member_type, SemanticValueCategory::Lvalue, &node);
+				fact.token = SimpleTokenType::OP_ARROW;
+				fact.binding = selection.binding;
+				fact.selected_binding = selection.binding;
+				fact.selected_scope = selection.owner;
+				const SemanticFactId result = make_semantic_fact(fact);
+				set_semantic_name(result, path);
+				set_semantic_children(result,
+					std::vector<SemanticFactId>(1, object.fact));
+				return ExprInfo(result, member_type,
+					SemanticValueCategory::Lvalue, false);
+			}
+		}
+	}
 	const std::vector<ValueRef> values = lookup_value_path(path, scope);
 	if (values.empty())
 		throw std::runtime_error("PA12 unknown expression name");
@@ -1251,40 +1275,6 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 		throw std::runtime_error("PA12 overloaded id requires a target");
 	const Binding& value = binding(values.front().binding);
 	TypeId type = value.type;
-	if (value.kind == BindingKind::Variable &&
-		!is_static_member(values.front().binding))
-	{
-		const BindingSidecar* sidecar = binding_sidecar(values.front().binding);
-		const BindingId this_id = implicit_this_binding(scope);
-		if ((sidecar == NULL || !sidecar->backing_storage.valid()) &&
-			this_id.valid())
-		{
-			const Binding& this_binding = binding(this_id);
-			const TypeId this_pointer = strip_cv_type(
-				expression_object_type(this_binding.type));
-			if (type_kind(this_pointer) == TypeKind::Pointer)
-			{
-				const TypeId this_record = types_[this_pointer.value].child;
-				if (class_scope_for_type(this_record) == values.front().scope)
-				{
-					const ExprInfo object = semantic_this_expression(node, scope);
-					const TypeId member_type = member_access_type(this_record,
-						value.type);
-					SemanticFact fact(SemanticFactKind::MemberExpression,
-						member_type, SemanticValueCategory::Lvalue, &node);
-					fact.token = SimpleTokenType::OP_ARROW;
-					fact.binding = values.front().binding;
-					fact.selected_binding = values.front().binding;
-					const SemanticFactId result = make_semantic_fact(fact);
-					set_semantic_name(result, path);
-					set_semantic_children(result,
-						std::vector<SemanticFactId>(1, object.fact));
-					return ExprInfo(result, member_type,
-						SemanticValueCategory::Lvalue, false);
-				}
-			}
-		}
-	}
 	if (value.kind == BindingKind::Function)
 		type = member_function_expression_type(type, values.front().scope,
 			values.front().binding);
@@ -2237,9 +2227,21 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const bool local_object_scope = declaration->scope.valid() &&
 			declaration->scope.value < scopes_.size() &&
 			scopes_[declaration->scope.value].kind == ScopeKind::Block;
-		const bool implicit_default_object = init.children.size() == 1 &&
+		const bool legacy_empty_default_object = init.children.size() == 1 &&
 			local_object_scope && record.valid() &&
-			implicit_default_constructor_supported(record);
+			record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class &&
+			!named_[record.value].has_base &&
+			named_[record.value].scope.valid() &&
+			named_[record.value].scope.value < scopes_.size() &&
+			scopes_[named_[record.value].scope.value].bindings.empty();
+		if (init.children.size() == 1 && local_object_scope && record.valid())
+			// An empty implicit default construction is represented by the
+			// storage fact alone for inherited state-free records.  The call below
+			// validates that no unsupported base/member initialization would be
+			// silently discarded.  Keep the pre-existing no-base empty-class
+			// constructor fact for the PA12 semantic contract.
+			(void)implicit_default_constructor_supported(record);
 		const bool special_function_initializer =
 			value.kind == BindingKind::Function &&
 			function_declaration_kind(binding_id) !=
@@ -2285,7 +2287,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
 		}
-		else if (anonymous_union_object || implicit_default_object)
+		else if (anonymous_union_object || legacy_empty_default_object)
 		{
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1,

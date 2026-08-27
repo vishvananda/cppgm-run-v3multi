@@ -81,6 +81,49 @@ void zero_floating_literal(LiteralData* literal)
 
 }
 
+BindingId PA11SemanticModel::ensure_implicit_default_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		throw std::runtime_error("invalid implicit constructor record");
+	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
+	if (existing != NULL && existing->constructor_binding.valid())
+		return existing->constructor_binding;
+	const TypeId object = named_type(record_id);
+	const TypeId constructor_type = make_function(
+		std::vector<TypeId>(1, make_pointer(object)), false,
+		fundamental(FundamentalType::Void));
+	Binding constructor(BindingKind::Function, NameId(), constructor_type);
+	const BindingId binding_id(bindings_.size());
+	bindings_.push_back(constructor);
+	NamedRecordSidecar record_sidecar;
+	if (existing != NULL)
+		record_sidecar = *existing;
+	record_sidecar.constructor_binding = binding_id;
+	set_named_record_sidecar(record_id, record_sidecar);
+	BindingSidecar binding_sidecar;
+	binding_sidecar.constructor_record = record_id;
+	set_binding_sidecar(binding_id, binding_sidecar);
+	synthetic_function_facts_.push_back(
+		SyntheticFunctionFact(record_id, binding_id));
+	return binding_id;
+}
+BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag != ClassTag::Union)
+		throw std::runtime_error("invalid anonymous union constructor record");
+	return ensure_implicit_default_constructor(record_id);
+}
+const AnonymousUnionFact* PA11SemanticModel::anonymous_union_fact(
+	const PA10AstNode& node) const
+{
+	return anonymous_union_fact_index_.find(&node);
+}
+
 ExprInfo PA11SemanticModel::semantic_empty_braced_init_list(
 	const PA10AstNode& node, TypeId target)
 {
