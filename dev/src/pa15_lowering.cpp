@@ -1052,12 +1052,15 @@ void Pa15Lowerer::index_function_scope_variables(){
 
 void Pa15Lowerer::collect_functions(){
 		index_function_scope_variables();
+		std::vector<unsigned char> demanded_member_functions(
+			model_.function_facts_.size(), 0);
+		collect_demanded_member_functions(&demanded_member_functions);
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
 			if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
 				model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
-				model_.member_call_demand_index_.find(fact.binding) == NULL)
+				demanded_member_functions[i] == 0)
 				continue;
 			if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size())
 				throw std::runtime_error("PA15 function owner is missing");

@@ -213,7 +213,6 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	function_fact_index_(), function_binding_fact_index_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
 	class_function_facts_(),
-	member_call_demand_index_(),
 	synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),

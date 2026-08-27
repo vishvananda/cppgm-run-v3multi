@@ -340,6 +340,8 @@ private:
 	void collect_globals();
 	void materialize_pending_global_initializers();
 	void index_function_scope_variables();
+	void collect_demanded_member_functions(
+		std::vector<unsigned char>* demanded) const;
 	void collect_functions();
 	void collect_function_declarations();
 	void demand_function_declaration(BindingId binding);

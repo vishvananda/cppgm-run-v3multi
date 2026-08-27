@@ -3,6 +3,88 @@
 namespace pa11_semantic_internal
 {
 
+void Pa15Lowerer::collect_demanded_member_functions(
+	std::vector<unsigned char>* demanded) const
+{
+	if (demanded == NULL || demanded->size() != model_.function_facts_.size())
+		throw std::runtime_error("PA15 member demand output is missing");
+	std::vector<FunctionFactId> function_work;
+	std::vector<unsigned char> scanned_functions(
+		model_.function_facts_.size(), 0);
+	for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
+	{
+		const FunctionFact& fact = model_.function_facts_[i];
+		if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size() ||
+			model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace ||
+			!fact.function_scope.valid())
+			continue;
+		function_work.push_back(FunctionFactId(i));
+	}
+	std::vector<unsigned char> scanned_facts(
+		model_.semantic_facts_.size(), 0);
+	while (!function_work.empty())
+	{
+		const FunctionFactId function_id = function_work.back();
+		function_work.pop_back();
+		if (!function_id.valid() || function_id.value >=
+			model_.function_facts_.size())
+			throw std::runtime_error("PA15 member demand function is invalid");
+		if (scanned_functions[function_id.value] != 0)
+			continue;
+		scanned_functions[function_id.value] = 1;
+		const FunctionFact& function = model_.function_facts_[function_id.value];
+		if (!function.body_fact.valid())
+			continue;
+		std::vector<SemanticFactId> fact_work;
+		fact_work.push_back(function.body_fact);
+		while (!fact_work.empty())
+		{
+			const SemanticFactId fact_id = fact_work.back();
+			fact_work.pop_back();
+			if (!fact_id.valid() || fact_id.value >= model_.semantic_facts_.size())
+				throw std::runtime_error("PA15 member demand fact is invalid");
+			if (scanned_facts[fact_id.value] != 0)
+				continue;
+			scanned_facts[fact_id.value] = 1;
+			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+			if (fact.kind == SemanticFactKind::CallExpression &&
+				fact.has_implicit_object)
+			{
+				if (!fact.has_callee || !fact.selected_binding.valid() ||
+					fact.selected_binding.value >= model_.bindings_.size())
+					throw std::runtime_error("PA15 member call demand is incomplete");
+				const FunctionFactId* target_id =
+					model_.function_binding_fact_index_.find(fact.selected_binding);
+				if (target_id != NULL && target_id->valid() &&
+					target_id->value < model_.function_facts_.size())
+				{
+					const FunctionFact& target =
+						model_.function_facts_[target_id->value];
+					if (target.owner.valid() && target.owner.value <
+						model_.scopes_.size() &&
+						model_.scopes_[target.owner.value].kind == ScopeKind::Class &&
+						target.function_scope.valid() && target.body_fact.valid() &&
+						!(*demanded)[target_id->value])
+					{
+						(*demanded)[target_id->value] = 1;
+						function_work.push_back(*target_id);
+					}
+				}
+			}
+			if (fact.child_count == 0)
+				continue;
+			if (fact.child_begin == InvalidIdentityValue ||
+				fact.child_count > model_.semantic_children_.size() ||
+				fact.child_begin > model_.semantic_children_.size() -
+					fact.child_count)
+				throw std::runtime_error("PA15 member demand child range is invalid");
+			for (std::size_t child = 0; child < fact.child_count; ++child)
+				fact_work.push_back(model_.semantic_children_[
+					fact.child_begin + child]);
+		}
+	}
+}
+
 LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 {
 	const SemanticFact& fact = model_.semantic_facts_[id.value];

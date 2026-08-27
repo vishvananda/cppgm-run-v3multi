@@ -1339,8 +1339,6 @@ private:
 	std::vector<LabelFact> label_facts_;
 	std::vector<FunctionLabelTable> label_tables_;
 	std::vector<FunctionFactId> class_function_facts_;
-	FlatIndex<BindingId, bool, IdentityHash<BindingId> >
-		member_call_demand_index_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
@@ -1871,8 +1869,6 @@ private:
 	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope) const
-	;
-	void record_member_call_demand(BindingId binding)
 	;
 	BindingId implicit_this_binding(ScopeId scope) const
 	;

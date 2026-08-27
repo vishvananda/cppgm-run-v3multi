@@ -72,14 +72,6 @@ BindingId PA11SemanticModel::implicit_this_binding(ScopeId scope) const
 	}
 	return BindingId();
 }
-void PA11SemanticModel::record_member_call_demand(BindingId binding_id)
-{
-	if (!binding_id.valid() || binding_id.value >= bindings_.size())
-		throw std::runtime_error("PA12 member call demand has invalid binding");
-	if (member_call_demand_index_.find(binding_id) != NULL)
-		return;
-	member_call_demand_index_.set(binding_id, true);
-}
 ExprInfo PA11SemanticModel::semantic_this_expression(
 	const PA10AstNode& node, ScopeId scope)
 {
@@ -207,8 +199,10 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 	{
 		ValueRef value;
 		TypeId type;
+		std::vector<unsigned int> ranks;
 	};
 	std::vector<CandidateScore> viable;
+	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
 		const Binding& candidate = binding(candidates[i].binding);
@@ -228,6 +222,11 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		CandidateScore score;
 		score.value = candidates[i];
 		score.type = candidate.type;
+		score.ranks.reserve(arguments.size() + 1);
+		// The implicit object is the first call argument for overload
+		// ranking.  conversion_for intentionally ignores top-level cv for
+		// ordinary by-value arguments, so rank this qualification explicitly.
+		score.ranks.push_back(actual_object == required_object ? 0 : 1);
 		bool arguments_viable = true;
 		for (std::size_t arg = 0; arg < arguments.size(); ++arg)
 		{
@@ -238,6 +237,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 					arguments_viable = false;
 					break;
 				}
+				score.ranks.push_back(ellipsis_rank);
 				continue;
 			}
 			ConversionChoice choice;
@@ -262,16 +262,35 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 				arguments_viable = false;
 				break;
 			}
+			score.ranks.push_back(choice.rank);
 		}
 		if (arguments_viable)
 			viable.push_back(score);
 	}
 	if (viable.empty())
 		throw std::runtime_error("PA12 no viable member call");
-	if (viable.size() != 1)
-		throw std::runtime_error("PA12 member overload set is deferred");
-	const ValueRef selected = viable.front().value;
-	const TypeId selected_type = viable.front().type;
+	const auto better = [](const CandidateScore& left,
+		const CandidateScore& right) -> bool
+	{
+		bool strict = false;
+		for (std::size_t i = 0; i < left.ranks.size(); ++i)
+		{
+			if (left.ranks[i] > right.ranks[i])
+				return false;
+			if (left.ranks[i] < right.ranks[i])
+				strict = true;
+		}
+		return strict;
+	};
+	std::size_t best_index = 0;
+	for (std::size_t i = 1; i < viable.size(); ++i)
+		if (better(viable[i], viable[best_index]))
+			best_index = i;
+	for (std::size_t i = 0; i < viable.size(); ++i)
+		if (i != best_index && !better(viable[best_index], viable[i]))
+			throw std::runtime_error("PA12 ambiguous member call");
+	const ValueRef selected = viable[best_index].value;
+	const TypeId selected_type = viable[best_index].type;
 	if (!member_accessible(selected.binding, member_scope, scope))
 		throw std::runtime_error("PA12 member call is inaccessible");
 	if (function_declaration_kind(selected.binding) ==
@@ -325,7 +344,6 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		children.push_back(arguments[i].fact);
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result, children);
-	record_member_call_demand(selected.binding);
 	return ExprInfo(result, result_type, result_category, false);
 }
 
