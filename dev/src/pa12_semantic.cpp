@@ -1759,13 +1759,13 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	const BuiltinKind builtin = builtin_kind(callee_node);
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
+	const ExprInfo member_call = semantic_member_call_probe(node, scope);
+	if (member_call.fact.valid())
+		return member_call;
 	TypeId functional_target;
 	if (functional_cast_target(callee_node, scope, &functional_target))
 		return semantic_functional_cast(node, scope, functional_target,
 			argument_node);
-	const ExprInfo member_call = semantic_member_call_probe(node, scope);
-	if (member_call.fact.valid())
-		return member_call;
 	if (callee_node.kind == PA10NodeKind::IdExpression &&
 		!has_template_id(callee_node))
 	{

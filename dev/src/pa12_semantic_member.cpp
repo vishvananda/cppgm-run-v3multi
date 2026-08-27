@@ -4,6 +4,135 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+bool PA11SemanticModel::direct_base_chain(TypeId object,
+	std::vector<NamedRecordId>* chain) const
+{
+	if (chain == NULL)
+		return false;
+	chain->clear();
+	if (!object.valid() || object.value >= types_.size())
+		return false;
+	const TypeId record_type = strip_cv_type(expression_object_type(object));
+	if (!record_type.valid() || type_kind(record_type) != TypeKind::Named)
+		return false;
+	const NamedRecordId record_id = named_record_for_type(record_type);
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+
+	// The semantic model permits one direct non-virtual base.  Keep the
+	// relation walk typed and validate it before either lookup or lowering uses
+	// it.  Floyd's check keeps malformed metadata from turning a bounded walk
+	// into an unbounded retry without allocating a whole-program visited set.
+	const auto next_base = [this](NamedRecordId current) -> NamedRecordId
+	{
+		if (!current.valid() || current.value >= named_.size() ||
+			named_[current.value].kind != NamedKind::Class)
+			throw std::runtime_error("invalid PA16 base record identity");
+		const NamedRecord& record = named_[current.value];
+		if (record.direct_base_virtual)
+			throw std::runtime_error("virtual inheritance is outside PA16");
+		if (!record.has_base)
+			return NamedRecordId();
+		if (!record.direct_base.valid() || record.direct_base.value >= named_.size())
+			throw std::runtime_error("invalid PA16 direct base metadata");
+		const NamedRecord& base = named_[record.direct_base.value];
+		if (base.kind != NamedKind::Class || !base.scope.valid() ||
+			base.scope.value >= scopes_.size() ||
+			scopes_[base.scope.value].kind != ScopeKind::Class)
+			throw std::runtime_error("invalid PA16 direct base class metadata");
+		return record.direct_base;
+	};
+
+	NamedRecordId slow = record_id;
+	NamedRecordId fast = record_id;
+	while (slow.valid() && fast.valid())
+	{
+		slow = next_base(slow);
+		if (!slow.valid())
+			break;
+		fast = next_base(fast);
+		if (!fast.valid())
+			break;
+		fast = next_base(fast);
+		if (!fast.valid())
+			break;
+		if (slow == fast)
+			throw std::runtime_error("cyclic PA16 direct base metadata");
+	}
+
+	NamedRecordId current = record_id;
+	while (true)
+	{
+		const NamedRecordId base = next_base(current);
+		if (!base.valid())
+			break;
+		chain->push_back(base);
+		current = base;
+	}
+	return true;
+}
+
+bool PA11SemanticModel::member_base_path(TypeId object, ScopeId target,
+	std::vector<NamedRecordId>* path) const
+{
+	if (path != NULL)
+		path->clear();
+	if (!target.valid() || target.value >= scopes_.size() ||
+		scopes_[target.value].kind != ScopeKind::Class)
+		return false;
+	const ScopeId actual = class_scope_for_type(object);
+	if (!actual.valid())
+		return false;
+	if (actual == target)
+		return true;
+	std::vector<NamedRecordId> chain;
+	if (!direct_base_chain(object, &chain))
+		return false;
+	for (std::size_t i = 0; i < chain.size(); ++i)
+	{
+		if (path != NULL)
+			path->push_back(chain[i]);
+		if (named_[chain[i].value].scope == target)
+			return true;
+	}
+	if (path != NULL)
+		path->clear();
+	return false;
+}
+
+bool PA11SemanticModel::member_object_qualification_convertible(TypeId object,
+	TypeId required) const
+{
+	if (!object.valid() || object.value >= types_.size() ||
+		!required.valid() || required.value >= types_.size())
+		return false;
+	const TypeId actual_record = strip_cv_type(expression_object_type(object));
+	const TypeId required_record = strip_cv_type(expression_object_type(required));
+	if (type_kind(actual_record) != TypeKind::Named ||
+		type_kind(required_record) != TypeKind::Named)
+		return false;
+	return (cv_qualifiers(object) & ~cv_qualifiers(required)) == 0;
+}
+bool PA11SemanticModel::member_object_convertible(TypeId object,
+	TypeId required, ScopeId member_scope,
+	std::vector<NamedRecordId>* path) const
+{
+	if (path != NULL)
+		path->clear();
+	if (!object.valid() || object.value >= types_.size() ||
+		!required.valid() || required.value >= types_.size() ||
+		!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class)
+		return false;
+	const TypeId required_record = strip_cv_type(expression_object_type(required));
+	if (type_kind(required_record) != TypeKind::Named ||
+		class_scope_for_type(required_record) != member_scope ||
+		!member_base_path(object, member_scope, path))
+		return false;
+	return member_object_qualification_convertible(object, required);
+}
+
 TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member)
 {
 	const unsigned int qualifiers = cv_qualifiers(expression_object_type(object));
@@ -25,12 +154,18 @@ BindingId PA11SemanticModel::member_binding(TypeId object, NameId name) const
 std::vector<ValueRef> PA11SemanticModel::member_function_candidates(
 	TypeId object, NameId name) const
 {
-	std::vector<ValueRef> result;
 	const TypeId record_type = strip_cv_type(expression_object_type(object));
 	if (type_kind(record_type) != TypeKind::Named)
-		return result;
+		return std::vector<ValueRef>();
 	const ScopeId member_scope = class_scope_for_type(record_type);
-	if (!member_scope.valid() || member_scope.value >= scopes_.size())
+	return member_function_candidates_in_scope(member_scope, name);
+}
+std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
+	ScopeId member_scope, NameId name) const
+{
+	std::vector<ValueRef> result;
+	if (!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class)
 		return result;
 	const ValueList* values = scopes_[member_scope.value].values.find(name);
 	if (values == NULL)
@@ -45,6 +180,58 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates(
 			result.push_back(ValueRef(member_scope, candidate_id));
 	}
 	return result;
+}
+ScopeId PA11SemanticModel::unqualified_member_scope(TypeId object,
+	NameId name, ScopeId start, std::vector<NamedRecordId>* base_path) const
+{
+	if (base_path != NULL)
+		base_path->clear();
+	const ScopeId class_scope = class_scope_for_type(object);
+	if (!class_scope.valid() || !start.valid() || start.value >= scopes_.size())
+		return ScopeId();
+	const SourcePoint point = lookup_source_point(start);
+	ScopeId cursor = start;
+	bool reached_class = false;
+	while (cursor.valid() && cursor.value < scopes_.size())
+	{
+		begin_lookup();
+		std::vector<ValueRef> values;
+		if (lookup_value_graph(cursor, name, &values, false, point))
+		{
+			for (std::size_t i = 0; i < values.size(); ++i)
+				if (values[i].scope != cursor)
+					return ScopeId();
+			return cursor;
+		}
+		if (cursor == class_scope)
+		{
+			reached_class = true;
+			break;
+		}
+		cursor = scopes_[cursor.value].parent;
+	}
+	if (!reached_class)
+		return ScopeId();
+
+	std::vector<NamedRecordId> bases;
+	if (!direct_base_chain(object, &bases))
+		return ScopeId();
+	for (std::size_t i = 0; i < bases.size(); ++i)
+	{
+		const ScopeId base_scope = named_[bases[i].value].scope;
+		begin_lookup();
+		std::vector<ValueRef> values;
+		if (lookup_value_graph(base_scope, name, &values, false, point))
+		{
+			for (std::size_t j = 0; j < values.size(); ++j)
+				if (values[j].scope != base_scope)
+					return ScopeId();
+			if (base_path != NULL)
+				base_path->assign(bases.begin(), bases.begin() + i + 1);
+			return base_scope;
+		}
+	}
+	return ScopeId();
 }
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	ScopeId member_scope, ScopeId access_scope) const
@@ -167,23 +354,41 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		if (type_kind(record_object) != TypeKind::Named)
 			return ExprInfo();
 	}
-	const ScopeId member_scope = class_scope_for_type(record_object);
+	return semantic_member_call_with_object(node, scope,
+		member_node.token, object, actual_object,
+		class_scope_for_type(record_object),
+		member_function_candidates(record_object, member_name.last()));
+}
+
+ExprInfo PA11SemanticModel::semantic_member_call_with_object(
+	const PA10AstNode& node, ScopeId scope,
+	SimpleTokenType member_token, const ExprInfo& object,
+	TypeId actual_object, ScopeId member_scope,
+	const std::vector<ValueRef>& candidates,
+	const std::vector<NamedRecordId>* base_path)
+{
+	if (member_token != SimpleTokenType::OP_DOT &&
+		member_token != SimpleTokenType::OP_ARROW)
+		throw std::runtime_error("PA12 invalid member call token");
 	if (!member_scope.valid())
 		return ExprInfo();
-	const std::vector<ValueRef> candidates = member_function_candidates(
-		record_object, member_name.last());
 	if (candidates.empty())
 		return ExprInfo();
-	if (member_node.token == SimpleTokenType::OP_DOT &&
+	if (member_token == SimpleTokenType::OP_DOT &&
 		object.category != SemanticValueCategory::Lvalue)
 		throw std::runtime_error("PA12 member call needs an lvalue object");
-	if (member_node.token == SimpleTokenType::OP_ARROW)
+	if (member_token == SimpleTokenType::OP_ARROW)
 	{
+		const TypeId pointer = strip_cv_type(expression_object_type(object.type));
+		if (type_kind(pointer) != TypeKind::Pointer)
+			throw std::runtime_error("PA12 member call arrow operand is not a pointer");
 		const TypeId pointer_value = strip_top_cv_type(object.type);
 		record_builtin_conversion(object, pointer_value);
 	}
-	const TypeId actual_record = strip_cv_type(actual_object);
-	if (class_scope_for_type(actual_record) != member_scope)
+	if (base_path == NULL && !member_base_path(actual_object, member_scope, NULL))
+		throw std::runtime_error("PA12 member call object owner mismatch");
+	if (base_path != NULL && base_path->empty() &&
+		class_scope_for_type(actual_object) != member_scope)
 		throw std::runtime_error("PA12 member call object owner mismatch");
 
 	const PA10AstNode& argument_node = node.children.back();
@@ -211,7 +416,9 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		const TypeId required_object = member_object_type(candidate.type,
 			member_scope);
 		if (!required_object.valid() ||
-			!qualification_convertible(actual_object, required_object))
+			class_scope_for_type(required_object) != member_scope ||
+			!member_object_qualification_convertible(actual_object,
+				required_object))
 			continue;
 		std::size_t required = function.parameters.size();
 		while (required != 0 && function_default_argument(
@@ -339,7 +546,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		result_category = SemanticValueCategory::Xvalue;
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
-	fact.token = member_node.token;
+	fact.token = member_token;
 	fact.has_callee = true;
 	fact.has_implicit_object = true;
 	fact.selected_binding = selected.binding;
@@ -357,6 +564,51 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 	return ExprInfo(result, result_type, result_category, false);
 }
 
+ExprInfo PA11SemanticModel::semantic_unqualified_member_call(
+	const PA10AstNode& node, const PA10AstNode& callee_node, ScopeId scope)
+{
+	if (node.children.size() != 2)
+		return ExprInfo();
+	if (callee_node.kind != PA10NodeKind::IdExpression ||
+		callee_node.has_token || has_template_id(callee_node))
+		return ExprInfo();
+	const NamePath member_name = name_path(callee_node);
+	if (member_name.global || member_name.components.size() != 1)
+		return ExprInfo();
+	const BindingId this_id = implicit_this_binding(scope);
+	if (!this_id.valid())
+		return ExprInfo();
+	const Binding& this_binding = binding(this_id);
+	const TypeId this_pointer = strip_cv_type(expression_object_type(
+		this_binding.type));
+	if (this_binding.kind != BindingKind::Parameter ||
+		type_kind(this_pointer) != TypeKind::Pointer)
+		throw std::runtime_error("PA12 implicit this binding is invalid");
+	const TypeId record_object = types_[this_pointer.value].child;
+	const ScopeId member_scope = class_scope_for_type(record_object);
+	if (!member_scope.valid())
+		return ExprInfo();
+
+	// Search lexical block/function scopes, then the direct class and its typed
+	// direct-base chain.  A nearer non-class declaration leaves ownership with
+	// the ordinary call resolver; a class/base method set suppresses enclosing
+	// namespace candidates.
+	std::vector<NamedRecordId> base_path;
+	const ScopeId selected_scope = unqualified_member_scope(record_object,
+		member_name.last(), scope, &base_path);
+	if (!selected_scope.valid() || selected_scope.value >= scopes_.size() ||
+		scopes_[selected_scope.value].kind != ScopeKind::Class)
+		return ExprInfo();
+	const std::vector<ValueRef> candidates =
+		member_function_candidates_in_scope(selected_scope, member_name.last());
+	if (candidates.empty())
+		return ExprInfo();
+	const ExprInfo object = semantic_this_expression(node, scope);
+	return semantic_member_call_with_object(node, scope,
+		SimpleTokenType::OP_ARROW, object, record_object, selected_scope,
+		candidates, &base_path);
+}
+
 ExprInfo PA11SemanticModel::semantic_member_call_probe(
 	const PA10AstNode& node, ScopeId scope)
 {
@@ -366,11 +618,14 @@ ExprInfo PA11SemanticModel::semantic_member_call_probe(
 	while (member_node->kind == PA10NodeKind::ParenthesizedExpression &&
 		member_node->children.size() == 1)
 		member_node = &member_node->children.front();
-	if (member_node->kind != PA10NodeKind::MemberExpression)
+	if (member_node->kind != PA10NodeKind::MemberExpression &&
+		member_node->kind != PA10NodeKind::IdExpression)
 		return ExprInfo();
 	SemanticTailGuard member_tail(*this);
-	const ExprInfo member_call = semantic_member_call_expression(
-		node, *member_node, scope);
+	const ExprInfo member_call = member_node->kind ==
+		PA10NodeKind::MemberExpression ? semantic_member_call_expression(
+			node, *member_node, scope) : semantic_unqualified_member_call(node,
+			*member_node, scope);
 	if (!member_call.fact.valid())
 		return ExprInfo();
 	member_tail.commit();

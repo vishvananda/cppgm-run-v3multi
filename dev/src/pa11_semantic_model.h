@@ -1436,6 +1436,18 @@ private:
 	;
 	ScopeId class_scope_for_type(TypeId type) const
 	;
+	bool direct_base_chain(TypeId object,
+		std::vector<NamedRecordId>* chain) const
+	;
+	bool member_base_path(TypeId object, ScopeId target,
+		std::vector<NamedRecordId>* path) const
+	;
+	bool member_object_qualification_convertible(TypeId object,
+		TypeId required) const
+	;
+	bool member_object_convertible(TypeId object, TypeId required,
+		ScopeId member_scope, std::vector<NamedRecordId>* path = NULL) const
+	;
 	ScopeId scope_for_type(TypeId type) const
 	;
 	bool direct_value_exists(ScopeId scope, NameId name) const
@@ -1867,6 +1879,12 @@ private:
 	std::vector<ValueRef> member_function_candidates(TypeId object,
 		NameId name) const
 	;
+	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
+		NameId name) const
+	;
+	ScopeId unqualified_member_scope(TypeId object, NameId name,
+		ScopeId start, std::vector<NamedRecordId>* base_path = NULL) const
+	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope) const
 	;
@@ -1880,6 +1898,15 @@ private:
 	;
 	ExprInfo semantic_member_call_expression(const PA10AstNode& node,
 		const PA10AstNode& member_node, ScopeId scope)
+	;
+	ExprInfo semantic_member_call_with_object(const PA10AstNode& node,
+		ScopeId scope, SimpleTokenType member_token,
+		const ExprInfo& object, TypeId actual_object, ScopeId member_scope,
+		const std::vector<ValueRef>& candidates,
+		const std::vector<NamedRecordId>* base_path = NULL)
+	;
+	ExprInfo semantic_unqualified_member_call(const PA10AstNode& node,
+		const PA10AstNode& callee_node, ScopeId scope)
 	;
 	ExprInfo semantic_member_call_probe(const PA10AstNode& node,
 		ScopeId scope)

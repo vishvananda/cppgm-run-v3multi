@@ -325,10 +325,42 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				actual_object = model_.expression_object_type(object_fact.type);
 				object = lower_address(facts.front());
 			}
-			if (model_.class_scope_for_type(model_.strip_cv_type(actual_object)) !=
-				member_owner || !model_.qualification_convertible(
-				actual_object, required_object) || !object.type.is_pointer())
+			std::vector<NamedRecordId> base_path;
+			if (!model_.member_object_convertible(actual_object,
+				required_object, member_owner, &base_path) ||
+				!object.type.is_pointer())
 				throw std::runtime_error("PA15 member call object is incompatible");
+			NamedRecordId current_record = model_.named_record_for_type(
+				actual_object);
+			for (std::size_t i = 0; i < base_path.size(); ++i)
+			{
+				if (!current_record.valid() || current_record.value >=
+					model_.named_.size())
+					throw std::runtime_error(
+						"PA15 member call base record is invalid");
+				const NamedRecord& current = model_.named_[current_record.value];
+				const NamedRecordId base_record = base_path[i];
+				if (current.kind != NamedKind::Class || !current.has_base ||
+					current.direct_base_virtual || current.direct_base != base_record)
+					throw std::runtime_error(
+						"PA15 member call base relation is invalid");
+				const RecordLayout& layout = model_.record_layout(current_record);
+				if (layout.state != RecordLayoutState::Complete ||
+					!layout.has_direct_base ||
+					layout.direct_base.record != base_record ||
+					layout.direct_base.offset != 0)
+					throw std::runtime_error(
+						"PA15 member call base layout is invalid");
+				const LowType offset_type = size_low_type();
+				const LoweredValue offset(integer_operand(0, offset_type),
+					offset_type, false);
+				LowType byte;
+				byte.kind = LowType::TYPE_INTEGER;
+				byte.integer_kind = LowType::INTEGER_I8;
+				object = emit_index(object, offset, byte,
+					lowir_model::IPK_BASE_SUBOBJECT);
+				current_record = base_record;
+			}
 			instruction.args.push_back(object.value);
 			argument_begin = 1;
 		}
