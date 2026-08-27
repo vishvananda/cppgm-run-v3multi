@@ -340,6 +340,21 @@ void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 			prepare_pa12_node(node.children[i], scope);
 		return;
+	case PA10NodeKind::ClassSpecifier:
+	{
+		const NamePath name = class_name(node);
+		if (name.empty())
+			return;
+		const ScopeId class_scope = class_scope_for_type(
+			lookup_type_path(name, scope));
+		if (!class_scope.valid())
+			throw std::runtime_error("PA12 class semantic scope is missing");
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			if (node.children[i].kind == PA10NodeKind::FunctionDefinition ||
+				node.children[i].kind == PA10NodeKind::ClassSpecifier)
+				prepare_pa12_node(node.children[i], class_scope);
+		return;
+	}
 	case PA10NodeKind::FunctionDefinition:
 	{
 		const FunctionFact* function = function_fact(node);
@@ -2931,6 +2946,11 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 			throw std::runtime_error("PA12 class semantic scope is missing");
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 		{
+			if (node.children[i].kind == PA10NodeKind::ClassSpecifier)
+			{
+				analyze_pa12_node(node.children[i], class_scope);
+				continue;
+			}
 			if (node.children[i].kind != PA10NodeKind::FunctionDefinition)
 				continue;
 			analyze_pa12_node(node.children[i], class_scope);

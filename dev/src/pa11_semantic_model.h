@@ -1312,6 +1312,9 @@ private:
 	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
 		function_definition_points_;
 	std::vector<Binding> bindings_;
+	// BindingId is the canonical identity; retain its typed owning scope so
+	// ValueEntry ownership checks do not rescan a whole scope on redeclaration.
+	std::vector<ScopeId> binding_owners_;
 	FlatIndex<BindingId, BindingSidecar, IdentityHash<BindingId> >
 		binding_sidecars_;
 	ScopeId global_;
@@ -1451,6 +1454,9 @@ private:
 	ScopeId scope_for_type(TypeId type) const
 	;
 	bool direct_value_exists(ScopeId scope, NameId name) const
+	;
+	BindingId direct_variable_binding(ScopeId scope,
+		const ValueList& values, bool* direct_other) const
 	;
 	bool direct_namespace_exists(ScopeId scope, NameId name) const
 	;

@@ -199,11 +199,11 @@ if "$app" --emit-lowir -O0 -o "$static_output" "$static_source" \
 else
   static_status=$?
 fi
-if [ "$static_status" -ne 1 ] ||
-   ! rg -Fq 'ERROR: PA15 static member projection is unsupported' \
-     "$static_output.stderr" ||
-   rg -Fq 'ERROR: PA12 record member is inaccessible' "$static_output.stderr"; then
-  echo "protected static object spelling did not reach the PA15 boundary" >&2
+if [ "$static_status" -ne 0 ] ||
+   ! rg -Fq 'return i32 7' "$static_output" ||
+   rg -Fq 'projection=field' "$static_output" ||
+   rg -Fq 'ERROR:' "$static_output.stderr"; then
+  echo "protected static object spelling did not use the static storage boundary" >&2
   sed -n '1,80p' "$static_output.stderr" >&2
   exit 1
 fi

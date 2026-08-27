@@ -231,6 +231,9 @@ private:
 	std::vector<TypeId> demanded_member_declaration_types_;
 	std::map<std::size_t, SymbolId> global_symbols_;
 	std::map<std::size_t, SpellingId> global_name_ids_;
+	std::map<std::size_t, bool> thread_local_by_binding_;
+	std::vector<unsigned char> required_global_bindings_;
+	std::set<std::size_t> emitted_tls_wrappers_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
 	std::map<std::size_t, SymbolId> literal_address_symbols_;
 	std::vector<BlockId> label_blocks_;
@@ -325,12 +328,16 @@ private:
 	abi_mangle::AbiType abi_type(TypeId type) const;
 	std::string abi_symbol(const FunctionFact& fact) const;
 	std::string abi_function_symbol(BindingId binding_id, ScopeId owner) const;
+	std::string abi_tls_wrapper_symbol(BindingId binding_id, ScopeId owner) const;
 	LowType low_type(TypeId type) const;
 	LowType function_result_low_type(TypeId type) const;
 	bool class_object_type(TypeId type) const;
 	bool checkpoint_zero_storage_eligible(TypeId type) const;
 	LowType low_reference_value_type(TypeId type) const;
 	void index_binding_facts();
+	void index_global_storage_demands();
+	void append_tls_wrapper(BindingId binding_id, ScopeId owner,
+		SpellingId global_name);
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
 	bool typed_pointer_zero(SemanticFactId id, TypeId destination) const;
 	bool map_constant_address(SemanticFactId id, SymbolId* target,

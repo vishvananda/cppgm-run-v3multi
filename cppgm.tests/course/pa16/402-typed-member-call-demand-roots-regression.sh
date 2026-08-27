@@ -253,3 +253,30 @@ if [ -s "$inherited_field_output" ] &&
   echo "blocked inherited member emitted an outer f call" >&2
   exit 1
 fi
+
+# A default argument is represented by one typed fact reused by both calls.
+# Keep the address demand rooted through repeated transparent casts so the
+# PA15 index accepts semantic DAG sharing and visits each cast fact once.
+shared_source=$build_dir/static-shared-fact-demand.cpp
+printf '%s\n' \
+  'struct SharedStatic {' \
+  '  static const int value = 7;' \
+  '};' \
+  'int read(const int *value = reinterpret_cast<const int *>(reinterpret_cast<const void *>(&SharedStatic::value))) {' \
+  '  return *value;' \
+  '}' \
+  'int main() { return read() == 7 && read() == 7 ? 0 : 1; }' \
+  >"$shared_source"
+shared_output=$build_dir/static-shared-fact-demand.lowir
+if ! "$app" --emit-lowir -O0 -o "$shared_output" "$shared_source" \
+    >"$shared_output.stdout" 2>"$shared_output.stderr"; then
+  cat "$shared_output.stderr" >&2
+  exit 1
+fi
+if [ "$(rg -c '^declare global @SharedStatic__value' "$shared_output" || true)" -ne 1 ] ||
+   rg -Fq 'multiple parents' "$shared_output.stderr" ||
+   rg -Fq 'projection=field' "$shared_output"; then
+  echo "shared default static address demand did not use one typed global" >&2
+  sed -n '1,80p' "$shared_output.stderr" >&2
+  exit 1
+fi

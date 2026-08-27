@@ -12,6 +12,8 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  demanded_function_declarations_(), demanded_member_declarations_(),
 		  demanded_member_declaration_types_(),
 		  global_symbols_(), global_name_ids_(),
+		  thread_local_by_binding_(), required_global_bindings_(),
+		  emitted_tls_wrappers_(),
 		  symbol_name_ids_(), literal_address_symbols_(), label_blocks_(),
 		  label_referenced_(), label_subtrees_(), label_index_states_(),
 		  label_subtree_states_(), label_lowered_(), label_block_generations_(),
@@ -55,6 +57,7 @@ void Pa15Lowerer::run(){
 		index_binding_facts();
 		collect_functions();
 		collect_function_declarations();
+		index_global_storage_demands();
 		collect_globals();
 		materialize_pending_global_initializers();
 		constant_truth_cache_.assign(model_.semantic_facts_.size(), 255);
@@ -139,6 +142,8 @@ void Pa15Lowerer::initialize_identity_counters(){
 			used_symbols_.insert(spelling(program_.globals[i].name_id));
 		for (std::size_t i = 0; i < program_.functions.size(); ++i)
 			used_symbols_.insert(spelling(program_.functions[i].name_id));
+		for (std::size_t i = 0; i < program_.function_declarations.size(); ++i)
+			used_symbols_.insert(spelling(program_.function_declarations[i].name_id));
 	}
 
 const std::string& Pa15Lowerer::spelling(SpellingId id) const{
@@ -530,11 +535,24 @@ void Pa15Lowerer::index_binding_facts(){
 			const DeclarationFact& declaration = model_.declaration_facts_[i];
 			if (declaration.binding_begin == InvalidIdentityValue)
 				continue;
+			if (declaration.binding_begin > model_.declaration_bindings_.size() ||
+				declaration.binding_count > model_.declaration_bindings_.size() -
+					declaration.binding_begin)
+				throw std::runtime_error("PA15 declaration binding range is invalid");
+			if (declaration.semantic_begin != InvalidIdentityValue &&
+				(declaration.semantic_begin > model_.declaration_semantic_ids_.size() ||
+				 declaration.semantic_count > model_.declaration_semantic_ids_.size() -
+					declaration.semantic_begin))
+				throw std::runtime_error("PA15 declaration semantic range is invalid");
 			for (std::size_t j = 0; j < declaration.binding_count; ++j)
 			{
 				const BindingId binding = model_.declaration_bindings_[
 					declaration.binding_begin + j];
+				if (!binding.valid() || binding.value >= model_.bindings_.size())
+					throw std::runtime_error("PA15 declaration binding identity is invalid");
 				declaration_by_binding_[binding.value] = &declaration;
+				if (declaration.is_thread_local)
+					thread_local_by_binding_[binding.value] = true;
 				if (declaration.semantic_begin != InvalidIdentityValue &&
 					j < declaration.semantic_count)
 					variable_facts_[binding.value] = SemanticFactId(
@@ -794,12 +812,21 @@ void Pa15Lowerer::collect_globals(){
 		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
 		{
 			const Scope& scope = model_.scopes_[scope_index];
-			if (scope.kind != ScopeKind::Namespace) continue;
+			const bool namespace_scope = scope.kind == ScopeKind::Namespace;
+			const bool class_scope = scope.kind == ScopeKind::Class;
+			if (!namespace_scope && !class_scope) continue;
 			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
 			{
 				const BindingId binding_id = scope.bindings[i];
 				const Binding& binding = model_.binding(binding_id);
-				if (binding.kind != BindingKind::Variable) continue;
+				const bool class_static = class_scope &&
+					model_.is_static_member(binding_id);
+				if (binding.kind != BindingKind::Variable ||
+					(class_scope && !class_static) ||
+					(class_static && !binding.has_definition &&
+						(binding_id.value >= required_global_bindings_.size() ||
+						 required_global_bindings_[binding_id.value] == 0)))
+					continue;
 				const std::string internal_name = internal_value_name(ScopeId(scope_index), binding.name);
 				global_symbols_[binding_id.value] = SymbolId(next_symbol_++);
 				global_name_ids_[binding_id.value] = symbol_spelling(internal_name);
@@ -811,16 +838,27 @@ void Pa15Lowerer::collect_globals(){
 		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
 		{
 			const Scope& scope = model_.scopes_[scope_index];
-			if (scope.kind != ScopeKind::Namespace) continue;
+			const bool namespace_scope = scope.kind == ScopeKind::Namespace;
+			const bool class_scope = scope.kind == ScopeKind::Class;
+			if (!namespace_scope && !class_scope) continue;
 			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
 			{
 				const BindingId binding_id = scope.bindings[i];
 				const Binding& binding = model_.binding(binding_id);
-				if (binding.kind != BindingKind::Variable) continue;
+				const bool class_static = class_scope &&
+					model_.is_static_member(binding_id);
+				if (binding.kind != BindingKind::Variable ||
+					(class_scope && !class_static) ||
+					(class_static && !binding.has_definition &&
+						(binding_id.value >= required_global_bindings_.size() ||
+						 required_global_bindings_[binding_id.value] == 0)))
+					continue;
 				const DeclarationFact* declaration = NULL;
 				std::map<std::size_t, const DeclarationFact*>::const_iterator declaration_it =
 					declaration_by_binding_.find(binding_id.value);
 				if (declaration_it != declaration_by_binding_.end()) declaration = declaration_it->second;
+				if (class_static && declaration == NULL)
+					throw std::runtime_error("PA15 static member declaration is missing");
 				const SymbolId symbol = global_symbols_.find(binding_id.value)->second;
 				const SpellingId name_id = global_name_ids_.find(binding_id.value)->second;
 				const SpellingId object_name = intern_spelling(abi_variable_symbol(
@@ -831,22 +869,30 @@ void Pa15Lowerer::collect_globals(){
 					variable_facts_.find(binding_id.value) != variable_facts_.end() ?
 					children(variable_facts_.find(binding_id.value)->second) :
 					std::vector<SemanticFactId>();
-				const bool declaration_only = declaration != NULL && declaration->is_extern &&
-					initializers.empty();
+				const std::map<std::size_t, bool>::const_iterator thread_local_it =
+					thread_local_by_binding_.find(binding_id.value);
+				const bool is_thread_local = thread_local_it !=
+					thread_local_by_binding_.end() && thread_local_it->second;
+				const bool declaration_only = !binding.has_definition;
 				if (declaration_only)
 				{
 					GlobalDeclaration entry;
 					entry.symbol_id = symbol;
 					entry.name_id = name_id;
-					entry.has_type = !unknown_array;
+					// A class-static declaration is an ABI declaration boundary,
+					// not a storage definition.  Keep its type opaque in LowIR so
+					// the declaration cannot be mistaken for an allocated object;
+					// namespace externs retain their established typed boundary.
+					entry.has_type = !class_static && !unknown_array;
 					if (entry.has_type) entry.type = low_type(binding.type);
-					if (declaration->is_thread_local)
+					if (is_thread_local)
 						entry.storage = lowir_model::GSM_THREAD_LOCAL;
 					entry.metadata.binding = binding.internal_linkage ? lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
 					entry.metadata.object_symbol_id = object_name;
 					if (binding.language_linkage == LanguageLinkage::C)
 						entry.metadata.linkage = lowir_model::LLM_C;
 					program_.global_declarations.push_back(entry);
+					append_tls_wrapper(binding_id, ScopeId(scope_index), name_id);
 					continue;
 				}
 				GlobalDefinition entry;
@@ -856,7 +902,7 @@ void Pa15Lowerer::collect_globals(){
 				entry.metadata.object_symbol_id = object_name;
 				if (binding.language_linkage == LanguageLinkage::C)
 					entry.metadata.linkage = lowir_model::LLM_C;
-				if (declaration != NULL && declaration->is_thread_local)
+				if (is_thread_local)
 					entry.storage = lowir_model::GSM_THREAD_LOCAL;
 				TypeId object_type = model_.strip_cv_type(binding.type);
 				if (model_.type_kind(object_type) == TypeKind::Array)
@@ -949,6 +995,7 @@ void Pa15Lowerer::collect_globals(){
 					}
 				}
 				program_.globals.push_back(entry);
+				append_tls_wrapper(binding_id, ScopeId(scope_index), name_id);
 			}
 		}
 	}

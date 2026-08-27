@@ -16,7 +16,13 @@ LoweredValue Pa15Lowerer::lower_member_address(SemanticFactId id){
 		if (member.kind != BindingKind::Variable)
 			throw std::runtime_error("PA15 member address is not a data member");
 		if (model_.is_static_member(member_id))
-			throw std::runtime_error("PA15 static member projection is unsupported");
+		{
+			// The object operand is still an evaluated source expression, but a
+			// static data member has no subobject projection.  Its storage is the
+			// canonical class-owned global selected by PA11/PA12.
+			lower_discarded_expression(facts.front());
+			return address_of_storage(storage_for(member_id));
+		}
 		const BindingSidecar* sidecar = model_.binding_sidecar(member_id);
 		if (sidecar != NULL && sidecar->backing_storage.valid())
 			// Anonymous-union injected members are storage-backed facts, not

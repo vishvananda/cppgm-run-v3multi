@@ -1782,6 +1782,36 @@ void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId
 	scopes_[effective.value].effective_using_directives.push_back(
 		EffectiveUsingDirective(target, scope, declaration_point));
 }
+BindingId PA11SemanticModel::direct_variable_binding(ScopeId scope,
+	const ValueList& values, bool* direct_other) const
+{
+	if (!direct_other)
+		throw std::runtime_error("missing direct value conflict result");
+	*direct_other = false;
+	BindingId result;
+	for (std::size_t i = 0; i < values.entries.size(); ++i)
+	{
+		const ValueEntry& entry = values.entries[i];
+		if (!entry.origin.valid() || entry.origin.value >= scopes_.size())
+			throw std::runtime_error("invalid value origin identity");
+		if (!entry.binding.valid() || entry.binding.value >= bindings_.size() ||
+			entry.binding.value >= binding_owners_.size() ||
+			binding_owners_[entry.binding.value] != entry.origin)
+			throw std::runtime_error("value entry owner identity mismatch");
+		const Binding& value = binding(entry.binding);
+		if (entry.origin != scope)
+			continue;
+		if (value.kind == BindingKind::Variable)
+		{
+			if (result.valid())
+				throw std::runtime_error("ambiguous variable redeclaration");
+			result = entry.binding;
+		}
+		else
+			*direct_other = true;
+	}
+	return result;
+}
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
 {
 	if (node.children.size() != 1)

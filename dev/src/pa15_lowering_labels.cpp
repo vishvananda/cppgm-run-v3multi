@@ -974,10 +974,17 @@ void Pa15Lowerer::collect_label_flow(SemanticFactId id,
 	SemanticFactId parent, std::size_t parent_index){
 	if (!id.valid() || id.value >= model_.semantic_facts_.size())
 		throw std::runtime_error("PA15 label prepass fact is invalid");
-	if (fact_parents_[id.value].valid() &&
-		(fact_parents_[id.value] != parent ||
-		 fact_parent_indexes_[id.value] != parent_index))
-		throw std::runtime_error("PA15 semantic fact has multiple parents");
+	// A default argument or another typed expression may be shared by several
+	// call sites.  Its first structural path is sufficient for label recovery;
+	// a second completed occurrence must not turn ordinary DAG sharing into a
+	// parent conflict.  An active occurrence, however, is a real cycle.
+	if (fact_index_generations_[id.value] == label_generation_)
+	{
+		if (label_index_states_[id.value] == 2)
+			return;
+		if (label_index_states_[id.value] == 1)
+			throw std::runtime_error("PA15 semantic fact cycle in label prepass");
+	}
 	fact_parents_[id.value] = parent;
 	fact_parent_indexes_[id.value] = parent_index;
 	fact_switch_ancestors_[id.value] = SemanticFactId();

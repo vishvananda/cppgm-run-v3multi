@@ -202,7 +202,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	  namespace_alias_declaration_points_(),
 	  type_declaration_points_(), inline_namespace_declaration_points_(),
 	  scope_declaration_points_(), function_definition_points_(),
-	  bindings_(), binding_sidecars_(),
+		bindings_(), binding_owners_(), binding_sidecars_(),
 	  global_(), deferred_scopes_(),
 	  dump_binding_views_(), dump_scope_views_(),
 	  anonymous_union_count_(0), anonymous_enum_count_(0), creation_order_(0),
@@ -1206,8 +1206,9 @@ ScopeId PA11SemanticModel::resolve_namespace_path(const NamePath& path,
 BindingId PA11SemanticModel::store_binding(ScopeId scope, const Binding& binding,
 	std::size_t position )
 {
+	if (!scope.valid() || scope.value >= scopes_.size()) throw std::runtime_error("invalid PA11 binding owner scope");
 	const BindingId result(bindings_.size());
-	bindings_.push_back(binding);
+	bindings_.push_back(binding); binding_owners_.push_back(scope);
 	Scope& current = scopes_[scope.value];
 	if (position == InvalidIdentityValue || position > current.bindings.size())
 		position = current.bindings.size();
@@ -1986,38 +1987,68 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	const ValueList* existing_values = current.values.find(name);
 	if (existing_values != NULL)
 	{
-		for (std::size_t i = 0; i < existing_values->entries.size(); ++i)
+		if (!function)
 		{
-			const BindingId existing_id = existing_values->entries[i].binding;
-			const Binding& existing = binding(existing_id);
-			if (!function || existing.kind != BindingKind::Function)
+			bool direct_other = false;
+			const BindingId direct_variable = direct_variable_binding(scope,
+				*existing_values, &direct_other);
+			if (direct_other)
+				throw std::runtime_error("ambiguous variable redeclaration");
+			if (direct_variable.valid())
+			{
+				const Binding& existing = binding(direct_variable);
+				if (existing.language_linkage != language_linkage ||
+					existing.internal_linkage != internal_linkage)
+					throw std::runtime_error("incompatible variable redeclaration");
+				if (existing.type != type)
+					throw std::runtime_error("conflicting variable type");
+				if (definition && existing.has_definition)
+					throw std::runtime_error("duplicate variable definition");
+				if (definition)
+					binding(direct_variable).has_definition = true;
+				if (lexical_view)
+					add_dump_binding_view(scope, direct_variable);
+				return direct_variable;
+			}
+			if (direct_other || !existing_values->entries.empty())
 				throw std::runtime_error("incompatible value redeclaration");
-			if (existing.language_linkage != language_linkage ||
-				existing.internal_linkage != internal_linkage)
-				continue;
-			if (type_kind(existing.type) != TypeKind::Function || type_kind(type) != TypeKind::Function)
-				throw std::runtime_error("invalid function redeclaration");
-			const TypeKey& existing_function = types_[existing.type.value];
-			const TypeKey& candidate_function = types_[type.value];
-			if (existing_function.cv != candidate_function.cv ||
-				existing_function.variadic != candidate_function.variadic ||
-				existing_function.parameters != candidate_function.parameters)
-				continue;
-			if (existing_function.result != candidate_function.result)
-				throw std::runtime_error("conflicting function return type");
-			if (declaration_kind != FunctionDeclarationKind::Normal &&
-				!existing.has_definition)
-				throw std::runtime_error(
-					"deleted/defaulted function must be first declaration");
-			if (definition && existing.has_definition)
-				throw std::runtime_error("duplicate function definition");
-			if (definition) binding(existing_id).has_definition = true;
-			if (lexical_view) add_dump_binding_view(scope, existing_id);
-			return existing_id;
+		}
+		else
+		{
+			for (std::size_t i = 0; i < existing_values->entries.size(); ++i)
+			{
+				const BindingId existing_id = existing_values->entries[i].binding;
+				const Binding& existing = binding(existing_id);
+				if (existing.language_linkage != language_linkage ||
+					existing.internal_linkage != internal_linkage)
+					continue;
+				if (existing.kind != BindingKind::Function)
+					throw std::runtime_error("incompatible value redeclaration");
+				if (type_kind(existing.type) != TypeKind::Function ||
+					type_kind(type) != TypeKind::Function)
+					throw std::runtime_error("invalid function redeclaration");
+				const TypeKey& existing_function = types_[existing.type.value];
+				const TypeKey& candidate_function = types_[type.value];
+				if (existing_function.cv != candidate_function.cv ||
+					existing_function.variadic != candidate_function.variadic ||
+					existing_function.parameters != candidate_function.parameters)
+					continue;
+				if (existing_function.result != candidate_function.result)
+					throw std::runtime_error("conflicting function return type");
+				if (declaration_kind != FunctionDeclarationKind::Normal &&
+					!existing.has_definition)
+					throw std::runtime_error(
+						"deleted/defaulted function must be first declaration");
+				if (definition && existing.has_definition)
+					throw std::runtime_error("duplicate function definition");
+				if (definition) binding(existing_id).has_definition = true;
+				if (lexical_view) add_dump_binding_view(scope, existing_id);
+				return existing_id;
+			}
 		}
 	}
 	Binding value(function ? BindingKind::Function : BindingKind::Variable, name, type);
-	value.has_definition = function && definition;
+	value.has_definition = definition;
 	value.language_linkage = language_linkage;
 	value.internal_linkage = internal_linkage;
 	const BindingId binding_id = store_binding(scope, value);
@@ -2467,13 +2498,13 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		else
 		{
 			const bool function = type_kind(type) == TypeKind::Function;
-			const FunctionDeclarationKind declaration_kind = function ?
-				special_initializer_kind(init) :
-				FunctionDeclarationKind::Normal;
-			const bool definition = function && declaration_kind !=
-				FunctionDeclarationKind::Normal;
-			const bool internal_linkage = spec.is_static &&
-				target.value < scopes_.size() &&
+			const FunctionDeclarationKind declaration_kind = function ? special_initializer_kind(init) : FunctionDeclarationKind::Normal;
+			const bool has_initializer = init.children.size() > 1;
+			// Qualified class targets keep in-class static data declarations distinct from definitions.
+			const bool class_target = target.value < scopes_.size() && scopes_[target.value].kind == ScopeKind::Class;
+			const bool definition = function ? declaration_kind != FunctionDeclarationKind::Normal :
+				(!spec.is_extern || has_initializer) && (!class_target || !spec.is_static);
+			const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&
 				scopes_[target.value].kind == ScopeKind::Namespace;
 			binding_id = add_value(target, name.path.last(), type,
 				function, definition, true, BindingId(),
