@@ -1,6 +1,7 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace pa11_semantic_internal
@@ -1590,6 +1591,12 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 			if (member_specifiers->children[i].has_token &&
 				member_specifiers->children[i].token == SimpleTokenType::KW_STATIC)
 				throw std::runtime_error("PA11 static constructor is invalid");
+	const bool explicit_constructor = member_specifiers != NULL &&
+		std::find_if(member_specifiers->children.begin(),
+			member_specifiers->children.end(),
+			[](const PA10AstNode& child) {
+				return child.has_token && child.token == SimpleTokenType::KW_EXPLICIT;
+			}) != member_specifiers->children.end();
 	const PA10AstNode* clause = top_parameter_clause(*declarator);
 	if (clause == NULL)
 		throw std::runtime_error("PA11 special member parameter clause is missing");
@@ -1613,6 +1620,8 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	if (existing != NULL)
 		sidecar = *existing;
 	sidecar.constructor_record = record_id;
+	sidecar.explicit_constructor = sidecar.explicit_constructor ||
+		explicit_constructor;
 	set_binding_sidecar(function_binding, sidecar);
 	NamedRecordSidecar record_sidecar;
 	const NamedRecordSidecar* existing_record = named_record_sidecar(record_id);

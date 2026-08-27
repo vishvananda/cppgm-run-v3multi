@@ -12,6 +12,7 @@
 #include "pa10_ast.h"
 #include "posttoken.h"
 #include "pa11_semantic_storage.h"
+#include "pa12_semantic_selection.h"
 
 namespace lowir_model
 {
@@ -23,7 +24,6 @@ namespace pa11_semantic_internal
 using namespace pa11_semantic_storage;
 
 class Pa15Lowerer;
-
 
 enum class TypeKind
 {
@@ -296,6 +296,7 @@ struct BindingSidecar
 	PA10OperatorFunctionKind operator_function_kind;
 	SimpleTokenType operator_token;
 	bool nonthrowing;
+	bool explicit_constructor;
 	FunctionDeclarationKind declaration_kind;
 	TemplateSpecializationId template_specialization;
 	TypeId unadjusted_type;
@@ -311,6 +312,7 @@ struct BindingSidecar
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
+		  explicit_constructor(false),
 		  declaration_kind(FunctionDeclarationKind::Normal),
 		  template_specialization(), unadjusted_type()
 	{}
@@ -333,16 +335,6 @@ struct ValueEntry
 struct ValueList
 {
 	std::vector<ValueEntry> entries;
-};
-
-struct ValueRef
-{
-	ScopeId scope;
-	BindingId binding;
-
-	ValueRef(ScopeId scope = ScopeId(), BindingId binding = BindingId())
-		: scope(scope), binding(binding)
-	{}
 };
 
 struct UsingDirectiveRelation
@@ -858,33 +850,6 @@ enum class BuiltinKind
 	Abort
 };
 
-enum class SemanticValueCategory
-{
-	Lvalue,
-	Prvalue,
-	Xvalue
-};
-
-enum class ConversionKind
-{
-	Identity,
-	LvalueToRvalue,
-	Integral,
-	PointerQualification,
-	PointerToVoid,
-	NullptrToPointer,
-	NullIntegerToPointer,
-	NullptrToBool,
-	NullIntegerToNullptr,
-	ArrayToPointer,
-	FunctionToPointer,
-	ReferenceBinding,
-	PointerToBool,
-	Floating,
-	Reinterpret,
-	ToVoid
-};
-
 // PA12 uses this local discriminator while validating the source-level cast
 // family.  It is not stored in SemanticFact and has no PA15 presentation role.
 enum class ExplicitCastKind
@@ -907,44 +872,6 @@ struct ConversionFact
 	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
 		ConversionKind kind = ConversionKind::Identity, unsigned int rank = 0)
 		: source(source), target(target), kind(kind), rank(rank)
-	{}
-};
-
-struct ConversionChoice
-{
-	bool valid;
-	unsigned int rank;
-	ConversionKind kind;
-
-	ConversionChoice(bool valid = false, unsigned int rank = 0,
-		ConversionKind kind = ConversionKind::Identity)
-		: valid(valid), rank(rank), kind(kind)
-	{}
-};
-
-struct FunctionIdResolution
-{
-	bool valid;
-	ValueRef selected;
-	ConversionChoice conversion;
-
-	FunctionIdResolution(bool valid = false, ValueRef selected = ValueRef(),
-		ConversionChoice conversion = ConversionChoice())
-		: valid(valid), selected(selected), conversion(conversion)
-	{}
-};
-
-struct ExprInfo
-{
-	SemanticFactId fact;
-	TypeId type;
-	SemanticValueCategory category;
-	bool integer_zero;
-
-	ExprInfo(SemanticFactId fact = SemanticFactId(), TypeId type = TypeId(),
-		SemanticValueCategory category = SemanticValueCategory::Prvalue,
-		bool integer_zero = false)
-		: fact(fact), type(type), category(category), integer_zero(integer_zero)
 	{}
 };
 
@@ -1680,6 +1607,12 @@ private:
 	;
 	BindingId ensure_implicit_default_constructor(NamedRecordId record)
 	;
+	ConstructorSelection select_constructor(NamedRecordId record,
+		ScopeId access_scope,
+		const std::vector<const PA10AstNode*>& argument_nodes,
+		bool allow_implicit_default,
+		ConstructorInitializationContext context)
+	;
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
 	;
 	const AnonymousUnionFact* anonymous_union_fact(
@@ -1903,8 +1836,11 @@ private:
 	bool has_function_default_argument(const PA10AstNode& declaration,
 		std::size_t declarator_index) const
 	;
-	void record_function_default_arguments(FunctionFact& function,
+	void record_function_default_arguments(FunctionFactId function,
 		const PA10AstNode& declaration, std::size_t declarator_index)
+	;
+	void publish_class_constructor_defaults(const PA10AstNode& node,
+		ScopeId class_scope)
 	;
 	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
 	;
@@ -2009,6 +1945,12 @@ private:
 		bool qualified_class_member, ScopeId qualified_static_scope,
 		ScopeId access_scope) const
 	;
+	TypedFunctionSelection select_typed_function(
+		const std::vector<ValueRef>& candidates,
+		const std::vector<const PA10AstNode*>& argument_nodes,
+		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
+		bool reject_class_by_value = false)
+	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope, TypeId object) const
 	;
@@ -2050,8 +1992,18 @@ private:
 	ExprInfo semantic_storage_id(BindingId storage,
 		const PA10AstNode* source = NULL)
 	;
+	bool semantic_local_class_initializer(
+		BindingId storage, SemanticFactId variable,
+		const PA10AstNode& source, const PA10AstNode* direct_operand,
+		const PA10AstNode* clause, NamedRecordId record, ScopeId access_scope,
+		ConstructorInitializationContext context)
+	;
 	SemanticFactId semantic_constructor_action(BindingId storage,
-		const PA10AstNode& source)
+		const PA10AstNode& source,
+		const std::vector<const PA10AstNode*>& argument_nodes =
+			std::vector<const PA10AstNode*>(), ScopeId access_scope = ScopeId(),
+		ConstructorInitializationContext context =
+			ConstructorInitializationContext::Direct)
 	;
 	bool fundamental_of(TypeId type, FundamentalType* result) const
 	;

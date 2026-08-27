@@ -263,6 +263,50 @@ bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
 		if (function == NULL || !function->synthetic)
 			result = true;
 	}
+	if (!result && record.scope.valid() && record.scope.value < scopes_.size())
+	{
+		// A constructor with trailing defaults is still a runtime constructor
+		// for a no-argument initialization.  Keep this probe typed and local to
+		// the owning class; the full selector publishes the chosen conversion
+		// and default facts when the action is formed.
+		const ScopeId class_scope = record.scope;
+		const ValueList* constructor_values = record.name.valid() ?
+			scopes_[class_scope.value].values.find(record.name) : NULL;
+		FlatIndex<BindingId, bool, IdentityHash<BindingId> > seen;
+		if (constructor_values != NULL)
+		{
+			for (std::size_t i = 0; i < constructor_values->entries.size() &&
+				!result; ++i)
+			{
+				const ValueEntry& entry = constructor_values->entries[i];
+				const BindingId candidate_id = entry.binding;
+				if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+					candidate_id.value >= binding_owners_.size() ||
+					binding_owners_[candidate_id.value] != class_scope ||
+					entry.origin != class_scope)
+					throw std::runtime_error(
+						"PA12 constructor runtime value index identity is invalid");
+				if (seen.find(candidate_id) != NULL)
+					throw std::runtime_error(
+						"PA12 duplicate constructor runtime value index entry");
+				seen.set(candidate_id, true);
+				const Binding& candidate = binding(candidate_id);
+				const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+				if (candidate.kind != BindingKind::Function ||
+					!candidate.type.valid() || candidate.type.value >= types_.size() ||
+					type_kind(candidate.type) != TypeKind::Function || sidecar == NULL ||
+					sidecar->constructor_record != record_id)
+					continue;
+				const TypeKey signature = types_[candidate.type.value];
+				std::size_t required = signature.parameters.size();
+				while (required != 0 && function_default_argument(candidate_id,
+					required - 1).valid())
+					--required;
+				if (required == 0)
+					result = true;
+			}
+		}
+	}
 	if (!result && record.has_base)
 	{
 		result = classify_constructor_runtime(record.direct_base);

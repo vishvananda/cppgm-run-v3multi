@@ -570,7 +570,10 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 			if (fact.has_implicit_object || facts.empty())
 				throw std::runtime_error("PA15 constructor call object is missing");
 			instruction.args.push_back(lower_expression(facts.front()).value);
-			argument_begin = facts.size();
+			// Constructor semantic children own the hidden destination first;
+			// every remaining child is the already-converted/defaulted typed
+			// constructor argument sequence.
+			argument_begin = 1;
 		}
 		else if (fact.has_implicit_object)
 		{

@@ -487,6 +487,46 @@ TypeId PA11SemanticModel::expression_object_type(TypeId type) const
 {
 	return strip_reference_type(type);
 }
+bool PA11SemanticModel::direct_initializer_operand(const PA10AstNode& node,
+	ScopeId scope, const PA10AstNode** operand)
+{
+	if (node.kind != PA10NodeKind::InitDeclarator || node.children.size() != 1)
+		return false;
+	const PA10AstNode& declarator = node.children.front();
+	if (declarator.kind != PA10NodeKind::Declarator ||
+		declarator.children.size() != 2 ||
+		declarator.children[0].kind != PA10NodeKind::Identifier ||
+		declarator.children[1].kind != PA10NodeKind::ParameterClause)
+		return false;
+	const PA10AstNode& clause = declarator.children[1];
+	if (clause.children.size() != 1 ||
+		clause.children.front().kind != PA10NodeKind::ParameterDeclaration)
+		return false;
+	const PA10AstNode& parameter = clause.children.front();
+	if (parameter.children.size() != 1 ||
+		parameter.children.front().kind != PA10NodeKind::DeclSpecifierSeq)
+		return false;
+	const PA10AstNode& spec = parameter.children.front();
+	if (spec.children.size() != 1 ||
+		spec.children.front().kind != PA10NodeKind::DeclSpecifier)
+		return false;
+	const PA10AstNode& name_node = spec.children.front();
+	if (!name_node.identifier_declspecifier || name_node.has_token ||
+		name_node.name_parts.empty())
+		return false;
+	const NamePath name = name_path(name_node);
+	const std::vector<ValueRef> values = lookup_value_path(name, scope);
+	if (values.empty())
+		return false;
+	if (lookup_type_path(name, scope).valid() &&
+		(values.size() != 1 || values.front().binding.value >= bindings_.size() ||
+			(binding(values.front().binding).kind != BindingKind::Variable &&
+				binding(values.front().binding).kind != BindingKind::Parameter)))
+		return false;
+	if (operand != NULL)
+		*operand = &name_node;
+	return true;
+}
 ExprInfo PA11SemanticModel::semantic_storage_id(BindingId storage,
 	const PA10AstNode* source)
 {
@@ -506,16 +546,36 @@ ExprInfo PA11SemanticModel::semantic_storage_id(BindingId storage,
 	return ExprInfo(result, value.type, SemanticValueCategory::Lvalue, false);
 }
 SemanticFactId PA11SemanticModel::semantic_constructor_action(
-	BindingId storage, const PA10AstNode& source)
+	BindingId storage, const PA10AstNode& source,
+	const std::vector<const PA10AstNode*>& argument_nodes,
+	ScopeId access_scope, ConstructorInitializationContext context)
 {
+	if (!storage.valid() || storage.value >= binding_owners_.size())
+		throw std::runtime_error("PA12 constructor storage is invalid");
+	if (!access_scope.valid())
+		access_scope = binding_owners_[storage.value];
 	const Binding& storage_binding = binding(storage);
 	const NamedRecordId record = named_record_for_type(storage_binding.type);
 	if (!record.valid() || record.value >= named_.size() ||
 		named_[record.value].kind != NamedKind::Class)
 		throw std::runtime_error("PA12 constructor action needs a class object");
-	const BindingId constructor = named_[record.value].class_tag == ClassTag::Union ?
-		ensure_anonymous_union_constructor(record) :
-		ensure_implicit_default_constructor(record);
+	if (named_[record.value].class_tag == ClassTag::Union &&
+		!argument_nodes.empty())
+		throw std::runtime_error(
+			"PA16 union constructor arguments are outside checkpoint");
+	ConstructorSelection selection;
+	if (named_[record.value].class_tag == ClassTag::Union)
+	{
+		const BindingId constructor = ensure_anonymous_union_constructor(record);
+		selection = ConstructorSelection(constructor, named_[record.value].scope,
+			constructor_callable_type(constructor));
+	}
+	else
+		selection = select_constructor(record, access_scope,
+			argument_nodes, true, context);
+	if (!selection.valid())
+		throw std::runtime_error("PA12 constructor selection is incomplete");
+	const BindingId constructor = selection.binding;
 	if (function_declaration_kind(constructor) ==
 		FunctionDeclarationKind::Deleted)
 		throw std::runtime_error("PA12 default construction selects deleted constructor");
@@ -532,15 +592,20 @@ SemanticFactId PA11SemanticModel::semantic_constructor_action(
 		&source);
 	call.has_callee = true;
 	call.selected_binding = constructor;
-	call.selected_scope = named_[record.value].scope;
-	call.callable_type = constructor_callable_type(constructor);
+	call.selected_scope = selection.scope;
+	call.callable_type = selection.callable_type;
 	const SemanticFactId call_id = make_semantic_fact(call);
-	set_semantic_children(call_id,
-		std::vector<SemanticFactId>(1, address));
+	std::vector<SemanticFactId> call_children;
+	call_children.reserve(1 + selection.arguments.size());
+	call_children.push_back(address);
+	call_children.insert(call_children.end(), selection.arguments.begin(),
+		selection.arguments.end());
+	set_semantic_children(call_id, call_children);
 	SemanticFact action(SemanticFactKind::ConstructorAction, TypeId(),
 		SemanticValueCategory::Prvalue, &source);
 	action.selected_binding = constructor;
-	action.selected_scope = named_[record.value].scope;
+	action.selected_scope = selection.scope;
+	action.callable_type = selection.callable_type;
 	const SemanticFactId action_id = make_semantic_fact(action);
 	set_semantic_children(action_id,
 		std::vector<SemanticFactId>(1, call_id));
@@ -1762,131 +1827,29 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	TypeId selected_type;
 	if (direct)
 	{
-		struct CandidateScore
-		{
-			ValueRef value;
-			TypeId type;
-			bool variadic;
-			std::vector<unsigned int> ranks;
-		};
-		std::vector<CandidateScore> viable_candidates;
-		const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
-		for (std::size_t i = 0; i < candidates.size(); ++i)
-		{
-			const Binding& candidate = binding(candidates[i].binding);
-			if (candidate.kind != BindingKind::Function ||
-				type_kind(candidate.type) != TypeKind::Function)
-				continue;
-			const TypeKey& function = types_[candidate.type.value];
-			std::size_t required = function.parameters.size();
-			while (required != 0 && function_default_argument(
-				candidates[i].binding, required - 1).valid())
-				--required;
-			if (arguments.size() < required ||
-				(!function.variadic && arguments.size() >
-				function.parameters.size()))
-				continue;
-			CandidateScore score = {candidates[i], candidate.type,
-				function.variadic, std::vector<unsigned int>()};
-			score.ranks.reserve(arguments.size());
-			for (std::size_t arg = 0; arg < arguments.size(); ++arg)
-			{
-				if (arg >= function.parameters.size())
-				{
-					if (!arguments[arg].fact.valid())
-						break;
-					score.ranks.push_back(ellipsis_rank);
-					continue;
-				}
-				ConversionChoice choice;
-				if (arguments[arg].fact.valid())
-					choice = conversion_for(arguments[arg].type, arguments[arg].category, function.parameters[arg], semantic_facts_[arguments[arg].fact.value].source, arguments[arg].integer_zero);
-				else
-				{
-					const PA10AstNode* function_id = target_function_id(
-						argument_node.children[arg], scope);
-					if (function_id != NULL)
-					{
-						const FunctionIdResolution resolution =
-							resolve_function_id_target(*function_id, scope,
-								function.parameters[arg]);
-						choice = resolution.conversion;
-					}
-				}
-				if (!choice.valid)
-					break;
-				score.ranks.push_back(choice.rank);
-			}
-			if (score.ranks.size() != arguments.size())
-				continue;
-			viable_candidates.push_back(score);
-		}
-		if (viable_candidates.empty())
-			throw std::runtime_error("PA12 no viable call");
-		const auto better = [](const CandidateScore& left,
-			const CandidateScore& right) -> bool
-		{
-			bool strict = false;
-			for (std::size_t i = 0; i < left.ranks.size(); ++i)
-			{
-				if (left.ranks[i] > right.ranks[i])
-					return false;
-				if (left.ranks[i] < right.ranks[i])
-					strict = true;
-			}
-			return strict || (left.variadic != right.variadic && !left.variadic);
-		};
-		std::size_t best_index = 0;
-		for (std::size_t i = 1; i < viable_candidates.size(); ++i)
-			if (better(viable_candidates[i], viable_candidates[best_index]))
-				best_index = i;
-		for (std::size_t i = 0; i < viable_candidates.size(); ++i)
-			if (i != best_index && !better(viable_candidates[best_index],
-				viable_candidates[i]))
-				throw std::runtime_error("PA12 ambiguous call");
-		selected = viable_candidates[best_index].value;
-		selected_type = viable_candidates[best_index].type;
+		std::vector<const PA10AstNode*> argument_nodes;
+		argument_nodes.reserve(argument_node.children.size());
+		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+			argument_nodes.push_back(&argument_node.children[i]);
+		const TypedFunctionSelection selection = select_typed_function(
+			candidates, argument_nodes, arguments, scope);
+		selected = selection.selected;
+		selected_type = selection.type;
+		arguments = selection.arguments;
 		validate_direct_static_member_call(selected, qualified_class_member,
 			qualified_static_scope, scope);
-		if (function_declaration_kind(selected.binding) ==
-			FunctionDeclarationKind::Deleted)
-			throw std::runtime_error("PA12 call selects deleted function");
-		const TypeKey& function = types_[selected_type.value];
-		const std::size_t explicit_count = arguments.size();
-		for (std::size_t arg = explicit_count;
-			arg < function.parameters.size(); ++arg)
-		{
-			const SemanticFactId default_fact = function_default_argument(
-				selected.binding, arg);
-			if (!default_fact.valid())
-				throw std::runtime_error("PA12 selected call default is missing");
-			const SemanticFact& value = semantic_facts_[default_fact.value];
-			arguments.push_back(ExprInfo(default_fact, value.type,
-				value.category, false));
-		}
-		const std::size_t fixed_explicit = explicit_count <
-			function.parameters.size() ? explicit_count :
-			function.parameters.size();
-		for (std::size_t arg = 0; arg < fixed_explicit; ++arg)
-		{
-			if (!arguments[arg].fact.valid())
-				arguments[arg] = semantic_expression_for_target(
-					argument_node.children[arg], scope, function.parameters[arg]);
-			arguments[arg] = apply_context_conversion(arguments[arg],
-				function.parameters[arg],
-				semantic_facts_[arguments[arg].fact.value].source);
-		}
 	}
 	else
 	{
 		selected_type = indirect_type;
-		const TypeKey& function = types_[selected_type.value];
+		const TypeKey function = types_[selected_type.value];
 		for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
 			arguments[arg] = apply_context_conversion(arguments[arg],
 				function.parameters[arg],
 				semantic_facts_[arguments[arg].fact.value].source);
 	}
-	apply_call_argument_conversions(arguments, selected_type, scope);
+	if (!direct)
+		apply_call_argument_conversions(arguments, selected_type, scope);
 	const TypeId result_type = function_result_type(selected_type);
 	SemanticValueCategory result_category = SemanticValueCategory::Prvalue;
 	if (type_kind(result_type) == TypeKind::LvalueReference)
@@ -2173,8 +2136,16 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		if (value.kind == BindingKind::Function &&
 			has_function_default_argument(node, i))
 		{
-			FunctionFact* function = function_fact_for_binding(binding_id);
-			if (function == NULL)
+			FunctionFactId function_id;
+			const FunctionFactId* found = function_binding_fact_index_.find(
+				binding_id);
+			if (found != NULL)
+			{
+				if (!found->valid() || found->value >= function_facts_.size())
+					throw std::runtime_error("PA12 default function fact is invalid");
+				function_id = *found;
+			}
+			else
 			{
 				if (init.children.empty())
 					throw std::runtime_error("PA12 default function declarator is missing");
@@ -2184,12 +2155,11 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				if (!owner.valid())
 					throw std::runtime_error("PA12 default function scope is missing");
 				const FunctionFact declaration_function(&node, owner, binding_id);
-				const FunctionFactId function_id(function_facts_.size());
+				function_id = FunctionFactId(function_facts_.size());
 				function_facts_.push_back(declaration_function);
 				function_binding_fact_index_.set(binding_id, function_id);
-				function = &function_facts_[function_id.value];
 			}
-			record_function_default_arguments(*function, node, i);
+			record_function_default_arguments(function_id, node, i);
 		}
 		SemanticFact fact(SemanticFactKind::Variable, value.type,
 			SemanticValueCategory::Prvalue, &init);
@@ -2214,13 +2184,47 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			!named_[record.value].has_base && named_[record.value].scope.valid() &&
 			named_[record.value].scope.value < scopes_.size() &&
 			scopes_[named_[record.value].scope.value].bindings.empty();
-		if (default_object)
-			(void)implicit_default_constructor_supported(record);
 		const bool special_function_initializer =
 			value.kind == BindingKind::Function &&
 			function_declaration_kind(binding_id) !=
 				FunctionDeclarationKind::Normal;
 		const PA10AstNode* direct_operand = NULL;
+		const bool direct_operand_initializer = direct_initializer_operand(init,
+			declaration->scope, &direct_operand);
+		const bool local_class_object = value.kind == BindingKind::Variable &&
+			local_object_scope && record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class &&
+			named_[record.value].class_tag != ClassTag::Union;
+		if (default_object && !direct_operand_initializer &&
+			!has_constructor_declaration(record))
+			(void)implicit_default_constructor_supported(record);
+		const PA10AstNode* clause = NULL;
+		ConstructorInitializationContext initialization_context =
+			ConstructorInitializationContext::Direct;
+		if (!direct_operand_initializer && init.children.size() > 1)
+		{
+			const PA10AstNode& initializer = init.children[1];
+			if (initializer.kind != PA10NodeKind::Initializer &&
+				initializer.kind != PA10NodeKind::ParenInitializer)
+				throw std::runtime_error("PA12 unsupported initializer");
+			if (initializer.kind == PA10NodeKind::Initializer)
+			{
+				if (initializer.children.size() != 1)
+					throw std::runtime_error("PA12 initializer arity mismatch");
+				clause = &initializer.children.front();
+				if (initializer.has_token)
+					initialization_context = clause->kind ==
+						PA10NodeKind::BracedInitList ?
+						ConstructorInitializationContext::CopyList :
+						ConstructorInitializationContext::Copy;
+			}
+			else
+				clause = &initializer;
+		}
+		const bool constructor_initializer = local_class_object &&
+			semantic_local_class_initializer(binding_id, variable, init,
+				direct_operand, clause, record, declaration->scope,
+				initialization_context);
 		SemanticFactId initializer_fact;
 		if (special_function_initializer)
 		{
@@ -2228,7 +2232,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			// binding fact.  They are declaration properties, not expressions
 			// to feed through PA12's target-conversion machinery.
 		}
-		else if (direct_initializer_operand(init, declaration->scope, &direct_operand))
+		else if (!constructor_initializer && direct_operand_initializer)
 		{
 			const ExprInfo expression = semantic_expression_for_target(
 				*direct_operand, declaration->scope, value.type);
@@ -2238,29 +2242,25 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				std::vector<SemanticFactId>(1, expression.fact));
 			initializer_fact = expression.fact;
 		}
-		else if (init.children.size() > 1)
+		else if (!constructor_initializer && init.children.size() > 1)
 		{
-			const PA10AstNode& initializer = init.children[1];
-			if (initializer.kind != PA10NodeKind::Initializer &&
-				initializer.kind != PA10NodeKind::ParenInitializer)
-				throw std::runtime_error("PA12 unsupported initializer");
-			if (initializer.children.size() != 1)
-				throw std::runtime_error("PA12 initializer arity mismatch");
-			const PA10AstNode* clause = &initializer.children.front();
-			if (clause->kind == PA10NodeKind::ParenInitializer)
+			const PA10AstNode* expression_clause = clause;
+			if (expression_clause->kind == PA10NodeKind::ParenInitializer)
 			{
-				if (clause->children.size() != 1)
-					throw std::runtime_error("PA12 invalid parenthesized initializer");
-				clause = &clause->children.front();
+				if (expression_clause->children.size() != 1)
+					throw std::runtime_error(
+						"PA12 invalid parenthesized initializer");
+				expression_clause = &expression_clause->children.front();
 			}
 			const bool class_member_declaration = declaration->scope.valid() &&
 				declaration->scope.value < scopes_.size() &&
 				scopes_[declaration->scope.value].kind == ScopeKind::Class;
 			const ExprInfo expression = class_member_declaration ?
-				semantic_default_member_initializer(*clause, declaration->scope,
-					value.type) : semantic_expression_for_target(*clause,
+				semantic_default_member_initializer(*expression_clause,
+					declaration->scope, value.type) :
+				semantic_expression_for_target(*expression_clause,
 					declaration->scope, value.type);
-			if (clause->kind != PA10NodeKind::BracedInitList)
+			if (expression_clause->kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
 			if (declaration->is_constexpr)
@@ -2925,6 +2925,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 			lookup_type_path(name, scope));
 		if (!class_scope.valid())
 			throw std::runtime_error("PA12 class semantic scope is missing");
+		publish_class_constructor_defaults(node, class_scope);
 		// Form every field's initializer fact before any constructor consumes
 		// the class-owned DMI sidecars.  This also makes declaration order in
 		// the source independent of which constructor appears first.
@@ -2972,8 +2973,7 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 			node.children.empty())
 			throw std::runtime_error("PA12 function fact is missing");
 		prepare_pa12_member_parameter(function_facts_[function_id.value]);
-		record_function_default_arguments(function_facts_[function_id.value],
-			node, 0);
+		record_function_default_arguments(function_id, node, 0);
 		prepare_pa12_labels(node.children.back(),
 			function_facts_[function_id.value]);
 		const ScopeId function_scope =

@@ -2362,41 +2362,6 @@ bool PA11SemanticModel::ambiguous_call_statement(const PA10AstNode& node, ScopeI
 		*argument = &inner.children.front();
 	return true;
 }
-bool PA11SemanticModel::direct_initializer_operand(const PA10AstNode& node,
-	ScopeId scope, const PA10AstNode** operand)
-{
-	if (node.kind != PA10NodeKind::InitDeclarator || node.children.size() != 1)
-		return false;
-	const PA10AstNode& declarator = node.children.front();
-	if (declarator.kind != PA10NodeKind::Declarator ||
-		declarator.children.size() != 2 ||
-		declarator.children[0].kind != PA10NodeKind::Identifier ||
-		declarator.children[1].kind != PA10NodeKind::ParameterClause)
-		return false;
-	const PA10AstNode& clause = declarator.children[1];
-	if (clause.children.size() != 1 ||
-		clause.children.front().kind != PA10NodeKind::ParameterDeclaration)
-		return false;
-	const PA10AstNode& parameter = clause.children.front();
-	if (parameter.children.size() != 1 ||
-		parameter.children.front().kind != PA10NodeKind::DeclSpecifierSeq)
-		return false;
-	const PA10AstNode& spec = parameter.children.front();
-	if (spec.children.size() != 1 ||
-		spec.children.front().kind != PA10NodeKind::DeclSpecifier)
-		return false;
-	const PA10AstNode& name_node = spec.children.front();
-	if (!name_node.identifier_declspecifier || name_node.has_token ||
-		name_node.name_parts.empty())
-		return false;
-	const NamePath name = name_path(name_node);
-	if (lookup_type_path(name, scope).valid() ||
-		lookup_value_path(name, scope).empty())
-		return false;
-	if (operand != NULL)
-		*operand = &name_node;
-	return true;
-}
 const PA10AstNode* PA11SemanticModel::top_parameter_clause(const PA10AstNode& node) const
 {
 	std::size_t direct = node.children.size();

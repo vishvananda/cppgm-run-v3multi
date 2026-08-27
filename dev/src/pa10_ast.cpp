@@ -1691,11 +1691,11 @@ PA10AstNode PA10Parser::parse_parameter_declaration()
 PA10AstNode PA10Parser::parse_initializer()
 {
 	PA10AstNode result = node(PA10NodeKind::Initializer);
-	bool had_equal = false;
 	if (fixed(SimpleTokenType::OP_ASS))
 	{
 		consume_fixed(SimpleTokenType::OP_ASS);
-		had_equal = true;
+		result.has_token = true;
+		result.token = SimpleTokenType::OP_ASS;
 		if (fixed(SimpleTokenType::KW_DEFAULT) ||
 			fixed(SimpleTokenType::KW_DELETE))
 		{
@@ -1707,7 +1707,7 @@ PA10AstNode PA10Parser::parse_initializer()
 	}
 	if (fixed(SimpleTokenType::OP_LBRACE))
 		result.children.push_back(parse_braced_init_list());
-	else if (fixed(SimpleTokenType::OP_LPAREN) && !had_equal)
+	else if (fixed(SimpleTokenType::OP_LPAREN) && !result.has_token)
 	{
 		consume_fixed(SimpleTokenType::OP_LPAREN);
 		begin_non_angle();
