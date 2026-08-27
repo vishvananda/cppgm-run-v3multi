@@ -393,6 +393,117 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::unqualified_member_lookup(
 	return member_lookup(object, name);
 }
 
+ExprInfo PA11SemanticModel::semantic_static_data_member(
+	const PA10AstNode& node, ScopeId scope, const NamePath& path,
+	const MemberLookup& selection, bool* claimed)
+{
+	if (claimed == NULL)
+		throw std::runtime_error("PA12 static member claim output is missing");
+	*claimed = false;
+	if (!selection.owner.valid() || selection.owner.value >= scopes_.size() ||
+		scopes_[selection.owner.value].kind != ScopeKind::Class)
+		return ExprInfo();
+	// Types and blocked names are authoritative class lookup results.  Function
+	// overload sets are intentionally left to the function-id/call path.
+	if (selection.kind == MemberLookupKind::Type ||
+		selection.kind == MemberLookupKind::Blocked)
+	{
+		*claimed = true;
+		return ExprInfo();
+	}
+	if (selection.kind != MemberLookupKind::Value ||
+		!selection.binding.valid())
+		return ExprInfo();
+	if (selection.binding.value >= bindings_.size())
+		throw std::runtime_error("PA12 static member binding is invalid");
+	const Binding& member = binding(selection.binding);
+	if (member.kind != BindingKind::Variable)
+		return ExprInfo();
+	*claimed = true;
+	if (!is_static_member(selection.binding))
+		return ExprInfo();
+	if (!member_accessible(selection.binding, selection.owner, scope, TypeId()))
+		throw std::runtime_error("PA12 record member is inaccessible");
+	TypeId member_type = member.type;
+	if (type_kind(member_type) == TypeKind::LvalueReference ||
+		type_kind(member_type) == TypeKind::RvalueReference)
+		member_type = types_[member_type.value].child;
+	SemanticFact fact(SemanticFactKind::IdExpression, member_type,
+		SemanticValueCategory::Lvalue, &node);
+	fact.binding = selection.binding;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_name(result, path);
+	return ExprInfo(result, member_type, SemanticValueCategory::Lvalue, false);
+}
+
+ExprInfo PA11SemanticModel::semantic_unqualified_static_data(
+	const PA10AstNode& node, ScopeId scope, const NamePath& path, bool* claimed)
+{
+	if (claimed == NULL)
+		throw std::runtime_error("PA12 static member claim output is missing");
+	*claimed = false;
+	if (path.global || path.components.size() != 1)
+		return ExprInfo();
+	ScopeId cursor = scope;
+	for (std::size_t steps = 0; cursor.valid() &&
+		cursor.value < scopes_.size() && steps < scopes_.size(); ++steps)
+	{
+		const Scope& current = scopes_[cursor.value];
+		if (current.kind == ScopeKind::Function)
+		{
+			if (current.parent.valid() && current.parent.value < scopes_.size() &&
+				scopes_[current.parent.value].kind == ScopeKind::Class)
+			{
+				const ScopeId member_scope = current.parent;
+				const Scope& owner = scopes_[member_scope.value];
+				const MemberLookup selection = unqualified_member_lookup(
+					named_type(owner.record), path.last(), scope);
+				return semantic_static_data_member(node, scope, path, selection,
+					claimed);
+			}
+			return ExprInfo();
+		}
+		cursor = current.parent;
+	}
+	return ExprInfo();
+}
+
+ExprInfo PA11SemanticModel::semantic_qualified_static_data(
+	const PA10AstNode& node, ScopeId scope, const NamePath& path, bool* claimed)
+{
+	if (claimed == NULL)
+		throw std::runtime_error("PA12 static member claim output is missing");
+	*claimed = false;
+	if (path.components.size() <= 1)
+		return ExprInfo();
+	NamePath qualifier;
+	qualifier.global = path.global;
+	qualifier.components.assign(path.components.begin(), path.components.end() - 1);
+	const TypeId qualifier_type = lookup_type_path(qualifier, scope);
+	if (!qualifier_type.valid() || !class_scope_for_type(qualifier_type).valid())
+		return ExprInfo();
+	const MemberLookup selection = member_lookup(qualifier_type, path.last());
+	return semantic_static_data_member(node, scope, path, selection, claimed);
+}
+
+ExprInfo PA11SemanticModel::semantic_static_data(const PA10AstNode& node,
+	ScopeId scope, const NamePath& path)
+{
+	bool claimed = false;
+	ExprInfo result = semantic_unqualified_static_data(node, scope, path,
+		&claimed);
+	if (result.fact.valid())
+		return result;
+	if (claimed)
+		throw std::runtime_error("PA12 class member requires an object");
+	result = semantic_qualified_static_data(node, scope, path, &claimed);
+	if (result.fact.valid())
+		return result;
+	if (claimed)
+		throw std::runtime_error("PA12 class member requires an object");
+	return result;
+}
+
 std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	ScopeId member_scope, NameId name) const
 {

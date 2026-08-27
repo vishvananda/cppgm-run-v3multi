@@ -172,9 +172,15 @@ TemplateSpecializationId PA11SemanticModel::specialize_template_function(
 		fact.state = TemplateSpecializationState::Failed;
 		return TemplateSpecializationId();
 	}
+	if (!function.binding.valid() || function.binding.value >= binding_owners_.size())
+	{
+		fact.state = TemplateSpecializationState::Failed;
+		return TemplateSpecializationId();
+	}
 	const BindingId binding_id(bindings_.size());
 	bindings_.push_back(Binding(BindingKind::Function, source.name,
 		specialized_type));
+	binding_owners_.push_back(binding_owners_[function.binding.value]);
 	fact.binding = binding_id;
 	BindingSidecar sidecar;
 	sidecar.template_specialization = specialization;

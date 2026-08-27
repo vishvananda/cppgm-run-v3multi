@@ -555,8 +555,27 @@ void Pa15Lowerer::index_binding_facts(){
 					thread_local_by_binding_[binding.value] = true;
 				if (declaration.semantic_begin != InvalidIdentityValue &&
 					j < declaration.semantic_count)
-					variable_facts_[binding.value] = SemanticFactId(
-						model_.declaration_semantic_ids_[declaration.semantic_begin + j].value);
+				{
+					const SemanticFactId candidate = model_.declaration_semantic_ids_[
+						declaration.semantic_begin + j];
+					if (!candidate.valid() || candidate.value >=
+						model_.semantic_facts_.size())
+						throw std::runtime_error(
+							"PA15 declaration semantic identity is invalid");
+					std::map<std::size_t, SemanticFactId>::const_iterator existing =
+						variable_facts_.find(binding.value);
+					const bool candidate_has_initializer =
+						model_.semantic_facts_[candidate.value].child_count != 0;
+					const bool existing_has_initializer = existing !=
+						variable_facts_.end() && model_.semantic_facts_[
+							existing->second.value].child_count != 0;
+					// A later declaration may legally share the canonical binding but
+					// has no initializer.  Preserve the earlier definition fact so
+					// storage emission cannot erase its typed initializer.
+					if (existing == variable_facts_.end() ||
+						(candidate_has_initializer && !existing_has_initializer))
+						variable_facts_[binding.value] = candidate;
+				}
 			}
 		}
 	}

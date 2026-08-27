@@ -94,9 +94,13 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 	const TypeId constructor_type = make_function(
 		std::vector<TypeId>(1, make_pointer(object)), false,
 		fundamental(FundamentalType::Void));
+	if (!named_[record_id.value].scope.valid() ||
+		named_[record_id.value].scope.value >= scopes_.size())
+		throw std::runtime_error("implicit constructor has no owner scope");
 	Binding constructor(BindingKind::Function, NameId(), constructor_type);
 	const BindingId binding_id(bindings_.size());
 	bindings_.push_back(constructor);
+	binding_owners_.push_back(named_[record_id.value].scope);
 	NamedRecordSidecar record_sidecar;
 	if (existing != NULL)
 		record_sidecar = *existing;

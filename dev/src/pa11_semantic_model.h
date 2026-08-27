@@ -1458,6 +1458,9 @@ private:
 	BindingId direct_variable_binding(ScopeId scope,
 		const ValueList& values, bool* direct_other) const
 	;
+	void validate_qualified_class_static_definition(ScopeId target,
+		NameId name) const
+	;
 	bool direct_namespace_exists(ScopeId scope, NameId name) const
 	;
 	ScopeId named_namespace(ScopeId parent, NameId name)
@@ -1909,6 +1912,18 @@ private:
 	;
 	MemberLookup unqualified_member_lookup(TypeId object, NameId name,
 		ScopeId start) const
+	;
+	ExprInfo semantic_static_data_member(const PA10AstNode& node, ScopeId scope,
+		const NamePath& path, const MemberLookup& selection, bool* claimed)
+	;
+	ExprInfo semantic_unqualified_static_data(const PA10AstNode& node,
+		ScopeId scope, const NamePath& path, bool* claimed)
+	;
+	ExprInfo semantic_qualified_static_data(const PA10AstNode& node,
+		ScopeId scope, const NamePath& path, bool* claimed)
+	;
+	ExprInfo semantic_static_data(const PA10AstNode& node, ScopeId scope,
+		const NamePath& path)
 	;
 	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
 		NameId name) const

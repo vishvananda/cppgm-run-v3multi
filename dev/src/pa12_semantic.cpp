@@ -433,9 +433,10 @@ BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
 		return builtin_abort_binding_;
 	const TypeId function_type = make_function(std::vector<TypeId>(), false,
 		fundamental(FundamentalType::Void));
+	if (!global_.valid() || global_.value >= scopes_.size()) throw std::runtime_error("builtin binding has no owner scope");
 	const BindingId result(bindings_.size());
 	bindings_.push_back(Binding(BindingKind::Function, builtin_abort_name_,
-		function_type));
+		function_type)); binding_owners_.push_back(global_);
 	builtin_abort_binding_ = result;
 	return result;
 }
@@ -1210,10 +1211,6 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 	if (has_template_id(node))
 		throw std::runtime_error("PA12 template-id requires a target");
 	const NamePath path = name_path(node);
-	// An unqualified member expression is selected against the exact
-	// synthetic object binding before ordinary value lookup.  Qualified base
-	// names use the same typed selector after resolving only the qualifier;
-	// this keeps inherited fields from falling back to an untyped IdExpression.
 	const BindingId this_id = implicit_this_binding(scope);
 	if (this_id.valid() && !path.components.empty())
 	{
@@ -1258,6 +1255,9 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 			selection.binding.valid())
 		{
 			const Binding& member = binding(selection.binding);
+			bool static_member_claimed = false;
+			const ExprInfo static_member = semantic_static_data_member(node, scope, path, selection, &static_member_claimed);
+			if (static_member.fact.valid()) return static_member;
 			const BindingSidecar* sidecar = binding_sidecar(selection.binding);
 			if (member.kind == BindingKind::Variable &&
 				!is_static_member(selection.binding) &&
@@ -1282,8 +1282,11 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 				return ExprInfo(result, member_type,
 					SemanticValueCategory::Lvalue, false);
 			}
+			if (static_member_claimed) throw std::runtime_error("PA12 class member requires an object");
 		}
 	}
+	const ExprInfo static_member = this_id.valid() ? ExprInfo() : semantic_static_data(node, scope, path);
+	if (static_member.fact.valid()) return static_member;
 	const std::vector<ValueRef> values = lookup_value_path(path, scope);
 	if (values.empty())
 		throw std::runtime_error("PA12 unknown expression name");

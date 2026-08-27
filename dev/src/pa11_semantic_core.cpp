@@ -1206,7 +1206,7 @@ ScopeId PA11SemanticModel::resolve_namespace_path(const NamePath& path,
 BindingId PA11SemanticModel::store_binding(ScopeId scope, const Binding& binding,
 	std::size_t position )
 {
-	if (!scope.valid() || scope.value >= scopes_.size()) throw std::runtime_error("invalid PA11 binding owner scope");
+	if (!scope.valid() || scope.value >= scopes_.size()) { throw std::runtime_error("invalid PA11 binding owner scope"); } if (bindings_.size() != binding_owners_.size()) { throw std::runtime_error("PA11 binding owner index is out of sync"); }
 	const BindingId result(bindings_.size());
 	bindings_.push_back(binding); binding_owners_.push_back(scope);
 	Scope& current = scopes_[scope.value];
@@ -2501,7 +2501,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			const FunctionDeclarationKind declaration_kind = function ? special_initializer_kind(init) : FunctionDeclarationKind::Normal;
 			const bool has_initializer = init.children.size() > 1;
 			// Qualified class targets keep in-class static data declarations distinct from definitions.
-			const bool class_target = target.value < scopes_.size() && scopes_[target.value].kind == ScopeKind::Class;
+			const bool class_target = target.value < scopes_.size() && scopes_[target.value].kind == ScopeKind::Class; if (!function && class_target && (name.path.global || name.path.components.size() > 1)) validate_qualified_class_static_definition(target, name.path.last());
 			const bool definition = function ? declaration_kind != FunctionDeclarationKind::Normal :
 				(!spec.is_extern || has_initializer) && (!class_target || !spec.is_static);
 			const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&

@@ -2,24 +2,142 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `2f1303960a22bfa9ef468a8124d4cd4d0b298564`
+relative to parent `9317247c1dfe0888be1a0b22420858dd97bdd7e2`, plus the
+bounded audit repairs and one focused course regression in this checkpoint.
+It is limited to the typed static-data
+storage/access boundary: direct class-owned declaration/definition identity,
+inherited and nested owner retention, access, demand, declaration-only versus
+defined globals, TLS metadata, constant folding, address/reference demand, and
+static object-expression evaluation.  Constructors and broader class-object
+lifetime, operators/ADL, friends/using re-exposure, aggregate/dynamic
+initialization, special members, and multiple/virtual inheritance remain
+outside this review.
+
+The authoritative turn-start full-stage state is `61/243` passed, `182`
+failed, and `243/243` covered, from
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The authorized final validation reran the broad PA16 and through-PA15 gates.
+`make test-pa16` exits `2` at `61/243` passed and `182` failures with all
+`243/243` fixtures covered; sorted failure-identity comparison against the
+turn-start log has no additions and no removals.  The exact through-PA15
+command exits `0` at `1167/1167`.
+
+The complete affected ownership path is:
+
+```text
+PA10 declaration, qualified IdExpression, or object MemberExpression
+  -> PA11 target class ScopeId + ValueEntry origin + canonical BindingId
+     + typed variable/linkage/static/TLS/definition facts
+  -> PA12 typed MemberLookup, inherited declaring owner, access, and object
+     child fact (or direct typed IdExpression for a qualified static member)
+  -> PA15 dense binding/fact index and semantic-DAG storage-demand worklist
+  -> deterministic namespace/class-static collection and one TLS wrapper
+  -> immediate typed constant or canonical global address/load
+     (static object spelling evaluates its object child once, with no field
+      projection)
+  -> LowIR global, TLS wrapper, address, load, or call
+```
+
+### Findings and bounded repairs
+
+- PA11 now keeps an O(1) `BindingId -> owner ScopeId` side index, including
+  builtin, implicit-constructor, and template-specialization bindings that are
+  created outside ordinary scope indexing.  Direct class-owned variable
+  redeclarations merge only one direct `ValueEntry` with matching variable
+  type and linkage; imported, ambiguous, non-variable, and duplicate
+  definitions fail closed.  A qualified out-of-class class definition cannot
+  manufacture a new binding for an inherited, absent, imported, or non-static
+  name.  Definition and TLS facts remain attached to the canonical binding;
+  TLS presence is accumulated across the declaration/definition boundary.
+- PA12's static-data selection now uses the typed class/direct-base lookup for
+  qualified names and for unqualified names in a member body.  An inherited
+  `Derived::value` or unqualified `value` retains the declaring `Base` binding
+  and symbol, including nested class owners.  The selected static variable is
+  access-checked at its actual owner; the existing protected object-access
+  path remains typed, while private/unrelated access fails closed.  The
+  ordinary namespace/global lookup path remains unchanged when no class
+  member claims the spelling.  The explicitly deferred using/friend
+  re-exposure cases remain a bounded risk rather than being broadened here.
+- PA15 now preserves the earlier initializer fact when a later bodyless
+  redeclaration shares its canonical binding.  Its demand walk validates
+  semantic child/conversion ranges, accepts shared DAG facts, rejects actual
+  cycles, and marks storage only for nonconstant, address, reference, or
+  constant-address uses.  A value-used integral constant remains storage-free;
+  a declaration-only class static is emitted as one opaque global when
+  demanded, and a definition is emitted once with its typed initializer.
+- Namespace and class-static collection is deterministic and identity-based:
+  non-static class fields are excluded, inherited aliases do not create a
+  second global, and one `BindingId` receives one emission.  TLS class statics
+  receive one collision-safe wrapper with `tls_for` and ABI object metadata;
+  the wrapper/object family is isolated from ordinary generated names.  Static
+  `.`/`->` lowering evaluates its object child exactly once and returns the
+  canonical global address rather than projecting a field from the object.
+- The relevant complexity remains near-linear: owner and selected-binding
+  checks are O(1), semantic demand is O(F + E + V) over facts, child edges, and
+  conversion entries, and deterministic global collection is O(S + B) over
+  scopes and bindings.  Worklists memoize shared facts and emit each binding or
+  wrapper once; no textual recovery, whole-program retry, parent-singleton
+  assumption, or host/reference compiler dependency was added.
+
+## Focused Evidence
+
+`make -C dev cppgm++` exits `0`.
+
+- The bounded 16-fixture handout probe exits `2` from `make` with `11/16`
+  passing.  The six intended removed identities pass; the unchanged failures
+  are `300-static-class-member-object-definition.t`,
+  `300-static-member-aggregate-array-dynamic-init.t`,
+  `300-thread-local-synthetic-symbol-family-isolation.t`,
+  `300-header-static-class-init.t`, and
+  `300-using-base-static-same-signature-derived-preferred.t`.  The first
+  three are the documented special-member/scalar-braced/lifetime boundaries;
+  the latter two are pre-existing controls.  No broad identity or coverage
+  claim is made from this focused run.
+- Course regressions `400` through `407` each exit `0`; course 402 prints its
+  expected negative-case diagnostic.  `407` covers definition-fact retention,
+  inherited qualified and unqualified owner continuity, and fail-closed
+  inherited/imported out-of-class definitions, the two invalid non-static
+  uses, and lexical-shadow preservation.  `sh -n` on all course controls
+  `400` through `407` exits `0`.
+
+Temporary typed probes passed for initializer preservation (`= 3`), nested
+and inherited owner retention, declaration-only address/reference demand,
+exactly-once object side effects, duplicate-definition rejection, imported
+and inherited-definition rejection, TLS wrapper collision isolation, and
+one-time TLS/global emission.  A private qualified static access probe failed
+closed.  TLS specifier omission across a declaration/definition pair retained
+one TLS object, as required by the accumulated declaration facts.
+
+Representative final smoke timings are `407: 0.08s, 7,256KB`, the 16-fixture
+probe: `0.38s, 24,152KB`, and full PA16: `0.87s, 24,092KB` maximum RSS; these
+are not formal benchmarks.  The near-linear bounds above are structural
+evidence only.  The exact PA16 file audit exits `0` with five pre-existing
+header `bad-division` warnings (`abi_mangle.h`, `cpp_semantic_core.h`,
+`lowir_model.h`, `pa11_semantic_model.h`, and `pa15_lowering.h`).  `git
+diff --check` passes, and no handout test, fixture, reference, or `.ref` file
+changed.
+
+## Historical Static Member-Function Checkpoint Review
+
 This review covers landed commit `021ef63927293f62e13a29b5b8265c7105fb35a9`
 relative to parent `15e133af`, plus the bounded audit repairs and one focused
-course regression in this checkpoint.  It is limited to typed
+course regression in that checkpoint.  It is limited to typed
 static member-function lookup and reachable emission: qualified and
 unqualified calls, class/base hiding and overload filtering, access, canonical
 owner/binding/type continuity, PA15 demand, declaration/definition emission,
 recursion, and the raw static ABI.  Static data storage, constructors and
 lifetime, operators/ADL, broad initialization, friends/using, and
-multiple/virtual inheritance remain outside this review.
+multiple/virtual inheritance remain outside that review.
 
-The authoritative turn-start full-stage state is `55/243` passed, `188`
+The authoritative turn-start full-stage state was `55/243` passed, `188`
 failed, and `243/243` covered, from
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The final `make test-pa16` exits `2` at the same `55/243`, with `188`
-failures and `243/243` coverage; sorted failure-identity comparison is exact,
+The final `make test-pa16` exited `2` at the same `55/243`, with `188`
+failures and `243/243` coverage; sorted failure-identity comparison was exact,
 with no additions or removals.
 
-The affected ownership path is:
+The affected ownership path was:
 
 ```text
 PA10 qualified/unqualified IdExpression or parenthesized call
@@ -123,13 +241,13 @@ and dense visited worklists; no whole-program retry, textual recovery, or
 generated-artifact dependency was added.
 
 The existing `pa16/tests/general/200-out-of-class-member-default-argument.t`
-still fails in this tree before reaching this static declaration audit; that
-pre-existing default-argument merge gap is not part of the landed static
-ownership increment.  The focused declaration control consequently uses a
+still fails in that tree before reaching the static declaration audit; that
+pre-existing default-argument merge gap was not part of the landed static
+ownership increment.  The focused declaration control consequently used a
 bodyless static declaration without a default argument.  The required
-through-PA15 command exits `0` at `1167/1167`; the PA16 file audit exits `0`
+through-PA15 command exited `0` at `1167/1167`; the PA16 file audit exited `0`
 with five pre-existing header `bad-division` warnings.  `git diff --check`
-passes before the final commit, and no handout test, fixture, or `.ref` file
+passed before the final commit, and no handout test, fixture, or `.ref` file
 changed.
 
 ## Historical Protected-Access Checkpoint Review
@@ -432,6 +550,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `2f130396` typed static-data storage/access checkpointAudit | Completed bounded audit/repair: canonical direct class-owner merging, inherited/nested typed owner retention, initializer-fact preservation, demand-aware class-static/TLS emission, access checks, exactly-once static object evaluation, and PA12 fail-closed class claims are traced and repaired. `make -C dev cppgm++`, course controls 400--407, the focused probe, and exact through-PA15 gate pass their bounded criteria; full PA16 is `61/243` with `182` failures and `243/243` coverage, with failure-identity additions/removals `∅`/`∅`. The file audit exits `0` with five pre-existing warnings; no handout or reference changed. |
 | `021ef639` typed static member-function lookup/reachable-emission checkpointAudit | Completed bounded audit/repair: class-qualified lookup fails closed, current/base-qualified and unqualified member-body calls rank one mixed static/non-static set, static-body lookup preserves inherited owner/hiding, access and raw-vs-hidden-object facts remain typed, and PA15 uses a dense class-binding owner index with O(1) selected-owner checks. The focused handout matrix is `7/7`, course controls 401--406 exit `0`, final PA16 is `55/243` with the exact turn-start `188` failure identities and `243/243` coverage, through-PA15 is `1167/1167`, and the file audit passes with five pre-existing warnings. |
 | `8b445ee6` protected object access scope checkpointAudit | Completed and committed bounded audit/repair: static protected object spelling stops after the typed access-class/owner proof, nested protected access considers eligible enclosing class scopes while retaining the non-static object proof, and malformed valid scope ancestry fails closed after the bounded walk. Course 405 covers the field/method matrix, nested `Derived&`/`Base&` controls, and the exact existing PA15 static boundary. Final PA16 is `49/243` with `194` failures and `243/243` coverage, with exact failure additions/removals `∅`/`∅`; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and the final working tree is clean. |
 | `b1a9e589` direct + inherited unqualified member-call checkpointAudit | Bounded audit completed with four narrow fixes: exact synthetic-`this` BindingId reuse, value-before-type lookup with explicit `Type`/`Blocked` outcomes, fail-closed direct-base metadata validation, and inherited value-set ownership blocking. Direct/inherited/parenthesized reductions, the three focused controls, and course regressions pass; the six-test handout probe remains `1/6` on the same five prerequisite identities. Through-PA15 is `1167/1167`, the file audit exits `0` with five pre-existing warnings, and full PA16 is `48/243` with `195` failures and `243/243` coverage, with zero failure-identity additions or removals. |

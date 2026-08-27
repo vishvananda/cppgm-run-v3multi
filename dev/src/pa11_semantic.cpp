@@ -1800,7 +1800,13 @@ BindingId PA11SemanticModel::direct_variable_binding(ScopeId scope,
 			throw std::runtime_error("value entry owner identity mismatch");
 		const Binding& value = binding(entry.binding);
 		if (entry.origin != scope)
+		{
+			// An imported value is not a redeclaration in this scope.  Keep it as
+			// an explicit conflict, so a qualified class definition cannot silently
+			// merge a direct member with a using-view or another scope's value.
+			*direct_other = true;
 			continue;
+		}
 		if (value.kind == BindingKind::Variable)
 		{
 			if (result.valid())
@@ -1811,6 +1817,21 @@ BindingId PA11SemanticModel::direct_variable_binding(ScopeId scope,
 			*direct_other = true;
 	}
 	return result;
+}
+void PA11SemanticModel::validate_qualified_class_static_definition(
+	ScopeId target, NameId name) const
+{
+	if (!target.valid() || target.value >= scopes_.size() ||
+		scopes_[target.value].kind != ScopeKind::Class)
+		throw std::runtime_error("qualified definition has no class target");
+	const ValueList* existing = scopes_[target.value].values.find(name);
+	bool direct_other = false;
+	const BindingId direct_variable = existing == NULL ? BindingId() :
+		direct_variable_binding(target, *existing, &direct_other);
+	if (direct_other || !direct_variable.valid() ||
+		!is_static_member(direct_variable))
+		throw std::runtime_error(
+			"qualified class definition is not a direct static member");
 }
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
 {
