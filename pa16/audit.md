@@ -2,30 +2,32 @@
 
 ## Current Checkpoint Review
 
-This review covers landed commit `32c4546307b85d19226a07b5619cf6bbc482c404`
-relative to parent `a2ac5256`, plus the bounded audit repairs and one
-focused course regression.  It audits only typed class-object construction:
-local-object roots, scalar/pointer empty-brace and scalar DMI facts, supported
-aggregate/class-subobject DMI, implicit and in-class explicitly-defaulted
-default constructors, ordered base/member actions, explicit DMI overrides,
-demanded synthetic helpers, and constructor call/unwind metadata.  Copy/value
-semantics, out-of-class definitions, virtual or multiple inheritance,
-parameterized constructor argument lowering, global/TLS lifetime and guards,
-destructors outside a directly implicated regression, and unrelated
-operators/ADL/access/static-data surfaces remain outside this review.
+This review covers landed commit `fb4348b623be124090e3e7cbe3d9b7fbf4e01842`
+relative to parent `85ceba732c3d098a9709c6f57f1ec862070e54ce`, plus bounded
+audit repairs and one focused course regression.  The scope is the landed
+typed parameterized-constructor increment: PA10 initializer-context facts;
+PA11 canonical class, constructor, FunctionFact, explicitness, and default
+ownership; PA12 constructor candidate selection, conversions, access, and
+ordered argument/action facts; and PA15 demanded constructor definitions,
+hidden destinations, calls, and metadata.  Copy/move and value transfer,
+parameterized DMI, virtual/multiple inheritance, templates, unrelated
+operator/ADL, global/TLS lifetime, and external string-literal lowering remain
+outside this review.
 
-The authoritative turn-start full-stage state is `80/243` passed, `163`
-failed, and `243/243` covered, from
+The authoritative checkpoint-turn-start full-stage state was `91/243` passed,
+`152` failed, and `243/243` covered, from
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The final `make test-pa16` exits `2` at `80/243`, with `163` failures and
-`243/243` covered; exact failure-identity additions and removals against that
-log are both `∅`, and the coverage-identity additions and removals are both
-`∅`.  Its complete output is
-`/tmp/v3multi-pa16-full-final2.znmVUW.log`.  The exact prior-through-PA15 gate
-exits `0` at `1167/1167`, and the required file audit exits `0` with five
-pre-existing header-division warnings.
+The final `make test-pa16` command exited `2` with log
+`/tmp/v3multi-pa16-fb4348b-final.log`: `91/243` passed, `152` failed, and
+`243/243` were covered.  Normalized failure identities are unchanged from the
+turn-start log: additions `∅`, removals `∅`; the covered identity set is also
+unchanged at all `243` PA16 tests.  The exact through-PA15 gate passed
+`1167/1167` with log `/tmp/v3multi-through-pa15-fb4348b-final.log`; the exact
+file audit passed with five pre-existing warnings with log
+`/tmp/v3multi-pa16-file-audit-fb4348b-final.log`; and `git diff --check`
+passed.
 
-The complete affected ownership path is:
+The affected ownership path is:
 
 ```text
 PA10 class member/special-member/local-object syntax
@@ -33,90 +35,99 @@ PA10 class member/special-member/local-object syntax
      + FunctionFact and typed DMI ownership
   -> PA12 semantic initializer facts + ordered ConstructorActionFact ranges
      (base first, then declaration-order fields; explicit initializers win)
-  -> PA15 recursive demand/nothrow worklists and completed typed layout
-     offsets, with no eager helper emission or textual recovery
-  -> LowIR demanded synthetic helper/calls/actions, typed subobject
-     projections/stores, and truthful call/unwind metadata
+  -> PA15 recursive demand/nothrow worklists and typed layout offsets,
+     with no eager helper emission or textual recovery
+  -> LowIR demanded constructor calls/actions, typed subobject projections,
+     stores, and truthful call/unwind metadata
 ```
 
 ### Findings and bounded repairs
 
-- PA11 preserves one canonical class `ScopeId`, field `BindingId`, and
-  constructor `BindingId`; `FunctionFact` carries the constructor owner and
-  action range, while DMI ownership remains on the field sidecar.  The audit
-  found and repaired named empty classes taking a legacy constructor-binding
-  path with no `FunctionFact`, which made an empty class-subobject DMI fail at
-  PA15 demand time.  The repair is limited to named non-union classes; the
-  older anonymous/union representation remains outside this checkpoint.
-- Both value-initialization lowering paths validate the selected named-class
-  binding, FunctionFact, record, and owner identity before consulting
-  `FunctionFact.synthetic`; a missing or contradictory fact fails closed and
-  is never treated as an implicit/defaulted constructor.  The canonical
-  zero-argument FunctionFact is therefore retained end to end.
-- PA12 builds DMI semantic facts before constructor actions publish their
-  ranges.  Actions are emitted base-first and then in declaration order;
-  explicit mem-initializers win over a field DMI.  The construction snapshot
-  copies class member IDs before helper synthesis can grow binding/fact
-  vectors, and the audit added subtraction-safe arena checks plus canonical
-  owner checks.  No retained reference crosses a vector growth point.
-- PA15 demand is recursive but memoized: named-record runtime state and
-  constructor/semantic nothrow state each distinguish unseen, in-progress, and
-  complete.  Shared DAG edges are reused, cycles are rejected/conservative,
-  helper emission is demand-driven and deterministic, and no textual recovery
-  or whole-program retry is used.  Function identity, subobject paths, and
-  direct-base/member layout offsets remain BindingId/ScopeId/RecordLayout
-  facts rather than reconstructed names.
-- The audit found that empty class-subobject value-initialization omitted the
-  required zero-initialization step.  A typed `value_initialize` fact now
-  causes LowIR zeroing only when the selected default constructor is implicit
-  or in-class-defaulted (`FunctionFact.synthetic`); a user-provided constructor
-  is called without that step.  Aggregate empty-list lowering also now applies
-  direct and nested DMIs to omitted members.  Zeroing uses chunks whose widths
-  divide the recorded object alignment, with byte fallback, and validates
-  complete size/alignment and LowIR offset ranges.
-- Constructor calls/actions are emitted exactly once with typed subobject
-  projections.  Synthetic constructor unwind is marked `unwind=no` only when
-  the cached constructor/action analysis proves the emitted path nothrow;
-  user-provided calls retain the throwing boundary unless their declaration
-  fact says otherwise.  Range, child-ID, action-operation, function-scope,
-  binding-owner, and array/index validation now fail closed before unsafe
-  vector access.
-- Complexity remains near-linear for the owned path: each reachable record,
-  constructor action, and semantic edge is cached/scanned once, each owner and
-  layout lookup is O(1), and helper work is proportional to demanded DAG
-  edges.  The remaining expensive operations are bounded by declared direct
-  inheritance/member depth; no per-use whole-program retry was introduced.
+- PA10 retains `=` on the typed `Initializer` node, so PA12 distinguishes
+  direct, copy, and copy-list construction without recovering punctuation from
+  text.  PA11 stores constructor explicitness and default-expression facts on
+  the canonical constructor `BindingId`/`FunctionFact`; the class prepass makes
+  later-declared defaults available to earlier in-class bodies.
+- PA12 collects only the owning class-name value list and validates each
+  `ValueEntry` origin, binding owner, constructor record, type, and duplicate
+  identity.  The shared selector ranks references, contextual and variadic
+  conversions, function-id targets, and trailing defaults, then publishes
+  converted/defaulted facts in source order.  Its candidate `ValueRef` owner is
+  now checked again at the shared boundary.
+- Constructor callable types now prepend the hidden destination for every
+  named class.  Only the legacy anonymous-union binding may already contain
+  that hidden parameter; a user constructor taking `Self*` is no longer
+  mistaken for the legacy representation.  The callable owner and class-scope
+  identities are validated before either form is returned.
+- Constructor access uses the declaring class and lexical access-class proof.
+  Protected base constructors have no object expression, so they do not receive
+  the protected non-static-member object restriction; private constructors are
+  still rejected for an unrelated derived constructor.  Existing friend access
+  remains an earlier unsupported boundary and is not broadened here.
+- C++11 explicitly-defaulted/deleted constructors are not user-provided for
+  aggregate braced initialization.  The dispatcher now routes aggregate-
+  eligible copy/direct-list forms back to the typed aggregate facts while
+  retaining constructor selection for normal declarations and parenthesized
+  construction.
+- PA12 actions retain canonical `BindingId`/`ScopeId`/`SemanticFactId` ranges;
+  bases precede members and explicit initializers precede DMIs.  Member IDs are
+  snapshotted before helper publication, and selector/default/signature values
+  are copied before arena growth.  PA15 consumes the hidden destination first,
+  then the stored converted/default argument range, with demand-driven
+  constructor definitions and typed call/unwind metadata.
+- The bounded implementation is deterministic and near-linear: constructor
+  collection and aggregate eligibility are `O(C)`, shared scoring is
+  `O(C*A)`, and argument storage/lowering is `O(A)` for `C` candidates and `A`
+  explicit arguments.  No whole-scope retry, textual/name recovery, or
+  test-specific shortcut was introduced.
 
 ## Focused Evidence
 
-`make -C dev cppgm++` exits `0`.  The copied 11-fixture focused comparison is
-`10/11`: all eight prior construction identities, `200-single-inheritance.t`,
-and `200-empty-class-member-declaration.t` pass; the one unchanged failure is
-`300-value-init-aggregate-with-nontrivial-member.t`, whose remaining
-canonical diff is the alignment-safe `i32` zero chunks versus the reference's
-single `i64` bulk store, plus the pre-existing boolean conversion difference.
-No handout/reference files were used as writable outputs.
+`make -C dev cppgm++` exits `0`.  The focused constructor/control matrix is
+`17/17`: four local name/owner cases, direct-list explicit selection,
+overload/default/reference/function-id controls, direct base/member actions,
+copy and copy-list policy, and the prior member-call controls.  The two
+aggregate controls for explicitly-defaulted/deleted constructors now reach
+the expected successful tool status, but still fail relaxed LowIR comparison
+on the existing redundant-address and boolean-narrowing shape difference;
+checked-in references were not changed.
 
-Course regressions `400` through `407` each exit `0`, including the extended
-course-404 checks for state-free and unused-DMI demand, implicit/defaulted
-versus user-provided value-initialization, nested aggregate DMI ordering, and
-direct-base/member construction.  `sh -n` on all eight controls exits `0`.
-The named empty-class probe exits `0`; a value-initialized class-subobject
-probe emits zero stores before the synthetic call and the DMI store in the
-callee; a user-provided-constructor probe emits no caller zeroing.  Separate
-one-, three-, eight-, and aligned integer-layout probes emit `i8`, `i8`,
-`i64`, and alignment-safe `i32` chunks respectively.  A nested aggregate
-empty-list probe emits the untouched-field zero followed by nested DMI values.
+Course controls `400` through `409` and `sh -n` for all ten controls exit `0`.
+Course 408 covers copy-init/copy-list explicit policy and a later-declared
+constructor default used by an earlier in-class body.  New course 409 covers
+the self-pointer hidden-destination boundary, protected base-constructor
+access, private base-constructor rejection, and defaulted/deleted aggregate
+field initialization without a selected/emitted constructor helper or call.
+The small 409 smoke was `0.04s` wall, `0.01s` user, `0.02s` system, and
+`7356KB` maximum RSS; this is not a benchmark.
 
-The bounded 13-link/32-DMI stress probe compiled successfully in five runs:
-each was reported as `0.00s`, with maximum RSS from `5824` to `6056KB`; the
-timing files are in `/tmp/codex-pa16-stress-final.Tn9MSH` as `stress-1.time`
-through `stress-5.time`.  Its current LowIR has 14 constructor helpers, 14
-constructor calls, 13 base projections, 45 field projections, and 45 typed
-field stores.  This is representative smoke and structural evidence, not a
-benchmark; the dense cache/worklist bounds above are the performance claim.
-The final stage, through-stage, and file-audit results are recorded above and
-in the ledger below.
+### Performance Evidence
+
+The bounded scale input `/tmp/pa16-constructor-selector-scale.cpp` contains
+`853` lines and `20175` bytes: `480` unrelated fields, `120` methods, `8`
+constructor candidates, and `240` six-argument constructions.  Each of five
+outputs contains one `Scale` constructor helper and `240` constructor calls;
+sample 1 is `770` lines and `27742` bytes.
+
+| sample | wall (s) | user (s) | system (s) | max RSS (KB) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.03 | 0.01 | 0.01 | 13672 |
+| 2 | 0.03 | 0.01 | 0.01 | 13408 |
+| 3 | 0.03 | 0.02 | 0.01 | 13692 |
+| 4 | 0.03 | 0.02 | 0.01 | 13604 |
+| 5 | 0.03 | 0.02 | 0.00 | 13460 |
+
+These are representative smoke/scale samples, not benchmark comparisons; no
+allocation measurement was collected.  No handout tests, fixtures,
+references, or `.ref` files were modified.
+
+### Next Implementation Checkpoint
+
+PA17 is the next implementation checkpoint: extend this typed PA16 foundation
+with bounded copy/move value semantics, class-object value transfer, temporary
+materialization, delegating constructors, and out-of-class constructor/
+destructor work under the PA17 assignment boundary.  Virtual and
+multiple-inheritance work remains later.
 
 ## Historical Static Member-Function Checkpoint Review
 
@@ -550,6 +561,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `fb4348b6` typed parameterized class-constructor checkpointAudit | Complete: bounded PA10--PA15 constructor audit repaired canonical hidden-destination callable typing, protected-constructor access, shared candidate owner validation, and aggregate copy/direct-list dispatch for explicitly-defaulted/deleted constructors. The focused constructor matrix is `17/17`; course controls 400--409 pass with syntax checks, including new self-pointer/protected/private and aggregate field/helper coverage. The two aggregate handout controls retain the known LowIR address/bool shape comparison difference. Final PA16 is `91/243` with `152` failures and `243/243` coverage; failure and coverage identity additions/removals are both `∅`/`∅`. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing warnings; diff-check passes; representative scale smoke is recorded above. No handout, fixture, reference, or `.ref` changed. |
 | `32c45463` typed class-object construction checkpointAudit | Completed bounded audit of the landed typed construction increment relative to `a2ac5256`: repaired canonical empty named-class constructor identity, fail-closed FunctionFact ownership, value-initialization zeroing semantics, aggregate DMI fallback, typed range/owner/index validation, demand-driven empty-helper elision, and the course-404 ordering controls. Focused copied handout comparison is `10/11`; course controls 400--407 are green; final PA16 is `80/243` with `163` failures and `243/243` coverage, with exact failure and coverage additions/removals `∅`/`∅`; construction stress smoke is five successful `0.00s` runs with RSS `5824--6056KB` (timings in `/tmp/codex-pa16-stress-final.Tn9MSH/stress-1.time` through `stress-5.time`), 14 constructor helpers, 14 constructor calls, 13 base projections, 45 field projections, and 45 stores. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing header-division warnings; no handout, fixture, reference, or `.ref` changed. |
 | `2f130396` typed static-data storage/access checkpointAudit | Completed bounded audit/repair: canonical direct class-owner merging, inherited/nested typed owner retention, initializer-fact preservation, demand-aware class-static/TLS emission, access checks, exactly-once static object evaluation, and PA12 fail-closed class claims are traced and repaired. `make -C dev cppgm++`, course controls 400--407, the focused probe, and exact through-PA15 gate pass their bounded criteria; full PA16 is `61/243` with `182` failures and `243/243` coverage, with failure-identity additions/removals `∅`/`∅`. The file audit exits `0` with five pre-existing warnings; no handout or reference changed. |
 | `021ef639` typed static member-function lookup/reachable-emission checkpointAudit | Completed bounded audit/repair: class-qualified lookup fails closed, current/base-qualified and unqualified member-body calls rank one mixed static/non-static set, static-body lookup preserves inherited owner/hiding, access and raw-vs-hidden-object facts remain typed, and PA15 uses a dense class-binding owner index with O(1) selected-owner checks. The focused handout matrix is `7/7`, course controls 401--406 exit `0`, final PA16 is `55/243` with the exact turn-start `188` failure identities and `243/243` coverage, through-PA15 is `1167/1167`, and the file audit passes with five pre-existing warnings. |

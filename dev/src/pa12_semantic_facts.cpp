@@ -171,15 +171,28 @@ TypeId PA11SemanticModel::constructor_callable_type(BindingId constructor)
 		type_kind(value.type) != TypeKind::Function)
 		throw std::runtime_error("PA12 constructor binding is not a function");
 	const BindingSidecar* sidecar = binding_sidecar(constructor);
-	if (sidecar == NULL || !sidecar->constructor_record.valid())
+	if (sidecar == NULL || !sidecar->constructor_record.valid() ||
+		sidecar->constructor_record.value >= named_.size())
 		throw std::runtime_error("PA12 constructor owner is missing");
+	const NamedRecord& record = named_[sidecar->constructor_record.value];
+	if (record.kind != NamedKind::Class || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != sidecar->constructor_record)
+		throw std::runtime_error("PA12 constructor owner is invalid");
 	const TypeKey function = types_[value.type.value];
-	if (!function.parameters.empty())
+	// Named-class constructor bindings contain only their explicit parameters.
+	// The one legacy exception is the generated anonymous-union binding, whose
+	// raw type already carries its hidden destination.  Do not infer the
+	// representation from the first explicit parameter: a perfectly ordinary
+	// constructor may itself take a pointer to its class.
+	if (record.class_tag == ClassTag::Union && function.parameters.size() == 1)
 	{
 		const TypeId first = strip_cv_type(expression_object_type(
 			function.parameters.front()));
 		const TypeId object = named_type(sidecar->constructor_record);
-		if (type_kind(first) == TypeKind::Pointer &&
+		if (first.valid() && first.value < types_.size() &&
+			type_kind(first) == TypeKind::Pointer &&
 			types_[first.value].child == object)
 			return value.type;
 	}

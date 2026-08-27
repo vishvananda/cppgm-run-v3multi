@@ -1599,6 +1599,8 @@ private:
 	;
 	bool has_constructor_declaration(NamedRecordId record) const
 	;
+	bool aggregate_class_initialization_supported(NamedRecordId record) const
+	;
 	bool classify_constructor_runtime(NamedRecordId record)
 	;
 	bool constructor_requires_runtime(NamedRecordId record)

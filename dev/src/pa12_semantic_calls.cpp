@@ -30,9 +30,13 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	{
 		const ValueRef& candidate_ref = candidates[i];
 		if (!candidate_ref.binding.valid() || candidate_ref.binding.value >=
-			bindings_.size() || !candidate_ref.scope.valid() ||
+			bindings_.size() || candidate_ref.binding.value >=
+			binding_owners_.size() || !candidate_ref.scope.valid() ||
 			candidate_ref.scope.value >= scopes_.size())
 			throw std::runtime_error("PA12 function candidate identity is invalid");
+		if (binding_owners_[candidate_ref.binding.value] != candidate_ref.scope)
+			throw std::runtime_error(
+				"PA12 function candidate owner identity is invalid");
 		const Binding& candidate = binding(candidate_ref.binding);
 		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
 			candidate.type.value >= types_.size() ||

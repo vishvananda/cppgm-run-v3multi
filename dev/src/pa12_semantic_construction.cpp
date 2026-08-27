@@ -118,8 +118,9 @@ bool PA11SemanticModel::semantic_local_class_initializer(
 	}
 	if (clause == NULL)
 		return false;
+	const bool aggregate = aggregate_class_initialization_supported(record);
 	if (context != ConstructorInitializationContext::Direct &&
-		has_constructor_declaration(record))
+		has_constructor_declaration(record) && !aggregate)
 	{
 		std::vector<const PA10AstNode*> arguments;
 		if (clause->kind == PA10NodeKind::BracedInitList)
@@ -139,7 +140,7 @@ bool PA11SemanticModel::semantic_local_class_initializer(
 		(clause->kind == PA10NodeKind::BracedInitList ||
 			clause->kind == PA10NodeKind::ParenInitializer) &&
 		(clause->kind == PA10NodeKind::ParenInitializer ||
-			has_constructor_declaration(record)))
+			(has_constructor_declaration(record) && !aggregate)))
 	{
 		std::vector<const PA10AstNode*> arguments;
 		arguments.reserve(clause->children.size());
@@ -410,7 +411,7 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			action.value_initialize = true;
 		if (argument != NULL && argument->kind == PA10NodeKind::BracedInitList &&
 			!argument->children.empty() &&
-			!has_constructor_declaration(target_record))
+			aggregate_class_initialization_supported(target_record))
 		{
 			action.initializer = semantic_braced_init_list(*argument,
 				target_type, function_scope).fact;

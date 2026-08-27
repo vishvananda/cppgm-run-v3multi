@@ -223,6 +223,67 @@ bool PA11SemanticModel::has_constructor_declaration(
 	return sidecar != NULL && sidecar->has_constructor_declaration;
 }
 
+bool PA11SemanticModel::aggregate_class_initialization_supported(
+	NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag == ClassTag::Union)
+		return false;
+	const NamedRecord& record = named_[record_id.value];
+	if (!record.name.valid() || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
+		throw std::runtime_error("PA12 aggregate constructor owner is invalid");
+	// An implicitly generated constructor is not a user-declared constructor
+	// and must not change aggregate eligibility after it is materialized.
+	const bool declared = has_constructor_declaration(record_id);
+	if (!declared)
+		return true;
+	const ValueList* constructor_values =
+		scopes_[record.scope.value].values.find(record.name);
+	FlatIndex<BindingId, bool, IdentityHash<BindingId> > seen;
+	if (constructor_values == NULL)
+		throw std::runtime_error(
+			"PA12 aggregate constructor value index is missing");
+	bool found_constructor = false;
+	for (std::size_t i = 0; i < constructor_values->entries.size(); ++i)
+	{
+		const ValueEntry& entry = constructor_values->entries[i];
+		const BindingId candidate_id = entry.binding;
+		if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+			candidate_id.value >= binding_owners_.size() ||
+			binding_owners_[candidate_id.value] != record.scope ||
+			entry.origin != record.scope)
+			throw std::runtime_error(
+				"PA12 aggregate constructor value index identity is invalid");
+		if (seen.find(candidate_id) != NULL)
+			throw std::runtime_error(
+				"PA12 duplicate aggregate constructor value index entry");
+		seen.set(candidate_id, true);
+		const Binding& candidate = binding(candidate_id);
+		const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+		if (candidate.kind != BindingKind::Function ||
+			!candidate.type.valid() || candidate.type.value >= types_.size() ||
+			type_kind(candidate.type) != TypeKind::Function || sidecar == NULL ||
+			sidecar->constructor_record != record_id)
+			continue;
+		found_constructor = true;
+		// Explicitly defaulted and deleted constructors are not user-provided
+		// in the C++11 aggregate rule.  A normal declaration, including a
+		// declaration without an in-class body, is user-provided and therefore
+		// routes braced construction through constructor selection.
+		if (function_declaration_kind(candidate_id) ==
+			FunctionDeclarationKind::Normal)
+			return false;
+	}
+	if (!found_constructor)
+		throw std::runtime_error(
+			"PA12 aggregate constructor identity is missing");
+	return true;
+}
+
 bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
@@ -1043,13 +1104,19 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	// class proof above, but their spelling through an object does not impose a
 	// second object-type relation.
 	const bool static_member = is_static_member(binding_id);
+	const BindingSidecar* sidecar = binding_sidecar(binding_id);
+	const bool constructor = sidecar != NULL &&
+		sidecar->constructor_record.valid() &&
+		sidecar->constructor_record.value < named_.size() &&
+		named_[sidecar->constructor_record.value].kind == NamedKind::Class &&
+		named_[sidecar->constructor_record.value].scope == member_scope;
 	// C++ additionally restricts the object expression: it must have the
 	// accessing class type (or a further-derived type), not merely the
 	// declaring base type.  This prevents Derived::f(Base&) from acquiring
 	// Base's protected member through an arbitrary Base object.
-	const TypeId object_record = static_member ? TypeId() :
+	const TypeId object_record = (static_member || constructor) ? TypeId() :
 		strip_cv_type(expression_object_type(object));
-	if (!static_member && (!object_record.valid() ||
+	if (!static_member && !constructor && (!object_record.valid() ||
 		type_kind(object_record) != TypeKind::Named ||
 		!class_scope_for_type(object_record).valid()))
 		return false;
@@ -1072,7 +1139,8 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 		if (access_type == NULL ||
 			!member_base_path(*access_type, member_scope, NULL))
 			continue;
-		if (static_member || member_base_path(object_record, access_class, NULL))
+		if (static_member || constructor ||
+			member_base_path(object_record, access_class, NULL))
 			return true;
 	}
 	return false;
