@@ -428,6 +428,18 @@ void emit_instruction(std::ostream &out, const Program &program,
       out << ", " << operand_text(program, instruction.args[i]) << ":"
           << operand_text(program, instruction.args[i + 1]);
     break;
+  case Instruction::IK_EH_TRY:
+    out << "eh_try " << operand_text(program, instruction.first);
+    break;
+  case Instruction::IK_EH_CLEANUP:
+    out << "eh_cleanup " << operand_text(program, instruction.first);
+    break;
+  case Instruction::IK_EH_END:
+    out << "eh_end";
+    break;
+  case Instruction::IK_RESUME:
+    out << "resume";
+    break;
   case Instruction::IK_RETURN:
     out << "return " << type_text(instruction.type);
     if (!instruction.type.is_void())

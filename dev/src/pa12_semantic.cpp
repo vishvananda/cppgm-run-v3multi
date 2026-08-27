@@ -555,7 +555,7 @@ SemanticFactId PA11SemanticModel::semantic_constructor_action(
 	if (!access_scope.valid())
 		access_scope = binding_owners_[storage.value];
 	const Binding& storage_binding = binding(storage);
-	const NamedRecordId record = named_record_for_type(storage_binding.type);
+	const NamedRecordId record = class_record_for_object_type(storage_binding.type);
 	if (!record.valid() || record.value >= named_.size() ||
 		named_[record.value].kind != NamedKind::Class)
 		throw std::runtime_error("PA12 constructor action needs a class object");
@@ -2126,7 +2126,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 	const PA10AstNode& list = node.children[1];
 	if (list.children.size() != declaration->binding_count)
 		throw std::runtime_error("PA12 declaration binding mismatch");
-	declaration->semantic_begin = declaration_semantic_ids_.size();
+	declaration->semantic_begin = declaration_semantic_ids_.size(); declaration->lifetime_begin = lifetime_facts_.size();
 	for (std::size_t i = 0; i < list.children.size(); ++i)
 	{
 		const PA10AstNode& init = list.children[i];
@@ -2166,7 +2166,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		fact.binding = binding_id;
 		fact.selected_scope = declaration->scope;
 		SemanticFactId variable = make_semantic_fact(fact);
-		const NamedRecordId record = named_record_for_type(value.type);
+		const NamedRecordId record = class_record_for_object_type(value.type);
 		const NamedRecordSidecar* record_sidecar =
 			named_record_sidecar(record);
 		const bool anonymous_union_object = record.valid() &&
@@ -2290,13 +2290,14 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			sidecar.default_member_initializer = initializer_fact;
 			set_binding_sidecar(binding_id, sidecar);
 		}
-		// Namespace initializers are the one PA15 constant boundary.  Persist
-		// the typed PA12 fold result (including nested braced elements) once,
-		// while the semantic owner still has its validated scope and AST facts.
+		if (value.kind == BindingKind::Variable && declaration->automatic_storage &&
+			!declaration->is_static && !declaration->is_thread_local)
+			record_automatic_lifetime(binding_id, value.type, declaration->scope);
 		record_constant_initializer(variable, declaration->scope);
 		declaration_semantic_ids_.push_back(variable);
 	}
 	declaration->semantic_count = list.children.size();
+	declaration->lifetime_count = lifetime_facts_.size() - declaration->lifetime_begin;
 	return declaration_semantic_ids_[declaration->semantic_begin];
 }
 FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(

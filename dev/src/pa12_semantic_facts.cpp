@@ -162,6 +162,137 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 	return binding_id;
 }
 
+BindingId PA11SemanticModel::ensure_implicit_destructor(NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("invalid implicit destructor record");
+	const BindingId declared = destructor_binding(record_id);
+	if (declared.valid())
+		return declared;
+	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
+	if (existing != NULL && existing->destructor_binding.valid())
+		return existing->destructor_binding;
+	const NamedRecord& record = named_[record_id.value];
+	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		!record.name.valid())
+		throw std::runtime_error("implicit destructor has no owner");
+	const TypeId destructor_type = make_function(std::vector<TypeId>(), false,
+		fundamental(FundamentalType::Void));
+	const BindingId binding_id = store_binding(record.scope,
+		Binding(BindingKind::Function, record.name, destructor_type));
+	NamedRecordSidecar record_sidecar;
+	if (existing != NULL)
+		record_sidecar = *existing;
+	record_sidecar.destructor_binding = binding_id;
+	set_named_record_sidecar(record_id, record_sidecar);
+	BindingSidecar binding_sidecar;
+	binding_sidecar.destructor_record = record_id;
+	set_binding_sidecar(binding_id, binding_sidecar);
+	const ScopeId function_scope = create_scope(ScopeKind::Function,
+		record.scope, record.name);
+	FunctionFact function(NULL, record.scope, binding_id, function_scope,
+		ScopeId());
+	function.is_destructor = true;
+	function.synthetic = true;
+	function.destructor_record = record_id;
+	prepare_pa12_member_parameter(function);
+	const FunctionFactId function_id(function_facts_.size());
+	function_facts_.push_back(function);
+	function_binding_fact_index_.set(binding_id, function_id);
+	build_destructor_actions(function_id);
+	return binding_id;
+}
+
+void PA11SemanticModel::build_destructor_actions(FunctionFactId function_id)
+{
+	if (!function_id.valid() || function_id.value >= function_facts_.size())
+		throw std::runtime_error("PA16 destructor fact identity is invalid");
+	const FunctionFact initial_function = function_facts_[function_id.value];
+	if (!initial_function.is_destructor ||
+		!initial_function.destructor_record.valid() ||
+		initial_function.destructor_record.value >= named_.size() ||
+	!initial_function.function_scope.valid() ||
+	initial_function.function_scope.value >= scopes_.size() ||
+	scopes_[initial_function.function_scope.value].kind != ScopeKind::Function ||
+	scopes_[initial_function.function_scope.value].parent != initial_function.owner)
+		throw std::runtime_error("PA16 destructor function identity is invalid");
+	if (initial_function.destructor_action_begin != InvalidIdentityValue)
+		return;
+	const NamedRecordId record_id = initial_function.destructor_record;
+	const NamedRecord& record = named_[record_id.value];
+	if (record.kind != NamedKind::Class || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id ||
+		initial_function.owner != record.scope)
+		throw std::runtime_error("PA16 destructor action owner is invalid");
+	if (record.direct_base_virtual || (!record.has_base && record.direct_base.valid()))
+		throw std::runtime_error("PA16 virtual base destruction is outside checkpoint");
+	if (record.has_base && (!record.direct_base.valid() ||
+		record.direct_base.value >= named_.size() ||
+		named_[record.direct_base.value].kind != NamedKind::Class ||
+		named_[record.direct_base.value].class_tag == ClassTag::Union))
+		throw std::runtime_error("PA16 destructor base metadata is invalid");
+
+	// The class binding list is copied before any child destructor demand can
+	// publish a new function binding into another class arena.
+	const std::vector<BindingId> class_members =
+		scopes_[record.scope.value].bindings;
+	std::vector<DestructorActionFact> actions;
+	for (std::size_t position = class_members.size(); position != 0; --position)
+	{
+		const BindingId member_id = class_members[position - 1];
+		if (!member_id.valid() || member_id.value >= bindings_.size() ||
+			member_id.value >= binding_owners_.size() ||
+			binding_owners_[member_id.value] != record.scope)
+			throw std::runtime_error("PA16 destructor member identity is invalid");
+		const Binding& member = binding(member_id);
+		if (member.kind != BindingKind::Variable || is_static_member(member_id))
+			continue;
+		const NamedRecordId member_record = class_record_for_object_type(member.type);
+		if (!member_record.valid() || !destructor_requires_runtime(member_record))
+			continue;
+		const BindingId member_destructor = ensure_implicit_destructor(member_record);
+		if (!member_destructor.valid())
+			throw std::runtime_error("PA16 member destructor is missing");
+		actions.push_back(DestructorActionFact(
+			ConstructorActionTarget::Member, NamedRecordId(), member_id,
+			member_destructor, member.type));
+	}
+	if (record.has_base && destructor_requires_runtime(record.direct_base))
+	{
+		const BindingId base_destructor = ensure_implicit_destructor(record.direct_base);
+		if (!base_destructor.valid())
+			throw std::runtime_error("PA16 base destructor is missing");
+		actions.push_back(DestructorActionFact(
+			ConstructorActionTarget::Base, record.direct_base, BindingId(),
+			base_destructor, named_type(record.direct_base)));
+	}
+	const std::size_t action_begin = destructor_actions_.size();
+	destructor_actions_.insert(destructor_actions_.end(), actions.begin(), actions.end());
+	FunctionFact& function = function_facts_[function_id.value];
+	function.destructor_action_begin = action_begin;
+	function.destructor_action_count = actions.size();
+}
+
+void PA11SemanticModel::record_automatic_lifetime(BindingId object,
+	TypeId object_type, ScopeId scope)
+{
+	if (!object.valid() || object.value >= bindings_.size() ||
+		object.value >= binding_owners_.size() || binding_owners_[object.value] != scope ||
+		binding(object).kind != BindingKind::Variable)
+		throw std::runtime_error("PA16 automatic lifetime object is invalid");
+	const NamedRecordId record = class_record_for_object_type(object_type);
+	if (!record.valid() || !destructor_requires_runtime(record))
+		return;
+	const BindingId destructor = ensure_implicit_destructor(record);
+	if (!destructor.valid())
+		throw std::runtime_error("PA16 automatic lifetime destructor is missing");
+	lifetime_facts_.push_back(LifetimeFact(object, object_type, destructor, scope));
+}
+
 TypeId PA11SemanticModel::constructor_callable_type(BindingId constructor)
 {
 	if (!constructor.valid() || constructor.value >= bindings_.size())

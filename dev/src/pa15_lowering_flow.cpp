@@ -1270,10 +1270,11 @@ void Pa15Lowerer::finish_switch_loop(const LoopFlow& target){
 		set_current(target.end);
 	}
 
-void Pa15Lowerer::recover_existing_switch_loop(SemanticFactId body_fact,
-		const LoopFlow& target){
+	void Pa15Lowerer::recover_existing_switch_loop(SemanticFactId body_fact,
+	const LoopFlow& target){
+		const std::size_t loop_depth = active_lifetimes_.size();
 		control_stack_.push_back(ControlTarget(true, target.end,
-			loop_flow_continue_target(target)));
+			loop_flow_continue_target(target), loop_depth, loop_depth));
 		current_block_ = InvalidIdentityValue;
 		lower_switch_body(body_fact);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1304,7 +1305,9 @@ void Pa15Lowerer::lower_switch_while(SemanticFactId id){
 			const LoweredValue value = lower_condition(facts[0]);
 			emit_branch(value.value, body, end);
 		}
-		control_stack_.push_back(ControlTarget(true, end, condition));
+		const std::size_t loop_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(true, end, condition,
+			loop_depth, loop_depth));
 		set_current(body);
 		lower_statement(facts[1]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1337,7 +1340,9 @@ void Pa15Lowerer::lower_switch_do(SemanticFactId id){
 		const BlockId end = block_id(new_block("do_end"));
 		store_loop_flow(id, LoopFlow(SemanticFactKind::DoStatement,
 			condition, body, condition, end));
-		control_stack_.push_back(ControlTarget(true, end, condition));
+		const std::size_t loop_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(true, end, condition,
+			loop_depth, loop_depth));
 		set_current(body);
 		lower_statement(facts[0]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1402,7 +1407,9 @@ void Pa15Lowerer::lower_switch_for(SemanticFactId id){
 			const LoweredValue value = lower_condition(condition_fact);
 			emit_branch(value.value, body, end);
 		}
-		control_stack_.push_back(ControlTarget(true, end, iteration));
+		const std::size_t loop_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(true, end, iteration,
+			loop_depth, loop_depth));
 		set_current(body);
 		lower_statement(facts.back());
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1441,6 +1448,9 @@ bool Pa15Lowerer::lower_switch_body(SemanticFactId id){
 		{
 			const std::vector<SemanticFactId> branches = children(id);
 			std::vector<BlockId> fallthroughs;
+			std::vector<std::vector<BindingId> > fallthrough_lifetimes;
+			std::vector<std::vector<BindingId> > terminal_lifetimes;
+			const std::vector<BindingId> incoming_lifetimes = active_lifetimes_;
 			bool entered_label = false;
 			for (std::size_t i = 0; i < branches.size(); ++i)
 			{
@@ -1450,32 +1460,52 @@ bool Pa15Lowerer::lower_switch_body(SemanticFactId id){
 					kind != SemanticFactKind::ElseBranch)
 					continue;
 				if (!switch_subtree_has_label(branches[i])) continue;
-
-
-
-
 				if (entered_label) current_block_ = InvalidIdentityValue;
+				active_lifetimes_ = incoming_lifetimes;
 				if (!lower_switch_body(branches[i])) continue;
 				entered_label = true;
+				const std::vector<BindingId> branch_lifetimes = active_lifetimes_;
 				if (current_block_ != InvalidIdentityValue)
+				{
 					fallthroughs.push_back(current_block_id());
+					fallthrough_lifetimes.push_back(branch_lifetimes);
+				}
+				else
+					terminal_lifetimes.push_back(branch_lifetimes);
 			}
 			if (fallthroughs.empty())
 			{
+				if (!terminal_lifetimes.empty())
+				{
+					for (std::size_t i = 1; i < terminal_lifetimes.size(); ++i)
+						if (terminal_lifetimes[i] != terminal_lifetimes.front())
+							throw std::runtime_error(
+								"PA15 switch exits have divergent active lifetime states");
+					active_lifetimes_ = terminal_lifetimes.front();
+				}
+				else
+					active_lifetimes_ = incoming_lifetimes;
 				current_block_ = InvalidIdentityValue;
 			}
 			else if (fallthroughs.size() == 1)
 			{
+				active_lifetimes_ = fallthrough_lifetimes.front();
 				set_current(fallthroughs.front());
 			}
 			else
 			{
+				for (std::size_t i = 1; i < fallthrough_lifetimes.size(); ++i)
+					if (fallthrough_lifetimes[i] != fallthrough_lifetimes.front())
+						throw std::runtime_error(
+							"PA15 switch join has divergent active lifetime states");
 				const BlockId join = block_id(new_block("switch_if_end"));
 				for (std::size_t i = 0; i < fallthroughs.size(); ++i)
 				{
+					active_lifetimes_ = fallthrough_lifetimes[i];
 					set_current(fallthroughs[i]);
 					if (!terminated(block())) emit_jump(join);
 				}
+				active_lifetimes_ = fallthrough_lifetimes.front();
 				set_current(join);
 			}
 			return entered_label;
@@ -1608,7 +1638,9 @@ void Pa15Lowerer::lower_switch(SemanticFactId id,
 				propagate_edge(dispatch_source, context.arms[i].target);
 
 		switch_stack_.push_back(context);
-		control_stack_.push_back(ControlTarget(false, end));
+		const std::size_t switch_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(false, end, BlockId(),
+			switch_depth, switch_depth));
 		if (facts.size() == 2)
 		{
 
@@ -1648,7 +1680,9 @@ void Pa15Lowerer::lower_while(SemanticFactId id){
 			const LoweredValue value = lower_condition(facts[0]);
 			emit_branch(value.value, body, end);
 		}
-		control_stack_.push_back(ControlTarget(true, end, condition));
+		const std::size_t loop_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(true, end, condition,
+			loop_depth, loop_depth));
 		set_current(body);
 		lower_statement(facts[1]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1668,7 +1702,9 @@ void Pa15Lowerer::lower_do(SemanticFactId id){
 			condition, body, condition, end));
 		if (current_block_ != InvalidIdentityValue)
 			emit_jump(body);
-		control_stack_.push_back(ControlTarget(true, end, condition));
+		const std::size_t loop_depth = active_lifetimes_.size();
+		control_stack_.push_back(ControlTarget(true, end, condition,
+			loop_depth, loop_depth));
 		set_current(body);
 		lower_statement(facts[0]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1689,7 +1725,9 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() < 2)
 			throw std::runtime_error("PA15 invalid for fact");
+		const std::size_t loop_depth = active_lifetimes_.size();
 		lower_statement(facts[0]);
+		const std::size_t continue_depth = active_lifetimes_.size();
 		SemanticFactId condition_fact;
 		SemanticFactId iteration_fact;
 		for (std::size_t i = 1; i + 1 < facts.size(); ++i)
@@ -1716,7 +1754,8 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 			const LoweredValue value = lower_condition(condition_fact);
 			emit_branch(value.value, body, end);
 		}
-		control_stack_.push_back(ControlTarget(true, end, iteration));
+		control_stack_.push_back(ControlTarget(true, end, iteration,
+			loop_depth, continue_depth));
 		set_current(body);
 		lower_statement(facts.back());
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
@@ -1748,19 +1787,38 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 		{
 		case SemanticFactKind::CompoundStatement:
 		{
+			const ScopeId* compound_scope = fact.source == NULL ? NULL :
+				model_.compound_scope_index_.find(fact.source);
+			const std::size_t lifetime_depth = active_lifetimes_.size();
+			if (compound_scope != NULL)
+			{
+				lifetime_scope_stack_.push_back(*compound_scope);
+				lifetime_scope_depths_.push_back(lifetime_depth);
+			}
 			push_label_recovery_boundary(id);
 			for (std::size_t i = 0; i < facts.size(); ++i)
 			{
-				if (current_block_ == InvalidIdentityValue)
-				{
-					if (referenced_label_subtree(facts[i]))
-						lower_referenced_label_subtree(facts[i]);
-				}
-				else
-					lower_statement(facts[i]);
-				drain_label_recovery_queue(id, i + 1);
+					if (current_block_ == InvalidIdentityValue)
+					{
+						if (referenced_label_subtree(facts[i]))
+							lower_referenced_label_subtree(facts[i]);
+					}
+					else
+					{
+						lower_statement(facts[i]);
+					}
+					drain_label_recovery_queue(id, i + 1);
 			}
+			if (compound_scope != NULL && current_block_ != InvalidIdentityValue)
+				emit_scope_destructors(*compound_scope, lifetime_depth);
+			else
+				restore_lifetime_depth(lifetime_depth);
 			pop_label_recovery_boundary();
+			if (compound_scope != NULL)
+			{
+				lifetime_scope_stack_.pop_back();
+				lifetime_scope_depths_.pop_back();
+			}
 			break;
 		}
 		case SemanticFactKind::SimpleDeclaration:
@@ -1805,6 +1863,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					model_.binding(fact.binding).type))
 					(void)address_of_storage(storage);
 			}
+			activate_lifetime(fact.binding);
 			break;
 		case SemanticFactKind::ExpressionStatement:
 			if (facts.size() == 1) lower_discarded_expression(facts.front());
@@ -1821,9 +1880,11 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 				else
 					instruction.first = lower_expression(facts.front()).value;
 			}
-			else if (!instruction.type.is_void())
-				throw std::runtime_error("PA15 missing return operand");
-			block().instructions.push_back(instruction);
+				else if (!instruction.type.is_void())
+					throw std::runtime_error("PA15 missing return operand");
+				if (current_block_ != InvalidIdentityValue)
+					emit_active_scope_destructors();
+				block().instructions.push_back(instruction);
 			current_block_ = InvalidIdentityValue;
 			break;
 		}
@@ -1858,11 +1919,11 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			lower_discarded_expression(facts.front());
 			break;
 		case SemanticFactKind::BreakStatement:
-			emit_jump(control_target(false));
+			emit_control_lifetime_destructors(false);
 			current_block_ = InvalidIdentityValue;
 			break;
 		case SemanticFactKind::ContinueStatement:
-			emit_jump(control_target(true));
+			emit_control_lifetime_destructors(true);
 			current_block_ = InvalidIdentityValue;
 			break;
 		case SemanticFactKind::CaseStatement:
@@ -1917,6 +1978,9 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 		case SemanticFactKind::GotoStatement:
 			if (!fact.label.valid() || !facts.empty())
 				throw std::runtime_error("PA15 invalid goto statement");
+			if (function_has_nontrivial_lifetime_)
+				throw std::runtime_error(
+					"PA15 goto across active lifetime is outside checkpoint");
 			emit_jump(label_target(fact.label));
 			current_block_ = InvalidIdentityValue;
 			break;
@@ -1946,89 +2010,81 @@ void Pa15Lowerer::lower_if(SemanticFactId id,
 		if (current_block_ == InvalidIdentityValue)
 			set_current(block_id(new_block("if_selector")));
 		const bool direct = has_direct_short_circuit(facts[0]);
+		const bool implicit_else = facts.size() == 2;
+		BlockId then_block;
+		BlockId else_block;
+		BlockId join_block;
 		if (direct)
 		{
-
-
-
 			const std::size_t begin = function().blocks.size();
-			const BlockId then_block = block_id(new_block("if_then"));
-			const BlockId else_block = block_id(new_block("if_else"));
-			const bool implicit_else = facts.size() == 2;
-			BlockId join_block;
+			then_block = block_id(new_block("if_then"));
+			else_block = block_id(new_block("if_else"));
 			if (implicit_else)
 				join_block = block_id(new_block("if_end"));
 			lower_condition_branch(facts[0], then_block, else_block);
 			const BlockId saved_current = current_block_id();
 			reorder_condition_blocks(begin, implicit_else ? 3 : 2,
 				saved_current);
-
-			set_current(then_block);
-			lower_statement(facts[1]);
-			const BlockId then_exit = current_block_id();
-			const bool then_terminated = !then_exit.valid() ||
-				terminated(then_exit);
-			set_current(else_block);
-			if (!implicit_else) lower_statement(facts[2]);
-			const BlockId else_exit = current_block_id();
-			const bool else_terminated = !else_exit.valid() ||
-				terminated(else_exit);
-			if (then_terminated && else_terminated)
-			{
-				current_block_ = InvalidIdentityValue;
-				return;
-			}
-			if (!join_block.valid())
-				join_block = block_id(new_block("if_end"));
-			if (!then_terminated)
-			{
-				set_current(then_exit);
-				emit_jump(join_block);
-			}
-			if (!else_terminated)
-			{
-				set_current(else_exit);
-				emit_jump(join_block);
-			}
-			store_if_flow(id, IfFlow(then_block, else_block, join_block));
-			set_current(join_block);
-			return;
 		}
-
-		const LoweredValue condition = lower_condition(facts[0]);
-		const BlockId then_block = block_id(new_block("if_then"));
-		const BlockId else_block = block_id(new_block("if_else"));
-		emit_branch(condition.value, then_block, else_block);
-
+		else
+		{
+			const LoweredValue condition = lower_condition(facts[0]);
+			then_block = block_id(new_block("if_then"));
+			else_block = block_id(new_block("if_else"));
+			emit_branch(condition.value, then_block, else_block);
+		}
+		// Condition lowering is complete.  Both mutually exclusive bodies must
+		// start from exactly the same typed lifetime state, regardless of what
+		// the first body does to the mutable lowering cursor.
+		const std::vector<BindingId> incoming_lifetimes = active_lifetimes_;
+		active_lifetimes_ = incoming_lifetimes;
 		set_current(then_block);
 		lower_statement(facts[1]);
 		const BlockId then_exit = current_block_id();
 		const bool then_terminated = !then_exit.valid() ||
 			terminated(then_exit);
+		const std::vector<BindingId> then_lifetimes = active_lifetimes_;
+		active_lifetimes_ = incoming_lifetimes;
 		set_current(else_block);
-		if (facts.size() == 3) lower_statement(facts[2]);
+		if (!implicit_else) lower_statement(facts[2]);
 		const BlockId else_exit = current_block_id();
 		const bool else_terminated = !else_exit.valid() ||
 			terminated(else_exit);
+		const std::vector<BindingId> else_lifetimes = active_lifetimes_;
 		if (then_terminated && else_terminated)
 		{
+			// There is no ordinary join.  Preserve only a state shared by all
+			// emitted exit paths; choosing one divergent branch would make the
+			// enclosing sequential walk resurrect or lose a lifetime.
+			if (then_lifetimes != else_lifetimes)
+				throw std::runtime_error(
+					"PA15 if exits have divergent active lifetime states");
+			active_lifetimes_ = then_lifetimes;
 			current_block_ = InvalidIdentityValue;
 			return;
 		}
-		const BlockId join_block = block_id(new_block("if_end"));
+		if (!then_terminated && !else_terminated &&
+			then_lifetimes != else_lifetimes)
+			throw std::runtime_error(
+				"PA15 if join has divergent active lifetime states");
+		if (!join_block.valid())
+			join_block = block_id(new_block("if_end"));
 		if (!then_terminated)
 		{
+			active_lifetimes_ = then_lifetimes;
 			set_current(then_exit);
 			emit_jump(join_block);
 		}
 		if (!else_terminated)
 		{
+			active_lifetimes_ = else_lifetimes;
 			set_current(else_exit);
 			emit_jump(join_block);
 		}
+		active_lifetimes_ = then_terminated ? else_lifetimes : then_lifetimes;
 		store_if_flow(id, IfFlow(then_block, else_block, join_block));
 		set_current(join_block);
-	}
+}
 
 void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		current_function_ = plan.program_index;
@@ -2039,6 +2095,9 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		block_indexes_.clear();
 		control_stack_.clear();
 		switch_stack_.clear();
+		lifetime_scope_stack_.clear();
+		lifetime_scope_depths_.clear();
+		active_lifetimes_.clear();
 		recovery_control_head_ = RecoveryControlIndex();
 		recovery_control_base_depth_ = 0;
 		recovery_control_active_ = false;
@@ -2076,8 +2135,26 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			}
 		}
 		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
+		function_has_nontrivial_lifetime_ = false;
+		for (std::size_t lifetime = 0; lifetime < model_.lifetime_facts_.size();
+			++lifetime)
+		{
+			ScopeId scope = model_.lifetime_facts_[lifetime].scope;
+			while (scope.valid() && scope.value < model_.scopes_.size())
+			{
+				if (scope == fact.function_scope)
+				{
+					function_has_nontrivial_lifetime_ = true;
+					break;
+				}
+				scope = model_.scopes_[scope.value].parent;
+			}
+			if (function_has_nontrivial_lifetime_) break;
+		}
 		active_constructor_record_ = NamedRecordId();
 		active_constructor_this_ = BindingId();
+		active_destructor_record_ = NamedRecordId();
+		active_destructor_this_ = BindingId();
 		if (fact.is_constructor)
 		{
 			if (!fact.constructor_record.valid() ||
@@ -2104,8 +2181,28 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				throw std::runtime_error("PA15 constructor action range is invalid");
 			for (std::size_t action = 0; action < fact.constructor_action_count;
 				++action)
-				lower_constructor_action(model_.constructor_actions_[
-					fact.constructor_action_begin + action]);
+					lower_constructor_action(model_.constructor_actions_[
+						fact.constructor_action_begin + action]);
+		}
+		else if (fact.is_destructor)
+		{
+			if (!fact.destructor_record.valid() ||
+				fact.destructor_record.value >= model_.named_.size() ||
+				!fact.function_scope.valid() ||
+				fact.function_scope.value >= model_.scopes_.size() ||
+				model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function ||
+				model_.scopes_[fact.function_scope.value].parent != fact.owner ||
+				!model_.scopes_[fact.function_scope.value].implicit_object_binding.valid())
+				throw std::runtime_error("PA15 destructor object parameter is missing");
+			const BindingId this_binding = model_.scopes_[
+				fact.function_scope.value].implicit_object_binding;
+			if (this_binding.value >= model_.bindings_.size() ||
+				this_binding.value >= model_.binding_owners_.size() ||
+				model_.binding_owners_[this_binding.value] != fact.function_scope ||
+				model_.binding(this_binding).kind != BindingKind::Parameter)
+				throw std::runtime_error("PA15 destructor object parameter is invalid");
+			active_destructor_record_ = fact.destructor_record;
+			active_destructor_this_ = this_binding;
 		}
 		if (fact.body_fact.valid())
 		{
@@ -2113,8 +2210,20 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			lower_statement(fact.body_fact);
 			drain_label_recovery_queue(fact.body_fact);
 		}
-		else if (!fact.is_constructor || !fact.synthetic)
+		else if ((!fact.is_constructor && !fact.is_destructor) || !fact.synthetic)
 			throw std::runtime_error("PA15 function body fact is missing");
+		if (fact.is_destructor)
+		{
+			if (fact.destructor_action_begin == InvalidIdentityValue ||
+				fact.destructor_action_begin > model_.destructor_actions_.size() ||
+				fact.destructor_action_count > model_.destructor_actions_.size() -
+					fact.destructor_action_begin)
+				throw std::runtime_error("PA15 destructor action range is invalid");
+			for (std::size_t action = 0; action < fact.destructor_action_count;
+				++action)
+				lower_destructor_action(model_.destructor_actions_[
+					fact.destructor_action_begin + action]);
+		}
 		if (!label_recovery_queue_.empty())
 			drain_label_recovery_queue(SemanticFactId());
 		if (!label_recovery_queue_.empty())
@@ -2122,6 +2231,8 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		if (current_block_ != InvalidIdentityValue &&
 			!terminated(block()))
 		{
+			if (!active_lifetimes_.empty())
+				emit_active_scope_destructors();
 			const BlockId continuation = current_block_id();
 			if (!is_reachable(continuation))
 			{
@@ -2157,5 +2268,11 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		reorder_function_blocks();
 		active_constructor_record_ = NamedRecordId();
 		active_constructor_this_ = BindingId();
+		active_destructor_record_ = NamedRecordId();
+		active_destructor_this_ = BindingId();
+		lifetime_scope_stack_.clear();
+		lifetime_scope_depths_.clear();
+		active_lifetimes_.clear();
+		function_has_nontrivial_lifetime_ = false;
 	}
 }

@@ -480,7 +480,11 @@ void Pa15Lowerer::pop_label_recovery_control(SemanticFactId frame){
 	recovery_control_head_ = node.parent;
 }
 
-BlockId Pa15Lowerer::control_target(bool continue_target) const{
+
+BlockId Pa15Lowerer::control_target(bool continue_target,
+	std::size_t* lifetime_depth) const{
+	if (lifetime_depth != NULL)
+		*lifetime_depth = InvalidIdentityValue;
 	const std::size_t saved_depth = recovery_control_active_ ?
 		std::min(recovery_control_base_depth_, control_stack_.size()) : 0;
 	// Controls lowered inside the recovered label body are the innermost
@@ -491,7 +495,13 @@ BlockId Pa15Lowerer::control_target(bool continue_target) const{
 		if (continue_target && !target.loop) continue;
 		const BlockId result = continue_target ? target.continue_target :
 			target.break_target;
-		if (result.valid()) return result;
+		if (result.valid())
+		{
+			if (lifetime_depth != NULL)
+				*lifetime_depth = continue_target ?
+					target.continue_lifetime_depth : target.break_lifetime_depth;
+			return result;
+		}
 	}
 	if (recovery_control_active_ && recovery_control_head_.valid())
 	{
@@ -546,7 +556,13 @@ BlockId Pa15Lowerer::control_target(bool continue_target) const{
 		if (continue_target && !target.loop) continue;
 		const BlockId result = continue_target ? target.continue_target :
 			target.break_target;
-		if (result.valid()) return result;
+		if (result.valid())
+		{
+			if (lifetime_depth != NULL)
+				*lifetime_depth = continue_target ?
+					target.continue_lifetime_depth : target.break_lifetime_depth;
+			return result;
+		}
 	}
 	throw std::runtime_error(continue_target ?
 		"PA15 continue target is missing" : "PA15 break target is missing");

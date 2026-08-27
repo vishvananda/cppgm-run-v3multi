@@ -399,11 +399,12 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			throw std::runtime_error("PA12 member constructor action identity is invalid");
 		const TypeId target_type = target_kind == ConstructorActionTarget::Base ?
 			named_type(base) : binding(member).type;
-		const NamedRecordId target_record = named_record_for_type(target_type);
+		const NamedRecordId target_record = class_record_for_object_type(target_type);
 		if (!target_record.valid() || target_record.value >= named_.size() ||
 			named_[target_record.value].kind != NamedKind::Class)
 			throw std::runtime_error("PA12 class constructor action target is invalid");
 		ConstructorActionFact action(target_kind, base, member);
+		action.object_type = target_type;
 		if (argument != NULL &&
 			((argument->kind == PA10NodeKind::BracedInitList ||
 				argument->kind == PA10NodeKind::ParenArgumentList) &&
@@ -442,6 +443,21 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		const PA10AstNode* expression_node = argument;
 		if (argument->kind == PA10NodeKind::ParenArgumentList)
 		{
+			if (argument->children.empty() && type_kind(strip_top_cv_type(
+				target_type)) == TypeKind::Array)
+			{
+				const SemanticFactId empty_initializer = make_expression_fact(
+					SemanticFactKind::BracedInitList,
+					strip_top_cv_type(target_type),
+					SemanticValueCategory::Lvalue, *argument,
+					std::vector<SemanticFactId>());
+				ConstructorActionFact action(ConstructorActionTarget::Member,
+					NamedRecordId(), member);
+				action.object_type = target_type;
+				action.initializer = empty_initializer;
+				append_action(action, std::vector<SemanticFactId>());
+				return;
+			}
 			if (argument->children.size() != 1)
 				throw std::runtime_error("PA12 scalar mem-initializer arity mismatch");
 			expression_node = &argument->children.front();
@@ -453,6 +469,7 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 				semantic_facts_[expression.fact.value].source);
 		ConstructorActionFact action(ConstructorActionTarget::Member,
 			NamedRecordId(), member);
+		action.object_type = target_type;
 		action.initializer = expression.fact;
 		append_action(action, std::vector<SemanticFactId>());
 	};
@@ -483,7 +500,8 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			member_initializers.find(member_id);
 		if (explicit_init != NULL)
 		{
-			const NamedRecordId member_record = named_record_for_type(member.type);
+			const NamedRecordId member_record =
+				class_record_for_object_type(member.type);
 			if (member_record.valid() && member_record.value < named_.size() &&
 				named_[member_record.value].kind == NamedKind::Class)
 				append_class(ConstructorActionTarget::Member, NamedRecordId(),
@@ -510,6 +528,7 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 						"PA12 default member constructor identity is invalid");
 				ConstructorActionFact action(ConstructorActionTarget::Member,
 					NamedRecordId(), member_id, initializer.selected_binding);
+				action.object_type = member.type;
 				action.value_initialize = initializer.value_initialize;
 				std::vector<SemanticFactId> initializer_arguments;
 				if (initializer.child_count != 0)
@@ -530,12 +549,14 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			{
 				ConstructorActionFact action(ConstructorActionTarget::Member,
 					NamedRecordId(), member_id);
+				action.object_type = member.type;
 				action.initializer = sidecar->default_member_initializer;
 				append_action(action, std::vector<SemanticFactId>());
 			}
 			continue;
 		}
-		const NamedRecordId member_record = named_record_for_type(member.type);
+		const NamedRecordId member_record =
+			class_record_for_object_type(member.type);
 		if (member_record.valid() && constructor_requires_runtime(member_record))
 			append_class(ConstructorActionTarget::Member, NamedRecordId(), member_id,
 				NULL);
@@ -582,6 +603,8 @@ void PA11SemanticModel::publish_class_constructor_defaults(
 			throw std::runtime_error("PA12 constructor default fact is missing");
 		const FunctionFactId function_id = *found;
 		const FunctionFact function = function_facts_[function_id.value];
+		if (function.is_destructor)
+			continue;
 		if (!function.is_constructor || function.owner != class_scope ||
 			function.constructor_record != scopes_[class_scope.value].record)
 			throw std::runtime_error(
@@ -600,7 +623,8 @@ void PA11SemanticModel::analyze_special_member(const PA10AstNode& node,
 	const FunctionFactId* function_id = function_fact_index_.find(&node);
 	if (function_id == NULL || !function_id->valid() ||
 		function_id->value >= function_facts_.size() ||
-		!function_facts_[function_id->value].is_constructor)
+		(!function_facts_[function_id->value].is_constructor &&
+			!function_facts_[function_id->value].is_destructor))
 		throw std::runtime_error("PA12 special member fact is missing");
 	const FunctionFactId id = *function_id;
 	prepare_pa12_member_parameter(function_facts_[id.value]);
@@ -617,7 +641,10 @@ void PA11SemanticModel::analyze_special_member(const PA10AstNode& node,
 			function_scope, semantic_function, 0, 0, NULL);
 		function_facts_[id.value].body_fact = body_fact;
 	}
-	build_constructor_actions(id);
+	if (function_facts_[id.value].is_constructor)
+		build_constructor_actions(id);
+	else
+		build_destructor_actions(id);
 }
 
 void PA11SemanticModel::prepare_pa12()
@@ -636,6 +663,10 @@ void PA11SemanticModel::analyze_pa12()
 		ConstructorRuntimeCacheState::Unseen);
 	constructor_runtime_results_.assign(named_.size(), 0);
 	constructor_runtime_invalid_.assign(named_.size(), 0);
+	destructor_runtime_states_.assign(named_.size(),
+		ConstructorRuntimeCacheState::Unseen);
+	destructor_runtime_results_.assign(named_.size(), 0);
+	destructor_runtime_invalid_.assign(named_.size(), 0);
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		analyze_pa12_node(ast_.root.children[i], global_);
 }

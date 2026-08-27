@@ -56,6 +56,22 @@ void Pa15Lowerer::collect_demanded_member_functions(
 	}
 	std::vector<unsigned char> scanned_facts(
 		model_.semantic_facts_.size(), 0);
+	for (std::size_t i = 0; i < model_.lifetime_facts_.size(); ++i)
+	{
+		const LifetimeFact& lifetime = model_.lifetime_facts_[i];
+		const FunctionFactId* target_id =
+			model_.function_binding_fact_index_.find(lifetime.destructor);
+		if (target_id == NULL || !target_id->valid() ||
+			target_id->value >= model_.function_facts_.size() ||
+			!model_.function_facts_[target_id->value].is_destructor ||
+			model_.function_facts_[target_id->value].binding != lifetime.destructor)
+			throw std::runtime_error("PA15 lifetime destructor demand is invalid");
+		if (!(*demanded)[target_id->value])
+		{
+			(*demanded)[target_id->value] = 1;
+			function_work.push_back(*target_id);
+		}
+	}
 	while (!function_work.empty())
 	{
 		const FunctionFactId function_id = function_work.back();
@@ -136,7 +152,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 							model_.bindings_.size())
 							throw std::runtime_error(
 								"PA15 constructor action member identity is invalid");
-						target_record = model_.named_record_for_type(
+						target_record = model_.class_record_for_object_type(
 							model_.binding(action.member).type);
 					}
 					else
@@ -179,7 +195,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		}
 		if (function.body_fact.valid())
 			fact_work.push_back(function.body_fact);
-		if (fact_work.empty())
+		if (fact_work.empty() && !function.is_destructor)
 			continue;
 		while (!fact_work.empty())
 		{
@@ -415,6 +431,36 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			for (std::size_t child = 0; child < fact.child_count; ++child)
 				fact_work.push_back(model_.semantic_children_[
 					fact.child_begin + child]);
+		}
+		if (function.is_destructor)
+		{
+			if (function.destructor_action_begin == InvalidIdentityValue ||
+				function.destructor_action_begin > model_.destructor_actions_.size() ||
+				function.destructor_action_count > model_.destructor_actions_.size() -
+					function.destructor_action_begin)
+				throw std::runtime_error("PA15 destructor action range is invalid");
+			for (std::size_t action_index = 0;
+				action_index < function.destructor_action_count; ++action_index)
+			{
+				const DestructorActionFact& action =
+					model_.destructor_actions_[function.destructor_action_begin +
+						action_index];
+				if (!action.destructor.valid() || action.destructor.value >=
+					model_.bindings_.size())
+					throw std::runtime_error("PA15 destructor action binding is invalid");
+				const FunctionFactId* target_id =
+					model_.function_binding_fact_index_.find(action.destructor);
+				if (target_id == NULL || !target_id->valid() ||
+					target_id->value >= model_.function_facts_.size() ||
+					!model_.function_facts_[target_id->value].is_destructor ||
+					model_.function_facts_[target_id->value].binding != action.destructor)
+					throw std::runtime_error("PA15 destructor action target is missing");
+				if (!(*demanded)[target_id->value])
+				{
+					(*demanded)[target_id->value] = 1;
+					function_work.push_back(*target_id);
+				}
+			}
 		}
 	}
 }

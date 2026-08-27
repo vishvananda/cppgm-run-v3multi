@@ -280,7 +280,7 @@ enum class FunctionDeclarationKind
 struct BindingSidecar
 {
 	BindingId backing_storage;
-	NamedRecordId constructor_record;
+	NamedRecordId constructor_record; NamedRecordId destructor_record;
 	NamedRecordId generated_name_record;
 	MemberAccess member_access;
 	bool static_member;
@@ -304,7 +304,7 @@ struct BindingSidecar
 	BindingSidecar(BindingId backing_storage = BindingId(),
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
-		: backing_storage(backing_storage), constructor_record(constructor_record),
+		: backing_storage(backing_storage), constructor_record(constructor_record), destructor_record(),
 		  generated_name_record(generated_name_record),
 		  member_access(MemberAccess::Public), static_member(false),
 		  has_default_member_initializer(false),
@@ -663,9 +663,9 @@ struct NamedRecordSidecar
 {
 	bool local_object_name;
 	BindingId backing_storage;
-	BindingId constructor_binding;
-	BindingId default_constructor_binding;
-	bool has_constructor_declaration;
+	BindingId constructor_binding; BindingId default_constructor_binding;
+	BindingId destructor_binding;
+	bool has_constructor_declaration; bool has_destructor_declaration;
 	bool has_display_path;
 	NamePath display_path;
 
@@ -675,9 +675,9 @@ struct NamedRecordSidecar
 		BindingId default_constructor_binding = BindingId(),
 		bool has_constructor_declaration = false)
 		: local_object_name(local_object_name), backing_storage(backing_storage),
-		  constructor_binding(constructor_binding),
-		  default_constructor_binding(default_constructor_binding),
-		  has_constructor_declaration(has_constructor_declaration),
+		  constructor_binding(constructor_binding), default_constructor_binding(default_constructor_binding),
+		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
+		  has_destructor_declaration(false),
 		  has_display_path(false),
 		  display_path()
 	{}
@@ -1034,12 +1034,14 @@ struct DeclarationFact
 	bool is_extern;
 	bool is_static;
 	bool is_thread_local;
+	std::size_t lifetime_begin, lifetime_count;
 
 	DeclarationFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope), binding_begin(InvalidIdentityValue),
 		  binding_count(0), semantic_begin(InvalidIdentityValue),
 		  semantic_count(0), is_constexpr(false), automatic_storage(false),
-		  is_extern(false), is_static(false), is_thread_local(false)
+		  is_extern(false), is_static(false), is_thread_local(false),
+		  lifetime_begin(InvalidIdentityValue), lifetime_count(0)
 	{}
 };
 
@@ -1049,18 +1051,36 @@ struct ConstructorActionFact
 {
 	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
 	BindingId constructor; SemanticFactId initializer;
-	std::size_t argument_begin; std::size_t argument_count;
-	bool value_initialize;
-
-	ConstructorActionFact(ConstructorActionTarget target =
-		ConstructorActionTarget::Member,
-		NamedRecordId base_record = NamedRecordId(),
-		BindingId member = BindingId(), BindingId constructor = BindingId(),
-		SemanticFactId initializer = SemanticFactId())
+	std::size_t argument_begin; std::size_t argument_count; bool value_initialize;
+	TypeId object_type;
+	ConstructorActionFact(ConstructorActionTarget target = ConstructorActionTarget::Member,
+		NamedRecordId base_record = NamedRecordId(), BindingId member = BindingId(),
+		BindingId constructor = BindingId(), SemanticFactId initializer = SemanticFactId())
 		: target(target), base_record(base_record), member(member),
 		  constructor(constructor), initializer(initializer),
 		  argument_begin(InvalidIdentityValue), argument_count(0),
-		  value_initialize(false)
+		  value_initialize(false), object_type()
+	{}
+};
+
+struct DestructorActionFact
+{
+	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
+	BindingId destructor; TypeId object_type;
+	DestructorActionFact(ConstructorActionTarget target = ConstructorActionTarget::Member,
+		NamedRecordId base_record = NamedRecordId(), BindingId member = BindingId(),
+		BindingId destructor = BindingId(), TypeId object_type = TypeId())
+		: target(target), base_record(base_record), member(member), destructor(destructor),
+		  object_type(object_type)
+	{}
+};
+
+struct LifetimeFact
+{
+	BindingId object; TypeId object_type; BindingId destructor; ScopeId scope;
+	LifetimeFact(BindingId object = BindingId(), TypeId object_type = TypeId(),
+		BindingId destructor = BindingId(), ScopeId scope = ScopeId())
+		: object(object), object_type(object_type), destructor(destructor), scope(scope)
 	{}
 };
 
@@ -1078,10 +1098,12 @@ struct FunctionFact
 	std::size_t default_argument_begin;
 	std::size_t default_argument_count;
 	bool is_constructor;
+	bool is_destructor;
 	bool synthetic;
 	NamedRecordId constructor_record;
-	std::size_t constructor_action_begin;
-	std::size_t constructor_action_count;
+	NamedRecordId destructor_record;
+	std::size_t constructor_action_begin, constructor_action_count;
+	std::size_t destructor_action_begin, destructor_action_count;
 
 	FunctionFact(const PA10AstNode* node = NULL, ScopeId owner = ScopeId(),
 		BindingId binding = BindingId(), ScopeId function_scope = ScopeId(),
@@ -1090,9 +1112,11 @@ struct FunctionFact
 		  function_scope(function_scope), body_scope(body_scope), body_fact(),
 		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
-		  default_argument_count(0), is_constructor(false), synthetic(false),
-		  constructor_record(), constructor_action_begin(InvalidIdentityValue),
-		  constructor_action_count(0)
+		  default_argument_count(0), is_constructor(false), is_destructor(false),
+		  synthetic(false), constructor_record(), destructor_record(),
+		  constructor_action_begin(InvalidIdentityValue), constructor_action_count(0),
+		  destructor_action_begin(InvalidIdentityValue),
+		  destructor_action_count(0)
 	{}
 };
 
@@ -1312,9 +1336,14 @@ private:
 	std::vector<FunctionFactId> class_function_facts_;
 	std::vector<ConstructorActionFact> constructor_actions_;
 	std::vector<SemanticFactId> constructor_arguments_;
+	std::vector<DestructorActionFact> destructor_actions_;
+	std::vector<LifetimeFact> lifetime_facts_;
 	std::vector<ConstructorRuntimeCacheState> constructor_runtime_states_;
 	std::vector<unsigned char> constructor_runtime_results_;
 	std::vector<unsigned char> constructor_runtime_invalid_;
+	std::vector<ConstructorRuntimeCacheState> destructor_runtime_states_;
+	std::vector<unsigned char> destructor_runtime_results_;
+	std::vector<unsigned char> destructor_runtime_invalid_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
@@ -1592,12 +1621,18 @@ private:
 	;
 	bool implicit_default_constructor_supported(NamedRecordId record) const
 	;
+	NamedRecordId class_record_for_object_type(TypeId type) const
+	;
 	bool implicit_default_type_supported(TypeId type,
 		std::vector<NamedRecordId>& active) const
 	;
 	BindingId default_constructor_binding(NamedRecordId record) const
 	;
 	bool has_constructor_declaration(NamedRecordId record) const
+	;
+	BindingId destructor_binding(NamedRecordId record) const
+	;
+	bool has_destructor_declaration(NamedRecordId record) const
 	;
 	bool aggregate_class_initialization_supported(NamedRecordId record) const
 	;
@@ -1608,6 +1643,17 @@ private:
 	TypeId constructor_callable_type(BindingId constructor)
 	;
 	BindingId ensure_implicit_default_constructor(NamedRecordId record)
+	;
+	bool classify_destructor_runtime(NamedRecordId record)
+	;
+	bool destructor_requires_runtime(NamedRecordId record)
+	;
+	BindingId ensure_implicit_destructor(NamedRecordId record)
+	;
+	void build_destructor_actions(FunctionFactId function)
+	;
+	void record_automatic_lifetime(BindingId object, TypeId object_type,
+		ScopeId scope)
 	;
 	ConstructorSelection select_constructor(NamedRecordId record,
 		ScopeId access_scope,

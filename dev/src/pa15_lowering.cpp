@@ -42,6 +42,10 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), generated_slot_ordinal_(0),
 		  active_constructor_record_(), active_constructor_this_(),
+		  active_destructor_record_(), active_destructor_this_(),
+		  lifetime_by_binding_(), lifetime_scope_stack_(),
+		  lifetime_scope_depths_(), active_lifetimes_(),
+		  function_has_nontrivial_lifetime_(false),
 		  constructor_nothrow_states_(), constructor_nothrow_results_(),
 		  constructor_nothrow_invalid_(), semantic_nothrow_states_(),
 		  semantic_nothrow_results_(), semantic_nothrow_invalid_(),
@@ -203,12 +207,26 @@ std::vector<std::string> Pa15Lowerer::function_components(const FunctionFact& fa
 				reversed.push_back(model_.name_text(
 					model_.named_[current.record.value].name));
 			scope = current.parent;
-		}
-		std::reverse(reversed.begin(), reversed.end());
+	}
+	std::reverse(reversed.begin(), reversed.end());
+	const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+	const bool destructor = fact.is_destructor || (sidecar != NULL &&
+		sidecar->destructor_record.valid());
+	if (destructor)
+	{
+		const NamedRecordId record = fact.destructor_record.valid() ?
+			fact.destructor_record : sidecar->destructor_record;
+		if (!record.valid() || record.value >= model_.named_.size() ||
+			!model_.named_[record.value].name.valid())
+			throw std::runtime_error("PA15 destructor symbol owner is missing");
+		reversed.push_back("_" + model_.name_text(
+			model_.named_[record.value].name));
+	}
+	else
 		reversed.push_back(model_.name_text(
 			model_.binding(fact.binding).name));
-		return reversed;
-	}
+	return reversed;
+}
 
 std::vector<std::string> Pa15Lowerer::value_components(ScopeId owner, NameId name) const{
 		std::vector<std::string> reversed;
@@ -358,6 +376,8 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
 		const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
 		const bool constructor = sidecar != NULL &&
 			sidecar->constructor_record.valid();
+		const bool destructor = fact.is_destructor || (sidecar != NULL &&
+			sidecar->destructor_record.valid());
 		abi_mangle::AbiFactCase facts;
 		abi_mangle::AbiFactRecord record;
 		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
@@ -368,14 +388,19 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
 		record.target.function.name.components = function_abi_components(
 			fact.binding, fact.owner);
-		if (constructor)
+		if (constructor || destructor)
 		{
 			if (record.target.function.name.components.empty())
-				throw std::runtime_error("PA15 constructor ABI path is empty");
+				throw std::runtime_error("PA15 special-member ABI path is empty");
 			record.target.function.name.components.pop_back();
-			record.target.function.special_terminal = terminal ==
-				abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
-				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE : terminal;
+			if (constructor)
+				record.target.function.special_terminal = terminal ==
+					abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE : terminal;
+			else
+				record.target.function.special_terminal = terminal ==
+					abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE : terminal;
 		}
 		else
 			record.target.function.operator_terminal = operator_terminal(
@@ -398,7 +423,7 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
 					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
 			facts.records.push_back(qualifier);
 		}
-		if (constructor)
+		if (constructor || destructor)
 		{
 			abi_mangle::AbiFactRecord terminal_record;
 			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
@@ -420,6 +445,8 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 		const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
 		const bool constructor = sidecar != NULL &&
 			sidecar->constructor_record.valid();
+		const bool destructor = sidecar != NULL &&
+			sidecar->destructor_record.valid();
 		abi_mangle::AbiFactCase facts;
 		abi_mangle::AbiFactRecord record;
 		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
@@ -430,13 +457,14 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
 		record.target.function.name.components = function_abi_components(
 			binding_id, owner);
-		if (constructor)
+		if (constructor || destructor)
 		{
 			if (record.target.function.name.components.empty())
-				throw std::runtime_error("PA15 constructor ABI path is empty");
+				throw std::runtime_error("PA15 special-member ABI path is empty");
 			record.target.function.name.components.pop_back();
-			record.target.function.special_terminal =
-				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE;
+			record.target.function.special_terminal = constructor ?
+				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE :
+				abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
 		}
 		else
 			record.target.function.operator_terminal = operator_terminal(
@@ -459,14 +487,15 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
 			facts.records.push_back(qualifier);
 		}
-		if (constructor)
+		if (constructor || destructor)
 		{
 			abi_mangle::AbiFactRecord terminal_record;
 			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
 			terminal_record.function.kind =
 				abi_mangle::ABI_FUNCTION_RECORD_TERMINAL;
-			terminal_record.function.special_terminal =
-				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE;
+				terminal_record.function.special_terminal = constructor ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE :
+					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
 			facts.records.push_back(terminal_record);
 		}
 		facts.records.push_back(record);
@@ -581,6 +610,21 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 }
 
 void Pa15Lowerer::index_binding_facts(){
+		lifetime_by_binding_.clear();
+		for (std::size_t i = 0; i < model_.lifetime_facts_.size(); ++i)
+		{
+			const LifetimeFact& lifetime = model_.lifetime_facts_[i];
+			if (!lifetime.object.valid() || lifetime.object.value >= model_.bindings_.size() ||
+				!lifetime.object_type.valid() || !lifetime.destructor.valid() ||
+				!lifetime.scope.valid() || lifetime.scope.value >= model_.scopes_.size() ||
+				model_.binding_owners_[lifetime.object.value] != lifetime.scope ||
+				model_.binding(lifetime.object).kind != BindingKind::Variable)
+				throw std::runtime_error("PA15 lifetime fact identity is invalid");
+			if (lifetime_by_binding_.find(lifetime.object.value) !=
+				lifetime_by_binding_.end())
+				throw std::runtime_error("PA15 duplicate lifetime fact identity");
+			lifetime_by_binding_[lifetime.object.value] = &lifetime;
+		}
 		for (std::size_t i = 0; i < model_.declaration_facts_.size(); ++i)
 		{
 			const DeclarationFact& declaration = model_.declaration_facts_[i];
@@ -1226,6 +1270,9 @@ void Pa15Lowerer::collect_functions(){
 			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
 			const bool is_constructor = fact.is_constructor || (sidecar != NULL &&
 				sidecar->constructor_record.valid());
+			const bool is_destructor = fact.is_destructor || (sidecar != NULL &&
+				sidecar->destructor_record.valid());
+			const bool is_special_member = is_constructor || is_destructor;
 			if (sidecar != NULL && sidecar->nonthrowing)
 				function.boundary.unwind = lowir_model::CUM_NO;
 			if (is_constructor && fact.synthetic)
@@ -1233,7 +1280,7 @@ void Pa15Lowerer::collect_functions(){
 				if (constructor_is_nothrow(FunctionFactId(i)))
 					function.boundary.unwind = lowir_model::CUM_NO;
 			}
-			function.metadata.binding = is_constructor ?
+			function.metadata.binding = is_special_member ?
 				lowir_model::SBM_WEAK : (binding.internal_linkage ?
 				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG);
 			if (binding.language_linkage == LanguageLinkage::C)
@@ -1253,11 +1300,13 @@ void Pa15Lowerer::collect_functions(){
 			function_symbols_[fact.binding.value] = function.symbol_id;
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
-			if (is_constructor)
+			if (is_special_member)
 			{
 				lowir_model::ObjectAlias alias;
 				alias.object_name_id = intern_spelling(abi_symbol(fact,
-					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE));
+					is_constructor ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE :
+					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE));
 				alias.target_name_id = name_id;
 				alias.target_id = function.symbol_id;
 				program_.object_aliases.push_back(alias);

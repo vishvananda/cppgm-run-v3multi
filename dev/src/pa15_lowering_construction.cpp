@@ -281,6 +281,71 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 		byte, lowir_model::IPK_FIELD);
 }
 
+std::size_t Pa15Lowerer::checked_array_element_offset(TypeId array,
+	std::size_t index) const
+{
+	array = model_.strip_cv_type(model_.expression_object_type(array));
+	if (!array.valid() || array.value >= model_.types_.size() ||
+		model_.type_kind(array) != TypeKind::Array)
+		throw std::runtime_error("PA15 array element type is invalid");
+	const TypeKey& key = model_.types_[array.value];
+	if (key.unknown_bound || index >= key.bound.value)
+		throw std::runtime_error("PA15 array element index is out of bounds");
+	const std::size_t stride = model_.type_size(key.child);
+	const std::size_t max_offset = static_cast<std::size_t>(
+		std::numeric_limits<long long>::max());
+	if (stride == 0 || stride > max_offset || index > max_offset / stride)
+		throw std::runtime_error("PA15 array element stride overflows offset");
+	return index * stride;
+}
+
+LowType Pa15Lowerer::array_element_instruction_type(TypeId element) const
+{
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(element));
+	bool byte_projection = false;
+	if (object.valid() && object.value < model_.types_.size())
+	{
+		const TypeKind kind = model_.type_kind(object);
+		byte_projection = kind == TypeKind::Array;
+		if (kind == TypeKind::Named)
+		{
+			const NamedRecordId record = model_.named_record_for_type(object);
+			byte_projection = record.valid() && record.value < model_.named_.size() &&
+				model_.named_[record.value].kind == NamedKind::Class;
+		}
+		if (byte_projection)
+		{
+			LowType byte;
+			byte.kind = LowType::TYPE_INTEGER;
+			byte.integer_kind = LowType::INTEGER_I8;
+			return byte;
+		}
+	}
+	return low_type(element);
+}
+
+LoweredValue Pa15Lowerer::emit_array_element_offset(TypeId array,
+	std::size_t index)
+{
+	array = model_.strip_cv_type(model_.expression_object_type(array));
+	if (!array.valid() || array.value >= model_.types_.size() ||
+		model_.type_kind(array) != TypeKind::Array)
+		throw std::runtime_error("PA15 array element offset type is invalid");
+	const TypeId child = model_.types_[array.value].child;
+	(void)checked_array_element_offset(array, index);
+	const std::size_t stride = model_.type_size(child);
+	const LowType integer = size_low_type();
+	if (stride == 1)
+		return LoweredValue(integer_operand(static_cast<long long>(index),
+			integer), integer, false);
+	return emit_binary_value(lowir_model::BOP_MUL, integer,
+		LoweredValue(integer_operand(static_cast<long long>(index), integer),
+			integer, false),
+		LoweredValue(integer_operand(static_cast<long long>(stride), integer),
+			integer, false));
+}
+
 LoweredValue Pa15Lowerer::constructor_path_address(
 	const ConstructorActionFact& action,
 	const std::vector<ConstructorAddressStep>& path)
@@ -302,15 +367,23 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 		{
 			if (model_.type_kind(object) != TypeKind::Array ||
 				model_.types_[object.value].unknown_bound ||
-				path[i].index >= model_.types_[object.value].bound.value ||
-				path[i].index > static_cast<std::size_t>(
-					std::numeric_limits<long long>::max()))
+				path[i].index >= model_.types_[object.value].bound.value)
 				throw std::runtime_error("PA15 constructor path array is invalid");
-			result = emit_index(emit_decay(result),
+			const TypeId child = model_.types_[object.value].child;
+			const TypeId child_object = model_.strip_cv_type(
+				model_.expression_object_type(child));
+			const bool byte_projection = (child_object.valid() &&
+				model_.type_kind(child_object) == TypeKind::Array) ||
+				class_object_type(child);
+			const LoweredValue array_offset = byte_projection ?
+				emit_array_element_offset(object, path[i].index) :
 				LoweredValue(integer_operand(static_cast<long long>(path[i].index),
-					offset_type), offset_type, false), byte,
+					size_low_type()), size_low_type(), false);
+			const LowType element_type = array_element_instruction_type(child);
+			result = emit_index(emit_decay(result),
+				array_offset, element_type,
 				lowir_model::IPK_ARRAY_ELEMENT);
-			current_type = model_.types_[object.value].child;
+			current_type = child;
 			continue;
 		}
 		if (model_.type_kind(object) != TypeKind::Named ||
@@ -463,6 +536,350 @@ const FunctionFact& Pa15Lowerer::checked_constructor_function(
 	return function;
 }
 
+const FunctionFact& Pa15Lowerer::checked_destructor_function(
+	BindingId destructor, NamedRecordId record) const
+{
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].kind != NamedKind::Class ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("PA15 destructor fact record is invalid");
+	const NamedRecord& named = model_.named_[record.value];
+	if (!named.scope.valid() || named.scope.value >= model_.scopes_.size() ||
+		model_.scopes_[named.scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[named.scope.value].record != record)
+		throw std::runtime_error("PA15 destructor fact owner is invalid");
+	if (!destructor.valid() || destructor.value >= model_.bindings_.size() ||
+		destructor.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[destructor.value] != named.scope)
+		throw std::runtime_error("PA15 destructor fact binding owner is invalid");
+	const Binding& binding = model_.binding(destructor);
+	if (binding.kind != BindingKind::Function ||
+		model_.type_kind(binding.type) != TypeKind::Function)
+		throw std::runtime_error("PA15 destructor fact binding is invalid");
+	const BindingSidecar* sidecar = model_.binding_sidecar(destructor);
+	if (sidecar == NULL || sidecar->destructor_record != record)
+		throw std::runtime_error("PA15 destructor fact record owner is invalid");
+	const FunctionFactId* function_id =
+		model_.function_binding_fact_index_.find(destructor);
+	if (function_id == NULL || !function_id->valid() ||
+		function_id->value >= model_.function_facts_.size())
+		throw std::runtime_error("PA15 destructor fact is missing");
+	const FunctionFact& function = model_.function_facts_[function_id->value];
+	if (!function.is_destructor || function.binding != destructor ||
+		function.owner != named.scope || function.destructor_record != record ||
+		!function.function_scope.valid() ||
+		function.function_scope.value >= model_.scopes_.size() ||
+		model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
+		model_.scopes_[function.function_scope.value].parent != function.owner)
+		throw std::runtime_error("PA15 destructor fact identity is invalid");
+	const BindingId this_binding = model_.scopes_[function.function_scope.value].
+		implicit_object_binding;
+	if (!this_binding.valid() || this_binding.value >= model_.bindings_.size() ||
+		this_binding.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[this_binding.value] != function.function_scope ||
+		model_.binding(this_binding).kind != BindingKind::Parameter)
+		throw std::runtime_error("PA15 destructor fact object parameter is invalid");
+	if (function.destructor_action_begin == InvalidIdentityValue ||
+		function.destructor_action_begin > model_.destructor_actions_.size() ||
+		function.destructor_action_count > model_.destructor_actions_.size() -
+		function.destructor_action_begin)
+		throw std::runtime_error("PA15 destructor fact action range is invalid");
+	return function;
+}
+
+LoweredValue Pa15Lowerer::destructor_subobject_address(
+	const DestructorActionFact& action)
+{
+	if (!active_destructor_record_.valid() || !active_destructor_this_.valid() ||
+		active_destructor_record_.value >= model_.named_.size())
+		throw std::runtime_error("PA15 destructor has no active object");
+	const NamedRecord& active = model_.named_[active_destructor_record_.value];
+	if (active.kind != NamedKind::Class || !active.scope.valid() ||
+		active.scope.value >= model_.scopes_.size() ||
+		model_.scopes_[active.scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[active.scope.value].record != active_destructor_record_)
+		throw std::runtime_error("PA15 destructor owner is invalid");
+	const LoweredValue this_storage = storage_for(active_destructor_this_);
+	const ValueId this_value = emit_load(this_storage, this_storage.type);
+	const Instruction& this_load = block().instructions.back();
+	const LoweredValue object(temporary_operand(this_value,
+		this_load.destination_name_id), this_storage.type, false);
+	const LowType offset_type = size_low_type();
+	LowType byte;
+	byte.kind = LowType::TYPE_INTEGER;
+	byte.integer_kind = LowType::INTEGER_I8;
+	if (action.target == ConstructorActionTarget::Base)
+	{
+		if (!active.has_base || active.direct_base_virtual ||
+			active.direct_base != action.base_record ||
+			!action.base_record.valid())
+			throw std::runtime_error("PA15 destructor base action is invalid");
+		const RecordLayout& layout = model_.record_layout(active_destructor_record_);
+		if (layout.state != RecordLayoutState::Complete || !layout.has_direct_base ||
+			layout.direct_base.record != action.base_record ||
+			layout.direct_base.offset != 0)
+			throw std::runtime_error("PA15 destructor base layout is invalid");
+		return emit_index(object, LoweredValue(integer_operand(0, offset_type),
+			offset_type, false), byte, lowir_model::IPK_BASE_SUBOBJECT);
+	}
+	if (action.target != ConstructorActionTarget::Member ||
+		!action.member.valid() || action.member.value >= model_.bindings_.size() ||
+		model_.binding_owners_[action.member.value] != active.scope ||
+		model_.binding(action.member).kind != BindingKind::Variable ||
+		model_.is_static_member(action.member))
+		throw std::runtime_error("PA15 destructor member action is invalid");
+	const RecordLayout& layout = model_.record_layout(active_destructor_record_);
+	if (layout.state != RecordLayoutState::Complete)
+		throw std::runtime_error("PA15 destructor member layout is invalid");
+	const std::size_t* offset = layout.member_offsets.find(action.member);
+	if (offset == NULL || *offset > static_cast<std::size_t>(
+		std::numeric_limits<long long>::max()))
+		throw std::runtime_error("PA15 destructor member offset is invalid");
+	return emit_index(object, LoweredValue(integer_operand(
+		static_cast<long long>(*offset), offset_type), offset_type, false), byte,
+		lowir_model::IPK_FIELD);
+}
+
+LoweredValue Pa15Lowerer::recompute_constructed_element_address(
+	const ConstructedElement& element)
+{
+	if (!element.root.type.valid())
+		throw std::runtime_error("PA15 completed element root type is invalid");
+	LoweredValue result;
+	TypeId current_type = element.root.type;
+	if (element.root.action_based)
+	{
+		if (!element.root.owner.valid() ||
+			element.root.owner != active_constructor_record_)
+			throw std::runtime_error("PA15 completed element constructor owner is invalid");
+		result = constructor_subobject_address(element.root.action);
+	}
+	else
+	{
+		if (!element.root.storage.valid() ||
+			element.root.storage.value >= model_.bindings_.size() ||
+			model_.binding(element.root.storage).kind != BindingKind::Variable)
+			throw std::runtime_error("PA15 completed element storage root is invalid");
+		result = address_of_storage(storage_for(element.root.storage));
+	}
+	for (std::size_t i = 0; i < element.path.size(); ++i)
+	{
+		if (!element.path[i].array_element)
+			throw std::runtime_error("PA15 completed element path is not an array path");
+		const TypeId object = model_.strip_cv_type(
+			model_.expression_object_type(current_type));
+			if (!object.valid() || object.value >= model_.types_.size() ||
+			model_.type_kind(object) != TypeKind::Array)
+			throw std::runtime_error("PA15 completed element array path is invalid");
+		const TypeId child = model_.types_[object.value].child;
+		const LoweredValue array_offset = emit_array_element_offset(object,
+			element.path[i].index);
+		result = emit_index(emit_decay(result), array_offset,
+			array_element_instruction_type(child),
+			lowir_model::IPK_ARRAY_ELEMENT);
+		current_type = child;
+	}
+	return result;
+}
+
+void Pa15Lowerer::emit_destructor_call(BindingId destructor,
+	const LoweredValue& destination_value)
+{
+	if (!destructor.valid() || destructor.value >= model_.bindings_.size() ||
+		model_.binding(destructor).kind != BindingKind::Function ||
+		model_.type_kind(model_.binding(destructor).type) != TypeKind::Function)
+		throw std::runtime_error("PA15 destructor call target is invalid");
+	const std::map<std::size_t, SymbolId>::const_iterator symbol =
+		function_symbols_.find(destructor.value);
+	const std::map<std::size_t, SpellingId>::const_iterator name =
+		function_name_ids_.find(destructor.value);
+	if (symbol == function_symbols_.end() || name == function_name_ids_.end())
+		throw std::runtime_error("PA15 destructor call target was not emitted");
+	const TypeKey& signature = model_.types_[model_.binding(destructor).type.value];
+	if (signature.variadic || !signature.parameters.empty())
+		throw std::runtime_error("PA15 destructor call signature is invalid");
+	Instruction instruction;
+	instruction.kind = Instruction::IK_CALL;
+	instruction.first = global_operand(symbol->second, name->second);
+	instruction.direct_callee_id = symbol->second;
+	instruction.call_return_type.kind = LowType::TYPE_VOID;
+	instruction.call_returns_void = true;
+	instruction.call_boundary.arity = lowir_model::CAM_FIXED;
+	instruction.args.push_back(destination_value.value);
+	block().instructions.push_back(instruction);
+}
+
+void Pa15Lowerer::emit_destructor_elements(TypeId target,
+	const LoweredValue& destination, BindingId destructor)
+{
+	if (!destination.type.is_pointer())
+		throw std::runtime_error("PA15 array destructor target is not addressable");
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 array destructor target is invalid");
+	if (model_.type_kind(object) == TypeKind::Array)
+	{
+		const TypeKey& array = model_.types_[object.value];
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 array destructor bound is invalid");
+		const LoweredValue sequence = emit_decay(destination);
+		for (std::size_t i = array.bound.value; i != 0; --i)
+		{
+			const std::size_t index = i - 1;
+			const TypeId child = array.child;
+			const LoweredValue element = emit_index(sequence,
+				emit_array_element_offset(object, index),
+				array_element_instruction_type(child),
+				lowir_model::IPK_ARRAY_ELEMENT);
+			emit_destructor_elements(child, element, destructor);
+		}
+		return;
+	}
+	const NamedRecordId record = model_.class_record_for_object_type(object);
+	const BindingSidecar* sidecar = model_.binding_sidecar(destructor);
+	if (!record.valid() || sidecar == NULL || sidecar->destructor_record != record)
+		throw std::runtime_error("PA15 array destructor element owner is invalid");
+	(void)checked_destructor_function(destructor, record);
+	emit_destructor_call(destructor, destination);
+}
+
+void Pa15Lowerer::append_constructor_cleanup(ArrayCleanupChain* cleanup,
+	const ConstructedElement& element)
+{
+	if (cleanup == NULL)
+		throw std::runtime_error("PA15 constructor cleanup chain is missing");
+	if (!element.destructor.valid()) return;
+	const BlockId saved_current = current_block_id();
+	if (!cleanup->base.valid())
+	{
+		cleanup->base = block_id(new_block("array_ctor_cleanup_base"));
+		set_current(cleanup->base);
+		Instruction resume;
+		resume.kind = Instruction::IK_RESUME;
+		block().instructions.push_back(resume);
+	}
+	const BlockId prior = cleanup->head.valid() ? cleanup->head : cleanup->base;
+	const BlockId node = block_id(new_block("array_ctor_cleanup"));
+	set_current(node);
+	emit_destructor_call(element.destructor,
+		recompute_constructed_element_address(element));
+	emit_jump(prior);
+	cleanup->head = node;
+	if (saved_current.valid()) set_current(saved_current);
+	else current_block_ = InvalidIdentityValue;
+}
+
+void Pa15Lowerer::materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
+	const std::vector<ConstructedElement>& completed)
+{
+	if (cleanup == NULL || cleanup->materialized > completed.size())
+		throw std::runtime_error("PA15 constructor cleanup prefix is invalid");
+	for (std::size_t i = cleanup->materialized; i < completed.size(); ++i)
+	{
+		append_constructor_cleanup(cleanup, completed[i]);
+		++cleanup->materialized;
+	}
+}
+
+void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action)
+{
+	if ((action.target == ConstructorActionTarget::Base &&
+		(!action.base_record.valid() || action.member.valid())) ||
+		(action.target == ConstructorActionTarget::Member &&
+		(!action.member.valid() || action.base_record.valid())) ||
+		!action.destructor.valid() || !action.object_type.valid())
+		throw std::runtime_error("PA15 destructor action identity is invalid");
+	const LoweredValue destination = destructor_subobject_address(action);
+	emit_destructor_elements(action.object_type, destination, action.destructor);
+}
+
+void Pa15Lowerer::activate_lifetime(BindingId object)
+{
+	if (!object.valid() || object.value >= model_.bindings_.size())
+		throw std::runtime_error("PA15 lifetime activation binding is invalid");
+	const std::map<std::size_t, const LifetimeFact*>::const_iterator found =
+		lifetime_by_binding_.find(object.value);
+	if (found == lifetime_by_binding_.end()) return;
+	if (found->second->object != object || !found->second->scope.valid())
+		throw std::runtime_error("PA15 lifetime activation fact is invalid");
+	if (std::find(active_lifetimes_.begin(), active_lifetimes_.end(), object) !=
+		active_lifetimes_.end())
+		throw std::runtime_error("PA15 lifetime activation is duplicated");
+	active_lifetimes_.push_back(object);
+}
+
+void Pa15Lowerer::emit_lifetime_destructors(std::size_t depth)
+{
+	if (depth > active_lifetimes_.size())
+		throw std::runtime_error("PA15 lifetime stack depth is invalid");
+	for (std::size_t i = active_lifetimes_.size(); i != depth; --i)
+	{
+		const BindingId object = active_lifetimes_[i - 1];
+		const std::map<std::size_t, const LifetimeFact*>::const_iterator found =
+			lifetime_by_binding_.find(object.value);
+		if (found == lifetime_by_binding_.end() || found->second->object != object)
+			throw std::runtime_error("PA15 active lifetime fact is missing");
+		const LifetimeFact& lifetime = *found->second;
+		const LoweredValue storage = storage_for(lifetime.object);
+		emit_destructor_elements(lifetime.object_type,
+			address_of_storage(storage), lifetime.destructor);
+	}
+	active_lifetimes_.resize(depth);
+}
+
+void Pa15Lowerer::restore_lifetime_depth(std::size_t depth)
+{
+	// A structural exit may already have popped farther than this lexical
+	// marker.  Never resurrect an object on the continuation path.
+	if (depth < active_lifetimes_.size())
+		active_lifetimes_.resize(depth);
+}
+
+void Pa15Lowerer::emit_control_lifetime_destructors(bool continue_target)
+{
+	std::size_t depth = InvalidIdentityValue;
+	const BlockId target = control_target(continue_target, &depth);
+	if (depth == InvalidIdentityValue)
+	{
+		if (!active_lifetimes_.empty())
+			throw std::runtime_error(
+				"PA15 control exit crosses an unrepresentable lifetime");
+		emit_jump(target);
+		return;
+	}
+	emit_lifetime_destructors(depth);
+	emit_jump(target);
+}
+
+void Pa15Lowerer::emit_scope_destructors(ScopeId scope, std::size_t depth)
+{
+	if (!scope.valid() || scope.value >= model_.scopes_.size() ||
+		depth > active_lifetimes_.size() || lifetime_scope_stack_.empty() ||
+		lifetime_scope_depths_.empty() || lifetime_scope_stack_.back() != scope ||
+		lifetime_scope_depths_.back() != depth)
+		throw std::runtime_error("PA15 lifetime scope is invalid");
+	for (std::size_t i = active_lifetimes_.size(); i != depth; --i)
+	{
+		const BindingId object = active_lifetimes_[i - 1];
+		const std::map<std::size_t, const LifetimeFact*>::const_iterator found =
+			lifetime_by_binding_.find(object.value);
+		if (found == lifetime_by_binding_.end() || found->second->scope != scope)
+			throw std::runtime_error("PA15 lifetime scope stack is out of order");
+		const LifetimeFact& lifetime = *found->second;
+		const LoweredValue storage = storage_for(lifetime.object);
+		emit_destructor_elements(lifetime.object_type,
+			address_of_storage(storage), lifetime.destructor);
+	}
+	active_lifetimes_.resize(depth);
+}
+
+void Pa15Lowerer::emit_active_scope_destructors()
+{
+	emit_lifetime_destructors(0);
+}
+
 void Pa15Lowerer::emit_constructor_call(BindingId constructor,
 	const LoweredValue& destination_value, std::size_t argument_begin,
 	std::size_t argument_count)
@@ -504,6 +921,141 @@ void Pa15Lowerer::emit_constructor_call(BindingId constructor,
 	block().instructions.push_back(instruction);
 }
 
+void Pa15Lowerer::emit_constructor_call(BindingId constructor,
+	const LoweredValue& destination_value,
+	const std::vector<SemanticFactId>& arguments)
+{
+	if (!constructor.valid() || constructor.value >= model_.bindings_.size() ||
+		model_.binding(constructor).kind != BindingKind::Function ||
+		model_.type_kind(model_.binding(constructor).type) != TypeKind::Function)
+		throw std::runtime_error("PA15 constructor call target is invalid");
+	const std::map<std::size_t, SymbolId>::const_iterator symbol =
+		function_symbols_.find(constructor.value);
+	const std::map<std::size_t, SpellingId>::const_iterator name =
+		function_name_ids_.find(constructor.value);
+	if (symbol == function_symbols_.end() || name == function_name_ids_.end())
+		throw std::runtime_error("PA15 constructor call target was not emitted");
+	const TypeKey& signature = model_.types_[model_.binding(constructor).type.value];
+	if ((!signature.variadic && arguments.size() != signature.parameters.size()) ||
+		(signature.variadic && arguments.size() < signature.parameters.size()))
+		throw std::runtime_error("PA15 constructor call arity mismatch");
+	Instruction instruction;
+	instruction.kind = Instruction::IK_CALL;
+	instruction.first = global_operand(symbol->second, name->second);
+	instruction.direct_callee_id = symbol->second;
+	instruction.call_return_type.kind = LowType::TYPE_VOID;
+	instruction.call_returns_void = true;
+	instruction.call_boundary.arity = signature.variadic ?
+		lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
+	instruction.args.push_back(destination_value.value);
+	for (std::size_t i = 0; i < arguments.size(); ++i)
+		instruction.args.push_back(lower_expression(arguments[i]).value);
+	block().instructions.push_back(instruction);
+}
+
+void Pa15Lowerer::emit_constructor_elements(TypeId target,
+	const LoweredValue& destination, BindingId constructor,
+	std::size_t argument_begin, std::size_t argument_count,
+	const std::vector<SemanticFactId>* semantic_arguments,
+	ArrayCleanupChain* cleanup, std::vector<ConstructedElement>* completed,
+	bool value_initialize,
+	const ArrayAddressRoot& root,
+	const std::vector<ConstructorAddressStep>& path)
+{
+	if (!destination.type.is_pointer())
+		throw std::runtime_error("PA15 array constructor target is not addressable");
+	if (cleanup == NULL)
+		throw std::runtime_error("PA15 array constructor cleanup chain is missing");
+	std::vector<ConstructedElement> local_completed;
+	if (completed == NULL)
+	{
+		local_completed.reserve(1);
+		completed = &local_completed;
+	}
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 array constructor target is invalid");
+	if (model_.type_kind(object) == TypeKind::Array)
+	{
+		const TypeKey& array = model_.types_[object.value];
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 array constructor bound is invalid");
+		const LoweredValue sequence = emit_decay(destination);
+		for (std::size_t i = 0; i < array.bound.value; ++i)
+		{
+			const TypeId child = array.child;
+			const LoweredValue element = emit_index(sequence,
+				emit_array_element_offset(object, i),
+				array_element_instruction_type(child),
+				lowir_model::IPK_ARRAY_ELEMENT);
+			std::vector<ConstructorAddressStep> element_path = path;
+			element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
+			emit_constructor_elements(child, element, constructor,
+				argument_begin, argument_count, semantic_arguments, cleanup,
+				completed,
+				value_initialize, root, element_path);
+		}
+		return;
+	}
+	const NamedRecordId record = model_.class_record_for_object_type(object);
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("PA15 array constructor element is not a class");
+	const FunctionFact& constructor_function =
+		checked_constructor_function(constructor, record);
+	if (value_initialize && constructor_function.synthetic)
+		zero_initialize_value_initialized_object(object, destination);
+	const bool no_op = constructor_function.synthetic &&
+		constructor_function.constructor_action_count == 0;
+	const BindingSidecar* constructor_sidecar =
+		model_.binding_sidecar(constructor);
+	const FunctionFactId* constructor_id =
+		model_.function_binding_fact_index_.find(constructor);
+	bool throwing = constructor_sidecar == NULL ||
+		!constructor_sidecar->nonthrowing;
+	if (constructor_function.synthetic && constructor_id != NULL &&
+		constructor_is_nothrow(*constructor_id))
+		throwing = false;
+	bool emitted = false;
+	if (!no_op && throwing && !completed->empty())
+	{
+		materialize_constructor_cleanup(cleanup, *completed);
+	}
+	if (!no_op && throwing && cleanup->head.valid())
+	{
+		const BlockId dispatch = cleanup->head;
+		const BlockId continuation = block_id(new_block("array_ctor_continue"));
+		Instruction eh;
+		eh.kind = Instruction::IK_EH_TRY;
+		eh.first = block_operand(dispatch);
+		block().instructions.push_back(eh);
+		if (semantic_arguments != NULL)
+			emit_constructor_call(constructor, destination, *semantic_arguments);
+		else
+			emit_constructor_call(constructor, destination, argument_begin,
+				argument_count);
+		emitted = true;
+		Instruction end;
+		end.kind = Instruction::IK_EH_END;
+		block().instructions.push_back(end);
+		emit_jump(continuation);
+		set_current(continuation);
+	}
+	if (!no_op && !emitted)
+	{
+		if (semantic_arguments != NULL)
+			emit_constructor_call(constructor, destination, *semantic_arguments);
+		else
+			emit_constructor_call(constructor, destination, argument_begin,
+				argument_count);
+	}
+	const ConstructedElement completed_element(root, path,
+		model_.destructor_binding(record), record);
+	completed->push_back(completed_element);
+}
+
 void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 	const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
@@ -521,9 +1073,14 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 			std::numeric_limits<long long>::max()))
 			throw std::runtime_error("PA15 zero constructor array is incomplete");
 		const LoweredValue sequence = emit_decay(destination_value);
+		const TypeId child_object = model_.strip_cv_type(
+			model_.expression_object_type(array.child));
+		const bool byte_projection = (child_object.valid() &&
+			model_.type_kind(child_object) == TypeKind::Array) ||
+			class_object_type(array.child);
 		for (std::size_t i = 0; i < array.bound.value; ++i)
 		{
-			const LowType element_type = low_type(array.child);
+			const LowType element_type = array_element_instruction_type(array.child);
 			LoweredValue element;
 			std::vector<ConstructorAddressStep> element_path;
 			if (root_action != NULL && path != NULL)
@@ -537,6 +1094,7 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 			}
 			else
 				element = emit_index(sequence,
+					byte_projection ? emit_array_element_offset(object, i) :
 					LoweredValue(integer_operand(static_cast<long long>(i),
 						size_low_type()), size_low_type(), false), element_type,
 					lowir_model::IPK_ARRAY_ELEMENT);
@@ -691,9 +1249,14 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			throw std::runtime_error("PA15 braced constructor array bound is invalid");
 		const bool recompute_path = root_action != NULL && path != NULL;
 		const LoweredValue sequence = emit_decay(destination_value);
+		const TypeId child_object = model_.strip_cv_type(
+			model_.expression_object_type(array.child));
+		const bool byte_projection = (child_object.valid() &&
+			model_.type_kind(child_object) == TypeKind::Array) ||
+			class_object_type(array.child);
 		for (std::size_t i = 0; i < array.bound.value; ++i)
 		{
-			const LowType element_type = low_type(array.child);
+			const LowType element_type = array_element_instruction_type(array.child);
 			std::vector<ConstructorAddressStep> element_path;
 			LoweredValue element;
 			if (recompute_path)
@@ -707,6 +1270,7 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			}
 			else
 				element = emit_index(sequence,
+					byte_projection ? emit_array_element_offset(object, i) :
 					LoweredValue(integer_operand(static_cast<long long>(i),
 						size_low_type()), size_low_type(), false), element_type,
 					lowir_model::IPK_ARRAY_ELEMENT);
@@ -821,13 +1385,30 @@ void Pa15Lowerer::lower_constructor_action(const ConstructorActionFact& action)
 	{
 		const LoweredValue destination_value = constructor_subobject_address(action);
 		const TypeId target = action.target == ConstructorActionTarget::Base ?
-			model_.named_type(action.base_record) : model_.binding(action.member).type;
+			(action.object_type.valid() ? action.object_type :
+				model_.named_type(action.base_record)) :
+			(action.object_type.valid() ? action.object_type :
+				model_.binding(action.member).type);
 		const TypeId object = model_.strip_cv_type(
 			model_.expression_object_type(target));
-		const NamedRecordId record = model_.named_record_for_type(object);
+		const NamedRecordId record = model_.class_record_for_object_type(object);
 		if (!record.valid() || record.value >= model_.named_.size() ||
 			model_.named_[record.value].kind != NamedKind::Class)
 			throw std::runtime_error("PA15 constructor action record is invalid");
+		if (model_.type_kind(object) == TypeKind::Array)
+		{
+			ArrayAddressRoot root;
+			root.type = target;
+			root.owner = active_constructor_record_;
+			root.action = action;
+			root.action_based = true;
+			const std::vector<ConstructorAddressStep> empty_path;
+			ArrayCleanupChain cleanup;
+			emit_constructor_elements(target, destination_value,
+				action.constructor, action.argument_begin, action.argument_count,
+				NULL, &cleanup, NULL, action.value_initialize, root, empty_path);
+			return;
+		}
 		const NamedRecord& named = model_.named_[record.value];
 		if (named.class_tag == ClassTag::Union || !named.name.valid())
 		{
@@ -937,6 +1518,53 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 	const std::vector<SemanticFactId> action_facts = children(id);
 	if (action_facts.size() != 1)
 		throw std::runtime_error("PA15 constructor expression has no call fact");
+	const SemanticFact& call = model_.semantic_facts_[action_facts.front().value];
+	if (call.kind == SemanticFactKind::CallExpression)
+	{
+		const std::vector<SemanticFactId> call_children =
+			children(action_facts.front());
+		if (!call_children.empty())
+		{
+			const SemanticFact& address =
+				model_.semantic_facts_[call_children.front().value];
+			if (address.kind == SemanticFactKind::UnaryExpression &&
+				address.token == SimpleTokenType::OP_AMP)
+			{
+				const std::vector<SemanticFactId> address_children =
+					children(call_children.front());
+				if (address_children.size() == 1)
+				{
+					const SemanticFact& storage_fact =
+						model_.semantic_facts_[address_children.front().value];
+					if (storage_fact.binding.valid() &&
+						storage_fact.binding.value < model_.bindings_.size())
+					{
+						const TypeId target = model_.binding(
+							storage_fact.binding).type;
+						const TypeId object = model_.strip_cv_type(
+							model_.expression_object_type(target));
+			if (object.valid() && object.value < model_.types_.size() &&
+				model_.type_kind(object) == TypeKind::Array)
+			{
+							std::vector<SemanticFactId> arguments;
+							for (std::size_t i = 1; i < call_children.size(); ++i)
+								arguments.push_back(call_children[i]);
+				ArrayAddressRoot root;
+				root.type = target;
+				root.storage = storage_fact.binding;
+				const std::vector<ConstructorAddressStep> empty_path;
+				ArrayCleanupChain cleanup;
+				emit_constructor_elements(target,
+					address_of_storage(storage_for(storage_fact.binding)),
+				call.selected_binding, InvalidIdentityValue, 0,
+					&arguments, &cleanup, NULL, false, root, empty_path);
+							return storage_for(storage_fact.binding);
+						}
+					}
+				}
+			}
+		}
+	}
 	return lower_expression(action_facts.front());
 }
 

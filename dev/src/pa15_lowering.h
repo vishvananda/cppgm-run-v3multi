@@ -96,10 +96,16 @@ struct ControlTarget
 	bool loop;
 	BlockId break_target;
 	BlockId continue_target;
+	std::size_t break_lifetime_depth;
+	std::size_t continue_lifetime_depth;
 
 	ControlTarget(bool loop = false, BlockId break_target = BlockId(),
-		BlockId continue_target = BlockId())
-		: loop(loop), break_target(break_target), continue_target(continue_target) {}
+		BlockId continue_target = BlockId(),
+		std::size_t break_lifetime_depth = InvalidIdentityValue,
+		std::size_t continue_lifetime_depth = InvalidIdentityValue)
+		: loop(loop), break_target(break_target), continue_target(continue_target),
+		  break_lifetime_depth(break_lifetime_depth),
+		  continue_lifetime_depth(continue_lifetime_depth) {}
 };
 
 struct LoopFlowIndexTag {};
@@ -130,6 +136,49 @@ struct ConstructorAddressStep
 	ConstructorAddressStep(BindingId member = BindingId(),
 		std::size_t index = 0, bool array_element = false)
 		: array_element(array_element), member(member), index(index) {}
+};
+
+// A completed array element is described only by typed semantic roots and a
+// path.  Its LowIR address is deliberately recomputed in each unwind block;
+// retaining a LoweredValue here would let a producer from another block leak
+// across a cleanup edge.
+struct ArrayAddressRoot
+{
+	TypeId type;
+	BindingId storage;
+	NamedRecordId owner;
+	ConstructorActionFact action;
+	bool action_based;
+
+	ArrayAddressRoot()
+		: type(), storage(), owner(), action(), action_based(false) {}
+};
+
+struct ConstructedElement
+{
+	ArrayAddressRoot root;
+	std::vector<ConstructorAddressStep> path;
+	BindingId destructor;
+	NamedRecordId record;
+
+	ConstructedElement(const ArrayAddressRoot& root = ArrayAddressRoot(),
+		const std::vector<ConstructorAddressStep>& path =
+			std::vector<ConstructorAddressStep>(),
+		BindingId destructor = BindingId(), NamedRecordId record = NamedRecordId())
+		: root(root), path(path), destructor(destructor), record(record) {}
+};
+
+// A constructor's exceptional prefix cleanup is a persistent typed chain.
+// Each node destroys exactly one already-completed element and transfers to
+// the preceding node; no completed-element address or LowIR temporary is
+// retained between blocks.
+struct ArrayCleanupChain
+{
+	BlockId head;
+	BlockId base;
+	std::size_t materialized;
+
+	ArrayCleanupChain() : head(), base(), materialized(0) {}
 };
 
 typedef FlowArenaIndex<LoopFlowIndexTag> LoopFlowIndex;
@@ -300,6 +349,13 @@ private:
 	std::size_t generated_slot_ordinal_;
 	NamedRecordId active_constructor_record_;
 	BindingId active_constructor_this_;
+	NamedRecordId active_destructor_record_;
+	BindingId active_destructor_this_;
+	std::map<std::size_t, const LifetimeFact*> lifetime_by_binding_;
+	std::vector<ScopeId> lifetime_scope_stack_;
+	std::vector<std::size_t> lifetime_scope_depths_;
+	std::vector<BindingId> active_lifetimes_;
+	bool function_has_nontrivial_lifetime_;
 	// Constructor unwind classification is a per-lowering dense analysis.  The
 	// state vectors make recursive constructor and semantic-fact cycles
 	// explicit instead of allocating a map for each queried constructor.
@@ -493,11 +549,38 @@ private:
 		const ConstructorActionFact& action);
 	LoweredValue constructor_path_address(const ConstructorActionFact& action,
 		const std::vector<ConstructorAddressStep>& path);
+	std::size_t checked_array_element_offset(TypeId array, std::size_t index) const;
+	LowType array_element_instruction_type(TypeId element) const;
+	LoweredValue emit_array_element_offset(TypeId array, std::size_t index);
+	LoweredValue recompute_constructed_element_address(
+		const ConstructedElement& element);
 	void emit_constructor_call(BindingId constructor,
 		const LoweredValue& destination, std::size_t argument_begin,
 		std::size_t argument_count);
+	void emit_constructor_call(BindingId constructor,
+		const LoweredValue& destination,
+		const std::vector<SemanticFactId>& arguments);
+	void emit_constructor_elements(TypeId target, const LoweredValue& destination,
+		BindingId constructor, std::size_t argument_begin,
+		std::size_t argument_count,
+		const std::vector<SemanticFactId>* semantic_arguments,
+		ArrayCleanupChain* cleanup,
+		std::vector<ConstructedElement>* completed,
+		bool value_initialize, const ArrayAddressRoot& root,
+		const std::vector<ConstructorAddressStep>& path);
 	const FunctionFact& checked_constructor_function(BindingId constructor,
 		NamedRecordId record) const;
+	const FunctionFact& checked_destructor_function(BindingId destructor,
+		NamedRecordId record) const;
+	LoweredValue destructor_subobject_address(const DestructorActionFact& action);
+	void emit_destructor_call(BindingId destructor,
+		const LoweredValue& destination);
+	void emit_destructor_elements(TypeId target, const LoweredValue& destination,
+		BindingId destructor);
+	void append_constructor_cleanup(ArrayCleanupChain* cleanup,
+		const ConstructedElement& element);
+	void materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
+		const std::vector<ConstructedElement>& completed);
 	void initialize_constructor_value(TypeId target, SemanticFactId initializer,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
@@ -511,7 +594,14 @@ private:
 	bool constructor_action_is_noop(const SemanticFact& action) const;
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action);
+	void lower_destructor_action(const DestructorActionFact& action);
 	LoweredValue lower_constructor_expression(SemanticFactId id);
+	void activate_lifetime(BindingId object);
+	void emit_lifetime_destructors(std::size_t depth);
+	void restore_lifetime_depth(std::size_t depth);
+	void emit_control_lifetime_destructors(bool continue_target);
+	void emit_scope_destructors(ScopeId scope, std::size_t depth);
+	void emit_active_scope_destructors();
 	bool constructor_initializer_is_nothrow(SemanticFactId root);
 	bool constructor_is_nothrow(FunctionFactId function_id);
 	LoweredValue lower_expression(SemanticFactId id);
@@ -562,7 +652,8 @@ private:
 	bool has_direct_short_circuit(SemanticFactId id) const;
 	void lower_condition_branch(SemanticFactId id, BlockId true_target,
 		BlockId false_target);
-	BlockId control_target(bool continue_target) const;
+	BlockId control_target(bool continue_target,
+		std::size_t* lifetime_depth = NULL) const;
 	BlockId switch_label_target(SemanticFactId id);
 	bool switch_label_was_lowered(SemanticFactId id) const;
 	BlockId switch_label_existing_target(SemanticFactId id) const;

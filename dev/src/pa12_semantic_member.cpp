@@ -4,6 +4,27 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+NamedRecordId PA11SemanticModel::class_record_for_object_type(TypeId type) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return NamedRecordId();
+	type = strip_cv_type(type);
+	while (type.valid() && type.value < types_.size() &&
+		type_kind(type) == TypeKind::Array)
+	{
+		const TypeKey& array = types_[type.value];
+		if (array.unknown_bound)
+			return NamedRecordId();
+		type = strip_cv_type(array.child);
+	}
+	if (!type.valid() || type.value >= types_.size() ||
+		type_kind(type) != TypeKind::Named)
+		return NamedRecordId();
+	const NamedRecordId record = types_[type.value].named;
+	return record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Class ? record : NamedRecordId();
+}
+
 bool PA11SemanticModel::implicit_default_type_empty(TypeId type,
 	std::vector<NamedRecordId>& active) const
 {
@@ -223,6 +244,39 @@ bool PA11SemanticModel::has_constructor_declaration(
 	return sidecar != NULL && sidecar->has_constructor_declaration;
 }
 
+BindingId PA11SemanticModel::destructor_binding(NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return BindingId();
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	if (sidecar == NULL || !sidecar->destructor_binding.valid())
+		return BindingId();
+	const BindingId result = sidecar->destructor_binding;
+	if (result.value >= bindings_.size() || result.value >= binding_owners_.size() ||
+		!named_[record_id.value].scope.valid() ||
+		binding_owners_[result.value] != named_[record_id.value].scope)
+		throw std::runtime_error("PA16 destructor identity is invalid");
+	const Binding& candidate = binding(result);
+	if (candidate.kind != BindingKind::Function ||
+		type_kind(candidate.type) != TypeKind::Function)
+		throw std::runtime_error("PA16 destructor binding is invalid");
+	const BindingSidecar* binding_fact = binding_sidecar(result);
+	if (binding_fact == NULL || binding_fact->destructor_record != record_id)
+		throw std::runtime_error("PA16 destructor owner is invalid");
+	return result;
+}
+
+bool PA11SemanticModel::has_destructor_declaration(
+	NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	return sidecar != NULL && sidecar->has_destructor_declaration;
+}
+
 bool PA11SemanticModel::aggregate_class_initialization_supported(
 	NamedRecordId record_id) const
 {
@@ -396,7 +450,8 @@ bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
 				result = true;
 				break;
 			}
-			const NamedRecordId member_record = named_record_for_type(member.type);
+			const NamedRecordId member_record =
+				class_record_for_object_type(member.type);
 			if (member_record.valid())
 			{
 				result = classify_constructor_runtime(member_record);
@@ -422,6 +477,85 @@ bool PA11SemanticModel::constructor_requires_runtime(NamedRecordId record_id)
 		throw std::runtime_error("PA12 constructor runtime cache is invalid");
 	if (constructor_runtime_invalid_[record_id.value] != 0)
 		throw std::runtime_error("PA12 constructor runtime dependency cycle");
+	return result;
+}
+
+bool PA11SemanticModel::classify_destructor_runtime(NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	if (destructor_runtime_states_.size() != named_.size() ||
+		destructor_runtime_results_.size() != named_.size() ||
+		destructor_runtime_invalid_.size() != named_.size())
+		throw std::runtime_error("PA16 destructor runtime cache is missing");
+	const std::size_t index = record_id.value;
+	if (destructor_runtime_states_[index] ==
+		ConstructorRuntimeCacheState::Complete)
+		return destructor_runtime_results_[index] != 0;
+	if (destructor_runtime_states_[index] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		destructor_runtime_invalid_[index] = 1;
+		return false;
+	}
+	destructor_runtime_states_[index] =
+		ConstructorRuntimeCacheState::InProgress;
+	const NamedRecord& record = named_[index];
+	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
+		throw std::runtime_error("PA16 destructor runtime owner is invalid");
+	bool result = destructor_binding(record_id).valid();
+	if (!result && record.has_base)
+	{
+		if (!record.direct_base.valid() || record.direct_base.value >= named_.size() ||
+			named_[record.direct_base.value].kind != NamedKind::Class)
+			throw std::runtime_error("PA16 destructor base identity is invalid");
+		result = classify_destructor_runtime(record.direct_base);
+		if (destructor_runtime_invalid_[record.direct_base.value] != 0)
+			destructor_runtime_invalid_[index] = 1;
+	}
+	if (!result)
+	{
+		const Scope& scope = scopes_[record.scope.value];
+		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+		{
+			const BindingId member_id = scope.bindings[i];
+			if (!member_id.valid() || member_id.value >= bindings_.size() ||
+				member_id.value >= binding_owners_.size() ||
+				binding_owners_[member_id.value] != record.scope)
+				throw std::runtime_error("PA16 destructor member identity is invalid");
+			const Binding& member = binding(member_id);
+			if (member.kind != BindingKind::Variable || is_static_member(member_id))
+				continue;
+			const NamedRecordId member_record =
+				class_record_for_object_type(member.type);
+			if (!member_record.valid())
+				continue;
+			result = classify_destructor_runtime(member_record);
+			if (destructor_runtime_invalid_[member_record.value] != 0)
+				destructor_runtime_invalid_[index] = 1;
+			if (result)
+				break;
+		}
+	}
+	destructor_runtime_states_[index] =
+		ConstructorRuntimeCacheState::Complete;
+	destructor_runtime_results_[index] = result ? 1 : 0;
+	return result;
+}
+
+bool PA11SemanticModel::destructor_requires_runtime(NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	const bool result = classify_destructor_runtime(record_id);
+	if (record_id.value >= destructor_runtime_invalid_.size())
+		throw std::runtime_error("PA16 destructor runtime cache is invalid");
+	if (destructor_runtime_invalid_[record_id.value] != 0)
+		throw std::runtime_error("PA16 destructor runtime dependency cycle");
 	return result;
 }
 
