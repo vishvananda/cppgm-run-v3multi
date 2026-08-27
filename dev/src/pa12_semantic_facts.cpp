@@ -1180,9 +1180,16 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	default:
 		throw std::runtime_error("PA12 unsupported unary operator");
 	}
-	return ExprInfo(make_expression_fact(SemanticFactKind::UnaryExpression,
-		type, category, node, std::vector<SemanticFactId>(1, operand.fact)),
-		type, category, false);
+	const SemanticFactId result = make_expression_fact(
+		SemanticFactKind::UnaryExpression, type, category, node,
+		std::vector<SemanticFactId>(1, operand.fact));
+	SemanticFact& result_fact = semantic_facts_[result.value];
+	result_fact.canonical_truth = bool_id(type) &&
+		node.token == SimpleTokenType::OP_LNOT;
+	result_fact.direct_bool_boundary = result_fact.canonical_truth &&
+		(result_fact.contains_member_value ||
+			semantic_facts_[operand.fact.value].operator_result);
+	return ExprInfo(result, type, category, false);
 }
 
 } // namespace pa11_semantic_internal

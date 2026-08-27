@@ -30,6 +30,35 @@ struct HiddenFriendBindingRelation
 	{}
 };
 
+struct HiddenFriendBindingKey
+{
+	ScopeId namespace_scope;
+	NameId name;
+
+	HiddenFriendBindingKey(ScopeId namespace_scope = ScopeId(),
+		NameId name = NameId())
+		: namespace_scope(namespace_scope), name(name)
+	{}
+
+	bool operator==(const HiddenFriendBindingKey& other) const
+	{
+		return namespace_scope == other.namespace_scope && name == other.name;
+	}
+};
+
+struct HiddenFriendBindingKeyHash
+{
+	std::size_t operator()(const HiddenFriendBindingKey& key) const
+	{
+		std::size_t result = key.namespace_scope.value;
+		result ^= result >> 17;
+		result *= static_cast<std::size_t>(0xed5ad4bbU);
+		result ^= key.name.value + static_cast<std::size_t>(0x9e3779b9U) +
+			(result << 6) + (result >> 2);
+		return result;
+	}
+};
+
 struct HiddenFriendFunctionRelation
 {
 	BindingId binding;

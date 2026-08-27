@@ -968,20 +968,16 @@ struct SemanticFact
 	bool constant_value_unsigned;
 	bool constant_value_evaluated;
 	ConstantAddressFactId constant_address;
-	// PA12's canonical operand/operation type.  Comparisons retain this
-	// separately from their bool result so PA15 can preserve source signedness
-	// after the PA13 scalar spelling normalization.
 	TypeId operation_type;
-	// The expression's arithmetic result is normalized to the PA15 size_t
-	// LowIR representation.  The sizeof fact itself remains unsigned long;
-	// this marker is a typed semantic relation for containing expressions.
+	// Typed bool-boundary provenance; no source spelling or function category.
+	bool canonical_truth;
+	bool direct_bool_boundary;
+	bool contains_member_value;
+	bool bool_context_operand, operator_result;
 	bool size_type_derived;
 	bool has_callee;
-	// Value-initialization is separate from the selected constructor: implicit/
-	// defaulted constructors receive zero-initialization; user-provided ones do not.
 	bool value_initialize;
 	// A direct member call stores its typed implicit object as child zero.
-	// The remaining children are the already-converted explicit arguments.
 	bool has_implicit_object;
 	bool temporary_object;
 
@@ -1004,6 +1000,8 @@ struct SemanticFact
 			constant_value_unsigned(false), constant_value_evaluated(false),
 			constant_address(),
 			operation_type(),
+			canonical_truth(false), direct_bool_boundary(false),
+			contains_member_value(false), bool_context_operand(false), operator_result(false),
 			size_type_derived(false),
 			has_callee(false),
 			value_initialize(false),
@@ -1300,8 +1298,9 @@ private:
 	std::vector<ScopeId> binding_owners_;
 	FlatIndex<BindingId, BindingSidecar, IdentityHash<BindingId> >
 		binding_sidecars_;
-	FlatIndex<NameId, std::vector<HiddenFriendBindingRelation>,
-		IdentityHash<NameId> > hidden_friend_bindings_;
+	FlatIndex<HiddenFriendBindingKey,
+		std::vector<HiddenFriendBindingRelation>, HiddenFriendBindingKeyHash>
+		hidden_friend_bindings_;
 	ScopeId global_;
 	std::vector<ScopeId> deferred_scopes_;
 	std::vector<DumpBindingView> dump_binding_views_;
@@ -1758,7 +1757,13 @@ private:
 	;
 	TypeId normalize_function_type(TypeId type)
 	;
-	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function, bool definition = false, bool lexical_view = false, BindingId backing_storage = BindingId(), SourcePoint declaration_point = SourcePoint(), bool internal_linkage = false, LanguageLinkage language_linkage = LanguageLinkage::Cxx, FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal, bool hidden_friend = false, PA10OperatorFunctionKind operator_function_kind = PA10OperatorFunctionKind::None, SimpleTokenType operator_token = SimpleTokenType::OP_SEMICOLON);
+	BindingId add_value(ScopeId scope, NameId name, TypeId type, bool function,
+		bool definition = false, bool lexical_view = false, BindingId backing_storage = BindingId(),
+		SourcePoint declaration_point = SourcePoint(), bool internal_linkage = false,
+		LanguageLinkage language_linkage = LanguageLinkage::Cxx,
+		FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal,
+		bool hidden_friend = false, PA10OperatorFunctionKind operator_function_kind = PA10OperatorFunctionKind::None,
+		SimpleTokenType operator_token = SimpleTokenType::OP_SEMICOLON);
 	void index_hidden_friend(NameId name, ScopeId namespace_scope, BindingId binding);
 	bool has_friend_specifier(const PA10AstNode& node) const;
 	ScopeId friend_namespace_scope(ScopeId scope) const;

@@ -1393,6 +1393,7 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = node.token;
+	fact.contains_member_value = true;
 	fact.binding = member_id;
 	fact.selected_binding = member_id;
 	fact.selected_scope = selection.owner;

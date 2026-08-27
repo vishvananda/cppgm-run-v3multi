@@ -662,6 +662,9 @@ ExprInfo PA11SemanticModel::semantic_operator_call(
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
 	fact.has_callee = true;
+	fact.bool_context_operand = bool_id(result_type);
+	fact.direct_bool_boundary = bool_id(result_type);
+	fact.operator_result = true;
 	fact.has_implicit_object = selection.member;
 	fact.selected_binding = selection.selected.binding;
 	fact.selected_scope = selection.selected.scope;
@@ -916,6 +919,8 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
 	fact.has_callee = direct;
+	fact.bool_context_operand = bool_id(result_type);
+	fact.direct_bool_boundary = bool_id(result_type);
 	fact.callable_type = selected_type;
 	if (direct)
 	{

@@ -394,6 +394,8 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 		function_result_type(selected.type), SemanticValueCategory::Prvalue,
 		&node);
 	call.has_callee = true;
+	call.bool_context_operand = bool_id(function_result_type(selected.type));
+	call.direct_bool_boundary = bool_id(function_result_type(selected.type));
 	call.selected_binding = specialization_fact.binding;
 	call.selected_scope = template_function_facts_[selected.function.value].visible_scope;
 	const SemanticFactId call_id = make_semantic_fact(call);
@@ -750,24 +752,18 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 				PA10NodeKind::BracedInitList;
 			const ExprInfo expression = semantic_expression_for_target(
 				node.children.front(), scope, result_type);
-			const BindingSidecar* function_sidecar = binding_sidecar(function.binding);
-			const bool operator_bool_return = !braced && bool_id(result_type) &&
+			const SemanticFact& expression_fact =
+				semantic_facts_[expression.fact.value];
+			const bool exact_prvalue_bool = !braced && bool_id(result_type) &&
 				expression.category == SemanticValueCategory::Prvalue &&
-				expression.type == result_type && function_sidecar != NULL &&
-				function_sidecar->operator_function_kind !=
-					PA10OperatorFunctionKind::None;
-			const bool friend_bool_return = !braced && bool_id(result_type) &&
-				expression.category == SemanticValueCategory::Prvalue &&
-				expression.type == result_type && function_sidecar != NULL &&
-				!function_sidecar->friend_records.empty();
-			if (!braced && !operator_bool_return && !friend_bool_return &&
-				bool_id(result_type) && expression.category ==
-					SemanticValueCategory::Prvalue && expression.type == result_type)
-			{
+				expression.type == result_type;
+			const bool needs_canonical_bool_materialization = exact_prvalue_bool &&
+				expression_fact.canonical_truth &&
+				!expression_fact.direct_bool_boundary;
+			if (needs_canonical_bool_materialization)
 				set_fact_conversion(expression.fact, add_conversion(
 					expression.type, result_type, ConversionKind::Identity, 0));
-			}
-			else if (!operator_bool_return && !friend_bool_return && !braced)
+			else if (!exact_prvalue_bool)
 				apply_context_conversion(expression, result_type,
 					semantic_facts_[expression.fact.value].source);
 			children.push_back(expression.fact);

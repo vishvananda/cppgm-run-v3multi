@@ -2173,12 +2173,14 @@ void PA11SemanticModel::index_hidden_friend(NameId name,
 		binding_owners_[binding_id.value] != namespace_scope)
 		throw std::runtime_error("invalid PA11 hidden friend index relation");
 	std::vector<HiddenFriendBindingRelation>* relations =
-		hidden_friend_bindings_.find(name);
+		hidden_friend_bindings_.find(HiddenFriendBindingKey(namespace_scope,
+			name));
 	if (relations == NULL)
 	{
-		hidden_friend_bindings_.set(name,
+		hidden_friend_bindings_.set(HiddenFriendBindingKey(namespace_scope, name),
 			std::vector<HiddenFriendBindingRelation>());
-		relations = hidden_friend_bindings_.find(name);
+		relations = hidden_friend_bindings_.find(HiddenFriendBindingKey(
+			namespace_scope, name));
 	}
 	for (std::size_t i = 0; i < relations->size(); ++i)
 		if ((*relations)[i].namespace_scope == namespace_scope &&
@@ -2204,7 +2206,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	type = normalize_embedded_function_types(type);
 	const ValueList* existing_values = current.values.find(name);
 	const std::vector<HiddenFriendBindingRelation>* hidden_candidates =
-		function ? hidden_friend_bindings_.find(name) : NULL;
+		function ? hidden_friend_bindings_.find(HiddenFriendBindingKey(scope,
+			name)) : NULL;
 	if (function && hidden_candidates != NULL)
 	{
 		// Hidden friends are deliberately absent from the namespace value index.

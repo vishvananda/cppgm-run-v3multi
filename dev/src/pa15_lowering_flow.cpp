@@ -736,14 +736,15 @@ LoweredValue Pa15Lowerer::lower_logical(SemanticFactId id){
 		set_current(rhs_block);
 		const LoweredValue right = lower_condition_expression(operands.back());
 		LowType compare_type = right.physical_type;
-		// A bool-valued call has an ABI u8 result, while the established
-		// boolean-context representation for a logical RHS is the i64 truth
-		// comparison.  Keep that physical choice at the canonical condition
-		// boundary; the call itself remains an ordinary typed u8 result.
 		const SemanticFact& right_fact =
 			model_.semantic_facts_[operands.back().value];
-		if (right_fact.kind == SemanticFactKind::CallExpression &&
-			model_.bool_id(right_fact.type))
+		// Typed ABI bool results use the established i64 boolean-context
+		// comparison when they enter this value-producing logical RHS.  The
+		// semantic call boundary owns this fact; literals and built-in scalar
+		// values retain their established physical type.
+		if (right_fact.bool_context_operand &&
+			model_.bool_id(right_fact.type) && compare_type.is_integer() &&
+			compare_type.integer_width() < result_type.integer_width())
 		{
 			compare_type.kind = LowType::TYPE_INTEGER;
 			compare_type.integer_kind = LowType::INTEGER_I64;

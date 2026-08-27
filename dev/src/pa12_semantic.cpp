@@ -629,6 +629,7 @@ ExprInfo PA11SemanticModel::semantic_injected_member(
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = SimpleTokenType::OP_DOT;
+	fact.contains_member_value = true;
 	fact.binding = member_id;
 	fact.selected_binding = member_id;
 	const SemanticFactId result = make_semantic_fact(fact);
@@ -1196,6 +1197,10 @@ SemanticFactId PA11SemanticModel::make_expression_fact(SemanticFactKind kind, Ty
 {
 	SemanticFact fact(kind, type, category, &node);
 	fact.token = node.token;
+	for (std::size_t i = 0; i < children.size(); ++i)
+		if (children[i].valid() && children[i].value < semantic_facts_.size() &&
+			semantic_facts_[children[i].value].contains_member_value)
+			fact.contains_member_value = true;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result, children);
 	return result;
@@ -1266,6 +1271,7 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 				SemanticFact fact(SemanticFactKind::MemberExpression,
 					member_type, SemanticValueCategory::Lvalue, &node);
 				fact.token = SimpleTokenType::OP_ARROW;
+				fact.contains_member_value = true;
 				fact.binding = selection.binding;
 				fact.selected_binding = selection.binding;
 				fact.selected_scope = selection.owner;
@@ -1599,8 +1605,20 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	children.push_back(right.fact);
 	const SemanticFactId result = make_expression_fact(
 		SemanticFactKind::BinaryExpression, type, category, node, children);
-	semantic_facts_[result.value].operation_type = operation_type;
-	semantic_facts_[result.value].size_type_derived = size_type_derived;
+	SemanticFact& result_fact = semantic_facts_[result.value];
+	result_fact.operation_type = operation_type;
+	result_fact.size_type_derived = size_type_derived;
+	const bool comparison = node.token == SimpleTokenType::OP_EQ ||
+		node.token == SimpleTokenType::OP_NE ||
+		node.token == SimpleTokenType::OP_LT ||
+		node.token == SimpleTokenType::OP_LE ||
+		node.token == SimpleTokenType::OP_GT ||
+		node.token == SimpleTokenType::OP_GE;
+	result_fact.canonical_truth = bool_id(type) &&
+		(comparison || node.token == SimpleTokenType::OP_LAND ||
+			node.token == SimpleTokenType::OP_LOR);
+	result_fact.direct_bool_boundary = result_fact.canonical_truth &&
+		result_fact.contains_member_value;
 	return ExprInfo(result, type, category, false);
 }
 ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& node,
@@ -2327,6 +2345,8 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
 	fact.has_callee = true;
+	fact.bool_context_operand = bool_id(result_type);
+	fact.direct_bool_boundary = bool_id(result_type);
 	fact.selected_binding = selected.binding;
 	fact.selected_scope = selected.scope;
 	fact.callable_type = selected.binding.valid() ?
