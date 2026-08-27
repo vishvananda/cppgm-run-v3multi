@@ -61,10 +61,57 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			continue;
 		scanned_functions[function_id.value] = 1;
 		const FunctionFact& function = model_.function_facts_[function_id.value];
-		if (!function.body_fact.valid())
-			continue;
 		std::vector<SemanticFactId> fact_work;
-		fact_work.push_back(function.body_fact);
+		if (function.is_constructor)
+		{
+			if (function.constructor_action_begin == InvalidIdentityValue ||
+				function.constructor_action_begin >
+				model_.constructor_actions_.size() ||
+				function.constructor_action_count >
+				model_.constructor_actions_.size() -
+				function.constructor_action_begin)
+				throw std::runtime_error(
+					"PA15 constructor action range is invalid");
+			for (std::size_t action_index = 0;
+				action_index < function.constructor_action_count; ++action_index)
+			{
+				const ConstructorActionFact& action =
+					model_.constructor_actions_[function.constructor_action_begin +
+						action_index];
+				if (action.argument_begin != InvalidIdentityValue &&
+					(action.argument_begin > model_.constructor_arguments_.size() ||
+					action.argument_count > model_.constructor_arguments_.size() -
+						action.argument_begin))
+					throw std::runtime_error(
+						"PA15 constructor argument range is invalid");
+				if (action.constructor.valid())
+				{
+					const FunctionFactId* target_id =
+						model_.function_binding_fact_index_.find(action.constructor);
+					if (target_id == NULL || !target_id->valid() ||
+						target_id->value >= model_.function_facts_.size() ||
+						!model_.function_facts_[target_id->value].is_constructor)
+						throw std::runtime_error(
+							"PA15 constructor action target is missing");
+					if (!(*demanded)[target_id->value])
+					{
+						(*demanded)[target_id->value] = 1;
+						function_work.push_back(*target_id);
+					}
+				}
+				if (action.initializer.valid())
+					fact_work.push_back(action.initializer);
+				if (action.argument_begin != InvalidIdentityValue)
+					for (std::size_t argument = 0;
+						argument < action.argument_count; ++argument)
+						fact_work.push_back(model_.constructor_arguments_[
+							action.argument_begin + argument]);
+			}
+		}
+		if (function.body_fact.valid())
+			fact_work.push_back(function.body_fact);
+		if (fact_work.empty())
+			continue;
 		while (!fact_work.empty())
 		{
 			const SemanticFactId fact_id = fact_work.back();
@@ -140,6 +187,29 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				const FunctionFactId* target_id =
 					model_.function_binding_fact_index_.find(
 						fact.selected_binding);
+				const BindingSidecar* sidecar = model_.binding_sidecar(
+					fact.selected_binding);
+				const bool named_constructor = sidecar != NULL &&
+					sidecar->constructor_record.valid() &&
+					sidecar->constructor_record.value < model_.named_.size() &&
+					model_.named_[sidecar->constructor_record.value].name.valid();
+				if (named_constructor)
+				{
+					if (target.kind != BindingKind::Function ||
+						model_.type_kind(target.type) != TypeKind::Function ||
+						target_id == NULL || !target_id->valid() ||
+						target_id->value >= model_.function_facts_.size() ||
+						!model_.function_facts_[target_id->value].is_constructor ||
+						!fact.callable_type.valid() ||
+						model_.type_kind(fact.callable_type) != TypeKind::Function)
+						throw std::runtime_error(
+							"PA15 constructor demand is not typed");
+					if (!(*demanded)[target_id->value])
+					{
+						(*demanded)[target_id->value] = 1;
+						function_work.push_back(*target_id);
+					}
+				}
 				const bool static_target = target.kind == BindingKind::Function &&
 					model_.type_kind(target.type) == TypeKind::Function &&
 					model_.is_static_member(fact.selected_binding);
@@ -358,6 +428,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	const Binding* callee_binding = NULL;
 	const TypeKey* function_type = NULL;
 	std::size_t argument_begin = 0;
+	bool constructor_call = false;
 	Instruction instruction;
 	instruction.kind = Instruction::IK_CALL;
 	if (!fact.callable_type.valid() ||
@@ -381,7 +452,20 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 		instruction.direct_callee_id = symbol->second;
 		instruction.first = global_operand(symbol->second,
 			function_name_ids_.find(fact.selected_binding.value)->second);
-		if (fact.has_implicit_object)
+		const BindingSidecar* constructor_sidecar = model_.binding_sidecar(
+			fact.selected_binding);
+		constructor_call = constructor_sidecar != NULL &&
+			constructor_sidecar->constructor_record.valid() &&
+			constructor_sidecar->constructor_record.value < model_.named_.size() &&
+			model_.named_[constructor_sidecar->constructor_record.value].name.valid();
+		if (constructor_call)
+		{
+			if (fact.has_implicit_object || facts.empty())
+				throw std::runtime_error("PA15 constructor call object is missing");
+			instruction.args.push_back(lower_expression(facts.front()).value);
+			argument_begin = facts.size();
+		}
+		else if (fact.has_implicit_object)
 		{
 			if (facts.empty() || (fact.token != SimpleTokenType::OP_DOT &&
 				fact.token != SimpleTokenType::OP_ARROW))
@@ -505,7 +589,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	}
 	const std::size_t explicit_argument_count = facts.size() - argument_begin;
 	const std::size_t argument_count = explicit_argument_count +
-		(fact.has_implicit_object ? 1 : 0);
+		(fact.has_implicit_object ? 1 : 0) + (constructor_call ? 1 : 0);
 	if (!function_type || (!function_type->variadic &&
 		argument_count != function_type->parameters.size()) ||
 		(function_type->variadic && argument_count < function_type->parameters.size()))

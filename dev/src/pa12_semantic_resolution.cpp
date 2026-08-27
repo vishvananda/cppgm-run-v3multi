@@ -654,6 +654,69 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 		throw std::runtime_error("PA12 no function matches target type");
 	return semantic_id_expression_selected(*function_id, scope, resolution);
 }
+
+ExprInfo PA11SemanticModel::semantic_default_member_initializer(
+	const PA10AstNode& node, ScopeId scope, TypeId target)
+{
+	const TypeId object = strip_top_cv_type(target);
+	const NamedRecordId record = named_record_for_type(object);
+	if (record.valid() && record.value < named_.size() &&
+		named_[record.value].kind == NamedKind::Class)
+	{
+		if (node.kind == PA10NodeKind::BracedInitList && !node.children.empty())
+			return semantic_braced_init_list(node, target, scope);
+		if (node.kind == PA10NodeKind::BracedInitList ||
+			node.kind == PA10NodeKind::CallExpression)
+		{
+			const PA10AstNode* callee = NULL;
+			if (node.kind == PA10NodeKind::CallExpression)
+			{
+				if (node.children.size() != 2)
+					throw std::runtime_error(
+						"PA12 class member initializer call is invalid");
+				callee = &node.children.front();
+				const PA10AstNode& arguments = node.children.back();
+				if (arguments.kind != PA10NodeKind::ArgumentList &&
+					arguments.kind != PA10NodeKind::ParenArgumentList)
+					throw std::runtime_error(
+						"PA12 class member initializer arguments are invalid");
+				if (!arguments.children.empty())
+					throw std::runtime_error(
+						"PA12 class member initializer arguments are outside checkpoint");
+			}
+			if (node.kind == PA10NodeKind::BracedInitList &&
+				!node.children.empty())
+				throw std::runtime_error(
+					"PA12 class member initializer is not an aggregate");
+			if (callee != NULL)
+			{
+				const TypeId callee_type = lookup_type_path(name_path(*callee),
+					scope);
+				if (!callee_type.valid() || strip_cv_type(callee_type) != object)
+					throw std::runtime_error(
+						"PA12 class member initializer names another type");
+			}
+			BindingId constructor = default_constructor_binding(record);
+			if (!constructor.valid())
+				constructor = ensure_implicit_default_constructor(record);
+			if (function_declaration_kind(constructor) ==
+				FunctionDeclarationKind::Deleted)
+				throw std::runtime_error(
+					"PA12 class member initializer selects deleted constructor");
+			SemanticFact fact(SemanticFactKind::ConstructorAction, target,
+				SemanticValueCategory::Lvalue, &node);
+			fact.has_callee = true;
+			fact.selected_binding = constructor;
+			fact.selected_scope = named_[record.value].scope;
+			fact.callable_type = constructor_callable_type(constructor);
+			const SemanticFactId result = make_semantic_fact(fact);
+			set_semantic_children(result, std::vector<SemanticFactId>());
+			return ExprInfo(result, target, SemanticValueCategory::Lvalue, false);
+		}
+	}
+	return semantic_expression_for_target(node, scope, target);
+}
+
 SemanticFactId PA11SemanticModel::semantic_return_statement(
 	const PA10AstNode& node, ScopeId scope, const FunctionFact& function)
 {

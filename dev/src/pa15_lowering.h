@@ -121,6 +121,17 @@ struct FlowArenaIndex
 	}
 };
 
+struct ConstructorAddressStep
+{
+	bool array_element;
+	BindingId member;
+	std::size_t index;
+
+	ConstructorAddressStep(BindingId member = BindingId(),
+		std::size_t index = 0, bool array_element = false)
+		: array_element(array_element), member(member), index(index) {}
+};
+
 typedef FlowArenaIndex<LoopFlowIndexTag> LoopFlowIndex;
 typedef FlowArenaIndex<IfFlowIndexTag> IfFlowIndex;
 typedef FlowArenaIndex<SwitchFlowIndexTag> SwitchFlowIndex;
@@ -287,6 +298,17 @@ private:
 	std::size_t temp_ordinal_;
 	std::size_t block_ordinal_;
 	std::size_t generated_slot_ordinal_;
+	NamedRecordId active_constructor_record_;
+	BindingId active_constructor_this_;
+	// Constructor unwind classification is a per-lowering dense analysis.  The
+	// state vectors make recursive constructor and semantic-fact cycles
+	// explicit instead of allocating a map for each queried constructor.
+	std::vector<ConstructorRuntimeCacheState> constructor_nothrow_states_;
+	std::vector<unsigned char> constructor_nothrow_results_;
+	std::vector<unsigned char> constructor_nothrow_invalid_;
+	std::vector<ConstructorRuntimeCacheState> semantic_nothrow_states_;
+	std::vector<unsigned char> semantic_nothrow_results_;
+	std::vector<unsigned char> semantic_nothrow_invalid_;
 	std::map<std::size_t, std::size_t> block_indexes_;
 	std::vector<ControlTarget> control_stack_;
 	std::vector<SwitchContext> switch_stack_;
@@ -326,7 +348,9 @@ private:
 	std::vector<std::string> named_type_components(NamedRecordId record) const;
 	abi_mangle::AbiType abi_type_nested(TypeId type) const;
 	abi_mangle::AbiType abi_type(TypeId type) const;
-	std::string abi_symbol(const FunctionFact& fact) const;
+	std::string abi_symbol(const FunctionFact& fact,
+		abi_mangle::AbiFunctionSpecialTerminalKind terminal =
+		abi_mangle::ABI_SPECIAL_TERMINAL_NONE) const;
 	std::string abi_function_symbol(BindingId binding_id, ScopeId owner) const;
 	std::string abi_tls_wrapper_symbol(BindingId binding_id, ScopeId owner) const;
 	LowType low_type(TypeId type) const;
@@ -465,6 +489,27 @@ private:
 	LoweredValue lower_logical(SemanticFactId id);
 	void initialize_array(BindingId binding, SemanticFactId initializer,
 		const LoweredValue& storage);
+	LoweredValue constructor_subobject_address(
+		const ConstructorActionFact& action);
+	LoweredValue constructor_path_address(const ConstructorActionFact& action,
+		const std::vector<ConstructorAddressStep>& path);
+	void emit_constructor_call(BindingId constructor,
+		const LoweredValue& destination, std::size_t argument_begin,
+		std::size_t argument_count);
+	void initialize_constructor_value(TypeId target, SemanticFactId initializer,
+		const LoweredValue& destination,
+		const ConstructorActionFact* root_action = NULL,
+		const std::vector<ConstructorAddressStep>* path = NULL);
+	void zero_initialize_constructor_value(TypeId target,
+		const LoweredValue& destination,
+		const ConstructorActionFact* root_action = NULL,
+		const std::vector<ConstructorAddressStep>* path = NULL);
+	bool constructor_action_is_noop(const SemanticFact& action) const;
+	LoweredValue lower_variable_expression(SemanticFactId id);
+	void lower_constructor_action(const ConstructorActionFact& action);
+	LoweredValue lower_constructor_expression(SemanticFactId id);
+	bool constructor_initializer_is_nothrow(SemanticFactId root);
+	bool constructor_is_nothrow(FunctionFactId function_id);
 	LoweredValue lower_expression(SemanticFactId id);
 	LoweredValue lower_condition_expression(SemanticFactId id);
 	void lower_discarded_expression(SemanticFactId id);

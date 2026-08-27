@@ -87,31 +87,98 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class)
 		throw std::runtime_error("invalid implicit constructor record");
+	const BindingId declared = default_constructor_binding(record_id);
+	if (declared.valid())
+		return declared;
+	if (has_constructor_declaration(record_id))
+		throw std::runtime_error("PA12 implicit default constructor is unavailable");
 	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
 	if (existing != NULL && existing->constructor_binding.valid())
 		return existing->constructor_binding;
 	const TypeId object = named_type(record_id);
-	const TypeId constructor_type = make_function(
-		std::vector<TypeId>(1, make_pointer(object)), false,
-		fundamental(FundamentalType::Void));
+	const bool union_constructor = named_[record_id.value].class_tag ==
+		ClassTag::Union;
 	if (!named_[record_id.value].scope.valid() ||
 		named_[record_id.value].scope.value >= scopes_.size())
 		throw std::runtime_error("implicit constructor has no owner scope");
-	Binding constructor(BindingKind::Function, NameId(), constructor_type);
-	const BindingId binding_id(bindings_.size());
-	bindings_.push_back(constructor);
-	binding_owners_.push_back(named_[record_id.value].scope);
+	const ScopeId owner = named_[record_id.value].scope;
+	const NameId name = named_[record_id.value].name;
+	const bool legacy_empty_constructor = name.valid() && !union_constructor &&
+		!named_[record_id.value].has_base && scopes_[owner.value].bindings.empty();
+	const TypeId constructor_type = make_function(
+		legacy_empty_constructor ? std::vector<TypeId>(1, make_pointer(object)) :
+		std::vector<TypeId>(), false, fundamental(FundamentalType::Void));
+	BindingId binding_id;
+	if (name.valid() && !union_constructor && !legacy_empty_constructor)
+		binding_id = add_value(owner, name, constructor_type, true, true, false,
+			BindingId(), SourcePoint(), false, LanguageLinkage::Cxx);
+	else
+	{
+		// Keep the pre-existing anonymous-union representation isolated from
+		// named-class constructor lookup; anonymous unions still use their
+		// legacy generated binding until their own PA16 boundary is reached.
+		Binding constructor(BindingKind::Function, NameId(),
+			make_function(std::vector<TypeId>(1, make_pointer(object)), false,
+				fundamental(FundamentalType::Void)));
+		binding_id = store_binding(owner, constructor);
+	}
 	NamedRecordSidecar record_sidecar;
 	if (existing != NULL)
 		record_sidecar = *existing;
 	record_sidecar.constructor_binding = binding_id;
+	if (!union_constructor && !legacy_empty_constructor)
+		record_sidecar.default_constructor_binding = binding_id;
 	set_named_record_sidecar(record_id, record_sidecar);
 	BindingSidecar binding_sidecar;
 	binding_sidecar.constructor_record = record_id;
 	set_binding_sidecar(binding_id, binding_sidecar);
-	synthetic_function_facts_.push_back(
-		SyntheticFunctionFact(record_id, binding_id));
+	if (name.valid() && !union_constructor && !legacy_empty_constructor)
+	{
+		const ScopeId function_scope = create_scope(ScopeKind::Function, owner,
+			name);
+		FunctionFact function(NULL, owner, binding_id, function_scope,
+			ScopeId());
+		function.is_constructor = true;
+		function.synthetic = true;
+		function.constructor_record = record_id;
+		prepare_pa12_member_parameter(function);
+		const FunctionFactId function_id(function_facts_.size());
+		function_facts_.push_back(function);
+		function_binding_fact_index_.set(binding_id, function_id);
+		build_constructor_actions(function_id);
+	}
+	else
+		synthetic_function_facts_.push_back(
+			SyntheticFunctionFact(record_id, binding_id));
 	return binding_id;
+}
+
+TypeId PA11SemanticModel::constructor_callable_type(BindingId constructor)
+{
+	if (!constructor.valid() || constructor.value >= bindings_.size())
+		throw std::runtime_error("PA12 constructor binding is invalid");
+	const Binding& value = binding(constructor);
+	if (value.kind != BindingKind::Function ||
+		type_kind(value.type) != TypeKind::Function)
+		throw std::runtime_error("PA12 constructor binding is not a function");
+	const BindingSidecar* sidecar = binding_sidecar(constructor);
+	if (sidecar == NULL || !sidecar->constructor_record.valid())
+		throw std::runtime_error("PA12 constructor owner is missing");
+	const TypeKey& function = types_[value.type.value];
+	if (!function.parameters.empty())
+	{
+		const TypeId first = strip_cv_type(expression_object_type(
+			function.parameters.front()));
+		const TypeId object = named_type(sidecar->constructor_record);
+		if (type_kind(first) == TypeKind::Pointer &&
+			types_[first.value].child == object)
+			return value.type;
+	}
+	std::vector<TypeId> parameters;
+	parameters.push_back(make_pointer(named_type(sidecar->constructor_record)));
+	parameters.insert(parameters.end(), function.parameters.begin(),
+		function.parameters.end());
+	return make_function(parameters, function.variadic, function.result);
 }
 BindingId PA11SemanticModel::ensure_anonymous_union_constructor(
 	NamedRecordId record_id)

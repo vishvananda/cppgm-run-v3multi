@@ -100,10 +100,194 @@ bool PA11SemanticModel::implicit_default_constructor_supported(
 		throw std::runtime_error(
 			"PA12 implicit default construction requires a complete class");
 	std::vector<NamedRecordId> active;
-	if (!implicit_default_record_empty(record_id, active))
+	if (!implicit_default_type_supported(named_type(record_id), active))
 		throw std::runtime_error(
-			"PA12 implicit default construction requires unsupported initialization");
+			"PA12 implicit default construction is unavailable");
 	return true;
+}
+
+bool PA11SemanticModel::implicit_default_type_supported(TypeId type,
+	std::vector<NamedRecordId>& active) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	type = strip_cv_type(type);
+	const TypeKey& key = types_[type.value];
+	switch (key.kind)
+	{
+	case TypeKind::Cv:
+		return implicit_default_type_supported(key.child, active);
+	case TypeKind::Fundamental:
+		return key.fundamental != FundamentalType::Void;
+	case TypeKind::Pointer:
+	case TypeKind::MemberPointer:
+		return true;
+	case TypeKind::Array:
+		return !key.unknown_bound &&
+			implicit_default_type_supported(key.child, active);
+	case TypeKind::Named:
+	{
+		if (!key.named.valid() || key.named.value >= named_.size())
+			return false;
+		const NamedRecord& record = named_[key.named.value];
+		if (record.kind == NamedKind::Enum)
+			return true;
+		if (record.kind != NamedKind::Class ||
+			record.class_tag == ClassTag::Union || !record.defined ||
+			!record.scope.valid() || record.scope.value >= scopes_.size())
+			return false;
+		for (std::size_t i = 0; i < active.size(); ++i)
+			if (active[i] == key.named)
+				return false;
+		active.push_back(key.named);
+		const BindingId default_ctor = default_constructor_binding(key.named);
+		bool result = default_ctor.valid() ?
+			function_declaration_kind(default_ctor) !=
+			FunctionDeclarationKind::Deleted :
+			!has_constructor_declaration(key.named);
+		const NamedRecord& current = named_[key.named.value];
+		if (result && current.has_base)
+			result = implicit_default_type_supported(
+				named_type(current.direct_base), active);
+		if (result)
+		{
+			const Scope& scope = scopes_[current.scope.value];
+			for (std::size_t i = 0; i < scope.bindings.size() && result; ++i)
+			{
+				const BindingId member_id = scope.bindings[i];
+				const Binding& member = binding(member_id);
+				if (member.kind != BindingKind::Variable ||
+					is_static_member(member_id))
+					continue;
+				const BindingSidecar* sidecar = binding_sidecar(member_id);
+				if (sidecar != NULL && sidecar->has_default_member_initializer)
+					continue;
+				result = implicit_default_type_supported(member.type, active);
+			}
+		}
+		active.pop_back();
+		return result;
+	}
+	case TypeKind::LvalueReference:
+	case TypeKind::RvalueReference:
+	case TypeKind::Function:
+		return false;
+	}
+	return false;
+}
+
+BindingId PA11SemanticModel::default_constructor_binding(
+	NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return BindingId();
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	if (sidecar == NULL || !sidecar->default_constructor_binding.valid())
+		return BindingId();
+	const BindingId result = sidecar->default_constructor_binding;
+	if (result.value >= bindings_.size())
+		throw std::runtime_error("PA12 default constructor identity is invalid");
+	const Binding& candidate = binding(result);
+	if (candidate.kind != BindingKind::Function ||
+		type_kind(candidate.type) != TypeKind::Function)
+		throw std::runtime_error("PA12 default constructor binding is invalid");
+	return result;
+}
+
+bool PA11SemanticModel::has_constructor_declaration(
+	NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	return sidecar != NULL && sidecar->has_constructor_declaration;
+}
+
+bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	if (constructor_runtime_states_.size() != named_.size() ||
+		constructor_runtime_results_.size() != named_.size() ||
+		constructor_runtime_invalid_.size() != named_.size())
+		throw std::runtime_error("PA12 constructor runtime cache is missing");
+	const std::size_t index = record_id.value;
+	if (constructor_runtime_states_[index] ==
+		ConstructorRuntimeCacheState::Complete)
+		return constructor_runtime_results_[index] != 0;
+	if (constructor_runtime_states_[index] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		constructor_runtime_invalid_[index] = 1;
+		return false;
+	}
+	constructor_runtime_states_[index] =
+		ConstructorRuntimeCacheState::InProgress;
+	const NamedRecord& record = named_[index];
+	bool result = false;
+	const BindingId default_ctor = default_constructor_binding(record_id);
+	if (default_ctor.valid())
+	{
+		const FunctionFact* function = function_fact_for_binding(default_ctor);
+		// A non-synthetic default constructor is an emitted user body (or a
+		// deleted declaration, which must remain a demanded/error boundary).
+		if (function == NULL || !function->synthetic)
+			result = true;
+	}
+	if (!result && record.has_base)
+	{
+		result = classify_constructor_runtime(record.direct_base);
+		if (record.direct_base.valid() && record.direct_base.value <
+			constructor_runtime_invalid_.size() &&
+			constructor_runtime_invalid_[record.direct_base.value] != 0)
+			constructor_runtime_invalid_[index] = 1;
+	}
+	if (!result && record.scope.valid() && record.scope.value < scopes_.size())
+	{
+		const Scope& scope = scopes_[record.scope.value];
+		for (std::size_t i = 0; i < scope.bindings.size() && !result; ++i)
+		{
+			const BindingId member_id = scope.bindings[i];
+			const Binding& member = binding(member_id);
+			if (member.kind != BindingKind::Variable ||
+				is_static_member(member_id))
+				continue;
+			const BindingSidecar* sidecar = binding_sidecar(member_id);
+			if (sidecar != NULL && sidecar->has_default_member_initializer)
+			{
+				result = true;
+				break;
+			}
+			const NamedRecordId member_record = named_record_for_type(member.type);
+			if (member_record.valid())
+			{
+				result = classify_constructor_runtime(member_record);
+				if (member_record.value < constructor_runtime_invalid_.size() &&
+					constructor_runtime_invalid_[member_record.value] != 0)
+					constructor_runtime_invalid_[index] = 1;
+			}
+		}
+	}
+	constructor_runtime_states_[index] =
+		ConstructorRuntimeCacheState::Complete;
+	constructor_runtime_results_[index] = result ? 1 : 0;
+	return result;
+}
+
+bool PA11SemanticModel::constructor_requires_runtime(NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class)
+		return false;
+	const bool result = classify_constructor_runtime(record_id);
+	if (record_id.value >= constructor_runtime_invalid_.size())
+		throw std::runtime_error("PA12 constructor runtime cache is invalid");
+	if (constructor_runtime_invalid_[record_id.value] != 0)
+		throw std::runtime_error("PA12 constructor runtime dependency cycle");
+	return result;
 }
 
 bool PA11SemanticModel::direct_base_chain(TypeId object,

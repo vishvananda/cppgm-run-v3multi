@@ -40,6 +40,27 @@ bool has_virtual_member_specifier_impl(const PA10AstNode& node, bool root)
 	return false;
 }
 
+FunctionDeclarationKind special_member_initializer_kind_impl(
+	const PA10AstNode& node)
+{
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& child = node.children[i];
+		if (child.kind != PA10NodeKind::Initializer ||
+			child.children.size() != 1)
+			continue;
+		const PA10AstNode& initializer = child.children.front();
+		if (initializer.kind != PA10NodeKind::SpecialInitializer ||
+			!initializer.has_token)
+			continue;
+		if (initializer.token == SimpleTokenType::KW_DEFAULT)
+			return FunctionDeclarationKind::Defaulted;
+		if (initializer.token == SimpleTokenType::KW_DELETE)
+			return FunctionDeclarationKind::Deleted;
+	}
+	return FunctionDeclarationKind::Normal;
+}
+
 bool has_virtual_member_specifier(const PA10AstNode& node)
 {
 	// A class/enum declaration appearing as a member is itself a nested
@@ -1532,6 +1553,103 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	function_fact_index_.set(&node, function_id);
 	function_binding_fact_index_.set(function_binding, function_id);
 }
+
+void PA11SemanticModel::process_special_member(const PA10AstNode& node,
+	ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::SpecialMemberDeclaration &&
+		node.kind != PA10NodeKind::SpecialMemberDefinition)
+		throw std::runtime_error("invalid PA11 special member");
+	if (!scope.valid() || scope.value >= scopes_.size() ||
+		scopes_[scope.value].kind != ScopeKind::Class ||
+		!scopes_[scope.value].record.valid() ||
+		scopes_[scope.value].record.value >= named_.size())
+		throw std::runtime_error("PA11 special member has no class owner");
+	const NamedRecordId record_id = scopes_[scope.value].record;
+	const NamedRecord& record = named_[record_id.value];
+	const PA10AstNode* declarator = NULL;
+	const PA10AstNode* member_specifiers = NULL;
+	const PA10AstNode* body = NULL;
+	for (std::size_t i = 0; i < node.children.size(); ++i)
+	{
+		if (node.children[i].kind == PA10NodeKind::Declarator)
+			declarator = &node.children[i];
+		else if (node.children[i].kind == PA10NodeKind::MemberSpecifiers)
+			member_specifiers = &node.children[i];
+		else if (node.children[i].kind == PA10NodeKind::CompoundStatement)
+			body = &node.children[i];
+	}
+	if (declarator == NULL || !record.name.valid())
+		throw std::runtime_error("PA11 special member declarator is missing");
+	const DeclaratorName name = declarator_name(*declarator);
+	if (!name.found || name.path.global || name.path.components.size() != 1 ||
+		name.path.last() != record.name)
+		throw std::runtime_error("PA11 special member name does not match class");
+	if (member_specifiers != NULL)
+		for (std::size_t i = 0; i < member_specifiers->children.size(); ++i)
+			if (member_specifiers->children[i].has_token &&
+				member_specifiers->children[i].token == SimpleTokenType::KW_STATIC)
+				throw std::runtime_error("PA11 static constructor is invalid");
+	const PA10AstNode* clause = top_parameter_clause(*declarator);
+	if (clause == NULL)
+		throw std::runtime_error("PA11 special member parameter clause is missing");
+	bool variadic = false;
+	std::vector<ParamFact> parameters;
+	const std::vector<TypeId> parameter_types_value = parameter_types(*clause,
+		scope, &variadic, &parameters);
+	const FunctionDeclarationKind declaration_kind =
+		special_member_initializer_kind_impl(node);
+	const bool definition = body != NULL || declaration_kind !=
+		FunctionDeclarationKind::Normal;
+	const TypeId type = make_function(parameter_types_value, variadic,
+		fundamental(FundamentalType::Void));
+	const BindingId function_binding = add_value(scope, record.name, type, true,
+		definition, true, BindingId(), SourcePoint(node.source_begin), false,
+		current_language_linkage_, declaration_kind);
+	record_function_declarator(function_binding, name, *declarator,
+		declaration_kind);
+	BindingSidecar sidecar;
+	const BindingSidecar* existing = binding_sidecar(function_binding);
+	if (existing != NULL)
+		sidecar = *existing;
+	sidecar.constructor_record = record_id;
+	set_binding_sidecar(function_binding, sidecar);
+	NamedRecordSidecar record_sidecar;
+	const NamedRecordSidecar* existing_record = named_record_sidecar(record_id);
+	if (existing_record != NULL)
+		record_sidecar = *existing_record;
+	record_sidecar.has_constructor_declaration = true;
+	if (parameter_types_value.empty())
+		record_sidecar.default_constructor_binding = function_binding;
+	set_named_record_sidecar(record_id, record_sidecar);
+	const ScopeId function_scope = create_scope(ScopeKind::Function, scope,
+		record.name);
+	function_definition_points_.set(function_scope,
+		SourcePoint(node.source_begin));
+	for (std::size_t i = 0; i < parameters.size(); ++i)
+	{
+		const BindingId parameter = store_binding(function_scope,
+			Binding(BindingKind::Parameter, parameters[i].name,
+				parameters[i].type));
+		if (parameters[i].name.valid())
+			append_value_index(function_scope, parameters[i].name, parameter,
+				ScopeId(), SourcePoint(node.source_begin));
+	}
+	FunctionFact function_fact(&node, scope, function_binding, function_scope,
+		ScopeId());
+	function_fact.is_constructor = true;
+	function_fact.constructor_record = record_id;
+	if (declaration_kind == FunctionDeclarationKind::Defaulted)
+		function_fact.synthetic = true;
+	if (body != NULL)
+		function_fact.body_scope = process_compound_statement(*body,
+			function_scope);
+	const FunctionFactId function_id(function_facts_.size());
+	function_facts_.push_back(function_fact);
+	function_fact_index_.set(&node, function_id);
+	function_binding_fact_index_.set(function_binding, function_id);
+}
+
 ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
 {
 	if (node.kind != PA10NodeKind::CompoundStatement)

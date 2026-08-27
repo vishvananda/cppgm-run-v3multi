@@ -321,96 +321,6 @@ void PA11SemanticModel::validate_switch_initialization(
 	collect_switch_transfer_points(body, scope, &state);
 }
 
-void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
-	ScopeId scope)
-{
-	switch (node.kind)
-	{
-	case PA10NodeKind::NamespaceDefinition:
-	{
-		const NamespaceFact* namespace_fact = this->namespace_fact(node);
-		if (namespace_fact == NULL)
-			throw std::runtime_error("PA12 namespace fact is missing");
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			if (node.children[i].kind != PA10NodeKind::InlineMarker)
-				prepare_pa12_node(node.children[i], namespace_fact->scope);
-		return;
-	}
-	case PA10NodeKind::LinkageSpecification:
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			prepare_pa12_node(node.children[i], scope);
-		return;
-	case PA10NodeKind::ClassSpecifier:
-	{
-		const NamePath name = class_name(node);
-		if (name.empty())
-			return;
-		const ScopeId class_scope = class_scope_for_type(
-			lookup_type_path(name, scope));
-		if (!class_scope.valid())
-			throw std::runtime_error("PA12 class semantic scope is missing");
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			if (node.children[i].kind == PA10NodeKind::FunctionDefinition ||
-				node.children[i].kind == PA10NodeKind::ClassSpecifier)
-				prepare_pa12_node(node.children[i], class_scope);
-		return;
-	}
-	case PA10NodeKind::FunctionDefinition:
-	{
-		const FunctionFact* function = function_fact(node);
-		if (function == NULL || node.children.empty())
-			throw std::runtime_error("PA12 function fact is missing");
-		prepare_pa12_compound(node.children.back(), function->function_scope);
-		return;
-	}
-	default:
-		return;
-	}
-}
-
-void PA11SemanticModel::prepare_pa12_member_parameter(FunctionFact& function)
-{
-	if (!function.owner.valid() || function.owner.value >= scopes_.size() ||
-		scopes_[function.owner.value].kind != ScopeKind::Class ||
-		is_static_member(function.binding))
-		return;
-	if (!function.function_scope.valid() ||
-		function.function_scope.value >= scopes_.size() ||
-		scopes_[function.function_scope.value].kind != ScopeKind::Function)
-		throw std::runtime_error("PA12 member function scope is invalid");
-	const TypeId object_pointer = member_object_pointer_type(
-		binding(function.binding).type, function.owner);
-	if (!object_pointer.valid())
-		throw std::runtime_error("PA12 member function has no object type");
-	Scope& function_scope = scopes_[function.function_scope.value];
-	if (function_scope.implicit_object_binding.valid())
-	{
-		const Binding& parameter = binding(function_scope.implicit_object_binding);
-		if (parameter.kind != BindingKind::Parameter ||
-			parameter.type != object_pointer)
-			throw std::runtime_error("PA12 member function has invalid this binding");
-		return;
-	}
-	const BindingId this_binding = store_binding(function.function_scope,
-		Binding(BindingKind::Parameter, intern_name("this"), object_pointer), 0);
-	function_scope.implicit_object_binding = this_binding;
-}
-
-void PA11SemanticModel::prepare_pa12()
-{
-	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
-		prepare_pa12_node(ast_.root.children[i], global_);
-}
-
-void PA11SemanticModel::analyze_pa12()
-{
-	if (ast_.root.kind != PA10NodeKind::TranslationUnit)
-		throw std::runtime_error("PA12 root is not a translation unit");
-	pa12_render_mode_ = true;
-	prepare_pa12();
-	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
-		analyze_pa12_node(ast_.root.children[i], global_);
-}
 BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
 {
 	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
@@ -606,6 +516,9 @@ SemanticFactId PA11SemanticModel::semantic_constructor_action(
 	const BindingId constructor = named_[record.value].class_tag == ClassTag::Union ?
 		ensure_anonymous_union_constructor(record) :
 		ensure_implicit_default_constructor(record);
+	if (function_declaration_kind(constructor) ==
+		FunctionDeclarationKind::Deleted)
+		throw std::runtime_error("PA12 default construction selects deleted constructor");
 	const ExprInfo object = semantic_storage_id(storage, &source);
 	const TypeId pointer = make_pointer(object.type);
 	SemanticFact unary(SemanticFactKind::UnaryExpression, pointer,
@@ -619,14 +532,15 @@ SemanticFactId PA11SemanticModel::semantic_constructor_action(
 		&source);
 	call.has_callee = true;
 	call.selected_binding = constructor;
-	call.selected_scope = named_[record.value].owner;
+	call.selected_scope = named_[record.value].scope;
+	call.callable_type = constructor_callable_type(constructor);
 	const SemanticFactId call_id = make_semantic_fact(call);
 	set_semantic_children(call_id,
 		std::vector<SemanticFactId>(1, address));
 	SemanticFact action(SemanticFactKind::ConstructorAction, TypeId(),
 		SemanticValueCategory::Prvalue, &source);
 	action.selected_binding = constructor;
-	action.selected_scope = named_[record.value].owner;
+	action.selected_scope = named_[record.value].scope;
 	const SemanticFactId action_id = make_semantic_fact(action);
 	set_semantic_children(action_id,
 		std::vector<SemanticFactId>(1, call_id));
@@ -1047,9 +961,9 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 					choice.kind, choice.rank));
 				return ExprInfo(cast, referred, SemanticValueCategory::Prvalue,
 					false);
-			}
 		}
 	}
+}
 	const ConversionFactId conversion = add_conversion(expression.type, target,
 		choice.kind, choice.rank);
 	set_fact_conversion(expression.fact, conversion);
@@ -2003,6 +1917,53 @@ ExprInfo PA11SemanticModel::semantic_braced_init_list(
 	if (node.kind != PA10NodeKind::BracedInitList)
 		throw std::runtime_error("PA12 expected braced initializer");
 	const TypeId object = strip_top_cv_type(target);
+	if (type_kind(object) == TypeKind::Named)
+	{
+		const NamedRecordId record = named_record_for_type(object);
+		if (record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class)
+		{
+			if (named_[record.value].class_tag == ClassTag::Union ||
+				named_[record.value].has_base)
+				throw std::runtime_error(
+					"PA12 aggregate initializer target is unsupported");
+			const ScopeId class_scope = named_[record.value].scope;
+			if (!class_scope.valid() || class_scope.value >= scopes_.size())
+				throw std::runtime_error("PA12 aggregate initializer class scope is missing");
+			std::vector<BindingId> members;
+			bool has_default_member_initializer = false;
+			const Scope& owner = scopes_[class_scope.value];
+			for (std::size_t i = 0; i < owner.bindings.size(); ++i)
+			{
+				const BindingId member_id = owner.bindings[i];
+				const Binding& member = binding(member_id);
+				if (member.kind == BindingKind::Variable &&
+					!is_static_member(member_id))
+				{
+					members.push_back(member_id);
+					const BindingSidecar* sidecar = binding_sidecar(member_id);
+					if (sidecar != NULL && sidecar->has_default_member_initializer)
+						has_default_member_initializer = true;
+				}
+			}
+			if (has_default_member_initializer && !node.children.empty())
+				throw std::runtime_error(
+					"PA12 class with default member initializer is not an aggregate");
+			if (node.children.size() > members.size())
+				throw std::runtime_error(
+					"PA12 aggregate initializer has too many elements");
+			std::vector<SemanticFactId> children;
+			for (std::size_t i = 0; i < node.children.size(); ++i)
+			{
+				const TypeId member_type = binding(members[i]).type;
+				children.push_back(semantic_expression_for_target(node.children[i],
+					scope, member_type).fact);
+			}
+			return ExprInfo(make_expression_fact(SemanticFactKind::BracedInitList,
+				object, SemanticValueCategory::Lvalue, node, children), object,
+				SemanticValueCategory::Lvalue, false);
+		}
+	}
 	if (type_kind(object) != TypeKind::Array)
 	{
 		if (node.children.empty())
@@ -2246,26 +2207,21 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const bool local_object_scope = declaration->scope.valid() &&
 			declaration->scope.value < scopes_.size() &&
 			scopes_[declaration->scope.value].kind == ScopeKind::Block;
-		const bool legacy_empty_default_object = init.children.size() == 1 &&
-			local_object_scope && record.valid() &&
-			record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Class &&
-			!named_[record.value].has_base &&
-			named_[record.value].scope.valid() &&
+		const bool default_object = init.children.size() == 1 &&
+			local_object_scope && record.valid() && record.value < named_.size() &&
+			named_[record.value].kind == NamedKind::Class;
+		const bool legacy_empty_default_object = default_object &&
+			!named_[record.value].has_base && named_[record.value].scope.valid() &&
 			named_[record.value].scope.value < scopes_.size() &&
 			scopes_[named_[record.value].scope.value].bindings.empty();
-		if (init.children.size() == 1 && local_object_scope && record.valid())
-			// An empty implicit default construction is represented by the
-			// storage fact alone for inherited state-free records.  The call below
-			// validates that no unsupported base/member initialization would be
-			// silently discarded.  Keep the pre-existing no-base empty-class
-			// constructor fact for the PA12 semantic contract.
+		if (default_object)
 			(void)implicit_default_constructor_supported(record);
 		const bool special_function_initializer =
 			value.kind == BindingKind::Function &&
 			function_declaration_kind(binding_id) !=
 				FunctionDeclarationKind::Normal;
 		const PA10AstNode* direct_operand = NULL;
+		SemanticFactId initializer_fact;
 		if (special_function_initializer)
 		{
 			// PA11 has already retained `= default`/`= delete` as a typed
@@ -2280,6 +2236,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				semantic_facts_[expression.fact.value].source);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
+			initializer_fact = expression.fact;
 		}
 		else if (init.children.size() > 1)
 		{
@@ -2296,8 +2253,13 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 					throw std::runtime_error("PA12 invalid parenthesized initializer");
 				clause = &clause->children.front();
 			}
-			const ExprInfo expression = semantic_expression_for_target(
-				*clause, declaration->scope, value.type);
+			const bool class_member_declaration = declaration->scope.valid() &&
+				declaration->scope.value < scopes_.size() &&
+				scopes_[declaration->scope.value].kind == ScopeKind::Class;
+			const ExprInfo expression = class_member_declaration ?
+				semantic_default_member_initializer(*clause, declaration->scope,
+					value.type) : semantic_expression_for_target(*clause,
+					declaration->scope, value.type);
 			if (clause->kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
@@ -2305,12 +2267,28 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				retarget_constexpr_literal(expression.fact, value.type);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
+			initializer_fact = expression.fact;
 		}
-		else if (anonymous_union_object || legacy_empty_default_object)
+		else if (anonymous_union_object || legacy_empty_default_object ||
+			(default_object && constructor_requires_runtime(record)))
 		{
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1,
 					semantic_constructor_action(binding_id, init)));
+		}
+		if (initializer_fact.valid() &&
+			value.kind == BindingKind::Variable && !is_static_member(binding_id) &&
+			declaration->scope.valid() &&
+			declaration->scope.value < scopes_.size() &&
+			scopes_[declaration->scope.value].kind == ScopeKind::Class)
+		{
+			BindingSidecar sidecar;
+			const BindingSidecar* existing = binding_sidecar(binding_id);
+			if (existing != NULL)
+				sidecar = *existing;
+			sidecar.has_default_member_initializer = true;
+			sidecar.default_member_initializer = initializer_fact;
+			set_binding_sidecar(binding_id, sidecar);
 		}
 		// Namespace initializers are the one PA15 constant boundary.  Persist
 		// the typed PA12 fold result (including nested braced elements) once,
@@ -2947,6 +2925,13 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 			lookup_type_path(name, scope));
 		if (!class_scope.valid())
 			throw std::runtime_error("PA12 class semantic scope is missing");
+		// Form every field's initializer fact before any constructor consumes
+		// the class-owned DMI sidecars.  This also makes declaration order in
+		// the source independent of which constructor appears first.
+		for (std::size_t i = 0; i < node.children.size(); ++i)
+			if (node.children[i].kind == PA10NodeKind::SimpleDeclaration &&
+				declaration_fact(node.children[i]) != NULL)
+				semantic_declaration(node.children[i], class_scope);
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 		{
 			if (node.children[i].kind == PA10NodeKind::ClassSpecifier)
@@ -2954,14 +2939,18 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 				analyze_pa12_node(node.children[i], class_scope);
 				continue;
 			}
-			if (node.children[i].kind != PA10NodeKind::FunctionDefinition)
-				continue;
-			analyze_pa12_node(node.children[i], class_scope);
-			const FunctionFactId* id = function_fact_index_.find(
-				&node.children[i]);
-			if (id == NULL || !id->valid())
-				throw std::runtime_error("PA12 class function identity is missing");
-			class_function_facts_.push_back(*id);
+			if (node.children[i].kind == PA10NodeKind::FunctionDefinition)
+			{
+				analyze_pa12_node(node.children[i], class_scope);
+				const FunctionFactId* id = function_fact_index_.find(
+					&node.children[i]);
+				if (id == NULL || !id->valid())
+					throw std::runtime_error("PA12 class function identity is missing");
+				class_function_facts_.push_back(*id);
+			}
+			else if (node.children[i].kind == PA10NodeKind::SpecialMemberDefinition ||
+				node.children[i].kind == PA10NodeKind::SpecialMemberDeclaration)
+				analyze_special_member(node.children[i], class_scope);
 		}
 		break;
 	}
@@ -2974,14 +2963,28 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		break;
 	case PA10NodeKind::FunctionDefinition:
 	{
-		FunctionFact* function = function_fact(node);
-		if (function == NULL || function->body_fact.valid())
+		const FunctionFactId* found = function_fact_index_.find(&node);
+		if (found == NULL || !found->valid() ||
+			found->value >= function_facts_.size())
 			throw std::runtime_error("PA12 function fact is missing");
-		prepare_pa12_member_parameter(*function);
-		record_function_default_arguments(*function, node, 0);
-		prepare_pa12_labels(node.children.back(), *function);
-		function->body_fact = semantic_compound(node.children.back(),
-			function->function_scope, *function, 0, 0, NULL);
+		const FunctionFactId function_id = *found;
+		if (function_facts_[function_id.value].body_fact.valid() ||
+			node.children.empty())
+			throw std::runtime_error("PA12 function fact is missing");
+		prepare_pa12_member_parameter(function_facts_[function_id.value]);
+		record_function_default_arguments(function_facts_[function_id.value],
+			node, 0);
+		prepare_pa12_labels(node.children.back(),
+			function_facts_[function_id.value]);
+		const ScopeId function_scope =
+			function_facts_[function_id.value].function_scope;
+		// semantic_compound can publish more semantic facts and may therefore
+		// grow function_facts_ through a nested construction demand.  Pass a
+		// snapshot and publish the result by typed ID after it returns.
+		const FunctionFact semantic_function = function_facts_[function_id.value];
+		const SemanticFactId body_fact = semantic_compound(node.children.back(),
+			function_scope, semantic_function, 0, 0, NULL);
+		function_facts_[function_id.value].body_fact = body_fact;
 		break;
 	}
 	default:
@@ -2989,11 +2992,3 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 	}
 }
 } // namespace pa11_semantic_internal
-
-void emit_pa12_semantics(const PA10Ast& ast, std::ostream& output)
-{
-	pa11_semantic_internal::PA11SemanticModel model(ast);
-	model.analyze();
-	model.analyze_pa12();
-	model.dump_pa12(output);
-}

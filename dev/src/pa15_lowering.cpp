@@ -40,7 +40,12 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  literal_backing_ordinal_(0), next_value_(program.values.size()),
 		  next_slot_(0), next_block_(0), current_function_(0),
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
-		  block_ordinal_(0), generated_slot_ordinal_(0), block_indexes_(), control_stack_(),
+		  block_ordinal_(0), generated_slot_ordinal_(0),
+		  active_constructor_record_(), active_constructor_this_(),
+		  constructor_nothrow_states_(), constructor_nothrow_results_(),
+		  constructor_nothrow_invalid_(), semantic_nothrow_states_(),
+		  semantic_nothrow_results_(), semantic_nothrow_invalid_(),
+		  block_indexes_(), control_stack_(),
 		  switch_stack_(), loop_flow_indexes_(), loop_flow_arena_(),
 		  if_flow_indexes_(), if_flow_arena_(), switch_flow_indexes_(),
 		  switch_flow_arena_(),
@@ -344,11 +349,15 @@ abi_mangle::AbiType Pa15Lowerer::abi_type(TypeId type) const{
 		return abi_type_nested(type);
 	}
 
-std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact) const{
+std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
+	abi_mangle::AbiFunctionSpecialTerminalKind terminal) const{
 		const Binding& binding = model_.binding(fact.binding);
 		if (model_.type_kind(binding.type) != TypeKind::Function)
 			throw std::runtime_error("PA15 function binding has non-function type");
 		const TypeKey& function = model_.types_[binding.type.value];
+		const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+		const bool constructor = sidecar != NULL &&
+			sidecar->constructor_record.valid();
 		abi_mangle::AbiFactCase facts;
 		abi_mangle::AbiFactRecord record;
 		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
@@ -359,8 +368,18 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact) const{
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
 		record.target.function.name.components = function_abi_components(
 			fact.binding, fact.owner);
-		record.target.function.operator_terminal = operator_terminal(
-			fact.binding, function.parameters.size());
+		if (constructor)
+		{
+			if (record.target.function.name.components.empty())
+				throw std::runtime_error("PA15 constructor ABI path is empty");
+			record.target.function.name.components.pop_back();
+			record.target.function.special_terminal = terminal ==
+				abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
+				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE : terminal;
+		}
+		else
+			record.target.function.operator_terminal = operator_terminal(
+				fact.binding, function.parameters.size());
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
@@ -379,6 +398,16 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact) const{
 					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
 			facts.records.push_back(qualifier);
 		}
+		if (constructor)
+		{
+			abi_mangle::AbiFactRecord terminal_record;
+			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			terminal_record.function.kind =
+				abi_mangle::ABI_FUNCTION_RECORD_TERMINAL;
+			terminal_record.function.special_terminal = record.target.function.
+				special_terminal;
+			facts.records.push_back(terminal_record);
+		}
 		facts.records.push_back(record);
 		return abi_mangle::mangle_abi_fact_case(facts);
 }
@@ -388,6 +417,9 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 		if (model_.type_kind(binding.type) != TypeKind::Function)
 			throw std::runtime_error("PA15 function binding has non-function type");
 		const TypeKey& function = model_.types_[binding.type.value];
+		const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
+		const bool constructor = sidecar != NULL &&
+			sidecar->constructor_record.valid();
 		abi_mangle::AbiFactCase facts;
 		abi_mangle::AbiFactRecord record;
 		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
@@ -398,8 +430,17 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
 		record.target.function.name.components = function_abi_components(
 			binding_id, owner);
-		record.target.function.operator_terminal = operator_terminal(
-			binding_id, function.parameters.size());
+		if (constructor)
+		{
+			if (record.target.function.name.components.empty())
+				throw std::runtime_error("PA15 constructor ABI path is empty");
+			record.target.function.name.components.pop_back();
+			record.target.function.special_terminal =
+				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE;
+		}
+		else
+			record.target.function.operator_terminal = operator_terminal(
+				binding_id, function.parameters.size());
 		for (std::size_t i = 0; i < function.parameters.size(); ++i)
 			record.target.function.signature_parameter_types.push_back(
 				abi_type(function.parameters[i]));
@@ -417,6 +458,16 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner
 				qualifier.function.qualifiers.push_back(
 					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
 			facts.records.push_back(qualifier);
+		}
+		if (constructor)
+		{
+			abi_mangle::AbiFactRecord terminal_record;
+			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			terminal_record.function.kind =
+				abi_mangle::ABI_FUNCTION_RECORD_TERMINAL;
+			terminal_record.function.special_terminal =
+				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE;
+			facts.records.push_back(terminal_record);
 		}
 		facts.records.push_back(record);
 		return abi_mangle::mangle_abi_fact_case(facts);
@@ -1120,6 +1171,14 @@ void Pa15Lowerer::index_function_scope_variables(){
 
 void Pa15Lowerer::collect_functions(){
 		index_function_scope_variables();
+		constructor_nothrow_states_.assign(model_.function_facts_.size(),
+			ConstructorRuntimeCacheState::Unseen);
+		constructor_nothrow_results_.assign(model_.function_facts_.size(), 0);
+		constructor_nothrow_invalid_.assign(model_.function_facts_.size(), 0);
+		semantic_nothrow_states_.assign(model_.semantic_facts_.size(),
+			ConstructorRuntimeCacheState::Unseen);
+		semantic_nothrow_results_.assign(model_.semantic_facts_.size(), 0);
+		semantic_nothrow_invalid_.assign(model_.semantic_facts_.size(), 0);
 		std::vector<unsigned char> demanded_member_functions(
 			model_.function_facts_.size(), 0);
 		demanded_member_declarations_.assign(model_.bindings_.size(), 0);
@@ -1159,10 +1218,18 @@ void Pa15Lowerer::collect_functions(){
 			function.return_type = function_result_low_type(
 				model_.types_[binding.type.value].result);
 			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+			const bool is_constructor = fact.is_constructor || (sidecar != NULL &&
+				sidecar->constructor_record.valid());
 			if (sidecar != NULL && sidecar->nonthrowing)
 				function.boundary.unwind = lowir_model::CUM_NO;
-			function.metadata.binding = binding.internal_linkage ?
-				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
+			if (is_constructor && fact.synthetic)
+			{
+				if (constructor_is_nothrow(FunctionFactId(i)))
+					function.boundary.unwind = lowir_model::CUM_NO;
+			}
+			function.metadata.binding = is_constructor ?
+				lowir_model::SBM_WEAK : (binding.internal_linkage ?
+				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG);
 			if (binding.language_linkage == LanguageLinkage::C)
 				function.metadata.linkage = lowir_model::LLM_C;
 			const bool is_main = components.size() == 1 && components.front() == "main";
@@ -1180,6 +1247,15 @@ void Pa15Lowerer::collect_functions(){
 			function_symbols_[fact.binding.value] = function.symbol_id;
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
+			if (is_constructor)
+			{
+				lowir_model::ObjectAlias alias;
+				alias.object_name_id = intern_spelling(abi_symbol(fact,
+					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE));
+				alias.target_name_id = name_id;
+				alias.target_id = function.symbol_id;
+				program_.object_aliases.push_back(alias);
+			}
 			Function& stored = program_.functions.back();
 			used_slot_names_.clear();
 			slot_collision_counters_.clear();
@@ -1992,7 +2068,12 @@ LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
 		else
 			throw std::runtime_error("PA15 unsupported literal value");
 		const LowType type = low_type(fact.type);
-		return LoweredValue(integer_operand(value, type), type, false);
+		Operand operand = integer_operand(value, type);
+		if (type.is_pointer() && value == 0 && fact.source != NULL &&
+			fact.source->kind == PA10NodeKind::BracedInitList &&
+			fact.source->children.empty())
+			operand.presentation_id = intern_spelling("nullptr");
+		return LoweredValue(operand, type, false);
 	}
 
 LoweredValue Pa15Lowerer::apply_reinterpret_conversion(LoweredValue result,
@@ -2683,155 +2764,6 @@ LoweredValue Pa15Lowerer::lower_conditional_value(SemanticFactId id){
 			type, false);
 	}
 
-LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		const std::vector<SemanticFactId> facts = children(id);
-		switch (fact.kind)
-		{
-		case SemanticFactKind::Literal:
-		{
-			if (fact.literal_element_count == 0 ||
-				!fact.constant_address.valid())
-				break;
-			SymbolId target;
-			long long addend = 0;
-			if (!map_constant_address(id, &target, &addend, NULL) || addend != 0)
-				break;
-			LowType pointer;
-			pointer.kind = LowType::TYPE_POINTER;
-			const LoweredValue storage = LoweredValue(global_operand(target,
-				symbol_name_for(target)), pointer, true);
-			return address_of_storage(storage);
-		}
-		case SemanticFactKind::IdExpression:
-		case SemanticFactKind::Variable:
-			if (reference_binding(fact.binding) &&
-				model_.callable_function_type(model_.binding(fact.binding).type).valid())
-				return lower_lvalue(id);
-			if (model_.binding(fact.binding).kind == BindingKind::Function)
-			{
-				const std::map<std::size_t, SymbolId>::const_iterator found =
-					function_symbols_.find(fact.binding.value);
-				if (found == function_symbols_.end())
-					throw std::runtime_error("PA15 function address has no symbol");
-				demand_function_declaration(fact.binding);
-				LowType pointer;
-				pointer.kind = LowType::TYPE_POINTER;
-				return address_of_storage(LoweredValue(global_operand(found->second,
-					function_name_ids_.find(fact.binding.value)->second), pointer, false));
-			}
-			return address_of_storage(lower_lvalue(id));
-		case SemanticFactKind::MemberExpression: return lower_member_address(id);
-		case SemanticFactKind::UnaryExpression:
-			if (facts.size() != 1) throw std::runtime_error("PA15 invalid address unary fact");
-			if (fact.token == SimpleTokenType::OP_AMP)
-				return lower_address(facts.front());
-			if (fact.token == SimpleTokenType::OP_STAR)
-			{
-				const LoweredValue pointer = lower_expression(facts.front());
-				if (!pointer.type.is_pointer())
-					throw std::runtime_error("PA15 dereference address is not a pointer");
-				return pointer;
-			}
-			if (fact.token == SimpleTokenType::OP_INC ||
-				fact.token == SimpleTokenType::OP_DEC)
-				return address_of_storage(lower_incdec(id, false));
-			break;
-		case SemanticFactKind::SubscriptExpression:
-		{
-			if (facts.size() != 2) throw std::runtime_error("PA15 invalid subscript fact");
-			const SemanticFact& sequence_fact =
-				model_.semantic_facts_[facts.front().value];
-			const TypeId sequence_object = model_.strip_cv_type(
-				model_.expression_object_type(sequence_fact.type));
-			const bool literal_array = sequence_fact.kind ==
-				SemanticFactKind::Literal && sequence_fact.literal_element_count != 0 &&
-				sequence_object.valid() && model_.type_kind(sequence_object) ==
-				TypeKind::Array;
-			// PA12's literal fact owns the decoded bytes and the constant-address
-			// relation.  Consume that address directly for an array subscript so
-			// the backing global is materialized once; no source-text decoding or
-			// rendered-name reconstruction is needed here.
-			const LoweredValue sequence = literal_array ?
-				lower_address(facts.front()) : lower_expression(facts.front());
-			const LoweredValue index = lower_expression(facts.back());
-			TypeId sequence_type = model_.expression_object_type(sequence_fact.type);
-			sequence_type = model_.strip_cv_type(sequence_type);
-			const bool array = sequence_type.valid() &&
-				model_.type_kind(sequence_type) == TypeKind::Array;
-			const LowType element = low_type(fact.type);
-			return emit_index(sequence, index, element, array ? lowir_model::IPK_ARRAY_ELEMENT : lowir_model::IPK_NONE);
-		}
-		case SemanticFactKind::AssignmentExpression:
-				return address_of_storage(lower_assignment(id, true));
-		case SemanticFactKind::BinaryExpression:
-			if (fact.token == SimpleTokenType::OP_COMMA && facts.size() == 2)
-			{
-				lower_discarded_expression(facts.front());
-				return lower_address(facts.back());
-			}
-			break;
-		case SemanticFactKind::ConditionalExpression:
-			return lower_conditional_address(id);
-		case SemanticFactKind::CallExpression:
-		{
-			const LoweredValue call = lower_call(id);
-			if (!call.type.is_pointer() && !call.lvalue)
-				throw std::runtime_error("PA15 reference call has no address");
-			return call.lvalue ? address_of_storage(call) : call;
-		}
-		case SemanticFactKind::CastExpression:
-			if (facts.size() == 1) return lower_address(facts.front());
-			break;
-		default:
-			break;
-		}
-		throw std::runtime_error("PA15 unsupported address expression");
-	}
-
-bool Pa15Lowerer::pointer_like(TypeId type) const{
-		type = model_.strip_cv_type(model_.expression_object_type(type));
-		return type.valid() && (model_.type_kind(type) == TypeKind::Pointer ||
-			model_.type_kind(type) == TypeKind::Array);
-	}
-
-void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer,
-		const LoweredValue& storage){
-		const SemanticFact& init_fact = model_.semantic_facts_[initializer.value];
-		if (init_fact.kind != SemanticFactKind::BracedInitList)
-			throw std::runtime_error("PA15 unsupported array initializer");
-		TypeId array_type = model_.strip_cv_type(model_.binding(binding).type);
-		if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
-			throw std::runtime_error("PA15 array initializer target is not an array");
-		const LowType element_type = low_type(model_.types_[array_type.value].child);
-		const LoweredValue base = address_of_storage(storage);
-		const std::vector<SemanticFactId> values = children(initializer);
-		const std::size_t bound = model_.types_[array_type.value].bound.value;
-		if (values.size() > bound)
-			throw std::runtime_error("PA15 array initializer exceeds bound");
-		for (std::size_t i = 0; i < bound; ++i)
-		{
-			LoweredValue destination_address = base;
-			if (i != 0)
-			{
-				LowType i64;
-				i64.kind = LowType::TYPE_INTEGER;
-				i64.integer_kind = LowType::INTEGER_I64;
-				LoweredValue offset(integer_operand(static_cast<long long>(i) *
-					static_cast<long long>(element_type.storage_size()), i64), i64, false);
-				LowType byte;
-				byte.kind = LowType::TYPE_INTEGER;
-				byte.integer_kind = LowType::INTEGER_I8;
-				destination_address = emit_index(base, offset, byte, lowir_model::IPK_NONE);
-			}
-			if (i < values.size() && model_.semantic_facts_[values[i].value].kind ==
-				SemanticFactKind::BracedInitList)
-				throw std::runtime_error("PA15 nested array initializer is outside checkpoint");
-			const Operand value = i < values.size() ?
-				lower_expression(values[i]).value : integer_operand(0, element_type);
-			emit_store(element_type, value, destination_address.value);
-		}
-	}
 
 LoweredValue Pa15Lowerer::lower_expression(SemanticFactId id){
 		return lower_expression_impl(id, false);

@@ -303,6 +303,244 @@ LowType Pa15Lowerer::function_result_low_type(TypeId type) const{
 	return low_type(type);
 }
 
+bool Pa15Lowerer::constructor_initializer_is_nothrow(SemanticFactId root)
+{
+	const std::size_t fact_count = model_.semantic_facts_.size();
+	if (!root.valid() || root.value >= fact_count ||
+		semantic_nothrow_states_.size() != fact_count ||
+		semantic_nothrow_results_.size() != fact_count ||
+		semantic_nothrow_invalid_.size() != fact_count)
+		return false;
+	if (semantic_nothrow_states_[root.value] ==
+		ConstructorRuntimeCacheState::Complete)
+		return semantic_nothrow_results_[root.value] != 0 &&
+			semantic_nothrow_invalid_[root.value] == 0;
+	if (semantic_nothrow_states_[root.value] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		semantic_nothrow_states_[root.value] =
+			ConstructorRuntimeCacheState::Complete;
+		semantic_nothrow_results_[root.value] = 0;
+		semantic_nothrow_invalid_[root.value] = 1;
+		return false;
+	}
+
+	// The enter/finish worklist memoizes every reachable semantic fact.  It is
+	// deliberately iterative: a large expression DAG cannot consume the call
+	// stack, and an in-progress edge is a conservative cycle boundary.
+	std::vector<std::pair<SemanticFactId, unsigned char> > work;
+	work.push_back(std::make_pair(root, static_cast<unsigned char>(0)));
+	while (!work.empty())
+	{
+		const SemanticFactId id = work.back().first;
+		const unsigned char finish = work.back().second;
+		work.pop_back();
+		if (!id.valid() || id.value >= fact_count)
+			continue;
+		if (finish != 0)
+		{
+			if (semantic_nothrow_states_[id.value] !=
+				ConstructorRuntimeCacheState::InProgress)
+				continue;
+			const SemanticFact& fact = model_.semantic_facts_[id.value];
+			bool result = fact.kind != SemanticFactKind::CallExpression &&
+				fact.kind != SemanticFactKind::ConstructorAction;
+			bool invalid = semantic_nothrow_invalid_[id.value] != 0;
+			if (fact.child_count != 0 &&
+				(fact.child_begin == InvalidIdentityValue ||
+				 fact.child_begin > model_.semantic_children_.size() ||
+				 fact.child_count > model_.semantic_children_.size() -
+				 fact.child_begin))
+			{
+				result = false;
+				invalid = true;
+			}
+			else
+			{
+				for (std::size_t child = 0; child < fact.child_count; ++child)
+				{
+					const SemanticFactId child_id = model_.semantic_children_[
+						fact.child_begin + child];
+					if (!child_id.valid() || child_id.value >= fact_count ||
+						semantic_nothrow_states_[child_id.value] !=
+							ConstructorRuntimeCacheState::Complete ||
+						semantic_nothrow_results_[child_id.value] == 0)
+						result = false;
+					if (!child_id.valid() || child_id.value >= fact_count ||
+						semantic_nothrow_invalid_[child_id.value] != 0)
+						invalid = true;
+				}
+			}
+			semantic_nothrow_states_[id.value] =
+				ConstructorRuntimeCacheState::Complete;
+			semantic_nothrow_results_[id.value] = result ? 1 : 0;
+			semantic_nothrow_invalid_[id.value] = invalid ? 1 : 0;
+			continue;
+		}
+		if (semantic_nothrow_states_[id.value] ==
+			ConstructorRuntimeCacheState::Complete)
+			continue;
+		if (semantic_nothrow_states_[id.value] ==
+			ConstructorRuntimeCacheState::InProgress)
+		{
+			semantic_nothrow_states_[id.value] =
+				ConstructorRuntimeCacheState::Complete;
+			semantic_nothrow_results_[id.value] = 0;
+			semantic_nothrow_invalid_[id.value] = 1;
+			continue;
+		}
+		semantic_nothrow_states_[id.value] =
+			ConstructorRuntimeCacheState::InProgress;
+		work.push_back(std::make_pair(id, static_cast<unsigned char>(1)));
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (fact.kind == SemanticFactKind::CallExpression ||
+			fact.kind == SemanticFactKind::ConstructorAction)
+			continue;
+		if (fact.child_count != 0 &&
+			(fact.child_begin == InvalidIdentityValue ||
+			 fact.child_begin > model_.semantic_children_.size() ||
+			 fact.child_count > model_.semantic_children_.size() -
+			 fact.child_begin))
+		{
+			semantic_nothrow_invalid_[id.value] = 1;
+			continue;
+		}
+		for (std::size_t child = fact.child_count; child != 0; --child)
+		{
+			const SemanticFactId child_id = model_.semantic_children_[
+				fact.child_begin + child - 1];
+			if (!child_id.valid() || child_id.value >= fact_count)
+			{
+				semantic_nothrow_invalid_[id.value] = 1;
+				continue;
+			}
+			if (semantic_nothrow_states_[child_id.value] ==
+				ConstructorRuntimeCacheState::InProgress)
+			{
+				semantic_nothrow_states_[child_id.value] =
+					ConstructorRuntimeCacheState::Complete;
+				semantic_nothrow_results_[child_id.value] = 0;
+				semantic_nothrow_invalid_[child_id.value] = 1;
+				continue;
+			}
+			if (semantic_nothrow_states_[child_id.value] !=
+				ConstructorRuntimeCacheState::Complete)
+				work.push_back(std::make_pair(child_id,
+					static_cast<unsigned char>(0)));
+		}
+	}
+	return semantic_nothrow_states_[root.value] ==
+		ConstructorRuntimeCacheState::Complete &&
+		semantic_nothrow_results_[root.value] != 0 &&
+		semantic_nothrow_invalid_[root.value] == 0;
+}
+
+bool Pa15Lowerer::constructor_is_nothrow(FunctionFactId function_id)
+{
+	const std::size_t function_count = model_.function_facts_.size();
+	if (!function_id.valid() || function_id.value >= function_count ||
+		constructor_nothrow_states_.size() != function_count ||
+		constructor_nothrow_results_.size() != function_count ||
+		constructor_nothrow_invalid_.size() != function_count)
+		return false;
+	if (constructor_nothrow_states_[function_id.value] ==
+		ConstructorRuntimeCacheState::Complete)
+		return constructor_nothrow_results_[function_id.value] != 0 &&
+			constructor_nothrow_invalid_[function_id.value] == 0;
+	if (constructor_nothrow_states_[function_id.value] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		constructor_nothrow_states_[function_id.value] =
+			ConstructorRuntimeCacheState::Complete;
+		constructor_nothrow_results_[function_id.value] = 0;
+		constructor_nothrow_invalid_[function_id.value] = 1;
+		return false;
+	}
+	constructor_nothrow_states_[function_id.value] =
+		ConstructorRuntimeCacheState::InProgress;
+	const FunctionFact& fact = model_.function_facts_[function_id.value];
+	bool result = fact.is_constructor && fact.synthetic;
+	bool invalid = false;
+	if (result && (fact.constructor_action_begin == InvalidIdentityValue ||
+		fact.constructor_action_begin > model_.constructor_actions_.size() ||
+		fact.constructor_action_count > model_.constructor_actions_.size() -
+		fact.constructor_action_begin))
+	{
+		result = false;
+		invalid = true;
+	}
+	if (result)
+	{
+		for (std::size_t i = 0; i < fact.constructor_action_count; ++i)
+		{
+			const ConstructorActionFact& action = model_.constructor_actions_[
+				fact.constructor_action_begin + i];
+			bool action_result = true;
+			if (action.argument_count != 0 &&
+				(action.argument_begin == InvalidIdentityValue ||
+				 action.argument_begin > model_.constructor_arguments_.size() ||
+				 action.argument_count > model_.constructor_arguments_.size() -
+				 action.argument_begin))
+			{
+				action_result = false;
+				invalid = true;
+			}
+			if (action_result && action.initializer.valid() &&
+				!constructor_initializer_is_nothrow(action.initializer))
+				action_result = false;
+			for (std::size_t argument = 0; action_result &&
+				argument < action.argument_count; ++argument)
+			{
+				const SemanticFactId argument_id = model_.constructor_arguments_[
+					action.argument_begin + argument];
+				if (!constructor_initializer_is_nothrow(argument_id))
+				{
+					action_result = false;
+					if (argument_id.valid() && argument_id.value <
+						semantic_nothrow_invalid_.size() &&
+						semantic_nothrow_invalid_[argument_id.value] != 0)
+						invalid = true;
+				}
+			}
+			if (action_result != false && action.constructor.valid())
+			{
+				const FunctionFactId* target =
+					model_.function_binding_fact_index_.find(action.constructor);
+				if (target == NULL || !constructor_is_nothrow(*target))
+				{
+					action_result = false;
+					if (target == NULL)
+						invalid = true;
+					if (target != NULL && target->value <
+						constructor_nothrow_invalid_.size() &&
+						constructor_nothrow_invalid_[target->value] != 0)
+						invalid = true;
+				}
+			}
+			else if (!action_result || !action.constructor.valid())
+			{
+				if (!action.constructor.valid() && !action.initializer.valid())
+					action_result = false;
+			}
+			if (!action_result)
+			{
+				result = false;
+				if (action.initializer.valid() &&
+					action.initializer.value < semantic_nothrow_invalid_.size() &&
+					semantic_nothrow_invalid_[action.initializer.value] != 0)
+					invalid = true;
+			}
+		}
+	}
+	if (constructor_nothrow_invalid_[function_id.value] != 0)
+		invalid = true;
+	constructor_nothrow_states_[function_id.value] =
+		ConstructorRuntimeCacheState::Complete;
+	constructor_nothrow_results_[function_id.value] = result ? 1 : 0;
+	constructor_nothrow_invalid_[function_id.value] = invalid ? 1 : 0;
+	return result && !invalid;
+}
+
 LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
 	const TypeId object = model_.expression_object_type(type);
 	if (object.valid() && model_.type_kind(model_.strip_cv_type(object)) ==
@@ -521,26 +759,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 		switch (fact.kind)
 		{
 		case SemanticFactKind::Variable:
-		{
-			const std::vector<SemanticFactId> initializer = children(id);
-			if (initializer.size() > 1)
-				throw std::runtime_error("PA15 invalid condition initializer");
-			const LoweredValue storage = storage_for(fact.binding);
-			if (initializer.size() == 1)
-			{
-				if (storage.type.is_object() &&
-					model_.semantic_facts_[initializer.front().value].kind ==
-					SemanticFactKind::BracedInitList)
-					initialize_array(fact.binding, initializer.front(), storage);
-				else
-				{
-					const LoweredValue value = lower_expression(initializer.front());
-					emit_store(storage.type, value.value, storage.value);
-				}
-			}
-			result = storage;
+			result = lower_variable_expression(id);
 			break;
-		}
 		case SemanticFactKind::Literal:
 			result = fact.literal_element_count != 0 ? lower_address(id) :
 				literal(fact);
@@ -678,6 +898,9 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			break;
 		case SemanticFactKind::CallExpression:
 			result = lower_call(id);
+			break;
+		case SemanticFactKind::ConstructorAction:
+			result = lower_constructor_expression(id);
 			break;
 		case SemanticFactKind::CastExpression:
 		{
@@ -1542,10 +1765,25 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			if (facts.size() == 1)
 			{
 				const LoweredValue storage = storage_for(fact.binding);
-				if (storage.type.is_object() &&
-					model_.semantic_facts_[facts.front().value].kind ==
-					SemanticFactKind::BracedInitList)
+				const SemanticFact& initializer =
+					model_.semantic_facts_[facts.front().value];
+				if (initializer.kind == SemanticFactKind::ConstructorAction)
+				{
+					if (!constructor_action_is_noop(initializer))
+						(void)lower_expression(facts.front());
+				}
+				else if (storage.type.is_object() &&
+					initializer.kind == SemanticFactKind::BracedInitList)
+				{
+					const TypeId declared_type = model_.binding(fact.binding).type;
+					const TypeId object_type = model_.strip_cv_type(
+						model_.expression_object_type(declared_type));
+					if (model_.type_kind(object_type) == TypeKind::Array)
 						initialize_array(fact.binding, facts.front(), storage);
+					else
+						initialize_constructor_value(declared_type, facts.front(),
+							address_of_storage(storage));
+				}
 				else
 				{
 					const LoweredValue value = lower_expression(facts.front());
@@ -1831,11 +2069,35 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			}
 		}
 		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
-		if (!fact.body_fact.valid())
+		active_constructor_record_ = NamedRecordId();
+		active_constructor_this_ = BindingId();
+		if (fact.is_constructor)
+		{
+			if (!fact.constructor_record.valid() ||
+				fact.constructor_record.value >= model_.named_.size() ||
+				!model_.scopes_[fact.function_scope.value].implicit_object_binding.valid())
+				throw std::runtime_error("PA15 constructor object parameter is missing");
+			active_constructor_record_ = fact.constructor_record;
+			active_constructor_this_ = model_.scopes_[fact.function_scope.value].
+				implicit_object_binding;
+			if (fact.constructor_action_begin == InvalidIdentityValue ||
+				fact.constructor_action_begin > model_.constructor_actions_.size() ||
+				fact.constructor_action_count > model_.constructor_actions_.size() -
+				fact.constructor_action_begin)
+				throw std::runtime_error("PA15 constructor action range is invalid");
+			for (std::size_t action = 0; action < fact.constructor_action_count;
+				++action)
+				lower_constructor_action(model_.constructor_actions_[
+					fact.constructor_action_begin + action]);
+		}
+		if (fact.body_fact.valid())
+		{
+			initialize_label_flow(fact.body_fact);
+			lower_statement(fact.body_fact);
+			drain_label_recovery_queue(fact.body_fact);
+		}
+		else if (!fact.is_constructor || !fact.synthetic)
 			throw std::runtime_error("PA15 function body fact is missing");
-		initialize_label_flow(fact.body_fact);
-		lower_statement(fact.body_fact);
-		drain_label_recovery_queue(fact.body_fact);
 		if (!label_recovery_queue_.empty())
 			drain_label_recovery_queue(SemanticFactId());
 		if (!label_recovery_queue_.empty())
@@ -1876,5 +2138,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		target.value_count = next_value_ - value_begin;
 		target.slot_count = next_slot_ - target.slot_begin.index;
 		reorder_function_blocks();
+		active_constructor_record_ = NamedRecordId();
+		active_constructor_this_ = BindingId();
 	}
 }

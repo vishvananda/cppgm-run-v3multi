@@ -17,6 +17,7 @@ printf '%s\n' \
   'struct Base { int base() { return 1; } };' \
   'struct Middle : Base { int middle() { return base(); } };' \
   'struct Derived : Middle { int run() { return middle(); } };' \
+  'struct Unused { int state = 9; };' \
   'int main() { Derived value; return value.run() == 1 ? 0 : 1; }' \
   >"$state_free"
 
@@ -25,6 +26,11 @@ state_free_output=$build_dir/state-free-chain.lowir
 if rg -q -e '@Base__Base|@Middle__Middle|@Derived__Derived' \
     "$state_free_output"; then
   echo "state-free implicit construction emitted a synthetic constructor" >&2
+  exit 1
+fi
+if rg -q -e 'function @Unused__Unused|@Unused__Unused' \
+    "$state_free_output"; then
+  echo "unused DMI class emitted a synthetic constructor" >&2
   exit 1
 fi
 
@@ -54,7 +60,14 @@ if "$app" --emit-lowir -O0 -o "$runtime_output" "$runtime_required" \
 else
   status=$?
 fi
-if [ "$status" -ne 1 ]; then
+if [ "$status" -ne 0 ] ||
+   ! rg -Fq 'function @Derived__Derived' "$runtime_output" ||
+   [ "$(rg -c '^function @Derived__Derived' "$runtime_output" || true)" -ne 1 ] ||
+   [ "$(rg -c 'call void @Base__Base' "$runtime_output" || true)" -ne 1 ] ||
+   ! rg -Fq 'call void @Base__Base' "$runtime_output" ||
+   ! rg -Fq 'projection=base_subobject' "$runtime_output" ||
+   [ "$(rg -c '^function @Base__Base' "$runtime_output" || true)" -ne 1 ] ||
+   ! rg -Fq 'store i32 7' "$runtime_output"; then
   echo "runtime-requiring implicit construction returned status $status" >&2
   exit 1
 fi
@@ -73,7 +86,14 @@ if "$app" --emit-lowir -O0 -o "$member_output" "$member_required" \
 else
   status=$?
 fi
-if [ "$status" -ne 1 ]; then
+if [ "$status" -ne 0 ] ||
+   ! rg -Fq 'function @Holder__Holder' "$member_output" ||
+   [ "$(rg -c '^function @Holder__Holder' "$member_output" || true)" -ne 1 ] ||
+   [ "$(rg -c 'call void @State__State' "$member_output" || true)" -ne 1 ] ||
+   ! rg -Fq 'call void @State__State' "$member_output" ||
+   ! rg -Fq 'projection=field' "$member_output" ||
+   [ "$(rg -c '^function @State__State' "$member_output" || true)" -ne 1 ] ||
+   ! rg -Fq 'store i32 7' "$member_output"; then
   echo "runtime-requiring member construction returned status $status" >&2
   exit 1
 fi

@@ -284,9 +284,8 @@ struct BindingSidecar
 	NamedRecordId generated_name_record;
 	MemberAccess member_access;
 	bool static_member;
-	// A default member initializer is a typed source fact.  Namespace object
-	// zero storage must not erase it at the layout-only boundary.
 	bool has_default_member_initializer;
+	SemanticFactId default_member_initializer;
 	// Non-static member alignment is retained on the canonical binding until
 	// RecordLayout consumes it; static members never participate in layout.
 	bool has_requested_alignment;
@@ -308,6 +307,7 @@ struct BindingSidecar
 		  generated_name_record(generated_name_record),
 		  member_access(MemberAccess::Public), static_member(false),
 		  has_default_member_initializer(false),
+		  default_member_initializer(),
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
@@ -665,21 +665,28 @@ struct TypeLayout
 	{}
 };
 
-// Only named records participating in the local anonymous-union checkpoint
-// receive one of these sparse typed relation entries.
+// Named records receive sparse typed relation entries for canonical
+// constructor identity and the narrow anonymous-union storage checkpoint.
 struct NamedRecordSidecar
 {
 	bool local_object_name;
 	BindingId backing_storage;
 	BindingId constructor_binding;
+	BindingId default_constructor_binding;
+	bool has_constructor_declaration;
 	bool has_display_path;
 	NamePath display_path;
 
 	NamedRecordSidecar(bool local_object_name = false,
 		BindingId backing_storage = BindingId(),
-		BindingId constructor_binding = BindingId())
+		BindingId constructor_binding = BindingId(),
+		BindingId default_constructor_binding = BindingId(),
+		bool has_constructor_declaration = false)
 		: local_object_name(local_object_name), backing_storage(backing_storage),
-		  constructor_binding(constructor_binding), has_display_path(false),
+		  constructor_binding(constructor_binding),
+		  default_constructor_binding(default_constructor_binding),
+		  has_constructor_declaration(has_constructor_declaration),
+		  has_display_path(false),
 		  display_path()
 	{}
 };
@@ -1105,6 +1112,27 @@ struct DeclarationFact
 	{}
 };
 
+enum class ConstructorActionTarget { Base, Member };
+
+struct ConstructorActionFact
+{
+	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
+	BindingId constructor; SemanticFactId initializer;
+	std::size_t argument_begin; std::size_t argument_count;
+
+	ConstructorActionFact(ConstructorActionTarget target =
+		ConstructorActionTarget::Member,
+		NamedRecordId base_record = NamedRecordId(),
+		BindingId member = BindingId(), BindingId constructor = BindingId(),
+		SemanticFactId initializer = SemanticFactId())
+		: target(target), base_record(base_record), member(member),
+		  constructor(constructor), initializer(initializer),
+		  argument_begin(InvalidIdentityValue), argument_count(0)
+	{}
+};
+
+enum class ConstructorRuntimeCacheState : std::uint8_t { Unseen, InProgress, Complete };
+
 struct FunctionFact
 {
 	const PA10AstNode* node;
@@ -1116,6 +1144,11 @@ struct FunctionFact
 	LabelTableId label_table;
 	std::size_t default_argument_begin;
 	std::size_t default_argument_count;
+	bool is_constructor;
+	bool synthetic;
+	NamedRecordId constructor_record;
+	std::size_t constructor_action_begin;
+	std::size_t constructor_action_count;
 
 	FunctionFact(const PA10AstNode* node = NULL, ScopeId owner = ScopeId(),
 		BindingId binding = BindingId(), ScopeId function_scope = ScopeId(),
@@ -1124,7 +1157,9 @@ struct FunctionFact
 		  function_scope(function_scope), body_scope(body_scope), body_fact(),
 		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
-		  default_argument_count(0)
+		  default_argument_count(0), is_constructor(false), synthetic(false),
+		  constructor_record(), constructor_action_begin(InvalidIdentityValue),
+		  constructor_action_count(0)
 	{}
 };
 
@@ -1342,6 +1377,11 @@ private:
 	std::vector<LabelFact> label_facts_;
 	std::vector<FunctionLabelTable> label_tables_;
 	std::vector<FunctionFactId> class_function_facts_;
+	std::vector<ConstructorActionFact> constructor_actions_;
+	std::vector<SemanticFactId> constructor_arguments_;
+	std::vector<ConstructorRuntimeCacheState> constructor_runtime_states_;
+	std::vector<unsigned char> constructor_runtime_results_;
+	std::vector<unsigned char> constructor_runtime_invalid_;
 	std::vector<SyntheticFunctionFact> synthetic_function_facts_;
 	std::vector<NamespaceFact> namespace_facts_;
 	FlatIndex<const PA10AstNode*, NamespaceFactId, PointerHash>
@@ -1434,6 +1474,8 @@ private:
 	ClassTag class_tag(const PA10AstNode& node) const
 	;
 	TypeId named_type(NamedRecordId named)
+	;
+	TypeId named_type(NamedRecordId named) const
 	;
 	NamedRecordId named_record_for_type(TypeId type) const
 	;
@@ -1617,6 +1659,19 @@ private:
 	;
 	bool implicit_default_constructor_supported(NamedRecordId record) const
 	;
+	bool implicit_default_type_supported(TypeId type,
+		std::vector<NamedRecordId>& active) const
+	;
+	BindingId default_constructor_binding(NamedRecordId record) const
+	;
+	bool has_constructor_declaration(NamedRecordId record) const
+	;
+	bool classify_constructor_runtime(NamedRecordId record)
+	;
+	bool constructor_requires_runtime(NamedRecordId record)
+	;
+	TypeId constructor_callable_type(BindingId constructor)
+	;
 	BindingId ensure_implicit_default_constructor(NamedRecordId record)
 	;
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
@@ -1756,6 +1811,8 @@ private:
 	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner,
 		bool alignment_applied)
 	;
+	void process_special_member(const PA10AstNode& node, ScopeId scope)
+	;
 	TypeId type_from_type_id(const PA10AstNode& node, ScopeId scope)
 	;
 	DeclaratorOp pointer_op(const PA10AstNode& node, ScopeId scope)
@@ -1844,6 +1901,10 @@ private:
 		const PA10AstNode& declaration, std::size_t declarator_index)
 	;
 	void prepare_pa12_node(const PA10AstNode& node, ScopeId scope)
+	;
+	void analyze_special_member(const PA10AstNode& node, ScopeId scope)
+	;
+	void build_constructor_actions(FunctionFactId function)
 	;
 	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
 	;
@@ -2138,6 +2199,9 @@ private:
 	;
 	ExprInfo semantic_expression_for_target(const PA10AstNode& node,
 	ScopeId scope, TypeId target)
+	;
+	ExprInfo semantic_default_member_initializer(const PA10AstNode& node,
+		ScopeId scope, TypeId target)
 	;
 	void retarget_constexpr_literal(SemanticFactId fact, TypeId target)
 	;

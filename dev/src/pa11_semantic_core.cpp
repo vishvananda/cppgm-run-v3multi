@@ -212,7 +212,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
 	function_fact_index_(), function_binding_fact_index_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
-	class_function_facts_(),
+	class_function_facts_(), constructor_actions_(), constructor_arguments_(),
+	constructor_runtime_states_(), constructor_runtime_results_(), constructor_runtime_invalid_(),
 	synthetic_function_facts_(), namespace_facts_(), namespace_fact_index_(),
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
@@ -2309,7 +2310,6 @@ NamePath PA11SemanticModel::class_name(const PA10AstNode& node)
 	}
 	return NamePath();
 }
-
 ArrayBound PA11SemanticModel::literal_bound(const PA10AstNode& node) const
 {
 	if (node.kind != PA10NodeKind::Literal || !node.has_literal ||
@@ -2769,6 +2769,9 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 	case PA10NodeKind::FunctionDefinition:
 		process_function_definition(node, scope);
 		return;
+	case PA10NodeKind::SpecialMemberDeclaration:
+	case PA10NodeKind::SpecialMemberDefinition:
+		process_special_member(node, scope); return;
 	case PA10NodeKind::ClassForwardDeclaration:
 	{
 		const NamePath name = class_name(node);
@@ -2840,7 +2843,6 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		unsupported("declaration form");
 	}
 }
-
 bool PA11SemanticModel::simple_declaration_has_initializer(
 	const PA10AstNode& node) const
 {
@@ -2863,7 +2865,6 @@ bool PA11SemanticModel::simple_declaration_has_initializer(
 	}
 	return false;
 }
-
 void PA11SemanticModel::collect_switch_transfer_points(
 	const PA10AstNode& node, ScopeId scope,
 	SwitchInitializationState* state) const
@@ -2877,7 +2878,6 @@ void PA11SemanticModel::collect_switch_transfer_points(
 		node.kind == PA10NodeKind::FunctionDefinition ||
 		node.kind == PA10NodeKind::LambdaExpression)
 		return;
-
 	ScopeId effective = scope;
 	if (node.kind == PA10NodeKind::CompoundStatement)
 		effective = compound_scope(node);
