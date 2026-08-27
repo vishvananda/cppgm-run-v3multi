@@ -2,132 +2,173 @@
 
 ## Current Checkpoint Review
 
-This review covers landed commit `fb4348b623be124090e3e7cbe3d9b7fbf4e01842`
-relative to parent `85ceba732c3d098a9709c6f57f1ec862070e54ce`, plus bounded
-audit repairs and one focused course regression.  The scope is the landed
-typed parameterized-constructor increment: PA10 initializer-context facts;
-PA11 canonical class, constructor, FunctionFact, explicitness, and default
-ownership; PA12 constructor candidate selection, conversions, access, and
-ordered argument/action facts; and PA15 demanded constructor definitions,
-hidden destinations, calls, and metadata.  Copy/move and value transfer,
-parameterized DMI, virtual/multiple inheritance, templates, unrelated
-operator/ADL, global/TLS lifetime, and external string-literal lowering remain
-outside this review.
+This review covers landed commit `0a6be82d9bf17db2585772f2be28d45e6af781de`
+(`PA16: add typed array lifetime cleanup`) relative to parent
+`5d91986f166e000daddecaf112e0cb58df6a8e8b`, plus bounded audit repairs and
+the focused course regression in
+`cppgm.tests/course/pa16/410-typed-lifetime-activation-control-exit-regression.sh`.
+The scope is fixed-bound local automatic arrays of class objects and recursive
+synthesized array-member lifetime: typed array shape, canonical class and
+destructor identity, PA12 lifetime/action facts, PA15 recursive construction
+and destruction, completed-prefix EH cleanup, lexical/control-exit state, and
+LowIR serialization.  Global/static/TLS lifetime and guards, copy/move or
+by-value transfer, virtual/multiple inheritance, templates, new/delete, and
+unrelated operator/access/temporary machinery remain outside this review.
 
-The authoritative checkpoint-turn-start full-stage state was `91/243` passed,
-`152` failed, and `243/243` covered, from
+The authoritative checkpoint-turn-start full-stage state was `93/243` passed,
+`150` failed, and `243/243` covered, from
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
 The final `make test-pa16` command exited `2` with log
-`/tmp/v3multi-pa16-fb4348b-final.log`: `91/243` passed, `152` failed, and
-`243/243` were covered.  Normalized failure identities are unchanged from the
-turn-start log: additions `∅`, removals `∅`; the covered identity set is also
-unchanged at all `243` PA16 tests.  The exact through-PA15 gate passed
-`1167/1167` with log `/tmp/v3multi-through-pa15-fb4348b-final.log`; the exact
-file audit passed with five pre-existing warnings with log
-`/tmp/v3multi-pa16-file-audit-fb4348b-final.log`; and `git diff --check`
-passed.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-test.log`:
+`93/243` passed, `150` failed, and all `243` tests were covered.  The
+normalized failure map is exactly the baseline map: `150` identities in each
+log, baseline-only `∅`, and final-only `∅`; the `93` passing complement is also
+unchanged.  The test inventory contains exactly `243` identities, and the
+baseline and final runs each report every identity, so coverage additions and
+removals are both `∅`.  The normalized set/count record is preserved at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-identity-compare.log`.
 
 The affected ownership path is:
 
 ```text
-PA10 class member/special-member/local-object syntax
-  -> PA11 canonical class ScopeId + field BindingId + constructor BindingId
-     + FunctionFact and typed DMI ownership
-  -> PA12 semantic initializer facts + ordered ConstructorActionFact ranges
-     (base first, then declaration-order fields; explicit initializers win)
-  -> PA15 recursive demand/nothrow worklists and typed layout offsets,
-     with no eager helper emission or textual recovery
-  -> LowIR demanded constructor calls/actions, typed subobject projections,
-     stores, and truthful call/unwind metadata
+PA10 local class-object/array declaration and synthesized-member syntax
+  -> PA11 canonical TypeId array shape, NamedRecordId, BindingId, and
+     destructor FunctionFact ownership
+  -> PA12 automatic LifetimeFact plus ordered ConstructorActionFact and
+     DestructorActionFact ranges (base/member order and recursive arrays)
+  -> PA15 typed destructor demand, constructor/destructor lowering, checked
+     array strides, active-lifetime state, and completed-prefix EH chains
+  -> LowIR constructor/destructor calls, lexical/control-exit cleanup,
+     eh_try/eh_cleanup/eh_end/resume, and truthful unwind metadata
 ```
 
 ### Findings and bounded repairs
 
-- PA10 retains `=` on the typed `Initializer` node, so PA12 distinguishes
-  direct, copy, and copy-list construction without recovering punctuation from
-  text.  PA11 stores constructor explicitness and default-expression facts on
-  the canonical constructor `BindingId`/`FunctionFact`; the class prepass makes
-  later-declared defaults available to earlier in-class bodies.
-- PA12 collects only the owning class-name value list and validates each
-  `ValueEntry` origin, binding owner, constructor record, type, and duplicate
-  identity.  The shared selector ranks references, contextual and variadic
-  conversions, function-id targets, and trailing defaults, then publishes
-  converted/defaulted facts in source order.  Its candidate `ValueRef` owner is
-  now checked again at the shared boundary.
-- Constructor callable types now prepend the hidden destination for every
-  named class.  Only the legacy anonymous-union binding may already contain
-  that hidden parameter; a user constructor taking `Self*` is no longer
-  mistaken for the legacy representation.  The callable owner and class-scope
-  identities are validated before either form is returned.
-- Constructor access uses the declaring class and lexical access-class proof.
-  Protected base constructors have no object expression, so they do not receive
-  the protected non-static-member object restriction; private constructors are
-  still rejected for an unrelated derived constructor.  Existing friend access
-  remains an earlier unsupported boundary and is not broadened here.
-- C++11 explicitly-defaulted/deleted constructors are not user-provided for
-  aggregate braced initialization.  The dispatcher now routes aggregate-
-  eligible copy/direct-list forms back to the typed aggregate facts while
-  retaining constructor selection for normal declarations and parenthesized
-  construction.
-- PA12 actions retain canonical `BindingId`/`ScopeId`/`SemanticFactId` ranges;
-  bases precede members and explicit initializers precede DMIs.  Member IDs are
-  snapshotted before helper publication, and selector/default/signature values
-  are copied before arena growth.  PA15 consumes the hidden destination first,
-  then the stored converted/default argument range, with demand-driven
-  constructor definitions and typed call/unwind metadata.
-- The bounded implementation is deterministic and near-linear: constructor
-  collection and aggregate eligibility are `O(C)`, shared scoring is
-  `O(C*A)`, and argument storage/lowering is `O(A)` for `C` candidates and `A`
-  explicit arguments.  No whole-scope retry, textual/name recovery, or
-  test-specific shortcut was introduced.
+- The original lowering path had a per-function scan of every lifetime fact and
+  its scope ancestry to decide whether `goto` must fail closed.  The repair
+  adds `index_lifetime_facts()`, called once from `index_binding_facts()`.  It
+  builds a dense `ScopeId`-indexed byte flag after walking each lifetime's
+  ancestry once.  `lower_function` validates its typed FunctionFact scope and
+  performs one O(1) flag lookup; any nontrivial lifetime in that function still
+  conservatively blocks `goto`.
+- The one-time lifetime index enforces exact typed continuity: the object's
+  `Binding.type` equals `LifetimeFact.object_type`; the object is a variable
+  owned by the fact's scope; the array/object type resolves to a class record;
+  the fact destructor equals `model_.destructor_binding(record)`; and
+  `checked_destructor_function` validates the complete destructor FunctionFact
+  and action range.  Every scope ID in the ancestry is range-checked, the walk
+  is bounded by the total scope count, it must reach a Function scope with a
+  valid non-self parent, and malformed or cyclic ancestry fails closed.
+  Duplicate lifetime bindings and declaration lifetime ranges are rejected.
+- The index's ancestry walk is now in `pa15_lowering_construction.cpp`, keeping
+  the affected `pa15_lowering.cpp` under the 3000-line file-audit limit.  This
+  is a source-ownership correction, not a behavior change: indexing remains
+  once per completed semantic model, with O(S) dense flags and O(L log L) map
+  publication for `L` lifetime facts and `S` scopes, plus bounded ancestry
+  work `O(sum depth) <= O(L*S)`.
+- Constructor/destructor actions remain canonical typed ranges.  PA12 publishes
+  base-first and declaration-order member construction, reverse member/base
+  destruction, and recursive array actions.  PA15 validates member owner
+  bounds and base record identities before lowering an action, rechecks the
+  active destructor FunctionFact, and uses typed demand worklists without
+  textual recovery.
+- Array element paths validate the bound and checked `ordinal * type_size(child)`
+  offset before converting the index.  Completed elements retain a typed root
+  and path; cleanup recomputes their addresses, so arena growth or later
+  LowIR emission cannot invalidate a saved temporary.  The shared prefix chain
+  materializes each completed element once and emits one reverse destructor
+  call per chain node before transferring to its predecessor and finally
+  `resume`.
+- Automatic lifetimes activate only after initialization.  Lexical scope
+  markers, unbraced substatement cleanup, branch-state restoration, loop
+  condition/iteration joins, for-init normal exit, switch-arm recovery, return,
+  fallthrough, break, and continue all preserve only the active typed suffix;
+  unsupported `goto` remains fail closed.  Destructor-body early return still
+  emits remaining base destruction.
+- The affected implementation is deterministic and bounded: typed fact/action
+  ranges are snapshotted before recursive demand can grow arenas, demand scans
+  reachable typed facts once, lowering performs bounded path/layout checks, and
+  no reference binary, host compiler, whole-scope retry, or test-specific
+  output shortcut is used.
 
 ## Focused Evidence
 
-`make -C dev cppgm++` exits `0`.  The focused constructor/control matrix is
-`17/17`: four local name/owner cases, direct-list explicit selection,
-overload/default/reference/function-id controls, direct base/member actions,
-copy and copy-list policy, and the prior member-call controls.  The two
-aggregate controls for explicitly-defaulted/deleted constructors now reach
-the expected successful tool status, but still fail relaxed LowIR comparison
-on the existing redundant-address and boolean-narrowing shape difference;
-checked-in references were not changed.
+`make -C dev cppgm++` exited `0`; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-build.log`.
+Syntax checks and focused course controls 408, 409, and 410 all exited `0`;
+the durable focused log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-focused.log`.
+Course 410 specifically verifies activation before later declarations,
+unbraced if/while/for statement cleanup, for-init normal exit, destructor
+early-return base cleanup, loop and switch join state, branch exits, nested
+array reverse addressing, and the E=8/16/32 structural scale controls.  Its
+exact output was:
 
-Course controls `400` through `409` and `sh -n` for all ten controls exit `0`.
-Course 408 covers copy-init/copy-list explicit policy and a later-declared
-constructor default used by an earlier in-class body.  New course 409 covers
-the self-pointer hidden-destination boundary, protected base-constructor
-access, private base-constructor rejection, and defaulted/deleted aggregate
-field initialization without a selected/emitted constructor helper or call.
-The small 409 smoke was `0.04s` wall, `0.01s` user, `0.02s` system, and
-`7356KB` maximum RSS; this is not a benchmark.
+```text
+PA16 structural flat E=8 cleanup_calls=7 main_lines=129
+PA16 structural flat E=16 cleanup_calls=15 main_lines=257
+PA16 structural flat E=32 cleanup_calls=31 main_lines=513
+```
+
+The full run still reports the four affected-path handout comparison
+identities `200-destructor-body-local-before-base-destruction.t`,
+`200-local-default-class-array-lifecycle.t`,
+`200-member-object-lifetime.t`, and
+`300-synthesized-array-member-lifecycle.t` in the unchanged baseline failure
+map.  Their checked-in fixtures and references were not changed; no current
+pass or failure claim is inferred from a reference-only shape difference.
+
+The exact prior gate command (`n=16` followed by
+`make test-report-through-pa15`) exited `0` at `1167/1167`; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-through-pa15.log`.
+The required file audit exited `0` and reported five existing
+header-division warnings; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-file-audit.log`.
+The warnings are `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+`pa11_semantic_model.h`, and `pa15_lowering.h`; there were no fatal issues.
+`git diff --check` exited `0`; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-diff-check.log`.
 
 ### Performance Evidence
 
-The bounded scale input `/tmp/pa16-constructor-selector-scale.cpp` contains
-`853` lines and `20175` bytes: `480` unrelated fields, `120` methods, `8`
-constructor candidates, and `240` six-argument constructions.  Each of five
-outputs contains one `Scale` constructor helper and `240` constructor calls;
-sample 1 is `770` lines and `27742` bytes.
+Course 410's E=8/16/32 cleanup calls are exactly `E-1`, with main-line deltas
+`128` and `256`; its nested `[2][3]` control verifies six reverse destructor
+calls, outer strides `1,0`, and inner indices `2,1,0,2,1,0`.  These are
+structural scale controls, not a timing claim.
 
-| sample | wall (s) | user (s) | system (s) | max RSS (KB) |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 0.03 | 0.01 | 0.01 | 13672 |
-| 2 | 0.03 | 0.01 | 0.01 | 13408 |
-| 3 | 0.03 | 0.02 | 0.01 | 13692 |
-| 4 | 0.03 | 0.02 | 0.01 | 13604 |
-| 5 | 0.03 | 0.02 | 0.00 | 13460 |
+The refreshed smoke/scale run used the immutable `0555` executable
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-perf/cppgm++-immutable`
+with SHA-256
+`be89e2a8efdc723f3e2947f8df48bf00b72333f52750f61dddbc6bd61539ad14`.
+For each E, the same generated input was used for five interleaved batches of
+20 compiler invocations; `/usr/bin/time` measured the batch and the reported
+values are medians and ranges across the five batches.  The complete output,
+including current input/output hashes, is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-0a6be82-final-performance.log`.
 
-These are representative smoke/scale samples, not benchmark comparisons; no
-allocation measurement was collected.  No handout tests, fixtures,
-references, or `.ref` files were modified.
+| E | wall median (range) | user median (range) | system median (range) | RSS median (range) |
+| --- | --- | --- | --- | --- |
+| 32 | `0.09s (0.09..0.09)` | `0.04s (0.04..0.04)` | `0.05s (0.04..0.05)` | `6516 (6448..6564) KiB` |
+| 128 | `0.18s (0.18..0.19)` | `0.09s (0.09..0.10)` | `0.09s (0.08..0.09)` | `8500 (8496..8628) KiB` |
+
+The input hashes are E=32 `f37786713c510300b1a9e5884285f7ae4ae7e16a5c1337616a087aac9bf79e54`
+and E=128 `c2a66edb4b0088e64e49a70b57dda93c935a0469a853c2a621de72fcc9422c0f`.
+Final output hashes are E=32
+`67b17d7e3f7b2a3507dd795ed9cd05285dc1050c1eec600d15f92b70a6b16d0b` and
+E=128 `cc0554ce1ed562f67be832da79110737001cbf9b96aa40c406960803c3e96399`.
+The outputs have main-line counts `513` and `2049`, cleanup nodes/calls
+`31/31` and `127/127`; the fourfold element increase gives fourfold main-line
+growth and cleanup calls remain `E-1`.  These are representative smoke/scale
+measurements, not a benchmark comparison or an allocation claim.
 
 ### Next Implementation Checkpoint
 
-PA17 is the next implementation checkpoint: extend this typed PA16 foundation
-with bounded copy/move value semantics, class-object value transfer, temporary
-materialization, delegating constructors, and out-of-class constructor/
-destructor work under the PA17 assignment boundary.  Virtual and
-multiple-inheritance work remains later.
+PA16 is not complete.  The next implementation checkpoint remains within
+PA16: resolve the remaining local automatic/synthesized lifetime reference
+shape and semantic cases after separately scoping unrelated PA16 failures.
+Global/static/TLS lifetime, value transfer, virtual/multiple inheritance, and
+the other exclusions above remain deferred; do not advance this path to PA17
+on the unchanged full-stage map alone.
 
 ## Historical Static Member-Function Checkpoint Review
 
@@ -569,3 +610,4 @@ conversion slices.
 | `b1a9e589` direct + inherited unqualified member-call checkpointAudit | Bounded audit completed with four narrow fixes: exact synthetic-`this` BindingId reuse, value-before-type lookup with explicit `Type`/`Blocked` outcomes, fail-closed direct-base metadata validation, and inherited value-set ownership blocking. Direct/inherited/parenthesized reductions, the three focused controls, and course regressions pass; the six-test handout probe remains `1/6` on the same five prerequisite identities. Through-PA15 is `1167/1167`, the file audit exits `0` with five pre-existing warnings, and full PA16 is `48/243` with `195` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `37265733` typed member projection audit/repair | Direct/nested dot and arrow ownership is traced through PA12, PA11 `RecordLayout::member_offsets` keyed by the object's canonical `NamedRecordId`, and PA15 LowIR; the reference-cv and class anonymous-injection defects are repaired. Broad validation and exact identity/coverage checks pass their bounded invariants; PA16 remains incomplete with the existing 205 failures. |
 | `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed reachable member demand, dense PA15 reachability metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
+| `0a6be82d` typed fixed-bound local/synthesized array lifetime checkpointAudit | Completed bounded audit/repair: typed lifetime ownership and destructor continuity are validated once, dense `ScopeId` flags replace the former per-function lifetime scan, checked array paths/actions and arena-safe recursive cleanup are retained, and lexical/control-exit/EH state is covered by course 410. Final PA16 is `93/243` with the exact turn-start `150` failure identities and `243/243` coverage; through-PA15 is `1167/1167`; the file audit passes with five existing warnings; diff-check passes; current structural and interleaved smoke/scale evidence is recorded above. |

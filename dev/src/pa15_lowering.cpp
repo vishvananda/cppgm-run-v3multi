@@ -43,7 +43,8 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  block_ordinal_(0), generated_slot_ordinal_(0),
 		  active_constructor_record_(), active_constructor_this_(),
 		  active_destructor_record_(), active_destructor_this_(),
-		  lifetime_by_binding_(), lifetime_scope_stack_(),
+		  lifetime_by_binding_(), lifetime_function_scope_flags_(),
+		  lifetime_scope_stack_(),
 		  lifetime_scope_depths_(), active_lifetimes_(),
 		  function_has_nontrivial_lifetime_(false),
 		  constructor_nothrow_states_(), constructor_nothrow_results_(),
@@ -610,24 +611,18 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 }
 
 void Pa15Lowerer::index_binding_facts(){
-		lifetime_by_binding_.clear();
-		for (std::size_t i = 0; i < model_.lifetime_facts_.size(); ++i)
-		{
-			const LifetimeFact& lifetime = model_.lifetime_facts_[i];
-			if (!lifetime.object.valid() || lifetime.object.value >= model_.bindings_.size() ||
-				!lifetime.object_type.valid() || !lifetime.destructor.valid() ||
-				!lifetime.scope.valid() || lifetime.scope.value >= model_.scopes_.size() ||
-				model_.binding_owners_[lifetime.object.value] != lifetime.scope ||
-				model_.binding(lifetime.object).kind != BindingKind::Variable)
-				throw std::runtime_error("PA15 lifetime fact identity is invalid");
-			if (lifetime_by_binding_.find(lifetime.object.value) !=
-				lifetime_by_binding_.end())
-				throw std::runtime_error("PA15 duplicate lifetime fact identity");
-			lifetime_by_binding_[lifetime.object.value] = &lifetime;
-		}
+		index_lifetime_facts();
 		for (std::size_t i = 0; i < model_.declaration_facts_.size(); ++i)
 		{
 			const DeclarationFact& declaration = model_.declaration_facts_[i];
+			if (declaration.lifetime_begin == InvalidIdentityValue &&
+				declaration.lifetime_count != 0)
+				throw std::runtime_error("PA15 declaration lifetime range is invalid");
+			if (declaration.lifetime_begin != InvalidIdentityValue &&
+				(declaration.lifetime_begin > model_.lifetime_facts_.size() ||
+				 declaration.lifetime_count > model_.lifetime_facts_.size() -
+					declaration.lifetime_begin))
+				throw std::runtime_error("PA15 declaration lifetime range is invalid");
 			if (declaration.binding_begin == InvalidIdentityValue)
 				continue;
 			if (declaration.binding_begin > model_.declaration_bindings_.size() ||

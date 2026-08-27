@@ -31,6 +31,161 @@ if [ "$return_dtors" -ne 1 ]; then
   exit 1
 fi
 
+if_source=$build_dir/unbraced-if.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main(int value) {' \
+  '  if (value) Guard guard;' \
+  '  return 0;' \
+  '}' >"$if_source"
+if_output=$build_dir/unbraced-if.lowir
+"$app" --emit-lowir -O0 -o "$if_output" "$if_source"
+if_main=$(sed -n '/^function @main/,/^}/p' "$if_output")
+if_dtor_line=$(printf '%s\n' "$if_main" |
+  rg -n 'call void @Guard___Guard' | head -n1 | cut -d: -f1 || true)
+if_else_line=$(printf '%s\n' "$if_main" |
+  rg -n '^  block \^if_else_' | head -n1 | cut -d: -f1 || true)
+if [ -z "$if_dtor_line" ] || [ -z "$if_else_line" ] ||
+   [ "$if_dtor_line" -ge "$if_else_line" ]; then
+  echo "unbraced if body did not destroy Guard in its statement scope" >&2
+  exit 1
+fi
+
+while_source=$build_dir/unbraced-while.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main(int value) {' \
+  '  while (value) Guard guard;' \
+  '  return 0;' \
+  '}' >"$while_source"
+while_output=$build_dir/unbraced-while.lowir
+"$app" --emit-lowir -O0 -o "$while_output" "$while_source"
+while_main=$(sed -n '/^function @main/,/^}/p' "$while_output")
+if ! printf '%s\n' "$while_main" | rg -U -q \
+    'call void @Guard___Guard\([^\n]+\)\n    jump \^while_cond_'; then
+  echo "unbraced while body did not destroy Guard before the next condition" >&2
+  exit 1
+fi
+
+for_body_source=$build_dir/unbraced-for.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main() {' \
+  '  for (int value = 0; value < 1; ++value) Guard guard;' \
+  '  return 0;' \
+  '}' >"$for_body_source"
+for_body_output=$build_dir/unbraced-for.lowir
+"$app" --emit-lowir -O0 -o "$for_body_output" "$for_body_source"
+for_body_main=$(sed -n '/^function @main/,/^}/p' "$for_body_output")
+if ! printf '%s\n' "$for_body_main" | rg -U -q \
+    'call void @Guard___Guard\([^\n]+\)\n    jump \^for_iter_'; then
+  echo "unbraced for body did not destroy Guard before iteration" >&2
+  exit 1
+fi
+
+for_init_source=$build_dir/for-init-lifetime.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main() {' \
+  '  for (Guard guard; 0; ) {}' \
+  '  return 0;' \
+  '}' >"$for_init_source"
+for_init_output=$build_dir/for-init-lifetime.lowir
+"$app" --emit-lowir -O0 -o "$for_init_output" "$for_init_source"
+for_init_main=$(sed -n '/^function @main/,/^}/p' "$for_init_output")
+for_init_dtors=$(printf '%s\n' "$for_init_main" |
+  rg -c 'call void @Guard___Guard' || true)
+if [ "$for_init_dtors" -ne 1 ] || ! printf '%s\n' "$for_init_main" |
+  rg -U -q 'call void @Guard___Guard\([^\n]+\)\n    jump \^for_end_'; then
+  echo "for-init Guard was not destroyed on the normal loop exit" >&2
+  exit 1
+fi
+
+dtor_return_source=$build_dir/destructor-return.cpp
+printf '%s\n' \
+  'struct Base { ~Base() {} };' \
+  'struct Derived: Base { ~Derived() { return; } };' \
+  'int main() {' \
+  '  Derived value;' \
+  '  return 0;' \
+  '}' >"$dtor_return_source"
+dtor_return_output=$build_dir/destructor-return.lowir
+"$app" --emit-lowir -O0 -o "$dtor_return_output" "$dtor_return_source"
+dtor_return_function=$(sed -n '/^function @Derived___Derived/,/^}/p' \
+  "$dtor_return_output")
+if ! printf '%s\n' "$dtor_return_function" | rg -U -q \
+    'call void @Base___Base\([^\n]+\)\n    return void'; then
+  echo "destructor early return did not preserve base destruction" >&2
+  exit 1
+fi
+
+loop_state_source=$build_dir/loop-state-join.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main() {' \
+  '  Guard outer;' \
+  '  while (0) {' \
+  '    return 1;' \
+  '  }' \
+  '  return 0;' \
+  '}' >"$loop_state_source"
+loop_state_output=$build_dir/loop-state-join.lowir
+"$app" --emit-lowir -O0 -o "$loop_state_output" "$loop_state_source"
+loop_state_main=$(sed -n '/^function @main/,/^}/p' "$loop_state_output")
+loop_state_dtors=$(printf '%s\n' "$loop_state_main" |
+  rg -c 'call void @Guard___Guard' || true)
+loop_state_returns=$(printf '%s\n' "$loop_state_main" |
+  rg -U -c 'call void @Guard___Guard\([^\n]+\)\n    return i32' || true)
+if [ "$loop_state_dtors" -ne 2 ] || [ "$loop_state_returns" -ne 2 ]; then
+  echo "loop join lost the outer Guard lifetime ($loop_state_dtors destructors/$loop_state_returns returns)" >&2
+  exit 1
+fi
+
+switch_source=$build_dir/switch-state-join.cpp
+printf '%s\n' \
+  'struct Guard {' \
+  '  Guard() {}' \
+  '  ~Guard() {}' \
+  '};' \
+  'int main(int value) {' \
+  '  Guard outer;' \
+  '  switch (value) {' \
+  '  case 1:' \
+  '    return 1;' \
+  '  case 2:' \
+  '    break;' \
+  '  default:' \
+  '    break;' \
+  '  }' \
+  '  return 0;' \
+  '}' >"$switch_source"
+switch_output=$build_dir/switch-state-join.lowir
+"$app" --emit-lowir -O0 -o "$switch_output" "$switch_source"
+switch_main=$(sed -n '/^function @main/,/^}/p' "$switch_output")
+switch_dtors=$(printf '%s\n' "$switch_main" |
+  rg -c 'call void @Guard___Guard' || true)
+switch_cleanup_returns=$(printf '%s\n' "$switch_main" |
+  rg -U -c 'call void @Guard___Guard\([^\n]+\)\n    return i32' || true)
+if [ "$switch_dtors" -ne 2 ] || [ "$switch_cleanup_returns" -ne 2 ]; then
+  echo "switch arm state did not preserve outer Guard cleanup ($switch_dtors destructors/$switch_cleanup_returns returns)" >&2
+  exit 1
+fi
+
 loop_source=$build_dir/loop-exits.cpp
 printf '%s\n' \
   'struct Guard {' \

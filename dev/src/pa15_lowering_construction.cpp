@@ -369,6 +369,7 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 				model_.types_[object.value].unknown_bound ||
 				path[i].index >= model_.types_[object.value].bound.value)
 				throw std::runtime_error("PA15 constructor path array is invalid");
+			(void)checked_array_element_offset(object, path[i].index);
 			const TypeId child = model_.types_[object.value].child;
 			const TypeId child_object = model_.strip_cv_type(
 				model_.expression_object_type(child));
@@ -484,6 +485,64 @@ void Pa15Lowerer::zero_initialize_value_initialized_object(TypeId target,
 	}
 	throw std::runtime_error("PA15 value-initialization target is unsupported");
 }
+
+void Pa15Lowerer::index_lifetime_facts()
+{
+		lifetime_by_binding_.clear();
+		// Build the scope-indexed ownership flags once.  Each lifetime walks its
+		// validated ancestry at indexing time; lower_function then performs one
+		// dense O(1) lookup instead of rescanning all lifetime facts.
+		lifetime_function_scope_flags_.assign(model_.scopes_.size(), 0);
+		for (std::size_t i = 0; i < model_.lifetime_facts_.size(); ++i)
+		{
+			const LifetimeFact& lifetime = model_.lifetime_facts_[i];
+			const NamedRecordId record = lifetime.object_type.valid() &&
+				lifetime.object_type.value < model_.types_.size() ?
+				model_.class_record_for_object_type(lifetime.object_type) :
+				NamedRecordId();
+			if (!lifetime.object.valid() || lifetime.object.value >= model_.bindings_.size() ||
+				lifetime.object.value >= model_.binding_owners_.size() ||
+				!lifetime.object_type.valid() ||
+				lifetime.object_type.value >= model_.types_.size() ||
+				!lifetime.destructor.valid() ||
+				lifetime.destructor.value >= model_.bindings_.size() ||
+				!lifetime.scope.valid() || lifetime.scope.value >= model_.scopes_.size() ||
+				model_.binding_owners_[lifetime.object.value] != lifetime.scope ||
+				model_.binding(lifetime.object).kind != BindingKind::Variable ||
+				model_.binding(lifetime.object).type != lifetime.object_type ||
+				!record.valid() || record.value >= model_.named_.size() ||
+				model_.named_[record.value].kind != NamedKind::Class)
+				throw std::runtime_error("PA15 lifetime fact identity is invalid");
+			if (model_.destructor_binding(record) != lifetime.destructor)
+				throw std::runtime_error("PA15 lifetime destructor identity is invalid");
+			(void)checked_destructor_function(lifetime.destructor, record);
+			ScopeId function_scope;
+			ScopeId scope = lifetime.scope;
+			for (std::size_t depth = 0; depth < model_.scopes_.size(); ++depth)
+			{
+				if (!scope.valid() || scope.value >= model_.scopes_.size())
+					throw std::runtime_error("PA15 lifetime scope ancestry is invalid");
+				const Scope& current = model_.scopes_[scope.value];
+				if (current.kind == ScopeKind::Function)
+				{
+					if (!current.parent.valid() || current.parent.value >=
+						model_.scopes_.size() || current.parent == scope)
+						throw std::runtime_error(
+							"PA15 lifetime function scope owner is invalid");
+					function_scope = scope;
+					break;
+				}
+				scope = current.parent;
+			}
+			if (!function_scope.valid())
+				throw std::runtime_error("PA15 lifetime scope ancestry is cyclic");
+			lifetime_function_scope_flags_[function_scope.value] = 1;
+			if (lifetime_by_binding_.find(lifetime.object.value) !=
+				lifetime_by_binding_.end())
+				throw std::runtime_error("PA15 duplicate lifetime fact identity");
+			lifetime_by_binding_[lifetime.object.value] = &lifetime;
+		}
+	}
 
 const FunctionFact& Pa15Lowerer::checked_constructor_function(
 	BindingId constructor, NamedRecordId record) const
@@ -624,6 +683,7 @@ LoweredValue Pa15Lowerer::destructor_subobject_address(
 	}
 	if (action.target != ConstructorActionTarget::Member ||
 		!action.member.valid() || action.member.value >= model_.bindings_.size() ||
+		action.member.value >= model_.binding_owners_.size() ||
 		model_.binding_owners_[action.member.value] != active.scope ||
 		model_.binding(action.member).kind != BindingKind::Variable ||
 		model_.is_static_member(action.member))
@@ -786,13 +846,29 @@ void Pa15Lowerer::materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
 void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action)
 {
 	if ((action.target == ConstructorActionTarget::Base &&
-		(!action.base_record.valid() || action.member.valid())) ||
+		(!action.base_record.valid() || action.base_record.value >=
+			model_.named_.size() || action.member.valid())) ||
 		(action.target == ConstructorActionTarget::Member &&
 		(!action.member.valid() || action.base_record.valid())) ||
-		!action.destructor.valid() || !action.object_type.valid())
+		!action.destructor.valid() || action.destructor.value >=
+			model_.bindings_.size() || !action.object_type.valid() ||
+			action.object_type.value >= model_.types_.size())
 		throw std::runtime_error("PA15 destructor action identity is invalid");
 	const LoweredValue destination = destructor_subobject_address(action);
 	emit_destructor_elements(action.object_type, destination, action.destructor);
+}
+
+void Pa15Lowerer::emit_active_destructor_actions()
+{
+	if (!active_destructor_record_.valid()) return;
+	const BindingId destructor = model_.destructor_binding(
+		active_destructor_record_);
+	const FunctionFact& function = checked_destructor_function(destructor,
+		active_destructor_record_);
+	for (std::size_t action = 0; action < function.destructor_action_count;
+		++action)
+		lower_destructor_action(model_.destructor_actions_[
+			function.destructor_action_begin + action]);
 }
 
 void Pa15Lowerer::activate_lifetime(BindingId object)
@@ -808,6 +884,32 @@ void Pa15Lowerer::activate_lifetime(BindingId object)
 		active_lifetimes_.end())
 		throw std::runtime_error("PA15 lifetime activation is duplicated");
 	active_lifetimes_.push_back(object);
+}
+
+void Pa15Lowerer::lower_scoped_statement(SemanticFactId id)
+{
+	if (!id.valid() || id.value >= model_.semantic_facts_.size())
+		throw std::runtime_error("PA15 scoped statement identity is invalid");
+	const SemanticFact& fact = model_.semantic_facts_[id.value];
+	const ScopeId scope = fact.source == NULL ? ScopeId() :
+		model_.substatement_scope(*fact.source);
+	if (!scope.valid())
+	{
+		lower_statement(id);
+		return;
+	}
+	if (scope.value >= model_.scopes_.size())
+		throw std::runtime_error("PA15 scoped statement scope is invalid");
+	const std::size_t depth = active_lifetimes_.size();
+	lifetime_scope_stack_.push_back(scope);
+	lifetime_scope_depths_.push_back(depth);
+	lower_statement(id);
+	if (current_block_ != InvalidIdentityValue && !terminated(block()))
+		emit_scope_destructors(scope, depth);
+	else
+		restore_lifetime_depth(depth);
+	lifetime_scope_stack_.pop_back();
+	lifetime_scope_depths_.pop_back();
 }
 
 void Pa15Lowerer::emit_lifetime_destructors(std::size_t depth)

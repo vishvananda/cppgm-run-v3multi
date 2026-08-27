@@ -258,6 +258,7 @@ struct SwitchContext
 	BlockId dispatch_target;
 	BlockId end_target;
 	BlockId default_target;
+	std::vector<BindingId> entry_lifetimes;
 	std::vector<SwitchArm> arms;
 	std::map<std::size_t, BlockId> labels;
 	std::set<std::size_t> lowered_labels;
@@ -265,7 +266,7 @@ struct SwitchContext
 
 	SwitchContext(BlockId end_target = BlockId(), BlockId dispatch_target = BlockId())
 		: dispatch_target(dispatch_target), end_target(end_target),
-		  default_target(end_target), arms(), labels(),
+		  default_target(end_target), entry_lifetimes(), arms(), labels(),
 		  lowered_labels(), label_subtrees() {}
 };
 
@@ -352,6 +353,7 @@ private:
 	NamedRecordId active_destructor_record_;
 	BindingId active_destructor_this_;
 	std::map<std::size_t, const LifetimeFact*> lifetime_by_binding_;
+	std::vector<unsigned char> lifetime_function_scope_flags_;
 	std::vector<ScopeId> lifetime_scope_stack_;
 	std::vector<std::size_t> lifetime_scope_depths_;
 	std::vector<BindingId> active_lifetimes_;
@@ -414,6 +416,7 @@ private:
 	bool class_object_type(TypeId type) const;
 	bool checkpoint_zero_storage_eligible(TypeId type) const;
 	LowType low_reference_value_type(TypeId type) const;
+	void index_lifetime_facts();
 	void index_binding_facts();
 	void index_global_storage_demands();
 	void append_tls_wrapper(BindingId binding_id, ScopeId owner,
@@ -595,6 +598,7 @@ private:
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action);
 	void lower_destructor_action(const DestructorActionFact& action);
+	void emit_active_destructor_actions();
 	LoweredValue lower_constructor_expression(SemanticFactId id);
 	void activate_lifetime(BindingId object);
 	void emit_lifetime_destructors(std::size_t depth);
@@ -602,6 +606,7 @@ private:
 	void emit_control_lifetime_destructors(bool continue_target);
 	void emit_scope_destructors(ScopeId scope, std::size_t depth);
 	void emit_active_scope_destructors();
+	void lower_scoped_statement(SemanticFactId id);
 	bool constructor_initializer_is_nothrow(SemanticFactId root);
 	bool constructor_is_nothrow(FunctionFactId function_id);
 	LoweredValue lower_expression(SemanticFactId id);

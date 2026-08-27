@@ -1175,6 +1175,12 @@ void Pa15Lowerer::terminate_unreachable_block(BlockId id){
 
 bool Pa15Lowerer::lower_switch_label_recovery(SemanticFactId id){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (current_block_ == InvalidIdentityValue)
+		{
+			if (switch_stack_.empty())
+				throw std::runtime_error("PA15 switch label lifetime context is missing");
+			active_lifetimes_ = switch_stack_.back().entry_lifetimes;
+		}
 		const bool already_lowered = switch_label_was_lowered(id);
 		const BlockId target = already_lowered ?
 			switch_label_existing_target(id) : switch_label_target(id);
@@ -1615,6 +1621,7 @@ void Pa15Lowerer::lower_switch(SemanticFactId id,
 		const BlockId dispatch = block_id(new_block("switch_dispatch"));
 		const BlockId end = block_id(new_block("switch_end"));
 		SwitchContext context(end, dispatch);
+		context.entry_lifetimes = active_lifetimes_;
 		if (facts.size() == 2)
 			collect_switch_labels(facts[1], &context);
 		store_switch_flow(id, context);
@@ -1657,7 +1664,7 @@ void Pa15Lowerer::lower_switch(SemanticFactId id,
 		control_stack_.pop_back();
 		switch_stack_.pop_back();
 
-
+		active_lifetimes_ = context.entry_lifetimes;
 		set_current(end);
 	}
 
@@ -1665,6 +1672,7 @@ void Pa15Lowerer::lower_while(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() != 2)
 			throw std::runtime_error("PA15 invalid while fact");
+		const std::vector<BindingId> incoming_lifetimes = active_lifetimes_;
 		const BlockId condition = block_id(new_block("while_cond"));
 		const BlockId body = block_id(new_block("while_body"));
 		const BlockId end = block_id(new_block("while_end"));
@@ -1684,10 +1692,11 @@ void Pa15Lowerer::lower_while(SemanticFactId id){
 		control_stack_.push_back(ControlTarget(true, end, condition,
 			loop_depth, loop_depth));
 		set_current(body);
-		lower_statement(facts[1]);
+		lower_scoped_statement(facts[1]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
 			emit_jump(condition);
 		control_stack_.pop_back();
+		active_lifetimes_ = incoming_lifetimes;
 		set_current(end);
 	}
 
@@ -1695,6 +1704,7 @@ void Pa15Lowerer::lower_do(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() != 2)
 			throw std::runtime_error("PA15 invalid do fact");
+		const std::vector<BindingId> incoming_lifetimes = active_lifetimes_;
 		const BlockId body = block_id(new_block("do_body"));
 		const BlockId condition = block_id(new_block("do_cond"));
 		const BlockId end = block_id(new_block("do_end"));
@@ -1706,9 +1716,10 @@ void Pa15Lowerer::lower_do(SemanticFactId id){
 		control_stack_.push_back(ControlTarget(true, end, condition,
 			loop_depth, loop_depth));
 		set_current(body);
-		lower_statement(facts[0]);
+		lower_scoped_statement(facts[0]);
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
 			emit_jump(condition);
+		active_lifetimes_ = incoming_lifetimes;
 		set_current(condition);
 		if (has_direct_short_circuit(facts[1]))
 			lower_condition_branch(facts[1], body, end);
@@ -1718,6 +1729,7 @@ void Pa15Lowerer::lower_do(SemanticFactId id){
 			emit_branch(value.value, body, end);
 		}
 		control_stack_.pop_back();
+		active_lifetimes_ = incoming_lifetimes;
 		set_current(end);
 	}
 
@@ -1725,9 +1737,24 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);
 		if (facts.size() < 2)
 			throw std::runtime_error("PA15 invalid for fact");
-		const std::size_t loop_depth = active_lifetimes_.size();
+		const std::vector<BindingId> incoming_lifetimes = active_lifetimes_;
+		const StatementFact* statement = model_.semantic_facts_[id.value].source == NULL ?
+			NULL : model_.statement_fact(*model_.semantic_facts_[id.value].source);
+		const ScopeId control_scope = statement == NULL ? ScopeId() : statement->scope;
+		const std::size_t loop_depth = incoming_lifetimes.size();
+		if (control_scope.valid())
+		{
+			if (control_scope.value >= model_.scopes_.size())
+				throw std::runtime_error("PA15 for lifetime scope is invalid");
+			lifetime_scope_stack_.push_back(control_scope);
+			lifetime_scope_depths_.push_back(loop_depth);
+		}
 		lower_statement(facts[0]);
-		const std::size_t continue_depth = active_lifetimes_.size();
+		const std::vector<BindingId> init_lifetimes = active_lifetimes_;
+		const std::size_t continue_depth = init_lifetimes.size();
+		const bool has_control_lifetimes = continue_depth > loop_depth;
+		if (has_control_lifetimes && !control_scope.valid())
+			throw std::runtime_error("PA15 for lifetime scope is missing");
 		SemanticFactId condition_fact;
 		SemanticFactId iteration_fact;
 		for (std::size_t i = 1; i + 1 < facts.size(); ++i)
@@ -1740,6 +1767,9 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 		const BlockId body = block_id(new_block("for_body"));
 		const BlockId iteration = block_id(new_block("for_iter"));
 		const BlockId end = block_id(new_block("for_end"));
+		const BlockId normal_end = has_control_lifetimes && condition_fact.valid() &&
+			!condition_is_empty(condition_fact) ?
+			block_id(new_block("for_scope_end")) : end;
 		store_loop_flow(id, LoopFlow(SemanticFactKind::ForStatement,
 			condition, body, iteration, end));
 		if (current_block_ != InvalidIdentityValue)
@@ -1748,18 +1778,19 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 		if (!condition_fact.valid() || condition_is_empty(condition_fact))
 			emit_jump(body);
 		else if (has_direct_short_circuit(condition_fact))
-			lower_condition_branch(condition_fact, body, end);
+			lower_condition_branch(condition_fact, body, normal_end);
 		else
 		{
 			const LoweredValue value = lower_condition(condition_fact);
-			emit_branch(value.value, body, end);
+			emit_branch(value.value, body, normal_end);
 		}
 		control_stack_.push_back(ControlTarget(true, end, iteration,
 			loop_depth, continue_depth));
 		set_current(body);
-		lower_statement(facts.back());
+		lower_scoped_statement(facts.back());
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
 			emit_jump(iteration);
+		active_lifetimes_ = init_lifetimes;
 		set_current(iteration);
 		if (iteration_fact.valid())
 		{
@@ -1771,6 +1802,19 @@ void Pa15Lowerer::lower_for(SemanticFactId id){
 		if (current_block_ != InvalidIdentityValue && !terminated(block()))
 			emit_jump(condition);
 		control_stack_.pop_back();
+		if (normal_end != end)
+		{
+			active_lifetimes_ = init_lifetimes;
+			set_current(normal_end);
+			emit_scope_destructors(control_scope, loop_depth);
+			emit_jump(end);
+		}
+		active_lifetimes_ = incoming_lifetimes;
+		if (control_scope.valid())
+		{
+			lifetime_scope_stack_.pop_back();
+			lifetime_scope_depths_.pop_back();
+		}
 		set_current(end);
 	}
 
@@ -1883,7 +1927,10 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 				else if (!instruction.type.is_void())
 					throw std::runtime_error("PA15 missing return operand");
 				if (current_block_ != InvalidIdentityValue)
+				{
 					emit_active_scope_destructors();
+					emit_active_destructor_actions();
+				}
 				block().instructions.push_back(instruction);
 			current_block_ = InvalidIdentityValue;
 			break;
@@ -1986,7 +2033,7 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			break;
 		case SemanticFactKind::ThenBranch:
 		case SemanticFactKind::ElseBranch:
-			if (facts.size() == 1) lower_statement(facts.front());
+			if (facts.size() == 1) lower_scoped_statement(facts.front());
 			break;
 		default:
 			throw std::runtime_error("PA15 unsupported scalar statement fact");
@@ -2135,22 +2182,12 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			}
 		}
 		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
-		function_has_nontrivial_lifetime_ = false;
-		for (std::size_t lifetime = 0; lifetime < model_.lifetime_facts_.size();
-			++lifetime)
-		{
-			ScopeId scope = model_.lifetime_facts_[lifetime].scope;
-			while (scope.valid() && scope.value < model_.scopes_.size())
-			{
-				if (scope == fact.function_scope)
-				{
-					function_has_nontrivial_lifetime_ = true;
-					break;
-				}
-				scope = model_.scopes_[scope.value].parent;
-			}
-			if (function_has_nontrivial_lifetime_) break;
-		}
+		if (!fact.function_scope.valid() || fact.function_scope.value >=
+			lifetime_function_scope_flags_.size() ||
+			model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function)
+			throw std::runtime_error("PA15 function scope is invalid");
+		function_has_nontrivial_lifetime_ =
+			lifetime_function_scope_flags_[fact.function_scope.value] != 0;
 		active_constructor_record_ = NamedRecordId();
 		active_constructor_this_ = BindingId();
 		active_destructor_record_ = NamedRecordId();
@@ -2212,22 +2249,13 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		}
 		else if ((!fact.is_constructor && !fact.is_destructor) || !fact.synthetic)
 			throw std::runtime_error("PA15 function body fact is missing");
-		if (fact.is_destructor)
-		{
-			if (fact.destructor_action_begin == InvalidIdentityValue ||
-				fact.destructor_action_begin > model_.destructor_actions_.size() ||
-				fact.destructor_action_count > model_.destructor_actions_.size() -
-					fact.destructor_action_begin)
-				throw std::runtime_error("PA15 destructor action range is invalid");
-			for (std::size_t action = 0; action < fact.destructor_action_count;
-				++action)
-				lower_destructor_action(model_.destructor_actions_[
-					fact.destructor_action_begin + action]);
-		}
 		if (!label_recovery_queue_.empty())
 			drain_label_recovery_queue(SemanticFactId());
 		if (!label_recovery_queue_.empty())
 			throw std::runtime_error("PA15 reachable deferred label was not drained");
+		if (fact.is_destructor && current_block_ != InvalidIdentityValue &&
+			!terminated(block()))
+			emit_active_destructor_actions();
 		if (current_block_ != InvalidIdentityValue &&
 			!terminated(block()))
 		{
