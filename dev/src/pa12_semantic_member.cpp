@@ -415,7 +415,7 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	return result;
 }
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
-	ScopeId member_scope, ScopeId access_scope) const
+	ScopeId member_scope, ScopeId access_scope, TypeId object) const
 {
 	const MemberAccess access = member_access(binding_id);
 	if (access == MemberAccess::Public)
@@ -438,30 +438,33 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 		access_class.value >= scopes_.size() ||
 		!scopes_[access_class.value].record.valid())
 		return false;
-	NamedRecordId current = scopes_[access_class.value].record;
-	std::vector<NamedRecordId> visited;
-	while (current.valid())
-	{
-		if (current.value >= named_.size())
-			return false;
-		for (std::size_t i = 0; i < visited.size(); ++i)
-			if (visited[i] == current)
-				return false;
-		visited.push_back(current);
-		const NamedRecord& record = named_[current.value];
-		if (record.kind != NamedKind::Class || !record.scope.valid() ||
-			record.scope.value >= scopes_.size() ||
-			scopes_[record.scope.value].kind != ScopeKind::Class ||
-			scopes_[record.scope.value].record != current)
-			return false;
-		if (record.scope == member_scope)
-			return true;
-		if (!record.has_base || record.direct_base_virtual ||
-			!record.direct_base.valid())
-			return false;
-		current = record.direct_base;
-	}
-	return false;
+	const NamedRecordId access_record = scopes_[access_class.value].record;
+	if (access_record.value >= named_.size() ||
+		named_[access_record.value].kind != NamedKind::Class ||
+		!named_[access_record.value].scope.valid() ||
+		named_[access_record.value].scope != access_class)
+		return false;
+	// Protected access has two independent typed requirements.  First, the
+	// class containing the body must derive from the declaring owner.  The
+	// canonical named type is already interned; looking it up by TypeKey keeps
+	// this const path O(1) without manufacturing a parallel type identity.
+	TypeKey access_key;
+	access_key.kind = TypeKind::Named;
+	access_key.named = access_record;
+	const TypeId* access_type = type_ids_.find(access_key);
+	if (access_type == NULL ||
+		!member_base_path(*access_type, member_scope, NULL))
+		return false;
+	// C++ additionally restricts the object expression: it must have the
+	// accessing class type (or a further-derived type), not merely the
+	// declaring base type.  This prevents Derived::f(Base&) from acquiring
+	// Base's protected member through an arbitrary Base object.
+	const TypeId object_record = strip_cv_type(expression_object_type(object));
+	if (!object_record.valid() || type_kind(object_record) != TypeKind::Named ||
+		!class_scope_for_type(object_record).valid() ||
+		!member_base_path(object_record, access_class, NULL))
+		return false;
+	return true;
 }
 BindingId PA11SemanticModel::implicit_this_binding(ScopeId scope) const
 {
@@ -534,7 +537,7 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 	const Binding& member = binding(member_id);
 	if (member.kind != BindingKind::Variable)
 		throw std::runtime_error("PA12 member function access is unsupported");
-	if (!member_accessible(member_id, selection.owner, scope))
+	if (!member_accessible(member_id, selection.owner, scope, record_object))
 		throw std::runtime_error("PA12 record member is inaccessible");
 	const TypeId type = member_access_type(record_object, member.type);
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
@@ -751,7 +754,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 			throw std::runtime_error("PA12 ambiguous member call");
 	const ValueRef selected = viable[best_index].value;
 	const TypeId selected_type = viable[best_index].type;
-	if (!member_accessible(selected.binding, member_scope, scope))
+	if (!member_accessible(selected.binding, member_scope, scope, actual_object))
 		throw std::runtime_error("PA12 member call is inaccessible");
 	if (function_declaration_kind(selected.binding) ==
 		FunctionDeclarationKind::Deleted)

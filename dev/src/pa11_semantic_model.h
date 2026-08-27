@@ -1908,7 +1908,7 @@ private:
 		NameId name) const
 	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
-		ScopeId access_scope) const
+		ScopeId access_scope, TypeId object) const
 	;
 	BindingId implicit_this_binding(ScopeId scope) const
 	;

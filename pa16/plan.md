@@ -13,8 +13,10 @@ Explicit dot/arrow fields and non-static member calls consume that result.
 Unqualified and parser-supported qualified inherited fields and calls in
 member bodies use the exact synthetic this binding. Calls retain the selected
 owner/path through the shared call selector, including cv and argument ranking.
-Access is checked at the selected owner; protected access is admitted only
-from a typed derived-class body, while private and unrelated access remain
+Access is checked at the selected owner. Public and same-owner access retain
+their existing behavior; protected access additionally requires typed proof
+that the access class derives from the owner and that the actual object is the
+access class or a further-derived class. Private and unrelated access remain
 rejected.
 
 PA15 consumes the selected owner for member addresses, validates the actual
@@ -46,6 +48,12 @@ make test-pa16 >/tmp/pa16-final-final.log 2>&1 exits 2 with 49/243,
 - removed: pa16/tests/general/200-protected-base-method.t
 - added: empty set
 
+The typed inherited-member checkpoint is landed in 9f158daa. The current
+follow-up only tightens protected access by carrying the actual object record
+into the typed accessibility check; its full PA16 result remains 49/243 with
+194 failures and 243/243 coverage, with the same one removed identity and no
+added identities.
+
 The overload primary remains out of this boundary: its exact current error is
 PA15 unsupported address expression. A debug lowering breakpoint showed the
 first failing address fact is SemanticFactKind::Literal, fact id 9,
@@ -63,19 +71,20 @@ PA11 semantic feature not implemented: declaration form. Courses 401, 402,
 PA12 inherited member name is not callable negative diagnostic. The PA12
 constructor-contract control passes 1/1. A constructor-free inherited
 overload probe also exits 0 and lowers to Base__select through one typed
-base-subobject projection. No handout fixture or .ref file changed.
+base-subobject projection. Course 405 exits 0: the qualified-this protected
+call lowers, while protected field/method access through Base& returns status
+1. No handout fixture or .ref file changed.
 
 ## Active Checkpoint
 
-The coherent checkpoint is complete and ready for commit: typed inherited
-field selection/lowering, explicit and qualified/unqualified inherited
-non-static calls, protected derived-body access, owner-path validation, the
-owner invariant audit, and demand-truth for state-free inherited construction
-are implemented. Stage progress is proven by one removed checked-in PA16
-failure with no added identity. The overload local string address gap,
-explicit-constructor parsing/lifetime, broader initialization, friend/using
-re-exposure, multiple/virtual inheritance, static members, and full PA16
-success remain out of scope.
+The typed inherited field/call selection, owner-path lowering, protected
+derived-body call, and state-free construction-demand work landed in
+9f158daa. This follow-up corrects the protected object-expression rule using
+the actual typed record at every new field/call access site. Stage progress
+remains one removed checked-in PA16 failure with no added identity. The
+overload local string address gap, explicit-constructor parsing/lifetime,
+broader initialization, friend/using re-exposure, multiple/virtual
+inheritance, static members, and full PA16 success remain out of scope.
 
 ## Performance evidence and uncertainties
 
@@ -93,10 +102,10 @@ times per size; all compiler invocations exited 0. On this workspace, 1 and
 128 declarations each measured 0.00s elapsed in all five runs; 512 measured
 0.01s elapsed in all five runs (user time 0.00-0.01s). This is measured
 bounded behavior, not a formal benchmark. The final audit also reports
-dev/src/pa12_semantic.cpp at 2975 lines and only the five pre-existing
+dev/src/pa12_semantic.cpp at 2976 lines and only the five pre-existing
 bad-division warnings.
 
-Mandatory gates after the corrections:
+Mandatory gates after the access-scope correction:
 n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
 exits 0 with 1167/1167, and
 perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src exits 0 with
@@ -106,10 +115,8 @@ five warnings.
 
 | checkpoint | status |
 | --- | --- |
-| d0470e94 + working tree | Current, ready to commit: final PA16 49/243, 194 failures versus baseline 48/243, 195; removed protected identity, added empty set, coverage 243/243; through-PA15 1167/1167; audit exit 0 with five pre-existing warnings; all focused/course/constructor controls recorded above. |
+| 9f158daa | Landed typed inherited field/call selection and lowering, protected derived-body qualified calls, state-free inherited construction demand, and the 48→49/243, 195→194 identity improvement with 243/243 coverage. Through-PA15 is 1167/1167 and audit exits 0 with five pre-existing warnings. |
+| this follow-up: protected object access scope | Carries the actual object record into all new field/call accessibility checks and adds course 405; focused protected/object controls and course regressions pass, while full PA16 remains 49/243 with the same 194-failure identity set and 243/243 coverage. |
 | 0b534f2f typed direct member-call checkpoint | Landed implicit-object cv subset ranking, N3485 variadic comparison, typed PA15 member reachability, dense FunctionFact/fact metadata, declaration-only member ABI boundaries, hidden-object call formation, and source-file sizing. |
 | b1e8272d + PA16 typed implicit-object boundary | Landed canonical Function-scope hidden-object ownership, fail-closed viability, typed demand indexing, direct PA15 lowering, and focused direct/member-call controls. |
 | 37265733 typed member projection audit/repair | Landed direct/nested dot and arrow ownership tracing through PA12, PA11 RecordLayout::member_offsets, and PA15 LowIR. |
-
-This increment is ready for the authorized commit after the final diff,
-fixture-immutability, and status checks complete.
