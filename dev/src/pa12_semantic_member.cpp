@@ -421,50 +421,71 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	if (access == MemberAccess::Public)
 		return true;
 	ScopeId cursor = access_scope;
-	ScopeId access_class;
-	while (cursor.valid() && cursor.value < scopes_.size())
+	std::vector<ScopeId> access_classes;
+	for (std::size_t lexical_steps = 0;
+		cursor.valid() && cursor.value < scopes_.size() &&
+		lexical_steps < scopes_.size(); ++lexical_steps)
 	{
 		if (cursor == member_scope)
 			return true;
-		if (!access_class.valid() && scopes_[cursor.value].kind ==
-			ScopeKind::Class)
-			access_class = cursor;
+		if (scopes_[cursor.value].kind == ScopeKind::Class)
+			access_classes.push_back(cursor);
 		cursor = scopes_[cursor.value].parent;
 	}
+	// A valid but out-of-range cursor, or a valid cursor left after the
+	// scope-vector bound was exhausted, is malformed ancestry.  Do not let
+	// classes collected before that point grant protected access.
+	if (cursor.valid())
+		return false;
 	// Protected members are also accessible from a member body of a derived
-	// class.  Keep this narrow: private members still require the owning class,
-	// and an unrelated/non-class access scope cannot acquire protected access.
-	if (access != MemberAccess::Protected || !access_class.valid() ||
-		access_class.value >= scopes_.size() ||
-		!scopes_[access_class.value].record.valid())
+	// class.  A nested class is itself a member, so its enclosing class scopes
+	// are eligible access classes as well.  Keep this narrow: private members
+	// still require the owning class, and an unrelated/non-class access scope
+	// cannot acquire protected access.
+	if (access != MemberAccess::Protected || access_classes.empty())
 		return false;
-	const NamedRecordId access_record = scopes_[access_class.value].record;
-	if (access_record.value >= named_.size() ||
-		named_[access_record.value].kind != NamedKind::Class ||
-		!named_[access_record.value].scope.valid() ||
-		named_[access_record.value].scope != access_class)
-		return false;
-	// Protected access has two independent typed requirements.  First, the
-	// class containing the body must derive from the declaring owner.  The
+	// Protected access has two independent typed requirements.  First, an
+	// eligible access class must derive from the declaring owner.  The
 	// canonical named type is already interned; looking it up by TypeKey keeps
 	// this const path O(1) without manufacturing a parallel type identity.
-	TypeKey access_key;
-	access_key.kind = TypeKind::Named;
-	access_key.named = access_record;
-	const TypeId* access_type = type_ids_.find(access_key);
-	if (access_type == NULL ||
-		!member_base_path(*access_type, member_scope, NULL))
-		return false;
+	// The object-expression restriction is specific to protected non-static
+	// members.  Protected static members still require the derived access
+	// class proof above, but their spelling through an object does not impose a
+	// second object-type relation.
+	const bool static_member = is_static_member(binding_id);
 	// C++ additionally restricts the object expression: it must have the
 	// accessing class type (or a further-derived type), not merely the
 	// declaring base type.  This prevents Derived::f(Base&) from acquiring
 	// Base's protected member through an arbitrary Base object.
-	const TypeId object_record = strip_cv_type(expression_object_type(object));
-	if (!object_record.valid() || type_kind(object_record) != TypeKind::Named ||
-		!class_scope_for_type(object_record).valid() ||
-		!member_base_path(object_record, access_class, NULL))
+	const TypeId object_record = static_member ? TypeId() :
+		strip_cv_type(expression_object_type(object));
+	if (!static_member && (!object_record.valid() ||
+		type_kind(object_record) != TypeKind::Named ||
+		!class_scope_for_type(object_record).valid()))
 		return false;
-	return true;
+	for (std::size_t i = 0; i < access_classes.size(); ++i)
+	{
+		const ScopeId access_class = access_classes[i];
+		if (access_class.value >= scopes_.size() ||
+			!scopes_[access_class.value].record.valid())
+			continue;
+		const NamedRecordId access_record = scopes_[access_class.value].record;
+		if (access_record.value >= named_.size() ||
+			named_[access_record.value].kind != NamedKind::Class ||
+			!named_[access_record.value].scope.valid() ||
+			named_[access_record.value].scope != access_class)
+			continue;
+		TypeKey access_key;
+		access_key.kind = TypeKind::Named;
+		access_key.named = access_record;
+		const TypeId* access_type = type_ids_.find(access_key);
+		if (access_type == NULL ||
+			!member_base_path(*access_type, member_scope, NULL))
+			continue;
+		if (static_member || member_base_path(object_record, access_class, NULL))
+			return true;
+	}
+	return false;
 }
 BindingId PA11SemanticModel::implicit_this_binding(ScopeId scope) const
 {
