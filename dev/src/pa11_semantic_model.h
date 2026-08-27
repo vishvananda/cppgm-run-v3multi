@@ -1914,7 +1914,12 @@ private:
 		ScopeId scope, std::vector<ValueRef>* candidates, ScopeId* owner)
 	;
 	std::vector<ValueRef> direct_call_candidates(const PA10AstNode& node,
-		ScopeId scope, const std::vector<ValueRef>& qualified_static_candidates)
+		ScopeId scope, bool qualified_class_member,
+		const std::vector<ValueRef>& qualified_static_candidates)
+	;
+	void validate_direct_static_member_call(const ValueRef& selected,
+		bool qualified_class_member, ScopeId qualified_static_scope,
+		ScopeId access_scope) const
 	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope, TypeId object) const
@@ -1937,7 +1942,13 @@ private:
 		ScopeId scope, SimpleTokenType member_token,
 		const ExprInfo& object, TypeId actual_object, ScopeId member_scope,
 		const std::vector<ValueRef>& candidates,
-		const std::vector<NamedRecordId>* base_path = NULL)
+		const std::vector<NamedRecordId>* base_path = NULL,
+		bool allow_static = false, BindingId implicit_this = BindingId())
+	;
+	ExprInfo semantic_member_call_with_implicit_object(
+		const PA10AstNode& node, ScopeId scope, BindingId this_binding,
+		TypeId actual_object, ScopeId member_scope,
+		const std::vector<ValueRef>& candidates)
 	;
 	ExprInfo semantic_unqualified_member_call(const PA10AstNode& node,
 		const PA10AstNode& callee_node, ScopeId scope)

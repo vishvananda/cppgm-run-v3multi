@@ -13,6 +13,29 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		declaration_types == NULL || declaration_types->size() !=
 		model_.bindings_.size())
 		throw std::runtime_error("PA15 member demand output is missing");
+	// Build the canonical class-owner relation once from scope-owned binding
+	// identities.  Static call facts can then validate their selected owner in
+	// O(1); duplicate or malformed ownership is rejected before the reachable
+	// worklist starts, rather than being recovered textually at each call.
+	std::vector<ScopeId> class_binding_owners(model_.bindings_.size());
+	std::vector<unsigned char> class_binding_seen(model_.bindings_.size(), 0);
+	for (std::size_t scope_index = 0; scope_index < model_.scopes_.size();
+		++scope_index)
+	{
+		const Scope& scope = model_.scopes_[scope_index];
+		if (scope.kind != ScopeKind::Class)
+			continue;
+		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+		{
+			const BindingId binding_id = scope.bindings[i];
+			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size() ||
+				class_binding_seen[binding_id.value] != 0)
+				throw std::runtime_error(
+					"PA15 class member binding ownership is invalid");
+			class_binding_seen[binding_id.value] = 1;
+			class_binding_owners[binding_id.value] = ScopeId(scope_index);
+		}
+	}
 	std::vector<FunctionFactId> function_work;
 	std::vector<unsigned char> scanned_functions(
 		model_.function_facts_.size(), 0);
@@ -117,47 +140,79 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				const FunctionFactId* target_id =
 					model_.function_binding_fact_index_.find(
 						fact.selected_binding);
-				const ScopeId target_owner = target_id != NULL && target_id->valid() &&
-					target_id->value < model_.function_facts_.size() ?
-					model_.function_facts_[target_id->value].owner :
-					fact.selected_scope;
 				const bool static_target = target.kind == BindingKind::Function &&
 					model_.type_kind(target.type) == TypeKind::Function &&
-					target_owner.valid() && target_owner.value <
-					model_.scopes_.size() && model_.scopes_[target_owner.value].kind ==
-					ScopeKind::Class && model_.is_static_member(
-						fact.selected_binding);
+					model_.is_static_member(fact.selected_binding);
 				if (static_target)
 				{
-					if (!fact.selected_scope.valid() ||
-						fact.selected_scope != target_owner ||
-						model_.scopes_[fact.selected_scope.value].kind !=
-						ScopeKind::Class || !fact.callable_type.valid() ||
-						model_.type_kind(fact.callable_type) != TypeKind::Function ||
-						fact.callable_type != target.type)
-						throw std::runtime_error(
-							"PA15 static member demand is not typed");
+					ScopeId target_owner = fact.selected_scope;
+					const FunctionFact* target_function = NULL;
 					if (target_id != NULL)
 					{
 						if (!target_id->valid() || target_id->value >=
 							model_.function_facts_.size())
 							throw std::runtime_error(
 								"PA15 static member demand function is invalid");
-						const FunctionFact& target_function =
-							model_.function_facts_[target_id->value];
-						if (target_function.owner != target_owner ||
-							!target_function.function_scope.valid() ||
-							target_function.function_scope.value >=
-							model_.scopes_.size() || !target_function.body_fact.valid())
+						target_function = &model_.function_facts_[target_id->value];
+						if (!target_function->binding.valid() ||
+							target_function->binding != fact.selected_binding ||
+							!target_function->owner.valid())
 							throw std::runtime_error(
-								"PA15 static member definition is invalid");
-						if (!(*demanded)[target_id->value])
-						{
-							(*demanded)[target_id->value] = 1;
-							function_work.push_back(*target_id);
-						}
+								"PA15 static member demand identity is invalid");
+						target_owner = target_function->owner;
 					}
-					else
+					if (!fact.selected_scope.valid() ||
+						fact.selected_scope.value >= model_.scopes_.size() ||
+						fact.selected_scope != target_owner ||
+						model_.scopes_[fact.selected_scope.value].kind !=
+						ScopeKind::Class || !fact.callable_type.valid() ||
+						model_.type_kind(fact.callable_type) != TypeKind::Function ||
+						fact.callable_type != target.type || target_owner.value >=
+						model_.scopes_.size() ||
+						!model_.scopes_[target_owner.value].record.valid() ||
+						model_.scopes_[target_owner.value].record.value >=
+						model_.named_.size() ||
+						model_.named_[model_.scopes_[target_owner.value].record.value].kind !=
+						NamedKind::Class ||
+						model_.named_[model_.scopes_[target_owner.value].record.value].scope !=
+						target_owner)
+						throw std::runtime_error(
+							"PA15 static member demand is not typed");
+					if (fact.selected_binding.value >= class_binding_owners.size() ||
+						class_binding_owners[fact.selected_binding.value] != target_owner)
+						throw std::runtime_error(
+							"PA15 static member owner binding is invalid");
+					if (target_function != NULL)
+					{
+						if (target_function->body_fact.valid())
+						{
+							if (!target_function->function_scope.valid() ||
+								target_function->function_scope.value >=
+								model_.scopes_.size() ||
+								model_.scopes_[target_function->function_scope.value].kind !=
+								ScopeKind::Function || !target_function->body_scope.valid() ||
+								target_function->body_scope.value >=
+								model_.scopes_.size() ||
+								model_.scopes_[target_function->body_scope.value].kind !=
+								ScopeKind::Block || target_function->body_fact.value >=
+								model_.semantic_facts_.size() || !target.has_definition)
+								throw std::runtime_error(
+									"PA15 static member definition is invalid");
+							if (!(*demanded)[target_id->value])
+							{
+								(*demanded)[target_id->value] = 1;
+								function_work.push_back(*target_id);
+							}
+						}
+						else if (target_function->function_scope.valid() ||
+							target_function->body_scope.valid() || target.has_definition)
+							throw std::runtime_error(
+								"PA15 static member declaration is invalid");
+					}
+					else if (target.has_definition)
+						throw std::runtime_error(
+							"PA15 static member definition fact is missing");
+					if (target_function == NULL || !target_function->body_fact.valid())
 					{
 						if (fact.selected_binding.value >= declarations->size())
 							throw std::runtime_error(

@@ -2,6 +2,128 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `021ef63927293f62e13a29b5b8265c7105fb35a9`
+relative to parent `15e133af`, plus the bounded audit repairs and one focused
+course regression in this checkpoint.  It is limited to typed
+static member-function lookup and reachable emission: qualified and
+unqualified calls, class/base hiding and overload filtering, access, canonical
+owner/binding/type continuity, PA15 demand, declaration/definition emission,
+recursion, and the raw static ABI.  Static data storage, constructors and
+lifetime, operators/ADL, broad initialization, friends/using, and
+multiple/virtual inheritance remain outside this review.
+
+The authoritative turn-start full-stage state is `55/243` passed, `188`
+failed, and `243/243` covered, from
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The final `make test-pa16` exits `2` at the same `55/243`, with `188`
+failures and `243/243` coverage; sorted failure-identity comparison is exact,
+with no additions or removals.
+
+The affected ownership path is:
+
+```text
+PA10 qualified/unqualified IdExpression or parenthesized call
+  -> PA12 typed qualifier/class-scope and MemberLookup selection
+  -> first owning class ScopeId + canonical BindingId + raw function TypeId
+  -> static-only candidates without an implicit object, or one mixed
+     static/non-static member set when a non-static body supplies this
+  -> access check at the selected owner; raw static or hidden-object fact
+  -> PA15 namespace roots and reached static bodies walk typed call facts
+  -> FunctionFactId identity chooses definition demand or declaration plan
+  -> LowIR symbol uses the retained owner and raw source parameters
+```
+
+### Findings
+
+- The landed helper correctly resolves a qualified class type through
+  `lookup_type_path`, uses `member_lookup` so the first direct/base
+  declaration set hides later bases.  With no implicit object, it filters that
+  set to static functions; in a non-static member body, current/base-qualified
+  and unqualified calls retain both static and non-static functions in one
+  typed overload set.  PA12 call facts keep the selected raw callable `TypeId`
+  for a static winner and the owner-qualified hidden-object type for a
+  non-static winner; the inherited owner remains the selected `ScopeId`/
+  `BindingId`.  PA15's `function_binding_fact_index_` then follows that same
+  identity into a definition or declaration boundary, and
+  `function_components`/`abi_function_symbol` retain the declaring owner.
+- The audit found a fail-open class-qualified case: if the selected class name
+  had only a non-static function, a type, a blocked name, or no static
+  candidate, the old boolean result could reopen ordinary value lookup and
+  manufacture a no-object call.  The repair separates “class-qualified name
+  claimed” from the static candidate vector, unwraps parenthesized callees,
+  and rejects the claimed spelling when no static target exists.  A valid
+  current/base-qualified call in a non-static member body instead leaves the
+  class claim to the unified member selector, so a viable static or non-static
+  candidate can win without the first category suppressing the other.
+- Static-body unqualified lookup now searches nearer block/function lexical
+  declarations first, then the enclosing class's typed direct/base member set.
+  An inherited static function therefore retains its base owner even when an
+  outer namespace function has the same spelling; a direct non-static
+  declaration still hides base declarations before static-only filtering in a
+  static body.  In a non-static body, the first owning set supplies both
+  categories to the same argument/object ranking.  The lookup is bounded by
+  the scope vector and never reopens an outer value set after a class member
+  has claimed the name.  Parenthesized callees use the same typed branches.
+- The landed access gate covered qualified static candidates only.  The audit
+  adds the same `member_accessible` check after selection for every
+  class-owned static binding, including an unqualified static-body call.
+  Protected inherited static access is granted by the derived access-class
+  proof without a non-static object relation; private or unrelated access
+  fails closed.
+- The landed PA15 demand branch treated every indexed static `FunctionFact` as
+  a definition.  Static declarations can have a valid fact with no body, so
+  the repair validates binding/owner identity and distinguishes a complete
+  function/body scope (definition demand) from a bodyless declaration
+  (declaration demand).  Missing or contradictory definition facts, scopes,
+  body ranges, owner records, and callable types fail closed.  Recursive
+  static edges still use the existing visited function/fact worklists and are
+  emitted once.  Before traversal, PA15 builds one dense
+  `BindingId -> class ScopeId` index from class-scope-owned bindings; duplicate
+  or out-of-range ownership fails closed, and each reached static fact checks
+  that index in O(1) instead of scanning the owner's values.
+- The added course regression covers parenthesized qualified and unqualified
+  static calls, qualified non-static rejection, both directions of mixed
+  static/non-static overload ranking in qualified and unqualified member
+  bodies, inherited static-body lookup against an outer same-spelled function,
+  protected/private access, an inherited declaration-only static call,
+  same-binding redeclaration identity, recursive demand deduplication, and
+  raw parameter-only static ABI.  The existing handout matrix covers
+  static/non-static filtering and qualified inherited owner retention.
+
+## Focused Evidence
+
+`make -C dev cppgm++` exits `0`.  The focused handout command
+
+```sh
+make -C pa16 check TEST='tests/general/100-static-member-qualified-call.t tests/general/100-static-member-overload-skips-nonstatic-this.t tests/general/200-inherited-static-member-qualified-call.t tests/general/200-static-nonstatic-same-pointer-signature.t tests/general/100-builtin-prefix-static-member-call.t tests/general/100-member-methods.t tests/general/200-protected-base-method.t'
+```
+
+exits `0` with `7/7` passing.  Course regressions 401--406 each exit `0`; 402's
+`PA12 inherited member name is not callable` line is from its expected
+negative case.  `sh -n` on the new script exits `0`.  No handout test,
+fixture, or `.ref` file changed.
+
+Five measured invocations of the new bounded regression (including its
+recursive/inherited static demand chain) took `0.17--0.18s`, with RSS
+`7,040--7,320KB`; the seven-test handout probe took `0.20s` and `9,824KB`.
+These are representative smoke measurements, not a formal benchmark.  The
+new lookup performs only bounded lexical/class/base walks, and PA15 performs
+one class-binding owner-index setup followed by O(1) selected-owner checks
+and dense visited worklists; no whole-program retry, textual recovery, or
+generated-artifact dependency was added.
+
+The existing `pa16/tests/general/200-out-of-class-member-default-argument.t`
+still fails in this tree before reaching this static declaration audit; that
+pre-existing default-argument merge gap is not part of the landed static
+ownership increment.  The focused declaration control consequently uses a
+bodyless static declaration without a default argument.  The required
+through-PA15 command exits `0` at `1167/1167`; the PA16 file audit exits `0`
+with five pre-existing header `bad-division` warnings.  `git diff --check`
+passes before the final commit, and no handout test, fixture, or `.ref` file
+changed.
+
+## Historical Protected-Access Checkpoint Review
+
 This review covers landed commit `8b445ee6e7b7090a1f2d19edebbc96d756f438ad`
 relative to parent `9f158daa4cf5fd8326123ca9ccded1b4c59df382`, plus one
 narrow source repair, one lexical-access repair, and the course regression
@@ -300,6 +422,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `021ef639` typed static member-function lookup/reachable-emission checkpointAudit | Completed bounded audit/repair: class-qualified lookup fails closed, current/base-qualified and unqualified member-body calls rank one mixed static/non-static set, static-body lookup preserves inherited owner/hiding, access and raw-vs-hidden-object facts remain typed, and PA15 uses a dense class-binding owner index with O(1) selected-owner checks. The focused handout matrix is `7/7`, course controls 401--406 exit `0`, final PA16 is `55/243` with the exact turn-start `188` failure identities and `243/243` coverage, through-PA15 is `1167/1167`, and the file audit passes with five pre-existing warnings. |
 | `8b445ee6` protected object access scope checkpointAudit | Completed and committed bounded audit/repair: static protected object spelling stops after the typed access-class/owner proof, nested protected access considers eligible enclosing class scopes while retaining the non-static object proof, and malformed valid scope ancestry fails closed after the bounded walk. Course 405 covers the field/method matrix, nested `Derived&`/`Base&` controls, and the exact existing PA15 static boundary. Final PA16 is `49/243` with `194` failures and `243/243` coverage, with exact failure additions/removals `∅`/`∅`; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and the final working tree is clean. |
 | `b1a9e589` direct + inherited unqualified member-call checkpointAudit | Bounded audit completed with four narrow fixes: exact synthetic-`this` BindingId reuse, value-before-type lookup with explicit `Type`/`Blocked` outcomes, fail-closed direct-base metadata validation, and inherited value-set ownership blocking. Direct/inherited/parenthesized reductions, the three focused controls, and course regressions pass; the six-test handout probe remains `1/6` on the same five prerequisite identities. Through-PA15 is `1167/1167`, the file audit exits `0` with five pre-existing warnings, and full PA16 is `48/243` with `195` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `37265733` typed member projection audit/repair | Direct/nested dot and arrow ownership is traced through PA12, PA11 `RecordLayout::member_offsets` keyed by the object's canonical `NamedRecordId`, and PA15 LowIR; the reference-cv and class anonymous-injection defects are repaired. Broad validation and exact identity/coverage checks pass their bounded invariants; PA16 remains incomplete with the existing 205 failures. |

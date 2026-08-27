@@ -439,12 +439,18 @@ bool PA11SemanticModel::qualified_static_member_candidates(
 	const PA10AstNode& node, ScopeId scope, std::vector<ValueRef>* candidates,
 	ScopeId* owner)
 {
+	if (candidates == NULL || owner == NULL)
+		throw std::runtime_error("PA12 static member lookup outputs are missing");
 	candidates->clear();
 	*owner = ScopeId();
-	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
-		has_template_id(node))
+	const PA10AstNode* callee = &node;
+	while (callee->kind == PA10NodeKind::ParenthesizedExpression &&
+		callee->children.size() == 1)
+		callee = &callee->children.front();
+	if (callee->kind != PA10NodeKind::IdExpression || callee->has_token ||
+		has_template_id(*callee))
 		return false;
-	const NamePath path = name_path(node);
+	const NamePath path = name_path(*callee);
 	if (path.components.size() <= 1)
 		return false;
 	NamePath qualifier;
@@ -457,38 +463,150 @@ bool PA11SemanticModel::qualified_static_member_candidates(
 	if (!class_scope.valid())
 		return false;
 	const MemberLookup selection = member_lookup(qualifier_type, path.last());
+	*owner = selection.owner.valid() ? selection.owner : class_scope;
+	const BindingId this_id = implicit_this_binding(scope);
+	const bool has_implicit_object = this_id.valid();
+	bool qualifier_is_implicit_object_base = false;
+	if (has_implicit_object)
+	{
+		const Binding& this_binding = binding(this_id);
+		const TypeId this_pointer = strip_cv_type(expression_object_type(
+			this_binding.type));
+		if (this_binding.kind == BindingKind::Parameter &&
+			type_kind(this_pointer) == TypeKind::Pointer)
+			qualifier_is_implicit_object_base = member_base_path(
+				types_[this_pointer.value].child, class_scope, NULL);
+	}
 	if (selection.kind != MemberLookupKind::Value || !selection.owner.valid())
-		return false;
-	*owner = selection.owner;
+		return !qualifier_is_implicit_object_base;
 	*candidates = static_member_function_candidates_in_scope(selection.owner,
 		path.last());
-	return !candidates->empty();
+	if (qualifier_is_implicit_object_base)
+	{
+		// A current/base class qualifier is still an implicit-object member
+		// call in a non-static member body.  Keep the class claim out of the
+		// direct static path so the member probe can rank the complete owning
+		// declaration set, including non-static candidates.
+		return false;
+	}
+	if (!candidates->empty())
+		return true;
+	// The boolean result claims the class-qualified spelling even when the
+	// first owning declaration set contains no static callable.  The caller
+	// must not reopen namespace/value lookup in that case: a non-static member,
+	// type, blocked name, or malformed overload set is a failed class lookup.
+	return true;
 }
 std::vector<ValueRef> PA11SemanticModel::direct_call_candidates(
 	const PA10AstNode& node, ScopeId scope,
+	bool qualified_class_member,
 	const std::vector<ValueRef>& qualified_static_candidates)
 {
-	if (!qualified_static_candidates.empty())
+	if (qualified_class_member)
 		return qualified_static_candidates;
-	if (node.kind != PA10NodeKind::IdExpression)
+	const PA10AstNode* callee = &node;
+	while (callee->kind == PA10NodeKind::ParenthesizedExpression &&
+		callee->children.size() == 1)
+		callee = &callee->children.front();
+	if (callee->kind != PA10NodeKind::IdExpression)
 		return std::vector<ValueRef>();
-	const NamePath path = name_path(node);
-	std::vector<ValueRef> candidates = lookup_value_path(path, scope);
+	const NamePath path = name_path(*callee);
+	std::vector<ValueRef> candidates;
 	if (path.components.size() == 1 && !path.global &&
 		!implicit_this_binding(scope).valid())
 	{
-		std::vector<ValueRef> static_candidates;
-		for (std::size_t i = 0; i < candidates.size(); ++i)
+		ScopeId static_member_scope;
+		bool function_scope_seen = false;
+		ScopeId cursor = scope;
+		for (std::size_t steps = 0; cursor.valid() &&
+			cursor.value < scopes_.size() && steps < scopes_.size(); ++steps)
 		{
-			const ValueRef& candidate = candidates[i];
-			if (candidate.scope.valid() && candidate.scope.value < scopes_.size() &&
-				scopes_[candidate.scope.value].kind == ScopeKind::Class &&
-				!is_static_member(candidate.binding))
-				continue;
-			static_candidates.push_back(candidate);
+			const Scope& current = scopes_[cursor.value];
+			if (current.kind == ScopeKind::Function)
+			{
+				function_scope_seen = true;
+				if (!current.implicit_object_binding.valid() && current.parent.valid() &&
+					current.parent.value < scopes_.size() &&
+					scopes_[current.parent.value].kind == ScopeKind::Class)
+					static_member_scope = current.parent;
+				break;
+			}
+			cursor = current.parent;
 		}
-		candidates.swap(static_candidates);
+		if (!function_scope_seen && cursor.valid())
+			throw std::runtime_error("PA12 static call scope ancestry is invalid");
+		if (static_member_scope.valid())
+		{
+			// Search block/function lexical declarations up to, but not past,
+			// the owning class.  An outer namespace function must not reopen
+			// lookup after a class member (including an inherited one) claims
+			// the unqualified spelling.
+			const SourcePoint point = lookup_source_point(scope);
+			prepare_unqualified_lookup(scope);
+			bool lexical_found = false;
+			cursor = scope;
+			for (std::size_t steps = 0; cursor.valid() &&
+				cursor.value < scopes_.size() && steps < scopes_.size() &&
+				cursor != static_member_scope; ++steps)
+			{
+				begin_lookup();
+				std::vector<ValueRef> found;
+				if (lookup_value_graph(cursor, path.last(), &found, false, point))
+				{
+					candidates.swap(found);
+					lexical_found = true;
+					break;
+				}
+				std::vector<ScopeId> targets;
+				append_effective_using_targets(cursor, &targets, point);
+				for (std::size_t i = 0; i < targets.size(); ++i)
+				{
+					begin_lookup();
+					std::vector<ValueRef> nominated;
+					if (lookup_value_graph(targets[i], path.last(), &nominated,
+						true, point))
+					{
+						candidates.insert(candidates.end(), nominated.begin(),
+							nominated.end());
+						lexical_found = true;
+					}
+				}
+				if (lexical_found)
+					break;
+				cursor = scopes_[cursor.value].parent;
+			}
+			if (!lexical_found)
+			{
+				const TypeId member_type = named_type(
+					scopes_[static_member_scope.value].record);
+				const MemberLookup selection = member_lookup(member_type,
+					path.last());
+				if (selection.kind == MemberLookupKind::Value &&
+					selection.owner.valid())
+					candidates = static_member_function_candidates_in_scope(
+						selection.owner, path.last());
+				else if (selection.kind == MemberLookupKind::None)
+					candidates = lookup_value_path(path, scope);
+			}
+		}
+		else
+		{
+			candidates = lookup_value_path(path, scope);
+			std::vector<ValueRef> static_candidates;
+			for (std::size_t i = 0; i < candidates.size(); ++i)
+			{
+				const ValueRef& candidate = candidates[i];
+				if (candidate.scope.valid() && candidate.scope.value < scopes_.size() &&
+					scopes_[candidate.scope.value].kind == ScopeKind::Class &&
+					!is_static_member(candidate.binding))
+					continue;
+				static_candidates.push_back(candidate);
+			}
+			candidates.swap(static_candidates);
+		}
 	}
+	else
+		candidates = lookup_value_path(path, scope);
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
 		const Binding& candidate = binding(candidates[i].binding);
@@ -497,6 +615,25 @@ std::vector<ValueRef> PA11SemanticModel::direct_call_candidates(
 			return std::vector<ValueRef>();
 	}
 	return candidates;
+}
+void PA11SemanticModel::validate_direct_static_member_call(
+	const ValueRef& selected, bool qualified_class_member,
+	ScopeId qualified_static_scope, ScopeId access_scope) const
+{
+	const bool selected_class_static = selected.scope.valid() &&
+		selected.scope.value < scopes_.size() &&
+		scopes_[selected.scope.value].kind == ScopeKind::Class &&
+		is_static_member(selected.binding);
+	if (qualified_class_member)
+	{
+		if (!selected_class_static || selected.scope != qualified_static_scope ||
+			!member_accessible(selected.binding, selected.scope, access_scope,
+				TypeId()))
+			throw std::runtime_error("PA12 static member call is inaccessible");
+	}
+	else if (selected_class_static && !member_accessible(selected.binding,
+		selected.scope, access_scope, TypeId()))
+		throw std::runtime_error("PA12 static member call is inaccessible");
 }
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	ScopeId member_scope, ScopeId access_scope, TypeId object) const
@@ -716,7 +853,8 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 	SimpleTokenType member_token, const ExprInfo& object,
 	TypeId actual_object, ScopeId member_scope,
 	const std::vector<ValueRef>& candidates,
-	const std::vector<NamedRecordId>* base_path)
+	const std::vector<NamedRecordId>* base_path, bool allow_static,
+	BindingId implicit_this)
 {
 	if (member_token != SimpleTokenType::OP_DOT &&
 		member_token != SimpleTokenType::OP_ARROW)
@@ -725,10 +863,14 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		return ExprInfo();
 	if (candidates.empty())
 		return ExprInfo();
-	if (member_token == SimpleTokenType::OP_DOT &&
+	if (allow_static && !implicit_this.valid())
+		throw std::runtime_error("PA12 implicit member object is missing");
+	if (!allow_static && !object.fact.valid())
+		throw std::runtime_error("PA12 member call object is missing");
+	if (!allow_static && member_token == SimpleTokenType::OP_DOT &&
 		object.category != SemanticValueCategory::Lvalue)
 		throw std::runtime_error("PA12 member call needs an lvalue object");
-	if (member_token == SimpleTokenType::OP_ARROW)
+	if (!allow_static && member_token == SimpleTokenType::OP_ARROW)
 	{
 		const TypeId pointer = strip_cv_type(expression_object_type(object.type));
 		if (type_kind(pointer) != TypeKind::Pointer)
@@ -755,6 +897,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 	{
 		ValueRef value;
 		TypeId type;
+		bool static_member;
 		unsigned int object_cv;
 		std::vector<unsigned int> ranks;
 	};
@@ -762,26 +905,43 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
-		const Binding& candidate = binding(candidates[i].binding);
+		const ValueRef& candidate_ref = candidates[i];
+		if (!candidate_ref.binding.valid() || candidate_ref.binding.value >=
+			bindings_.size() || !candidate_ref.scope.valid() ||
+			candidate_ref.scope != member_scope)
+			throw std::runtime_error("PA12 member candidate ownership is invalid");
+		const Binding& candidate = binding(candidate_ref.binding);
+		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
+			candidate.type.value >= types_.size() ||
+			type_kind(candidate.type) != TypeKind::Function)
+			throw std::runtime_error("PA12 member candidate type is invalid");
 		const TypeKey& function = types_[candidate.type.value];
-		const TypeId required_object = member_object_type(candidate.type,
-			member_scope);
-		if (!required_object.valid() ||
-			class_scope_for_type(required_object) != member_scope ||
-			!member_object_qualification_convertible(actual_object,
-				required_object))
+		const bool static_member = is_static_member(candidate_ref.binding);
+		if (static_member && !allow_static)
 			continue;
+		TypeId required_object;
+		if (!static_member)
+		{
+			required_object = member_object_type(candidate.type,
+				candidate_ref.scope);
+			if (!required_object.valid() ||
+				class_scope_for_type(required_object) != candidate_ref.scope ||
+				!member_object_qualification_convertible(actual_object,
+					required_object))
+				continue;
+		}
 		std::size_t required = function.parameters.size();
 		while (required != 0 && function_default_argument(
-			candidates[i].binding, required - 1).valid())
+			candidate_ref.binding, required - 1).valid())
 			--required;
 		if (arguments.size() < required ||
 			(!function.variadic && arguments.size() > function.parameters.size()))
 			continue;
 		CandidateScore score;
-		score.value = candidates[i];
+		score.value = candidate_ref;
 		score.type = candidate.type;
-		score.object_cv = cv_qualifiers(required_object) &
+		score.static_member = static_member;
+		score.object_cv = static_member ? 0 : cv_qualifiers(required_object) &
 			~cv_qualifiers(actual_object);
 		score.ranks.reserve(arguments.size());
 		bool arguments_viable = true;
@@ -859,7 +1019,9 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 			throw std::runtime_error("PA12 ambiguous member call");
 	const ValueRef selected = viable[best_index].value;
 	const TypeId selected_type = viable[best_index].type;
-	if (!member_accessible(selected.binding, member_scope, scope, actual_object))
+	const bool selected_static = viable[best_index].static_member;
+	if (!member_accessible(selected.binding, selected.scope, scope,
+		selected_static ? TypeId() : actual_object))
 		throw std::runtime_error("PA12 member call is inaccessible");
 	if (function_declaration_kind(selected.binding) ==
 		FunctionDeclarationKind::Deleted)
@@ -897,22 +1059,47 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		result_category = SemanticValueCategory::Xvalue;
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
-	fact.token = member_token;
 	fact.has_callee = true;
-	fact.has_implicit_object = true;
+	fact.has_implicit_object = !selected_static;
 	fact.selected_binding = selected.binding;
 	fact.selected_scope = selected.scope;
-	fact.callable_type = member_function_expression_type(selected_type,
-		member_scope, selected.binding);
+	fact.callable_type = selected_static ? selected_type :
+		member_function_expression_type(selected_type, selected.scope,
+			selected.binding);
 	if (type_kind(fact.callable_type) != TypeKind::Function)
-		throw std::runtime_error("PA12 member call has no hidden object signature");
+		throw std::runtime_error("PA12 member call signature is invalid");
 	std::vector<SemanticFactId> children;
-	children.push_back(object.fact);
+	if (!selected_static)
+	{
+		fact.token = member_token;
+		children.push_back(object.fact.valid() ? object.fact :
+			semantic_this_expression(node, implicit_this).fact);
+	}
 	for (std::size_t i = 0; i < arguments.size(); ++i)
 		children.push_back(arguments[i].fact);
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result, children);
 	return ExprInfo(result, result_type, result_category, false);
+}
+
+ExprInfo PA11SemanticModel::semantic_member_call_with_implicit_object(
+	const PA10AstNode& node, ScopeId scope, BindingId this_binding,
+	TypeId actual_object, ScopeId member_scope,
+	const std::vector<ValueRef>& candidates)
+{
+	if (node.children.size() != 2 || !this_binding.valid() ||
+		!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class)
+		return ExprInfo();
+	const Binding& this_value = binding(this_binding);
+	const TypeId this_pointer = strip_cv_type(expression_object_type(
+		this_value.type));
+	if (this_value.kind != BindingKind::Parameter ||
+		type_kind(this_pointer) != TypeKind::Pointer)
+		throw std::runtime_error("PA12 implicit member object is invalid");
+	return semantic_member_call_with_object(node, scope,
+		SimpleTokenType::OP_ARROW, ExprInfo(), actual_object, member_scope,
+		candidates, NULL, true, this_binding);
 }
 
 ExprInfo PA11SemanticModel::semantic_unqualified_member_call(
@@ -959,6 +1146,7 @@ ExprInfo PA11SemanticModel::semantic_unqualified_member_call(
 		// it is a base subobject of this, and then use the same typed selector
 		// as dot/arrow and unqualified calls.
 		NamePath qualifier;
+		qualifier.global = member_name.global;
 		qualifier.components.assign(member_name.components.begin(),
 			member_name.components.end() - 1);
 		const TypeId qualifier_type = lookup_type_path(qualifier, scope);
@@ -986,18 +1174,21 @@ ExprInfo PA11SemanticModel::semantic_unqualified_member_call(
 		!selection.owner.valid() || selection.owner.value >= scopes_.size() ||
 		scopes_[selection.owner.value].kind != ScopeKind::Class)
 		return ExprInfo();
-	const std::vector<ValueRef> candidates =
-		member_function_candidates_in_scope(selection.owner, member_name.last());
+	std::vector<ValueRef> candidates = member_function_candidates_in_scope(
+		selection.owner, member_name.last());
+	const std::vector<ValueRef> static_candidates =
+		static_member_function_candidates_in_scope(selection.owner,
+			member_name.last());
+	candidates.insert(candidates.end(), static_candidates.begin(),
+		static_candidates.end());
 	if (candidates.empty())
 	{
 		if (!base_path.empty())
 			throw std::runtime_error("PA12 inherited member name is not callable");
 		return ExprInfo();
 	}
-	const ExprInfo object = semantic_this_expression(node, this_id);
-	return semantic_member_call_with_object(node, scope,
-		SimpleTokenType::OP_ARROW, object, record_object, selection.owner,
-		candidates, &base_path);
+	return semantic_member_call_with_implicit_object(node, scope, this_id,
+		record_object, selection.owner, candidates);
 }
 
 ExprInfo PA11SemanticModel::semantic_member_call_probe(
