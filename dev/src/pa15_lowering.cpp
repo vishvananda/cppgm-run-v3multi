@@ -9,7 +9,9 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  used_slot_names_(), used_value_names_(), symbol_collision_counters_(),
 		  slot_collision_counters_(), function_symbols_(),
 		  function_name_ids_(), function_declaration_plans_(),
-		  demanded_function_declarations_(), global_symbols_(), global_name_ids_(),
+		  demanded_function_declarations_(), demanded_member_declarations_(),
+		  demanded_member_declaration_types_(),
+		  global_symbols_(), global_name_ids_(),
 		  symbol_name_ids_(), literal_address_symbols_(), label_blocks_(),
 		  label_referenced_(), label_subtrees_(), label_index_states_(),
 		  label_subtree_states_(), label_lowered_(), label_block_generations_(),
@@ -1054,7 +1056,10 @@ void Pa15Lowerer::collect_functions(){
 		index_function_scope_variables();
 		std::vector<unsigned char> demanded_member_functions(
 			model_.function_facts_.size(), 0);
-		collect_demanded_member_functions(&demanded_member_functions);
+		demanded_member_declarations_.assign(model_.bindings_.size(), 0);
+		demanded_member_declaration_types_.assign(model_.bindings_.size(), TypeId());
+		collect_demanded_member_functions(&demanded_member_functions,
+			&demanded_member_declarations_, &demanded_member_declaration_types_);
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
@@ -1160,61 +1165,6 @@ void Pa15Lowerer::collect_functions(){
 			stored.slot_count = next_slot_ - stored.slot_begin.index;
 			stored.value_begin = ValueId();
 			stored.value_count = 0;
-		}
-	}
-
-void Pa15Lowerer::collect_function_declarations(){
-		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
-		{
-			const Scope& scope = model_.scopes_[scope_index];
-			if (scope.kind != ScopeKind::Namespace) continue;
-			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
-			{
-				const BindingId binding_id = scope.bindings[i];
-				const Binding& binding = model_.binding(binding_id);
-				if (binding.kind != BindingKind::Function ||
-					model_.type_kind(binding.type) != TypeKind::Function ||
-					function_symbols_.find(binding_id.value) != function_symbols_.end())
-					continue;
-				const TypeKey& type = model_.types_[binding.type.value];
-				FunctionDeclaration declaration;
-				declaration.symbol_id = SymbolId(next_symbol_++);
-				declaration.name_id = symbol_spelling(internal_value_name(
-					ScopeId(scope_index), binding.name));
-				declaration.return_type = function_result_low_type(
-					type.result);
-				const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
-				if (sidecar != NULL && sidecar->nonthrowing)
-					declaration.boundary.unwind = lowir_model::CUM_NO;
-				declaration.metadata.binding = binding.internal_linkage ?
-					lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
-				if (binding.language_linkage != LanguageLinkage::C ||
-					binding.internal_linkage)
-					declaration.metadata.object_symbol_id = intern_spelling(
-						abi_function_symbol(binding_id, ScopeId(scope_index)));
-				if (binding.language_linkage == LanguageLinkage::C)
-					declaration.metadata.linkage = lowir_model::LLM_C;
-				declaration.boundary.arity = type.variadic ?
-					lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
-				for (std::size_t parameter = 0; parameter < type.parameters.size(); ++parameter)
-				{
-					Parameter parameter_record;
-					std::ostringstream parameter_name;
-					parameter_name << "%arg" << parameter;
-					parameter_record.name_id = intern_spelling(parameter_name.str());
-					parameter_record.type = low_type(type.parameters[parameter]);
-					const TypeKind parameter_kind = model_.type_kind(
-						model_.strip_cv_type(type.parameters[parameter]));
-					if (parameter_kind == TypeKind::LvalueReference ||
-						parameter_kind == TypeKind::RvalueReference)
-						parameter_record.metadata.passing = lowir_model::PPM_REFERENCE;
-					declaration.params.push_back(parameter_record);
-				}
-			function_declaration_plans_[binding_id.value] = declaration;
-			function_symbols_[binding_id.value] = declaration.symbol_id;
-			function_name_ids_[binding_id.value] = declaration.name_id;
-			symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;
-			}
 		}
 	}
 

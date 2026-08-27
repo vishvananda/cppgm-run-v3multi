@@ -199,6 +199,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 	{
 		ValueRef value;
 		TypeId type;
+		unsigned int object_cv;
 		std::vector<unsigned int> ranks;
 	};
 	std::vector<CandidateScore> viable;
@@ -222,11 +223,9 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		CandidateScore score;
 		score.value = candidates[i];
 		score.type = candidate.type;
-		score.ranks.reserve(arguments.size() + 1);
-		// The implicit object is the first call argument for overload
-		// ranking.  conversion_for intentionally ignores top-level cv for
-		// ordinary by-value arguments, so rank this qualification explicitly.
-		score.ranks.push_back(actual_object == required_object ? 0 : 1);
+		score.object_cv = cv_qualifiers(required_object) &
+			~cv_qualifiers(actual_object);
+		score.ranks.reserve(arguments.size());
 		bool arguments_viable = true;
 		for (std::size_t arg = 0; arg < arguments.size(); ++arg)
 		{
@@ -273,6 +272,17 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 		const CandidateScore& right) -> bool
 	{
 		bool strict = false;
+		// Qualification conversions form a subset ordering.  Thus an exact
+		// object match beats any added cv, const beats const volatile, and
+		// const and volatile remain incomparable.
+		if (left.object_cv != right.object_cv)
+		{
+			if ((left.object_cv & ~right.object_cv) != 0)
+				return false;
+			strict = true;
+		}
+		if (left.ranks.size() != right.ranks.size())
+			return false;
 		for (std::size_t i = 0; i < left.ranks.size(); ++i)
 		{
 			if (left.ranks[i] > right.ranks[i])

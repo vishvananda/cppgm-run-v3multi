@@ -85,6 +85,56 @@ if [ -z "$mutable_symbol" ] || [ -z "$const_symbol" ] ||
   exit 1
 fi
 
+subset_source=$build_dir/member-cv-subset.cpp
+printf '%s\n' \
+  'struct Qualified {' \
+  '  int get() const volatile { return 20; }' \
+  '  int get() const { return 10; }' \
+  '};' \
+  'int read_qualified(Qualified & value) { return value.get(); }' \
+  'int main() { Qualified value; return read_qualified(value); }' >"$subset_source"
+subset_output=$build_dir/member-cv-subset.lowir
+"$app" --emit-lowir -O0 -o "$subset_output" "$subset_source"
+subset_symbol=$(sed -n 's/^function @\([^ (]*\).*object=_ZNK9Qualified3getEv.*/\1/p' \
+  "$subset_output")
+if [ -z "$subset_symbol" ] ||
+   ! rg -Fq "call i32 @${subset_symbol}(" "$subset_output" ||
+   rg -Fq 'object=_ZNVK9Qualified3getEv' "$subset_output"; then
+  echo "implicit-object qualification subset did not select const" >&2
+  exit 1
+fi
+
+incomparable_source=$build_dir/member-cv-incomparable.cpp
+printf '%s\n' \
+  'struct Incomparable {' \
+  '  int get() const { return 1; }' \
+  '  int get() volatile { return 2; }' \
+  '};' \
+  'int main() { Incomparable value; return value.get(); }' \
+  >"$incomparable_source"
+expect_failure "$incomparable_source"
+
+declaration_source=$build_dir/member-declaration-only.cpp
+printf '%s\n' \
+  'struct ExternalMember {' \
+  '  int called(int value) const;' \
+  '  int unused(int value) const volatile;' \
+  '};' \
+  'int main() { ExternalMember value; return value.called(7); }' \
+  >"$declaration_source"
+declaration_output=$build_dir/member-declaration-only.lowir
+"$app" --emit-lowir -O0 -o "$declaration_output" "$declaration_source"
+if ! rg -Fq \
+    'declare function @ExternalMember__called(%this : ptr, %arg0 : i32) -> i32' \
+    "$declaration_output" ||
+   ! rg -Fq 'object=_ZNK14ExternalMember6calledEi' "$declaration_output" ||
+   ! rg -q -e '^    %t[0-9]+ = call i32 @ExternalMember__called\(%t[0-9]+, 7\)$' \
+    "$declaration_output" ||
+   rg -Fq 'ExternalMember__unused' "$declaration_output"; then
+  echo "declaration-only member demand did not retain its typed boundary" >&2
+  exit 1
+fi
+
 variadic_source=$build_dir/member-variadic-ellipsis.cpp
 printf '%s\n' \
   'struct Variadic {' \

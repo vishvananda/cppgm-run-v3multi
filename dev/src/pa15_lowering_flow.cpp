@@ -94,7 +94,8 @@ void Pa15Lowerer::materialize_function_declarations(){
 			++scope_index)
 		{
 			const Scope& scope = model_.scopes_[scope_index];
-			if (scope.kind != ScopeKind::Namespace) continue;
+			if (scope.kind != ScopeKind::Namespace &&
+				scope.kind != ScopeKind::Class) continue;
 			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
 			{
 				const BindingId binding_id = scope.bindings[i];

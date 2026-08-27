@@ -18,15 +18,17 @@ the original member Function type remains the ABI/signature owner.
 
 The only member emission-demand edge is a successful typed member
 `CallExpression` with its selected `BindingId` in a reachable emitted
-FunctionFact body.  PA15 maps that binding through the existing typed
-binding-to-FunctionFact index, then follows `FunctionFactId` work items.  It
-seeds the same namespace FunctionFact eligibility used by `collect_functions`
-and uses dense byte vectors for function/fact scans and class-method demand.
-Transitive class methods are followed once; unrelated class bodies are not
-scanned.  PA15 validates the selected FunctionFact, class owner, exact hidden
-binding/signature, object qualification, direct symbol, and ABI method cv.
-Dot uses one object address and arrow uses one object expression before
-lowering explicit arguments.
+FunctionFact body.  For a definition, PA15 maps that binding through the
+existing typed binding-to-FunctionFact index and follows a `FunctionFactId`
+work item; for a declaration-only member, it carries the selected binding and
+semantic `callable_type` as reachability metadata.  It seeds the same
+namespace FunctionFact eligibility used by `collect_functions` and uses dense
+byte/flag vectors for function/fact scans and class-method/declaration
+demand.  Transitive class methods are followed once; unrelated class bodies
+are not scanned.  PA15 validates the selected class owner, exact hidden
+binding/signature when a definition exists, hidden object/cv ABI boundary,
+object qualification, and direct symbol.  Dot uses one object address and
+arrow uses one object expression before lowering explicit arguments.
 
 This matches the root specification's one production pipeline, typed fact
 continuity, canonical semantic owners, typed demand roots/edges, bounded
@@ -61,22 +63,26 @@ boundary.  Earlier through-PA15 evidence is now revalidated at `1167/1167`.
 
 ## Current checkpoint
 
-The selector ranks the implicit object as the first conversion sequence and
-reuses typed direct-call ranks for explicit arguments.  Qualification
-compatibility is checked before ranking; exact cv matches beat added
-qualification.  A variadic function is not preferred merely because it is
-non-variadic when no ellipsis conversion occurs; an actual extra variadic
-argument receives the worst rank, and equal no-ellipsis candidates are
-ambiguous.  Defaults are checked before selection and materialized only for
-the selected binding.
+The selector checks implicit-object qualification compatibility before ranking
+and compares added cv by subset: exact matches win, `const` and `volatile`
+remain incomparable, and either is better than `const volatile` for a
+mutable object.  It reuses typed direct-call ranks for explicit arguments.  A
+non-variadic candidate is not preferred merely because its competitor is
+variadic when no ellipsis conversion occurs; an actual ellipsis argument
+receives the worst rank, and equal no-ellipsis candidates are ambiguous.
+Defaults are checked before selection and materialized only for the selected
+binding.
 
 The PA15 demand repair removes the landed boolean index that could leak a
 member helper from an un-emitted member body.  A single reachable typed-fact
 traversal starts at namespace FunctionFacts that `collect_functions` emits,
 follows selected member bindings transitively, and marks each FunctionFact
-once with dense typed metadata.  The course regression proves hidden-object
-call formation, both cv ABI identities and call targets, transitive demand,
-unreachable suppression, actual ellipsis handling, and variadic ambiguity.
+once with dense typed metadata.  A selected declaration-only member is
+planned from its typed callable boundary and is not emitted unless that edge
+is reachable.  The course regression proves hidden-object call formation,
+both cv ABI identities and call targets, qualification-subset selection,
+transitive demand, unreachable suppression, declaration-only boundary
+emission, actual ellipsis handling, and variadic ambiguity.
 
 The semantic tail guard rolls back failed probe facts and no failed probe can
 publish a demand edge.  Direct symbol/mangling and hidden-first-argument
@@ -92,23 +98,30 @@ Member viability/ranking is approximately `O(C * (P + A))` for `C` local
 candidates, `P` parameters, and `A` explicit arguments after direct class
 lookup.  PA15's `FunctionFactId` worklist and dense byte/flag vectors process
 each reachable FunctionFact and SemanticFact at most once; storage is bounded
-by the existing typed fact domains.  `pa15_lowering.cpp` is 2964 lines after
-the helper moved to the already-registered call-lowering translation unit, and
-the final file audit passes with only the five pre-existing header warnings.
+by the existing typed fact domains.  `pa15_lowering.cpp` is 2914 lines after
+declaration planning moved to the already-registered call-lowering translation
+unit, and the final file audit passes with only the five pre-existing header
+warnings.
 
 No timing/RSS/allocation or structural-counter measurement was collected, so
-the evidence is structural rather than a numerical performance claim.  The
-remaining bounded risks are large-input constants for the linear reachable
-fact walk and the explicitly deferred PA16 feature slices.  Demand ownership,
-speculation rollback, naming, and retry behavior are resolved for this
-checkpoint; no speculative-demand uncertainty is carried forward.
+the evidence is structural rather than a numerical performance claim.  A
+bounded two-input external-declaration smoke check also produced the typed
+member declaration; link-time definition pairing is not claimed as a PA16
+completion criterion here.  The remaining bounded risks are large-input
+constants for the linear reachable fact walk and the explicitly deferred PA16
+feature slices.  Demand ownership, speculation rollback, naming, and retry
+behavior are resolved for this checkpoint; no speculative-demand uncertainty
+is carried forward.
 
 Focused evidence after the final repair is:
 
 - PA16 affected controls: `6/6`.
 - PA15 free/indirect controls: `3/3`.
 - Relevant course regressions 400, 401, and 402: each exits `0`.
-- `git diff --check` and the 402 shell syntax check: pass.
+- The 402 regression covers const-subset selection, const/volatile
+  ambiguity, declaration-only member demand with hidden object/explicit
+  parameter/cv ABI, transitive demand, and unreachable suppression; all three
+  course scripts' shell syntax checks and `git diff --check` pass.
 
 Broad evidence is through-PA15 `1167/1167`, file audit exit `0` with five
 pre-existing warnings, and full PA16 `47/243`, `196` failures,
@@ -129,4 +142,4 @@ not claim full PA16 completion.
 | --- | --- |
 | `37265733` typed member projection audit/repair | Completed bounded audit/repair; direct/nested dot and arrow ownership remains traced through PA12, PA11 `RecordLayout::member_offsets`, and PA15 LowIR, with PA16 still incomplete at that checkpoint's existing failure baseline. |
 | `b1e8272d` + PA16 typed implicit-object boundary | Prior landed checkpoint record preserved: canonical Function-scope hidden-object ownership, fail-closed viability, typed demand indexing, direct PA15 lowering, focused `6/6` + `2/2`, and reported final `47/243` with `243/243` coverage. |
-| `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv ranking, N3485 variadic comparison, dense typed PA15 reachability, single-owner demand edges, hidden-object call formation, and source-file sizing are repaired. Focused controls and course regressions pass; broad gates record through-PA15 `1167/1167`, final PA16 `47/243` with `196` failures and `243/243` coverage, zero failure-identity additions/removals, and PA16 still incomplete. |
+| `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed PA15 reachability, dense FunctionFact/fact metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused controls and course regressions pass; broad gates record through-PA15 `1167/1167`, final PA16 `47/243` with `196` failures and `243/243` coverage, zero failure-identity additions/removals, and PA16 still incomplete. |

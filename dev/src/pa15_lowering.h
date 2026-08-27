@@ -227,6 +227,8 @@ private:
 	std::map<std::size_t, SpellingId> function_name_ids_;
 	std::map<std::size_t, FunctionDeclaration> function_declaration_plans_;
 	std::set<std::size_t> demanded_function_declarations_;
+	std::vector<unsigned char> demanded_member_declarations_;
+	std::vector<TypeId> demanded_member_declaration_types_;
 	std::map<std::size_t, SymbolId> global_symbols_;
 	std::map<std::size_t, SpellingId> global_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
@@ -341,7 +343,9 @@ private:
 	void materialize_pending_global_initializers();
 	void index_function_scope_variables();
 	void collect_demanded_member_functions(
-		std::vector<unsigned char>* demanded) const;
+		std::vector<unsigned char>* demanded,
+		std::vector<unsigned char>* declarations,
+		std::vector<TypeId>* declaration_types) const;
 	void collect_functions();
 	void collect_function_declarations();
 	void demand_function_declaration(BindingId binding);

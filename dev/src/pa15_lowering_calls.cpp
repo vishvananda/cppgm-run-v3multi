@@ -4,9 +4,14 @@ namespace pa11_semantic_internal
 {
 
 void Pa15Lowerer::collect_demanded_member_functions(
-	std::vector<unsigned char>* demanded) const
+	std::vector<unsigned char>* demanded,
+	std::vector<unsigned char>* declarations,
+	std::vector<TypeId>* declaration_types) const
 {
-	if (demanded == NULL || demanded->size() != model_.function_facts_.size())
+	if (demanded == NULL || demanded->size() != model_.function_facts_.size() ||
+		declarations == NULL || declarations->size() != model_.bindings_.size() ||
+		declaration_types == NULL || declaration_types->size() !=
+		model_.bindings_.size())
 		throw std::runtime_error("PA15 member demand output is missing");
 	std::vector<FunctionFactId> function_work;
 	std::vector<unsigned char> scanned_functions(
@@ -55,20 +60,52 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					throw std::runtime_error("PA15 member call demand is incomplete");
 				const FunctionFactId* target_id =
 					model_.function_binding_fact_index_.find(fact.selected_binding);
-				if (target_id != NULL && target_id->valid() &&
-					target_id->value < model_.function_facts_.size())
+				if (target_id != NULL)
 				{
+					if (!target_id->valid() || target_id->value >=
+						model_.function_facts_.size())
+						throw std::runtime_error("PA15 member demand function is invalid");
 					const FunctionFact& target =
 						model_.function_facts_[target_id->value];
-					if (target.owner.valid() && target.owner.value <
-						model_.scopes_.size() &&
-						model_.scopes_[target.owner.value].kind == ScopeKind::Class &&
-						target.function_scope.valid() && target.body_fact.valid() &&
-						!(*demanded)[target_id->value])
+					if (!fact.selected_scope.valid() ||
+						fact.selected_scope.value >= model_.scopes_.size() ||
+						model_.scopes_[fact.selected_scope.value].kind !=
+						ScopeKind::Class || !target.owner.valid() ||
+						target.owner != fact.selected_scope || target.owner.value >=
+						model_.scopes_.size() || !target.function_scope.valid() ||
+						target.function_scope.value >= model_.scopes_.size() ||
+						!target.body_fact.valid())
+						throw std::runtime_error(
+							"PA15 member demand definition is invalid");
+					if (!(*demanded)[target_id->value])
 					{
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
 					}
+				}
+				else
+				{
+					const Binding& target = model_.binding(fact.selected_binding);
+					if (!fact.selected_scope.valid() ||
+						fact.selected_scope.value >= model_.scopes_.size() ||
+						model_.scopes_[fact.selected_scope.value].kind !=
+						ScopeKind::Class || target.kind != BindingKind::Function ||
+						model_.type_kind(target.type) != TypeKind::Function ||
+						model_.is_static_member(fact.selected_binding))
+						throw std::runtime_error(
+							"PA15 member declaration demand is invalid");
+					if (!fact.callable_type.valid() ||
+						model_.type_kind(fact.callable_type) != TypeKind::Function)
+						throw std::runtime_error(
+							"PA15 member declaration signature is missing");
+					if ((*declaration_types)[fact.selected_binding.value].valid() &&
+						(*declaration_types)[fact.selected_binding.value] !=
+						fact.callable_type)
+						throw std::runtime_error(
+							"PA15 member declaration signature changed");
+					(*declarations)[fact.selected_binding.value] = 1;
+					(*declaration_types)[fact.selected_binding.value] =
+						fact.callable_type;
 				}
 			}
 			if (fact.child_count == 0)
@@ -81,6 +118,103 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			for (std::size_t child = 0; child < fact.child_count; ++child)
 				fact_work.push_back(model_.semantic_children_[
 					fact.child_begin + child]);
+		}
+	}
+}
+
+void Pa15Lowerer::collect_function_declarations(){
+	for (std::size_t scope_index = 0; scope_index < model_.scopes_.size();
+		++scope_index)
+	{
+		const Scope& scope = model_.scopes_[scope_index];
+		const bool namespace_scope = scope.kind == ScopeKind::Namespace;
+		const bool member_scope = scope.kind == ScopeKind::Class;
+		if (!namespace_scope && !member_scope) continue;
+		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+		{
+			const BindingId binding_id = scope.bindings[i];
+			const Binding& binding = model_.binding(binding_id);
+			if (binding.kind != BindingKind::Function ||
+				model_.type_kind(binding.type) != TypeKind::Function ||
+				function_symbols_.find(binding_id.value) != function_symbols_.end())
+				continue;
+			if (member_scope && (model_.is_static_member(binding_id) ||
+				binding_id.value >= demanded_member_declarations_.size() ||
+				demanded_member_declarations_[binding_id.value] == 0))
+				continue;
+			const ScopeId owner(scope_index);
+			const TypeKey& type = model_.types_[binding.type.value];
+			TypeId member_callable_type;
+			if (member_scope)
+			{
+				if (binding_id.value >= demanded_member_declaration_types_.size())
+					throw std::runtime_error(
+						"PA15 member declaration signature is missing");
+				member_callable_type =
+					demanded_member_declaration_types_[binding_id.value];
+				if (!member_callable_type.valid() ||
+					model_.type_kind(member_callable_type) != TypeKind::Function)
+					throw std::runtime_error(
+						"PA15 member declaration signature is missing");
+				const TypeKey& callable = model_.types_[
+					member_callable_type.value];
+				if (callable.cv != 0 || callable.variadic != type.variadic ||
+					callable.result != type.result || callable.parameters.size() !=
+					type.parameters.size() + 1)
+					throw std::runtime_error(
+						"PA15 member declaration boundary is invalid");
+				for (std::size_t parameter = 0;
+					parameter < type.parameters.size(); ++parameter)
+					if (callable.parameters[parameter + 1] !=
+						type.parameters[parameter])
+						throw std::runtime_error(
+							"PA15 member declaration parameter is invalid");
+			}
+			FunctionDeclaration declaration;
+			declaration.symbol_id = SymbolId(next_symbol_++);
+			declaration.name_id = symbol_spelling(internal_value_name(
+				owner, binding.name));
+			declaration.return_type = function_result_low_type(type.result);
+			const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
+			if (sidecar != NULL && sidecar->nonthrowing)
+				declaration.boundary.unwind = lowir_model::CUM_NO;
+			declaration.metadata.binding = binding.internal_linkage ?
+				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
+			if (binding.language_linkage != LanguageLinkage::C ||
+				binding.internal_linkage)
+				declaration.metadata.object_symbol_id = intern_spelling(
+					abi_function_symbol(binding_id, owner));
+			if (binding.language_linkage == LanguageLinkage::C)
+				declaration.metadata.linkage = lowir_model::LLM_C;
+			declaration.boundary.arity = type.variadic ?
+				lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
+			if (member_scope)
+			{
+				Parameter parameter_record;
+				parameter_record.name_id = intern_spelling("%this");
+				parameter_record.type = low_type(model_.types_[
+					member_callable_type.value].parameters.front());
+				declaration.params.push_back(parameter_record);
+			}
+			for (std::size_t parameter = 0; parameter < type.parameters.size();
+				++parameter)
+			{
+				Parameter parameter_record;
+				std::ostringstream parameter_name;
+				parameter_name << "%arg" << parameter;
+				parameter_record.name_id = intern_spelling(parameter_name.str());
+				parameter_record.type = low_type(type.parameters[parameter]);
+				const TypeKind parameter_kind = model_.type_kind(
+					model_.strip_cv_type(type.parameters[parameter]));
+				if (parameter_kind == TypeKind::LvalueReference ||
+					parameter_kind == TypeKind::RvalueReference)
+					parameter_record.metadata.passing = lowir_model::PPM_REFERENCE;
+				declaration.params.push_back(parameter_record);
+			}
+			function_declaration_plans_[binding_id.value] = declaration;
+			function_symbols_[binding_id.value] = declaration.symbol_id;
+			function_name_ids_[binding_id.value] = declaration.name_id;
+			symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;
 		}
 	}
 }
@@ -122,11 +256,17 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				throw std::runtime_error("PA15 member call object is missing");
 			const FunctionFact* member_fact =
 				model_.function_fact_for_binding(fact.selected_binding);
-			if (member_fact == NULL || !member_fact->owner.valid() ||
-				member_fact->owner.value >= model_.scopes_.size() ||
-				model_.scopes_[member_fact->owner.value].kind != ScopeKind::Class ||
-				fact.selected_scope != member_fact->owner)
+			ScopeId member_owner = member_fact == NULL ? fact.selected_scope :
+				member_fact->owner;
+			if (!member_owner.valid() || member_owner.value >=
+				model_.scopes_.size() || model_.scopes_[member_owner.value].kind !=
+				ScopeKind::Class || (member_fact != NULL &&
+				fact.selected_scope != member_owner))
 				throw std::runtime_error("PA15 member call owner is invalid");
+			if (member_fact == NULL && function_declaration_plans_.find(
+				fact.selected_binding.value) == function_declaration_plans_.end())
+				throw std::runtime_error(
+					"PA15 member declaration target was not planned");
 			const Binding& member = model_.binding(fact.selected_binding);
 			if (member.kind != BindingKind::Function ||
 				model_.type_kind(member.type) != TypeKind::Function ||
@@ -143,21 +283,30 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				if (function_type->parameters[parameter + 1] !=
 					member_signature.parameters[parameter])
 					throw std::runtime_error("PA15 member call parameter mismatch");
-			if (!member_fact->function_scope.valid() ||
-				member_fact->function_scope.value >= model_.scopes_.size())
-				throw std::runtime_error("PA15 member call function scope is missing");
-			const Scope& function_scope = model_.scopes_[
-				member_fact->function_scope.value];
-			const BindingId hidden_this = function_scope.implicit_object_binding;
-			if (!hidden_this.valid() || model_.binding(hidden_this).kind !=
-				BindingKind::Parameter || model_.binding(hidden_this).type !=
-				function_type->parameters.front())
-				throw std::runtime_error("PA15 member call hidden object mismatch");
 			const TypeId hidden_pointer = model_.strip_cv_type(
 				model_.expression_object_type(function_type->parameters.front()));
 			if (model_.type_kind(hidden_pointer) != TypeKind::Pointer)
 				throw std::runtime_error("PA15 member call hidden object is not a pointer");
 			const TypeId required_object = model_.types_[hidden_pointer.value].child;
+			if (model_.class_scope_for_type(model_.strip_cv_type(required_object)) !=
+				member_owner || model_.cv_qualifiers(required_object) !=
+				member_signature.cv)
+				throw std::runtime_error("PA15 member call hidden object mismatch");
+			if (member_fact != NULL)
+			{
+				if (!member_fact->function_scope.valid() ||
+					member_fact->function_scope.value >= model_.scopes_.size())
+					throw std::runtime_error(
+						"PA15 member call function scope is missing");
+				const Scope& function_scope = model_.scopes_[
+					member_fact->function_scope.value];
+				const BindingId hidden_this = function_scope.implicit_object_binding;
+				if (!hidden_this.valid() || model_.binding(hidden_this).kind !=
+					BindingKind::Parameter || model_.binding(hidden_this).type !=
+					function_type->parameters.front())
+					throw std::runtime_error(
+						"PA15 member call hidden object mismatch");
+			}
 			const SemanticFact& object_fact = model_.semantic_facts_[
 				facts.front().value];
 			TypeId actual_object;
@@ -177,7 +326,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				object = lower_address(facts.front());
 			}
 			if (model_.class_scope_for_type(model_.strip_cv_type(actual_object)) !=
-				member_fact->owner || !model_.qualification_convertible(
+				member_owner || !model_.qualification_convertible(
 				actual_object, required_object) || !object.type.is_pointer())
 				throw std::runtime_error("PA15 member call object is incompatible");
 			instruction.args.push_back(object.value);

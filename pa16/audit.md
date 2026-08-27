@@ -4,9 +4,10 @@
 
 This review covers landed commit `0b534f2fc163af1817d679eed484f0c210b54891`
 relative to parent `b1e8272d`, including the completed audit repairs for its
-typed direct non-static member-call boundary.  Unqualified member-call lookup,
-inherited lookup, operators, constructors/lifetime, virtual dispatch,
-ref-qualified methods, and unrelated PA16 surfaces remain outside this review.
+typed direct non-static member-call boundary and declaration-only member-call
+edge.  Unqualified member-call lookup, inherited lookup, operators,
+constructors/lifetime, virtual dispatch, ref-qualified methods, and unrelated
+PA16 surfaces remain outside this review.
 
 The owned path is:
 
@@ -28,8 +29,10 @@ PA10 CallExpression(MemberExpression) syntax
   The object is semantic child zero and explicit arguments follow it in source
   order.
 - The landed selector deferred every viable member overload set.  The repair
-  ranks the implicit object as the first conversion sequence, checks
-  qualification compatibility before ranking, and retains the existing typed
+  checks qualification compatibility before ranking, treats exact object cv as
+  best, and compares added object qualification by subset: `const` and
+  `volatile` remain incomparable, while either is better than `const volatile`
+  for a mutable object.  It retains the existing typed
   explicit-argument/default/conversion facts.  Equal best candidates fail as
   ambiguous rather than being selected by collection order.
 - The member comparator now follows the bounded N3485 conversion ordering: a
@@ -61,6 +64,13 @@ PA10 CallExpression(MemberExpression) syntax
   scanned semantic facts, and demanded class functions, so each reachable
   function/fact is processed once.  It does not scan class bodies that are not
   reached from an emitted namespace root, recover names, or retry the program.
+- For a demanded selected member `BindingId` without a FunctionFact, PA15
+  scans class-scope bindings only to materialize that one declaration.  It
+  takes the hidden first object parameter from the semantic callable type,
+  keeps explicit parameters at the declared boundary, and derives the cv ABI
+  symbol from the member Function type.  Definitions and declarations are
+  deduplicated by the existing binding symbol map; unused member declarations
+  remain absent.
 - Dot lowering takes one object address, while arrow lowering evaluates one
   pointer expression; explicit argument children are lowered afterward in
   source order.  Direct symbol lookup, ABI cv mangling, and the hidden first
@@ -85,9 +95,11 @@ PA10 CallExpression(MemberExpression) syntax
   `400-typed-layout-boundary-regression.sh`,
   `401-typed-member-projection-boundary-regression.sh`, and
   `402-typed-member-call-demand-roots-regression.sh` each exit `0`.
-  The new call regression checks both cv-selected ABI symbols and their
-  hidden-object call edges, transitive member demand, exactly-once helper
-  emission, unreachable-member suppression, actual ellipsis lowering, and
+  The call regression checks both cv-selected ABI symbols and their
+  hidden-object call edges, qualification-subset selection and
+  const/volatile ambiguity, transitive member demand, exactly-once helper
+  emission, unreachable suppression, a declaration-only called member with an
+  explicit parameter boundary and cv ABI symbol, actual ellipsis lowering, and
   no-ellipsis variadic ambiguity.
 - `sh -n cppgm.tests/course/pa16/402-typed-member-call-demand-roots-regression.sh`
   and `git diff --check` pass.
@@ -119,20 +131,23 @@ lookup.  PA15 uses typed `FunctionFactId` and `SemanticFactId` worklists plus
 dense byte vectors over the existing fact domains.  Each reachable function
 and semantic fact is scanned once, so demand traversal is linear in the
 reachable function/fact graph and has no name-recovery scan or whole-program
-retry.  The final implementation keeps `pa15_lowering.cpp` at 2964 lines,
+retry.  The final implementation keeps `pa15_lowering.cpp` at 2914 lines,
 below the file-audit limit.
 
 No timing, RSS, allocation, or structural-counter measurement was collected;
-these are structural bounds, not numerical performance claims.  The bounded
-remaining uncertainties are numerical performance on unusually large fact
-graphs and the explicitly separate unqualified, inherited/protected/friend,
-static-call, constructor/lifetime, virtual, ref-qualified, and broader
-conversion/overload slices.  The typed member-demand ownership itself has no
-speculative-demand side-index uncertainty remaining.
+these are structural bounds, not numerical performance claims.  A bounded
+two-input external-declaration smoke check also produced the typed member
+declaration; link-time definition pairing is not claimed as a PA16 completion
+criterion here.  Remaining uncertainties are numerical performance on
+unusually large fact graphs and the explicitly separate unqualified,
+inherited/protected/friend, static-call, constructor/lifetime, virtual,
+ref-qualified, and broader conversion/overload slices.  The typed
+member-demand ownership itself has no speculative-demand side-index
+uncertainty remaining.
 
 ## Audit ledger
 
 | checkpoint | result and disposition |
 | --- | --- |
 | `37265733` typed member projection audit/repair | Direct/nested dot and arrow ownership is traced through PA12, PA11 `RecordLayout::member_offsets` keyed by the object's canonical `NamedRecordId`, and PA15 LowIR; the reference-cv and class anonymous-injection defects are repaired. Broad validation and exact identity/coverage checks pass their bounded invariants; PA16 remains incomplete with the existing 205 failures. |
-| `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv ranking, N3485 variadic comparison, typed reachable member demand, dense PA15 reachability metadata, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
+| `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed reachable member demand, dense PA15 reachability metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
