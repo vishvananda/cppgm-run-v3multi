@@ -1061,6 +1061,9 @@ struct SemanticFact
 	// this marker is a typed semantic relation for containing expressions.
 	bool size_type_derived;
 	bool has_callee;
+	// Value-initialization is separate from the selected constructor: implicit/
+	// defaulted constructors receive zero-initialization; user-provided ones do not.
+	bool value_initialize;
 	// A direct member call stores its typed implicit object as child zero.
 	// The remaining children are the already-converted explicit arguments.
 	bool has_implicit_object;
@@ -1086,6 +1089,7 @@ struct SemanticFact
 			operation_type(),
 			size_type_derived(false),
 			has_callee(false),
+			value_initialize(false),
 			has_implicit_object(false)
 	{}
 };
@@ -1119,6 +1123,7 @@ struct ConstructorActionFact
 	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
 	BindingId constructor; SemanticFactId initializer;
 	std::size_t argument_begin; std::size_t argument_count;
+	bool value_initialize;
 
 	ConstructorActionFact(ConstructorActionTarget target =
 		ConstructorActionTarget::Member,
@@ -1127,7 +1132,8 @@ struct ConstructorActionFact
 		SemanticFactId initializer = SemanticFactId())
 		: target(target), base_record(base_record), member(member),
 		  constructor(constructor), initializer(initializer),
-		  argument_begin(InvalidIdentityValue), argument_count(0)
+		  argument_begin(InvalidIdentityValue), argument_count(0),
+		  value_initialize(false)
 	{}
 };
 

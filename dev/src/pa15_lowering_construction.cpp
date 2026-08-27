@@ -117,20 +117,31 @@ bool Pa15Lowerer::pointer_like(TypeId type) const{
 
 void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer,
 		const LoweredValue& storage){
+		if (!initializer.valid() || initializer.value >= model_.semantic_facts_.size())
+			throw std::runtime_error("PA15 array initializer fact is invalid");
 		const SemanticFact& init_fact = model_.semantic_facts_[initializer.value];
 		if (init_fact.kind != SemanticFactKind::BracedInitList)
 			throw std::runtime_error("PA15 unsupported array initializer");
 		TypeId array_type = model_.strip_cv_type(model_.binding(binding).type);
 		if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
 			throw std::runtime_error("PA15 array initializer target is not an array");
+		if (model_.types_[array_type.value].unknown_bound)
+			throw std::runtime_error("PA15 array initializer target is incomplete");
 		const LowType element_type = low_type(model_.types_[array_type.value].child);
 		const LoweredValue base = address_of_storage(storage);
 		const std::vector<SemanticFactId> values = children(initializer);
 		const std::size_t bound = model_.types_[array_type.value].bound.value;
+		const std::size_t max_offset = static_cast<std::size_t>(
+			std::numeric_limits<long long>::max());
+		if (bound > max_offset || element_type.storage_size() == 0 ||
+			element_type.storage_size() > max_offset)
+			throw std::runtime_error("PA15 array initializer index is out of range");
 		if (values.size() > bound)
 			throw std::runtime_error("PA15 array initializer exceeds bound");
 		for (std::size_t i = 0; i < bound; ++i)
 		{
+			if (i > max_offset / element_type.storage_size())
+				throw std::runtime_error("PA15 array initializer offset is out of range");
 			LoweredValue destination_address = base;
 			if (i != 0)
 			{
@@ -166,7 +177,11 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 			model_.semantic_facts_[initializer.front().value];
 		if (initializer_fact.kind == SemanticFactKind::ConstructorAction)
 		{
-			if (!constructor_action_is_noop(initializer_fact))
+			const TypeId declared_type = model_.binding(fact.binding).type;
+			if (initializer_fact.value_initialize)
+				initialize_constructor_value(declared_type, initializer.front(),
+					address_of_storage(storage));
+			else if (!constructor_action_is_noop(initializer_fact))
 			{
 				const std::vector<SemanticFactId> action_facts =
 					children(initializer.front());
@@ -207,8 +222,17 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 {
 	if (!active_constructor_record_.valid() ||
 		!active_constructor_this_.valid() ||
-		active_constructor_record_.value >= model_.named_.size())
+		active_constructor_record_.value >= model_.named_.size() ||
+		active_constructor_record_.value >= model_.record_layouts_.size())
 		throw std::runtime_error("PA15 constructor has no active object");
+	const NamedRecord& active_record = model_.named_[
+		active_constructor_record_.value];
+	if (active_record.kind != NamedKind::Class || !active_record.scope.valid() ||
+		active_record.scope.value >= model_.scopes_.size() ||
+		model_.scopes_[active_record.scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[active_record.scope.value].record !=
+			active_constructor_record_)
+		throw std::runtime_error("PA15 constructor owner is invalid");
 	const LoweredValue this_storage = storage_for(active_constructor_this_);
 	const ValueId this_value = emit_load(this_storage, this_storage.type);
 	const Instruction& this_load = block().instructions.back();
@@ -238,6 +262,9 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 	}
 	if (!action.member.valid() || action.member.value >= model_.bindings_.size())
 		throw std::runtime_error("PA15 constructor member action is invalid");
+	if (action.member.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[action.member.value] != active_record.scope)
+		throw std::runtime_error("PA15 constructor member owner is invalid");
 	if (model_.binding(action.member).kind != BindingKind::Variable ||
 		model_.is_static_member(action.member))
 		throw std::runtime_error("PA15 constructor member is not direct");
@@ -269,11 +296,15 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 	{
 		const TypeId object = model_.strip_cv_type(
 			model_.expression_object_type(current_type));
-		if (!object.valid())
+		if (!object.valid() || object.value >= model_.types_.size())
 			throw std::runtime_error("PA15 constructor path type is invalid");
 		if (path[i].array_element)
 		{
-			if (model_.type_kind(object) != TypeKind::Array)
+			if (model_.type_kind(object) != TypeKind::Array ||
+				model_.types_[object.value].unknown_bound ||
+				path[i].index >= model_.types_[object.value].bound.value ||
+				path[i].index > static_cast<std::size_t>(
+					std::numeric_limits<long long>::max()))
 				throw std::runtime_error("PA15 constructor path array is invalid");
 			result = emit_index(emit_decay(result),
 				LoweredValue(integer_operand(static_cast<long long>(path[i].index),
@@ -283,7 +314,8 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 			continue;
 		}
 		if (model_.type_kind(object) != TypeKind::Named ||
-			!path[i].member.valid())
+			!path[i].member.valid() || path[i].member.value >=
+			model_.bindings_.size())
 			throw std::runtime_error("PA15 constructor path member is invalid");
 		const NamedRecordId record = model_.named_record_for_type(object);
 		if (!record.valid() || record.value >= model_.named_.size() ||
@@ -292,6 +324,12 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 		const RecordLayout& layout = model_.record_layout(record);
 		if (layout.state != RecordLayoutState::Complete)
 			throw std::runtime_error("PA15 constructor path layout is invalid");
+		if (path[i].member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[path[i].member.value] !=
+				model_.named_[record.value].scope ||
+			model_.binding(path[i].member).kind != BindingKind::Variable ||
+			model_.is_static_member(path[i].member))
+			throw std::runtime_error("PA15 constructor path member owner is invalid");
 		const std::size_t* offset = layout.member_offsets.find(path[i].member);
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
@@ -302,6 +340,127 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
+}
+
+void Pa15Lowerer::zero_initialize_value_initialized_object(TypeId target,
+	const LoweredValue& destination)
+{
+	if (!destination.type.is_pointer())
+		throw std::runtime_error("PA15 value-initialization target is not addressable");
+	const LowType target_type = low_type(target);
+	if (!target_type.valid())
+		throw std::runtime_error("PA15 value-initialization type is invalid");
+	if (target_type.is_object())
+	{
+		const std::size_t bytes = target_type.object_bytes;
+		const std::size_t alignment = target_type.object_alignment;
+		if (bytes == 0 || alignment == 0 || bytes > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 value-initialization object size is invalid");
+		LowType byte;
+		byte.kind = LowType::TYPE_INTEGER;
+		byte.integer_kind = LowType::INTEGER_I8;
+		std::size_t offset = 0;
+		while (offset < bytes)
+		{
+			const std::size_t remaining = bytes - offset;
+			std::size_t width;
+			LowType zero;
+			zero.kind = LowType::TYPE_INTEGER;
+			if (remaining >= 8 && alignment % 8 == 0 && offset % 8 == 0)
+			{
+				width = 8;
+				zero.integer_kind = LowType::INTEGER_I64;
+			}
+			else if (remaining >= 4 && alignment % 4 == 0 && offset % 4 == 0)
+			{
+				width = 4;
+				zero.integer_kind = LowType::INTEGER_I32;
+			}
+			else if (remaining >= 2 && alignment % 2 == 0 && offset % 2 == 0)
+			{
+				width = 2;
+				zero.integer_kind = LowType::INTEGER_I16;
+			}
+			else
+			{
+				width = 1;
+				zero.integer_kind = LowType::INTEGER_I8;
+			}
+			LoweredValue storage = destination;
+			if (offset != 0)
+				storage = emit_index(destination, LoweredValue(integer_operand(
+					static_cast<long long>(offset), size_low_type()), size_low_type(),
+					false), byte, lowir_model::IPK_NONE);
+			emit_store(zero, integer_operand(0, zero), storage.value);
+			offset += width;
+		}
+		return;
+	}
+	if (target_type.is_float())
+	{
+		emit_store(target_type, floating_operand(0.0L, target_type),
+			destination.value);
+		return;
+	}
+	if (target_type.is_integer() || target_type.is_pointer())
+	{
+		emit_store(target_type, integer_operand(0, target_type),
+			destination.value);
+		return;
+	}
+	throw std::runtime_error("PA15 value-initialization target is unsupported");
+}
+
+const FunctionFact& Pa15Lowerer::checked_constructor_function(
+	BindingId constructor, NamedRecordId record) const
+{
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].kind != NamedKind::Class ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("PA15 constructor fact record is invalid");
+	const NamedRecord& named = model_.named_[record.value];
+	if (!named.scope.valid() || named.scope.value >= model_.scopes_.size() ||
+		model_.scopes_[named.scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[named.scope.value].record != record)
+		throw std::runtime_error("PA15 constructor fact owner is invalid");
+	if (!constructor.valid() || constructor.value >= model_.bindings_.size() ||
+		constructor.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[constructor.value] != named.scope)
+		throw std::runtime_error("PA15 constructor fact binding owner is invalid");
+	const Binding& binding = model_.binding(constructor);
+	if (binding.kind != BindingKind::Function ||
+		model_.type_kind(binding.type) != TypeKind::Function)
+		throw std::runtime_error("PA15 constructor fact binding is invalid");
+	const BindingSidecar* binding_sidecar = model_.binding_sidecar(constructor);
+	if (binding_sidecar == NULL || binding_sidecar->constructor_record != record)
+		throw std::runtime_error("PA15 constructor fact record owner is invalid");
+	const FunctionFactId* function_id =
+		model_.function_binding_fact_index_.find(constructor);
+	if (function_id == NULL || !function_id->valid() ||
+		function_id->value >= model_.function_facts_.size())
+		throw std::runtime_error("PA15 constructor fact is missing");
+	const FunctionFact& function = model_.function_facts_[function_id->value];
+	if (!function.is_constructor || function.binding != constructor ||
+		function.owner != named.scope || function.constructor_record != record ||
+		!function.function_scope.valid() ||
+		function.function_scope.value >= model_.scopes_.size() ||
+		model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
+		model_.scopes_[function.function_scope.value].parent != function.owner)
+		throw std::runtime_error("PA15 constructor fact identity is invalid");
+	const BindingId this_binding =
+		model_.scopes_[function.function_scope.value].implicit_object_binding;
+	if (!this_binding.valid() || this_binding.value >= model_.bindings_.size() ||
+		this_binding.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[this_binding.value] != function.function_scope ||
+		model_.binding(this_binding).kind != BindingKind::Parameter)
+		throw std::runtime_error("PA15 constructor fact object parameter is invalid");
+	if (function.constructor_action_begin == InvalidIdentityValue ||
+		function.constructor_action_begin > model_.constructor_actions_.size() ||
+		function.constructor_action_count > model_.constructor_actions_.size() -
+		function.constructor_action_begin)
+		throw std::runtime_error("PA15 constructor fact action range is invalid");
+	return function;
 }
 
 void Pa15Lowerer::emit_constructor_call(BindingId constructor,
@@ -352,13 +511,14 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 {
 	const TypeId object = model_.strip_cv_type(
 		model_.expression_object_type(target));
-	if (!object.valid())
+	if (!object.valid() || object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 zero constructor target is invalid");
 	const TypeKind kind = model_.type_kind(object);
 	if (kind == TypeKind::Array)
 	{
 		const TypeKey& array = model_.types_[object.value];
-		if (array.unknown_bound)
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
 			throw std::runtime_error("PA15 zero constructor array is incomplete");
 		const LoweredValue sequence = emit_decay(destination_value);
 		for (std::size_t i = 0; i < array.bound.value; ++i)
@@ -397,6 +557,8 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 		const ScopeId scope = model_.named_[record.value].scope;
 		const RecordLayout& layout = model_.record_layout(record);
 		if (!scope.valid() || scope.value >= model_.scopes_.size() ||
+			model_.scopes_[scope.value].kind != ScopeKind::Class ||
+			model_.scopes_[scope.value].record != record ||
 			layout.state != RecordLayoutState::Complete)
 			throw std::runtime_error("PA15 zero constructor class layout is invalid");
 		LowType byte;
@@ -407,6 +569,10 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 		for (std::size_t i = 0; i < class_members.size(); ++i)
 		{
 			const BindingId member = class_members[i];
+			if (!member.valid() || member.value >= model_.bindings_.size() ||
+				member.value >= model_.binding_owners_.size() ||
+				model_.binding_owners_[member.value] != scope)
+				throw std::runtime_error("PA15 zero constructor member identity is invalid");
 			if (model_.binding(member).kind != BindingKind::Variable ||
 				model_.is_static_member(member))
 				continue;
@@ -425,9 +591,22 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				emit_index(destination_value, LoweredValue(integer_operand(
 					static_cast<long long>(*offset), size_low_type()), size_low_type(),
 					false), byte, lowir_model::IPK_FIELD);
-			zero_initialize_constructor_value(model_.binding(member).type,
-				member_value, root_action, root_action != NULL && path != NULL ?
-				&member_path : NULL);
+			const BindingSidecar* sidecar = model_.binding_sidecar(member);
+			if (sidecar != NULL && sidecar->default_member_initializer.valid())
+			{
+				if (sidecar->default_member_initializer.value >=
+					model_.semantic_facts_.size())
+					throw std::runtime_error(
+						"PA15 zero constructor default member initializer is invalid");
+				initialize_constructor_value(model_.binding(member).type,
+					sidecar->default_member_initializer, member_value,
+					root_action, root_action != NULL && path != NULL ?
+					&member_path : NULL);
+			}
+			else
+				zero_initialize_constructor_value(model_.binding(member).type,
+					member_value, root_action, root_action != NULL && path != NULL ?
+					&member_path : NULL);
 		}
 		return;
 	}
@@ -455,6 +634,39 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 		if (!fact.has_callee || !fact.selected_binding.valid() ||
 			fact.child_count != 0)
 			throw std::runtime_error("PA15 nested constructor initializer is unsupported");
+		const TypeId object = model_.strip_cv_type(
+			model_.expression_object_type(target));
+		const NamedRecordId record = model_.named_record_for_type(object);
+		if (!record.valid() || record.value >= model_.named_.size() ||
+			model_.named_[record.value].kind != NamedKind::Class)
+			throw std::runtime_error("PA15 constructor initializer record is invalid");
+		const NamedRecord& named = model_.named_[record.value];
+		if (named.class_tag == ClassTag::Union || !named.name.valid())
+		{
+			// Anonymous/union construction retains its pre-checkpoint legacy
+			// representation.  Named non-union classes must use the checked
+			// FunctionFact path below.
+			const FunctionFact* legacy_constructor =
+				model_.function_fact_for_binding(fact.selected_binding);
+			if (fact.value_initialize && (legacy_constructor == NULL ||
+				legacy_constructor->synthetic))
+				zero_initialize_value_initialized_object(target, destination_value);
+			emit_constructor_call(fact.selected_binding, destination_value,
+				InvalidIdentityValue, 0);
+			return;
+		}
+		if (!fact.selected_scope.valid() || fact.selected_scope.value >=
+			model_.scopes_.size() || fact.selected_scope != named.scope ||
+			!fact.callable_type.valid() || model_.type_kind(fact.callable_type) !=
+			TypeKind::Function)
+			throw std::runtime_error(
+				"PA15 constructor initializer owner or type is invalid");
+		const FunctionFact& constructor = checked_constructor_function(
+			fact.selected_binding, record);
+		if (fact.value_initialize && constructor.synthetic)
+			zero_initialize_value_initialized_object(target, destination_value);
+		if (constructor.synthetic && constructor.constructor_action_count == 0)
+			return;
 		emit_constructor_call(fact.selected_binding, destination_value,
 			InvalidIdentityValue, 0);
 		return;
@@ -467,13 +679,15 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	}
 	const TypeId object = model_.strip_cv_type(
 		model_.expression_object_type(target));
-	if (!object.valid())
+	if (!object.valid() || object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 braced constructor target is invalid");
 	const std::vector<SemanticFactId> values = children(initializer);
 	if (model_.type_kind(object) == TypeKind::Array)
 	{
 		const TypeKey& array = model_.types_[object.value];
-		if (array.unknown_bound || values.size() > array.bound.value)
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()) ||
+			values.size() > array.bound.value)
 			throw std::runtime_error("PA15 braced constructor array bound is invalid");
 		const bool recompute_path = root_action != NULL && path != NULL;
 		const LoweredValue sequence = emit_decay(destination_value);
@@ -525,6 +739,8 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	const ScopeId scope = model_.named_[record.value].scope;
 	const RecordLayout& layout = model_.record_layout(record);
 	if (!scope.valid() || scope.value >= model_.scopes_.size() ||
+		model_.scopes_[scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[scope.value].record != record ||
 		layout.state != RecordLayoutState::Complete || values.size() >
 		model_.scopes_[scope.value].bindings.size())
 		throw std::runtime_error("PA15 braced constructor class layout is invalid");
@@ -537,6 +753,10 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	for (std::size_t i = 0; i < class_members.size(); ++i)
 	{
 		const BindingId member = class_members[i];
+		if (!member.valid() || member.value >= model_.bindings_.size() ||
+			member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[member.value] != scope)
+			throw std::runtime_error("PA15 braced constructor member identity is invalid");
 		if (model_.binding(member).kind == BindingKind::Variable &&
 			!model_.is_static_member(member))
 			members.push_back(member);
@@ -566,17 +786,69 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 				member_value, root_action, root_action != NULL && path != NULL ?
 				&member_path : NULL);
 		else
-			zero_initialize_constructor_value(model_.binding(member).type,
-				member_value, root_action, root_action != NULL && path != NULL ?
-				&member_path : NULL);
+		{
+			const BindingSidecar* sidecar = model_.binding_sidecar(member);
+			if (sidecar != NULL && sidecar->default_member_initializer.valid())
+			{
+				if (sidecar->default_member_initializer.value >=
+					model_.semantic_facts_.size())
+					throw std::runtime_error(
+						"PA15 aggregate default member initializer is invalid");
+				initialize_constructor_value(model_.binding(member).type,
+					sidecar->default_member_initializer, member_value,
+					root_action, root_action != NULL && path != NULL ?
+					&member_path : NULL);
+			}
+			else
+				zero_initialize_constructor_value(model_.binding(member).type,
+					member_value, root_action, root_action != NULL && path != NULL ?
+					&member_path : NULL);
+		}
 	}
 }
 
 void Pa15Lowerer::lower_constructor_action(const ConstructorActionFact& action)
 {
+	if (action.target != ConstructorActionTarget::Base &&
+		action.target != ConstructorActionTarget::Member)
+		throw std::runtime_error("PA15 constructor action target is invalid");
+	if ((action.constructor.valid() && action.initializer.valid()) ||
+		(!action.constructor.valid() && !action.initializer.valid()))
+		throw std::runtime_error("PA15 constructor action operation is invalid");
+	if (action.value_initialize && !action.constructor.valid())
+		throw std::runtime_error("PA15 value-initialization action is invalid");
 	if (action.constructor.valid())
 	{
 		const LoweredValue destination_value = constructor_subobject_address(action);
+		const TypeId target = action.target == ConstructorActionTarget::Base ?
+			model_.named_type(action.base_record) : model_.binding(action.member).type;
+		const TypeId object = model_.strip_cv_type(
+			model_.expression_object_type(target));
+		const NamedRecordId record = model_.named_record_for_type(object);
+		if (!record.valid() || record.value >= model_.named_.size() ||
+			model_.named_[record.value].kind != NamedKind::Class)
+			throw std::runtime_error("PA15 constructor action record is invalid");
+		const NamedRecord& named = model_.named_[record.value];
+		if (named.class_tag == ClassTag::Union || !named.name.valid())
+		{
+			// Preserve the pre-checkpoint anonymous/union constructor path.
+			const FunctionFact* legacy_constructor =
+				model_.function_fact_for_binding(action.constructor);
+			if (action.value_initialize && (legacy_constructor == NULL ||
+				legacy_constructor->synthetic))
+			{
+				zero_initialize_value_initialized_object(target, destination_value);
+			}
+			emit_constructor_call(action.constructor, destination_value,
+				action.argument_begin, action.argument_count);
+			return;
+		}
+		const FunctionFact& constructor = checked_constructor_function(
+			action.constructor, record);
+		if (action.value_initialize && constructor.synthetic)
+			zero_initialize_value_initialized_object(target, destination_value);
+		if (constructor.synthetic && constructor.constructor_action_count == 0)
+			return;
 		emit_constructor_call(action.constructor, destination_value,
 			action.argument_begin, action.argument_count);
 		return;
@@ -614,18 +886,36 @@ bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 {
 	if (!action.selected_binding.valid())
 		return false;
+	const BindingSidecar* binding_sidecar =
+		model_.binding_sidecar(action.selected_binding);
+	if (binding_sidecar != NULL && binding_sidecar->constructor_record.valid() &&
+		binding_sidecar->constructor_record.value < model_.named_.size())
+	{
+		const NamedRecord& named = model_.named_[
+			binding_sidecar->constructor_record.value];
+		if (named.kind == NamedKind::Class && named.class_tag != ClassTag::Union &&
+			named.name.valid())
+		{
+			if (!action.selected_scope.valid() || action.selected_scope.value >=
+				model_.scopes_.size() || action.selected_scope != named.scope)
+				throw std::runtime_error(
+					"PA15 constructor action selected owner is invalid");
+			const FunctionFact& function = checked_constructor_function(
+				action.selected_binding, binding_sidecar->constructor_record);
+			return !action.value_initialize && function.synthetic &&
+				function.constructor_action_count == 0;
+		}
+	}
 	const FunctionFactId* function_id =
 		model_.function_binding_fact_index_.find(action.selected_binding);
 	if (function_id != NULL && function_id->valid() &&
 		function_id->value < model_.function_facts_.size())
 	{
 		const FunctionFact& function = model_.function_facts_[function_id->value];
-		if (function.is_constructor && function.synthetic &&
+		if (!action.value_initialize && function.is_constructor && function.synthetic &&
 			function.constructor_action_count == 0)
 			return true;
 	}
-	const BindingSidecar* binding_sidecar =
-		model_.binding_sidecar(action.selected_binding);
 	if (binding_sidecar == NULL || !binding_sidecar->constructor_record.valid() ||
 		binding_sidecar->constructor_record.value >= model_.named_.size())
 		return false;

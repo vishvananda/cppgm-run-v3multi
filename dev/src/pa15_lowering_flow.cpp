@@ -478,9 +478,16 @@ bool Pa15Lowerer::constructor_is_nothrow(FunctionFactId function_id)
 			bool action_result = true;
 			if (action.argument_count != 0 &&
 				(action.argument_begin == InvalidIdentityValue ||
-				 action.argument_begin > model_.constructor_arguments_.size() ||
-				 action.argument_count > model_.constructor_arguments_.size() -
-				 action.argument_begin))
+					action.argument_begin > model_.constructor_arguments_.size() ||
+					action.argument_count > model_.constructor_arguments_.size() -
+					action.argument_begin))
+			{
+				action_result = false;
+				invalid = true;
+			}
+			else if (action.argument_count == 0 &&
+				action.argument_begin != InvalidIdentityValue &&
+				action.argument_begin > model_.constructor_arguments_.size())
 			{
 				action_result = false;
 				invalid = true;
@@ -2075,11 +2082,21 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		{
 			if (!fact.constructor_record.valid() ||
 				fact.constructor_record.value >= model_.named_.size() ||
+				!fact.function_scope.valid() ||
+				fact.function_scope.value >= model_.scopes_.size() ||
+				model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function ||
+				model_.scopes_[fact.function_scope.value].parent != fact.owner ||
 				!model_.scopes_[fact.function_scope.value].implicit_object_binding.valid())
 				throw std::runtime_error("PA15 constructor object parameter is missing");
+			const Scope& function_scope = model_.scopes_[fact.function_scope.value];
+			const BindingId this_binding = function_scope.implicit_object_binding;
+			if (this_binding.value >= model_.bindings_.size() ||
+				this_binding.value >= model_.binding_owners_.size() ||
+				model_.binding_owners_[this_binding.value] != fact.function_scope ||
+				model_.binding(this_binding).kind != BindingKind::Parameter)
+				throw std::runtime_error("PA15 constructor object parameter is invalid");
 			active_constructor_record_ = fact.constructor_record;
-			active_constructor_this_ = model_.scopes_[fact.function_scope.value].
-				implicit_object_binding;
+			active_constructor_this_ = this_binding;
 			if (fact.constructor_action_begin == InvalidIdentityValue ||
 				fact.constructor_action_begin > model_.constructor_actions_.size() ||
 				fact.constructor_action_count > model_.constructor_actions_.size() -

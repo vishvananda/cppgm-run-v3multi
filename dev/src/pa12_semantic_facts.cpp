@@ -103,20 +103,17 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 		throw std::runtime_error("implicit constructor has no owner scope");
 	const ScopeId owner = named_[record_id.value].scope;
 	const NameId name = named_[record_id.value].name;
-	const bool legacy_empty_constructor = name.valid() && !union_constructor &&
-		!named_[record_id.value].has_base && scopes_[owner.value].bindings.empty();
-	const TypeId constructor_type = make_function(
-		legacy_empty_constructor ? std::vector<TypeId>(1, make_pointer(object)) :
-		std::vector<TypeId>(), false, fundamental(FundamentalType::Void));
+	const TypeId constructor_type = make_function(std::vector<TypeId>(), false,
+		fundamental(FundamentalType::Void));
 	BindingId binding_id;
-	if (name.valid() && !union_constructor && !legacy_empty_constructor)
+	if (name.valid() && !union_constructor)
 		binding_id = add_value(owner, name, constructor_type, true, true, false,
 			BindingId(), SourcePoint(), false, LanguageLinkage::Cxx);
 	else
 	{
-		// Keep the pre-existing anonymous-union representation isolated from
-		// named-class constructor lookup; anonymous unions still use their
-		// legacy generated binding until their own PA16 boundary is reached.
+		// Keep the pre-existing anonymous/unnamed representation isolated from
+		// named-class constructor lookup; it still uses its legacy generated
+		// binding until its own PA16 boundary is reached.
 		Binding constructor(BindingKind::Function, NameId(),
 			make_function(std::vector<TypeId>(1, make_pointer(object)), false,
 				fundamental(FundamentalType::Void)));
@@ -126,13 +123,13 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 	if (existing != NULL)
 		record_sidecar = *existing;
 	record_sidecar.constructor_binding = binding_id;
-	if (!union_constructor && !legacy_empty_constructor)
+	if (name.valid() && !union_constructor)
 		record_sidecar.default_constructor_binding = binding_id;
 	set_named_record_sidecar(record_id, record_sidecar);
 	BindingSidecar binding_sidecar;
 	binding_sidecar.constructor_record = record_id;
 	set_binding_sidecar(binding_id, binding_sidecar);
-	if (name.valid() && !union_constructor && !legacy_empty_constructor)
+	if (name.valid() && !union_constructor)
 	{
 		const ScopeId function_scope = create_scope(ScopeKind::Function, owner,
 			name);
@@ -146,6 +143,8 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 		function_facts_.push_back(function);
 		function_binding_fact_index_.set(binding_id, function_id);
 		build_constructor_actions(function_id);
+		synthetic_function_facts_.push_back(
+			SyntheticFunctionFact(record_id, binding_id));
 	}
 	else
 		synthetic_function_facts_.push_back(

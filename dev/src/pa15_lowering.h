@@ -496,10 +496,14 @@ private:
 	void emit_constructor_call(BindingId constructor,
 		const LoweredValue& destination, std::size_t argument_begin,
 		std::size_t argument_count);
+	const FunctionFact& checked_constructor_function(BindingId constructor,
+		NamedRecordId record) const;
 	void initialize_constructor_value(TypeId target, SemanticFactId initializer,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
 		const std::vector<ConstructorAddressStep>* path = NULL);
+	void zero_initialize_value_initialized_object(TypeId target,
+		const LoweredValue& destination);
 	void zero_initialize_constructor_value(TypeId target,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,

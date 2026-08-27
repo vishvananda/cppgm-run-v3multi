@@ -112,6 +112,16 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		!initial_function.constructor_record.valid() ||
 		initial_function.constructor_record.value >= named_.size())
 		throw std::runtime_error("PA12 constructor action owner is missing");
+	if (!initial_function.binding.valid() ||
+		initial_function.binding.value >= bindings_.size() ||
+		initial_function.binding.value >= binding_owners_.size() ||
+		binding_owners_[initial_function.binding.value] != initial_function.owner ||
+		binding(initial_function.binding).kind != BindingKind::Function ||
+		!initial_function.function_scope.valid() ||
+		initial_function.function_scope.value >= scopes_.size() ||
+		scopes_[initial_function.function_scope.value].kind != ScopeKind::Function ||
+		scopes_[initial_function.function_scope.value].parent != initial_function.owner)
+		throw std::runtime_error("PA12 constructor function identity is invalid");
 	if (initial_function.constructor_action_begin != InvalidIdentityValue)
 		return;
 	const NamedRecordId function_record = initial_function.constructor_record;
@@ -119,8 +129,20 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 	const PA10AstNode* function_node = initial_function.node;
 	const NamedRecord record = named_[function_record.value];
 	if (record.kind != NamedKind::Class || !record.scope.valid() ||
-		record.scope.value >= scopes_.size())
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != function_record ||
+		initial_function.owner != record.scope)
 		throw std::runtime_error("PA12 constructor action owner is invalid");
+	if (record.direct_base_virtual)
+		throw std::runtime_error("PA12 virtual base construction is outside checkpoint");
+	if (!record.has_base && record.direct_base.valid())
+		throw std::runtime_error("PA12 direct base metadata is invalid");
+	if (record.has_base && (!record.direct_base.valid() ||
+		record.direct_base.value >= named_.size() ||
+		named_[record.direct_base.value].kind != NamedKind::Class ||
+		named_[record.direct_base.value].class_tag == ClassTag::Union))
+		throw std::runtime_error("PA12 direct base metadata is invalid");
 	std::vector<ConstructorActionFact> actions;
 	std::vector<SemanticFactId> arguments;
 	FlatIndex<BindingId, const PA10AstNode*, IdentityHash<BindingId> >
@@ -169,12 +191,29 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			member_initializers.set(selection.binding, argument);
 		}
 	}
-	const auto append_action = [&actions, &arguments](
+	const auto append_action = [this, &actions, &arguments](
 		const ConstructorActionFact& action,
 		const std::vector<SemanticFactId>& action_arguments) {
+		if ((action.target != ConstructorActionTarget::Base &&
+			action.target != ConstructorActionTarget::Member) ||
+			(action.target == ConstructorActionTarget::Base &&
+				(!action.base_record.valid() || action.member.valid())) ||
+			(action.target == ConstructorActionTarget::Member &&
+				(!action.member.valid() || action.base_record.valid())) ||
+			(action.constructor.valid() && action.initializer.valid()) ||
+			(!action.constructor.valid() && !action.initializer.valid()) ||
+			(action.value_initialize && !action.constructor.valid()))
+			throw std::runtime_error("PA12 constructor action identity is invalid");
+		for (std::size_t i = 0; i < action_arguments.size(); ++i)
+			if (!action_arguments[i].valid() || action_arguments[i].value >=
+				semantic_facts_.size())
+				throw std::runtime_error("PA12 constructor argument identity is invalid");
 		ConstructorActionFact stored = action;
 		if (!action_arguments.empty())
 		{
+			if (arguments.size() > std::numeric_limits<std::size_t>::max() -
+				action_arguments.size())
+				throw std::runtime_error("PA12 constructor argument arena overflow");
 			stored.argument_begin = arguments.size();
 			stored.argument_count = action_arguments.size();
 			arguments.insert(arguments.end(), action_arguments.begin(),
@@ -194,6 +233,15 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 	const auto append_class = [this, function_scope, &append_action, &constructor_for](
 		ConstructorActionTarget target_kind, NamedRecordId base,
 		BindingId member, const PA10AstNode* argument) {
+		if (target_kind != ConstructorActionTarget::Base &&
+			target_kind != ConstructorActionTarget::Member)
+			throw std::runtime_error("PA12 constructor action target is invalid");
+		if (target_kind == ConstructorActionTarget::Base &&
+			(!base.valid() || member.valid()))
+			throw std::runtime_error("PA12 base constructor action identity is invalid");
+		if (target_kind == ConstructorActionTarget::Member &&
+			(!member.valid() || base.valid() || member.value >= bindings_.size()))
+			throw std::runtime_error("PA12 member constructor action identity is invalid");
 		const TypeId target_type = target_kind == ConstructorActionTarget::Base ?
 			named_type(base) : binding(member).type;
 		const NamedRecordId target_record = named_record_for_type(target_type);
@@ -202,6 +250,11 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			throw std::runtime_error("PA12 class constructor action target is invalid");
 		ConstructorActionFact action(target_kind, base, member);
 		std::vector<SemanticFactId> arguments;
+		if (argument != NULL &&
+			((argument->kind == PA10NodeKind::BracedInitList ||
+				argument->kind == PA10NodeKind::ParenArgumentList) &&
+			argument->children.empty()))
+			action.value_initialize = true;
 		if (argument != NULL && argument->kind == PA10NodeKind::BracedInitList &&
 			!argument->children.empty())
 		{
@@ -255,6 +308,10 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 	for (std::size_t i = 0; i < class_members.size(); ++i)
 	{
 		const BindingId member_id = class_members[i];
+		if (!member_id.valid() || member_id.value >= bindings_.size() ||
+			member_id.value >= binding_owners_.size() ||
+			binding_owners_[member_id.value] != record.scope)
+			throw std::runtime_error("PA12 constructor member identity is invalid");
 		const Binding member = binding(member_id);
 		if (member.kind != BindingKind::Variable || is_static_member(member_id))
 			continue;
@@ -274,18 +331,29 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		const BindingSidecar* sidecar = binding_sidecar(member_id);
 		if (sidecar != NULL && sidecar->default_member_initializer.valid())
 		{
-			const SemanticFact& initializer = semantic_facts_[
-				sidecar->default_member_initializer.value];
+			const SemanticFactId initializer_id =
+				sidecar->default_member_initializer;
+			if (!initializer_id.valid() || initializer_id.value >=
+				semantic_facts_.size())
+				throw std::runtime_error(
+					"PA12 default member initializer identity is invalid");
+			const SemanticFact& initializer = semantic_facts_[initializer_id.value];
 			if (initializer.kind == SemanticFactKind::ConstructorAction)
 			{
+				if (!initializer.selected_binding.valid() ||
+					initializer.selected_binding.value >= bindings_.size())
+					throw std::runtime_error(
+						"PA12 default member constructor identity is invalid");
 				ConstructorActionFact action(ConstructorActionTarget::Member,
 					NamedRecordId(), member_id, initializer.selected_binding);
+				action.value_initialize = initializer.value_initialize;
 				std::vector<SemanticFactId> arguments;
 				if (initializer.child_count != 0)
 				{
 					if (initializer.child_begin == InvalidIdentityValue ||
-						initializer.child_begin + initializer.child_count >
-						semantic_children_.size())
+						initializer.child_begin > semantic_children_.size() ||
+						initializer.child_count > semantic_children_.size() -
+						initializer.child_begin)
 						throw std::runtime_error("PA12 constructor initializer range is invalid");
 					for (std::size_t child = 0; child < initializer.child_count; ++child)
 						arguments.push_back(semantic_children_[initializer.child_begin + child]);
@@ -308,12 +376,20 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 	}
 	const std::size_t action_begin = constructor_actions_.size();
 	const std::size_t argument_begin = constructor_arguments_.size();
+	if (argument_begin > std::numeric_limits<std::size_t>::max() -
+		arguments.size())
+		throw std::runtime_error("PA12 constructor argument arena overflow");
 	constructor_arguments_.insert(constructor_arguments_.end(), arguments.begin(),
 		arguments.end());
 	for (std::size_t i = 0; i < actions.size(); ++i)
 	{
 		if (actions[i].argument_begin != InvalidIdentityValue)
+		{
+			if (actions[i].argument_begin > std::numeric_limits<std::size_t>::max() -
+				argument_begin)
+				throw std::runtime_error("PA12 constructor argument range overflow");
 			actions[i].argument_begin += argument_begin;
+		}
 		constructor_actions_.push_back(actions[i]);
 	}
 	FunctionFact& function = function_facts_[function_id.value];

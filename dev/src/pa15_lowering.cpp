@@ -1137,7 +1137,9 @@ void Pa15Lowerer::index_function_scope_variables(){
 				continue;
 			if (!fact.function_scope.valid())
 				continue;
-			if (fact.function_scope.value >= model_.scopes_.size())
+			if (fact.function_scope.value >= model_.scopes_.size() ||
+				model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function ||
+				model_.scopes_[fact.function_scope.value].parent != fact.owner)
 				throw std::runtime_error("PA15 function scope is missing");
 			collected_function_scope[fact.function_scope.value] = true;
 		}
@@ -1199,6 +1201,10 @@ void Pa15Lowerer::collect_functions(){
 				continue;
 			if (!fact.function_scope.valid())
 				continue;
+			if (fact.function_scope.value >= model_.scopes_.size() ||
+				model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function ||
+				model_.scopes_[fact.function_scope.value].parent != fact.owner)
+				throw std::runtime_error("PA15 function scope is invalid");
 			const Binding& binding = model_.binding(fact.binding);
 			if (binding.kind != BindingKind::Function ||
 				model_.type_kind(binding.type) != TypeKind::Function)
@@ -1879,16 +1885,28 @@ LoweredValue Pa15Lowerer::storage_for(BindingId binding) const{
 	}
 
 std::vector<SemanticFactId> Pa15Lowerer::children(SemanticFactId id) const{
+		if (!id.valid() || id.value >= model_.semantic_facts_.size())
+			throw std::runtime_error("PA15 invalid semantic fact identity");
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		std::vector<SemanticFactId> result;
-		if (fact.child_count == 0) return result;
-		if (fact.child_begin == InvalidIdentityValue ||
-			fact.child_begin + fact.child_count > model_.semantic_children_.size())
+		if (fact.child_count != 0 &&
+			(fact.child_begin == InvalidIdentityValue ||
+				fact.child_begin > model_.semantic_children_.size() ||
+				fact.child_count > model_.semantic_children_.size() -
+					fact.child_begin))
+			throw std::runtime_error("PA15 invalid semantic child range");
+		if (fact.child_count == 0 && fact.child_begin != InvalidIdentityValue &&
+			fact.child_begin > model_.semantic_children_.size())
 			throw std::runtime_error("PA15 invalid semantic child range");
 		for (std::size_t i = 0; i < fact.child_count; ++i)
-			result.push_back(model_.semantic_children_[fact.child_begin + i]);
+		{
+			const SemanticFactId child = model_.semantic_children_[fact.child_begin + i];
+			if (!child.valid() || child.value >= model_.semantic_facts_.size())
+				throw std::runtime_error("PA15 invalid semantic child identity");
+			result.push_back(child);
+		}
 		return result;
-	}
+}
 
 LowType Pa15Lowerer::lvalue_type(SemanticFactId id) const{
 	const SemanticFact& fact = model_.semantic_facts_[id.value];

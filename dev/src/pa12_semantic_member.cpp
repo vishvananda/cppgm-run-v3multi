@@ -136,6 +136,14 @@ bool PA11SemanticModel::implicit_default_type_supported(TypeId type,
 			record.class_tag == ClassTag::Union || !record.defined ||
 			!record.scope.valid() || record.scope.value >= scopes_.size())
 			return false;
+		if (scopes_[record.scope.value].kind != ScopeKind::Class ||
+			scopes_[record.scope.value].record != key.named ||
+			record.direct_base_virtual ||
+			(!record.has_base && record.direct_base.valid()) ||
+			(record.has_base && (!record.direct_base.valid() ||
+				record.direct_base.value >= named_.size() ||
+				named_[record.direct_base.value].kind != NamedKind::Class)))
+			throw std::runtime_error("PA12 implicit constructor owner is invalid");
 		for (std::size_t i = 0; i < active.size(); ++i)
 			if (active[i] == key.named)
 				return false;
@@ -155,6 +163,11 @@ bool PA11SemanticModel::implicit_default_type_supported(TypeId type,
 			for (std::size_t i = 0; i < scope.bindings.size() && result; ++i)
 			{
 				const BindingId member_id = scope.bindings[i];
+				if (!member_id.valid() || member_id.value >= bindings_.size() ||
+					member_id.value >= binding_owners_.size() ||
+					binding_owners_[member_id.value] != record.scope)
+					throw std::runtime_error(
+						"PA12 implicit constructor member identity is invalid");
 				const Binding& member = binding(member_id);
 				if (member.kind != BindingKind::Variable ||
 					is_static_member(member_id))
@@ -186,12 +199,17 @@ BindingId PA11SemanticModel::default_constructor_binding(
 	if (sidecar == NULL || !sidecar->default_constructor_binding.valid())
 		return BindingId();
 	const BindingId result = sidecar->default_constructor_binding;
-	if (result.value >= bindings_.size())
+	if (result.value >= bindings_.size() || result.value >= binding_owners_.size() ||
+		!named_[record_id.value].scope.valid() ||
+		binding_owners_[result.value] != named_[record_id.value].scope)
 		throw std::runtime_error("PA12 default constructor identity is invalid");
 	const Binding& candidate = binding(result);
 	if (candidate.kind != BindingKind::Function ||
 		type_kind(candidate.type) != TypeKind::Function)
 		throw std::runtime_error("PA12 default constructor binding is invalid");
+	const BindingSidecar* binding_fact = binding_sidecar(result);
+	if (binding_fact == NULL || binding_fact->constructor_record != record_id)
+		throw std::runtime_error("PA12 default constructor owner is invalid");
 	return result;
 }
 
@@ -227,6 +245,14 @@ bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
 	constructor_runtime_states_[index] =
 		ConstructorRuntimeCacheState::InProgress;
 	const NamedRecord& record = named_[index];
+	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id ||
+		record.direct_base_virtual || (!record.has_base && record.direct_base.valid()) ||
+		(record.has_base && (!record.direct_base.valid() ||
+			record.direct_base.value >= named_.size() ||
+			named_[record.direct_base.value].kind != NamedKind::Class)))
+		throw std::runtime_error("PA12 constructor runtime owner is invalid");
 	bool result = false;
 	const BindingId default_ctor = default_constructor_binding(record_id);
 	if (default_ctor.valid())
@@ -251,6 +277,10 @@ bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)
 		for (std::size_t i = 0; i < scope.bindings.size() && !result; ++i)
 		{
 			const BindingId member_id = scope.bindings[i];
+			if (!member_id.valid() || member_id.value >= bindings_.size() ||
+				member_id.value >= binding_owners_.size() ||
+				binding_owners_[member_id.value] != record.scope)
+				throw std::runtime_error("PA12 constructor runtime member identity is invalid");
 			const Binding& member = binding(member_id);
 			if (member.kind != BindingKind::Variable ||
 				is_static_member(member_id))

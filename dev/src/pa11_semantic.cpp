@@ -2140,6 +2140,20 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 	if (!id.valid() || id.value >= semantic_facts_.size())
 		throw std::runtime_error("invalid PA12 semantic fact");
 	const SemanticFact& fact = semantic_facts_[id.value];
+	if (fact.child_count != 0 &&
+		(fact.child_begin == InvalidIdentityValue ||
+			fact.child_begin > semantic_children_.size() ||
+			fact.child_count > semantic_children_.size() - fact.child_begin))
+		throw std::runtime_error("invalid PA12 semantic child range");
+	if (fact.child_count == 0 && fact.child_begin != InvalidIdentityValue &&
+		fact.child_begin > semantic_children_.size())
+		throw std::runtime_error("invalid PA12 semantic child range");
+	for (std::size_t child = 0; child < fact.child_count; ++child)
+	{
+		const SemanticFactId child_id = semantic_children_[fact.child_begin + child];
+		if (!child_id.valid() || child_id.value >= semantic_facts_.size())
+			throw std::runtime_error("invalid PA12 semantic child identity");
+	}
 	const std::string type = fact.type.valid() ? render_type(fact.type) :
 		std::string();
 	const std::string op = semantic_operator(fact);
@@ -2203,10 +2217,31 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 		if (fact.has_callee)
 		{
 			const Binding& callee = binding(fact.selected_binding);
+			std::string callee_type = render_binding_type(callee);
+			const FunctionFact* callee_function =
+				function_fact_for_binding(fact.selected_binding);
+			if (callee_function != NULL && callee_function->is_constructor &&
+				callee_function->synthetic)
+			{
+				if (!callee_function->binding.valid() ||
+					callee_function->binding != fact.selected_binding ||
+					callee_function->owner != fact.selected_scope ||
+					!callee_function->constructor_record.valid() ||
+					callee_function->constructor_record.value >= named_.size() ||
+					!callee_function->owner.valid() ||
+					callee_function->owner.value >= scopes_.size() ||
+					scopes_[callee_function->owner.value].kind != ScopeKind::Class ||
+					scopes_[callee_function->owner.value].record !=
+						callee_function->constructor_record)
+					throw std::runtime_error(
+						"PA12 synthetic constructor identity is invalid");
+				callee_type = render_member_function_type(callee.type,
+					callee_function->owner, callee_function->binding);
+			}
 			for (std::size_t indent = 0; indent < depth + 1; ++indent)
 				output << "  ";
 			output << "callee " << qualified_binding_name(fact.selected_scope,
-				fact.selected_binding) << ' ' << render_binding_type(callee) << '\n';
+				fact.selected_binding) << ' ' << callee_type << '\n';
 		}
 		for (std::size_t i = 0; i < fact.child_count; ++i)
 			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
@@ -2350,6 +2385,10 @@ void PA11SemanticModel::dump_pa12_function(std::ostream& output,
 		function->owner.value < scopes_.size() &&
 		scopes_[function->owner.value].kind == ScopeKind::Class &&
 		!is_static_member(function->binding);
+	if (!function->function_scope.valid() ||
+		function->function_scope.value >= scopes_.size() ||
+		scopes_[function->function_scope.value].kind != ScopeKind::Function)
+		throw std::runtime_error("PA12 function scope is invalid");
 	const Scope& function_scope = scopes_[function->function_scope.value];
 	std::size_t parameter_index = 0;
 	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
@@ -2387,6 +2426,60 @@ void PA11SemanticModel::dump_pa12_synthetic_function(
 	if (value.kind != BindingKind::Function ||
 		type_kind(value.type) != TypeKind::Function)
 		throw std::runtime_error("PA12 synthetic function type is missing");
+	const FunctionFact* typed = function_fact_for_binding(function.binding);
+	if (typed != NULL)
+	{
+		if (!typed->is_constructor || !typed->synthetic ||
+			typed->binding != function.binding ||
+			typed->constructor_record != function.record ||
+			!typed->owner.valid() || typed->owner.value >= scopes_.size() ||
+			scopes_[typed->owner.value].kind != ScopeKind::Class ||
+			scopes_[typed->owner.value].record != function.record ||
+			!typed->function_scope.valid() ||
+			typed->function_scope.value >= scopes_.size() ||
+			scopes_[typed->function_scope.value].kind != ScopeKind::Function ||
+			scopes_[typed->function_scope.value].parent != typed->owner)
+			throw std::runtime_error(
+				"PA12 synthetic constructor fact is invalid");
+		for (std::size_t indent = 0; indent < depth; ++indent)
+			output << "  ";
+		output << "function-definition " << qualified_binding_name(
+			typed->owner, function.binding) << ' ' <<
+			render_member_function_type(value.type, typed->owner,
+				function.binding) << '\n';
+		const Scope& function_scope = scopes_[typed->function_scope.value];
+		const TypeKey& function_type = types_[value.type.value];
+		std::size_t parameter_index = 0;
+		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+		{
+			const Binding& parameter = binding(function_scope.bindings[i]);
+			if (parameter.kind != BindingKind::Parameter)
+				continue;
+			for (std::size_t indent = 0; indent < depth + 1; ++indent)
+				output << "  ";
+			output << "parameter ";
+			if (parameter.name.valid())
+				output << name_text(parameter.name);
+			if (parameter_index == 0)
+				output << ' ' << render_member_object_parameter(value.type,
+					typed->owner);
+			else
+			{
+				const std::size_t type_index = parameter_index - 1;
+				output << ' ' << render_type(type_index <
+					function_type.parameters.size() ?
+					function_type.parameters[type_index] : parameter.type);
+			}
+			output << '\n';
+			++parameter_index;
+		}
+		if (parameter_index == 0)
+			throw std::runtime_error("PA12 synthetic constructor parameter is missing");
+		for (std::size_t indent = 0; indent < depth + 1; ++indent)
+			output << "  ";
+		output << "compound-statement\n";
+		return;
+	}
 	for (std::size_t indent = 0; indent < depth; ++indent)
 		output << "  ";
 	output << "function-definition " << qualified_binding_name(

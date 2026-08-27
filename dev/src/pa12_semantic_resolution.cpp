@@ -706,6 +706,7 @@ ExprInfo PA11SemanticModel::semantic_default_member_initializer(
 			SemanticFact fact(SemanticFactKind::ConstructorAction, target,
 				SemanticValueCategory::Lvalue, &node);
 			fact.has_callee = true;
+			fact.value_initialize = true;
 			fact.selected_binding = constructor;
 			fact.selected_scope = named_[record.value].scope;
 			fact.callable_type = constructor_callable_type(constructor);

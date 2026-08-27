@@ -25,10 +25,16 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		const Scope& scope = model_.scopes_[scope_index];
 		if (scope.kind != ScopeKind::Class)
 			continue;
+		if (!scope.record.valid() || scope.record.value >= model_.named_.size() ||
+			model_.named_[scope.record.value].kind != NamedKind::Class ||
+			model_.named_[scope.record.value].scope != ScopeId(scope_index))
+			throw std::runtime_error("PA15 class scope ownership is invalid");
 		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
 		{
 			const BindingId binding_id = scope.bindings[i];
 			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size() ||
+				binding_id.value >= model_.binding_owners_.size() ||
+				model_.binding_owners_[binding_id.value] != ScopeId(scope_index) ||
 				class_binding_seen[binding_id.value] != 0)
 				throw std::runtime_error(
 					"PA15 class member binding ownership is invalid");
@@ -62,6 +68,15 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		scanned_functions[function_id.value] = 1;
 		const FunctionFact& function = model_.function_facts_[function_id.value];
 		std::vector<SemanticFactId> fact_work;
+		if (!function.binding.valid() || function.binding.value >=
+			model_.bindings_.size() || !function.owner.valid() ||
+			function.owner.value >= model_.scopes_.size())
+			throw std::runtime_error("PA15 member demand function identity is invalid");
+		if (function.function_scope.valid() &&
+			(function.function_scope.value >= model_.scopes_.size() ||
+				model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
+				model_.scopes_[function.function_scope.value].parent != function.owner))
+			throw std::runtime_error("PA15 member demand function scope is invalid");
 		if (function.is_constructor)
 		{
 			if (function.constructor_action_begin == InvalidIdentityValue ||
@@ -78,22 +93,76 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				const ConstructorActionFact& action =
 					model_.constructor_actions_[function.constructor_action_begin +
 						action_index];
-				if (action.argument_begin != InvalidIdentityValue &&
-					(action.argument_begin > model_.constructor_arguments_.size() ||
-					action.argument_count > model_.constructor_arguments_.size() -
-						action.argument_begin))
+				if (action.argument_count != 0 &&
+					(action.argument_begin == InvalidIdentityValue ||
+						action.argument_begin > model_.constructor_arguments_.size() ||
+						action.argument_count > model_.constructor_arguments_.size() -
+							action.argument_begin))
+						throw std::runtime_error(
+							"PA15 constructor argument range is invalid");
+				if (action.argument_count == 0 &&
+					action.argument_begin != InvalidIdentityValue &&
+					action.argument_begin > model_.constructor_arguments_.size())
+						throw std::runtime_error(
+							"PA15 constructor argument range is invalid");
+				if (action.constructor.valid() && action.initializer.valid())
 					throw std::runtime_error(
-						"PA15 constructor argument range is invalid");
+						"PA15 constructor action has multiple operations");
+				if (!action.constructor.valid() && !action.initializer.valid())
+					throw std::runtime_error(
+						"PA15 constructor action has no operation");
+				if (action.constructor.valid() && action.constructor.value >=
+					model_.bindings_.size())
+					throw std::runtime_error(
+						"PA15 constructor action binding is invalid");
+				if (action.initializer.valid() && action.initializer.value >=
+					model_.semantic_facts_.size())
+					throw std::runtime_error(
+						"PA15 constructor action initializer is invalid");
 				if (action.constructor.valid())
 				{
+					NamedRecordId target_record;
+					if (action.target == ConstructorActionTarget::Base)
+					{
+						if (!action.base_record.valid() ||
+							action.base_record.value >= model_.named_.size())
+							throw std::runtime_error(
+								"PA15 constructor action base identity is invalid");
+						target_record = action.base_record;
+					}
+					else if (action.target == ConstructorActionTarget::Member)
+					{
+						if (!action.member.valid() || action.member.value >=
+							model_.bindings_.size())
+							throw std::runtime_error(
+								"PA15 constructor action member identity is invalid");
+						target_record = model_.named_record_for_type(
+							model_.binding(action.member).type);
+					}
+					else
+						throw std::runtime_error(
+							"PA15 constructor action target is invalid");
+					bool no_op = false;
+					if (target_record.valid() && target_record.value <
+						model_.named_.size() && model_.named_[target_record.value].kind ==
+						NamedKind::Class && model_.named_[target_record.value].class_tag !=
+						ClassTag::Union && model_.named_[target_record.value].name.valid())
+					{
+						const FunctionFact& target_function =
+							checked_constructor_function(action.constructor, target_record);
+						no_op = target_function.synthetic &&
+							target_function.constructor_action_count == 0;
+					}
 					const FunctionFactId* target_id =
 						model_.function_binding_fact_index_.find(action.constructor);
 					if (target_id == NULL || !target_id->valid() ||
 						target_id->value >= model_.function_facts_.size() ||
-						!model_.function_facts_[target_id->value].is_constructor)
+						!model_.function_facts_[target_id->value].is_constructor ||
+						model_.function_facts_[target_id->value].binding !=
+							action.constructor)
 						throw std::runtime_error(
 							"PA15 constructor action target is missing");
-					if (!(*demanded)[target_id->value])
+					if (!no_op && !(*demanded)[target_id->value])
 					{
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
@@ -122,6 +191,15 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				continue;
 			scanned_facts[fact_id.value] = 1;
 			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+			if (fact.child_count != 0 &&
+				(fact.child_begin == InvalidIdentityValue ||
+					fact.child_begin > model_.semantic_children_.size() ||
+					fact.child_count > model_.semantic_children_.size() -
+						fact.child_begin))
+				throw std::runtime_error("PA15 member demand child range is invalid");
+			if (fact.child_count == 0 && fact.child_begin != InvalidIdentityValue &&
+				fact.child_begin > model_.semantic_children_.size())
+				throw std::runtime_error("PA15 member demand child range is invalid");
 			if (fact.kind == SemanticFactKind::CallExpression &&
 				fact.has_implicit_object)
 			{
@@ -130,6 +208,14 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					throw std::runtime_error("PA15 member call demand is incomplete");
 				const FunctionFactId* target_id =
 					model_.function_binding_fact_index_.find(fact.selected_binding);
+				if (fact.selected_binding.value >= class_binding_owners.size() ||
+					!fact.selected_scope.valid() ||
+					fact.selected_scope.value >= model_.scopes_.size() ||
+					model_.scopes_[fact.selected_scope.value].kind != ScopeKind::Class ||
+					class_binding_owners[fact.selected_binding.value] !=
+					fact.selected_scope)
+					throw std::runtime_error(
+						"PA15 member call owner binding is invalid");
 				if (target_id != NULL)
 				{
 					if (!target_id->valid() || target_id->value >=
@@ -204,7 +290,28 @@ void Pa15Lowerer::collect_demanded_member_functions(
 						model_.type_kind(fact.callable_type) != TypeKind::Function)
 						throw std::runtime_error(
 							"PA15 constructor demand is not typed");
-					if (!(*demanded)[target_id->value])
+					bool no_op = false;
+					const BindingSidecar* constructor_sidecar =
+						model_.binding_sidecar(fact.selected_binding);
+					if (constructor_sidecar != NULL &&
+						constructor_sidecar->constructor_record.valid() &&
+						constructor_sidecar->constructor_record.value <
+						model_.named_.size())
+					{
+						const NamedRecord& constructor_record = model_.named_[
+							constructor_sidecar->constructor_record.value];
+						if (constructor_record.kind == NamedKind::Class &&
+							constructor_record.class_tag != ClassTag::Union &&
+							constructor_record.name.valid())
+						{
+							const FunctionFact& target_function =
+								checked_constructor_function(fact.selected_binding,
+									constructor_sidecar->constructor_record);
+							no_op = target_function.synthetic &&
+								target_function.constructor_action_count == 0;
+						}
+					}
+					if (!no_op && !(*demanded)[target_id->value])
 					{
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
