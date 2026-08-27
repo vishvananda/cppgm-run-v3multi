@@ -1882,8 +1882,17 @@ private:
 	std::vector<ValueRef> member_function_candidates_in_scope(ScopeId scope,
 		NameId name) const
 	;
-	ScopeId unqualified_member_scope(TypeId object, NameId name,
-		ScopeId start, std::vector<NamedRecordId>* base_path = NULL) const
+	enum class UnqualifiedMemberDeclarationKind
+	{
+		None,
+		Value,
+		Type,
+		Blocked
+	};
+	UnqualifiedMemberDeclarationKind unqualified_member_scope(TypeId object,
+		NameId name, ScopeId start, ScopeId* declaration_scope,
+		TypeId* declaration_type,
+		std::vector<NamedRecordId>* base_path = NULL) const
 	;
 	bool member_accessible(BindingId binding, ScopeId member_scope,
 		ScopeId access_scope) const
@@ -1892,6 +1901,9 @@ private:
 	;
 	ExprInfo semantic_this_expression(const PA10AstNode& node,
 		ScopeId scope)
+	;
+	ExprInfo semantic_this_expression(const PA10AstNode& node,
+		BindingId binding)
 	;
 	ExprInfo semantic_member_expression(const PA10AstNode& node,
 		ScopeId scope)

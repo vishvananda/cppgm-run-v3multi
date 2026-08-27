@@ -19,6 +19,11 @@ bool PA11SemanticModel::direct_base_chain(TypeId object,
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class)
 		return false;
+	const NamedRecord& initial = named_[record_id.value];
+	if (!initial.scope.valid() || initial.scope.value >= scopes_.size() ||
+		scopes_[initial.scope.value].kind != ScopeKind::Class ||
+		scopes_[initial.scope.value].record != record_id)
+		throw std::runtime_error("invalid PA16 class scope metadata");
 
 	// The semantic model permits one direct non-virtual base.  Keep the
 	// relation walk typed and validate it before either lookup or lowering uses
@@ -30,16 +35,26 @@ bool PA11SemanticModel::direct_base_chain(TypeId object,
 			named_[current.value].kind != NamedKind::Class)
 			throw std::runtime_error("invalid PA16 base record identity");
 		const NamedRecord& record = named_[current.value];
+		if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+			scopes_[record.scope.value].kind != ScopeKind::Class ||
+			scopes_[record.scope.value].record != current)
+			throw std::runtime_error("invalid PA16 class scope metadata");
 		if (record.direct_base_virtual)
 			throw std::runtime_error("virtual inheritance is outside PA16");
 		if (!record.has_base)
+		{
+			if (record.direct_base.valid())
+				throw std::runtime_error("invalid PA16 direct base metadata");
 			return NamedRecordId();
+		}
 		if (!record.direct_base.valid() || record.direct_base.value >= named_.size())
 			throw std::runtime_error("invalid PA16 direct base metadata");
 		const NamedRecord& base = named_[record.direct_base.value];
 		if (base.kind != NamedKind::Class || !base.scope.valid() ||
 			base.scope.value >= scopes_.size() ||
-			scopes_[base.scope.value].kind != ScopeKind::Class)
+			scopes_[base.scope.value].kind != ScopeKind::Class ||
+			scopes_[base.scope.value].record != record.direct_base ||
+			base.class_tag == ClassTag::Union)
 			throw std::runtime_error("invalid PA16 direct base class metadata");
 		return record.direct_base;
 	};
@@ -181,14 +196,20 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	}
 	return result;
 }
-ScopeId PA11SemanticModel::unqualified_member_scope(TypeId object,
-	NameId name, ScopeId start, std::vector<NamedRecordId>* base_path) const
+PA11SemanticModel::UnqualifiedMemberDeclarationKind
+PA11SemanticModel::unqualified_member_scope(TypeId object, NameId name,
+	ScopeId start, ScopeId* declaration_scope, TypeId* declaration_type,
+	std::vector<NamedRecordId>* base_path) const
 {
+	if (declaration_scope != NULL)
+		*declaration_scope = ScopeId();
+	if (declaration_type != NULL)
+		*declaration_type = TypeId();
 	if (base_path != NULL)
 		base_path->clear();
 	const ScopeId class_scope = class_scope_for_type(object);
 	if (!class_scope.valid() || !start.valid() || start.value >= scopes_.size())
-		return ScopeId();
+		return UnqualifiedMemberDeclarationKind::None;
 	const SourcePoint point = lookup_source_point(start);
 	ScopeId cursor = start;
 	bool reached_class = false;
@@ -200,8 +221,23 @@ ScopeId PA11SemanticModel::unqualified_member_scope(TypeId object,
 		{
 			for (std::size_t i = 0; i < values.size(); ++i)
 				if (values[i].scope != cursor)
-					return ScopeId();
-			return cursor;
+					return UnqualifiedMemberDeclarationKind::None;
+			if (declaration_scope != NULL)
+				*declaration_scope = cursor;
+			return UnqualifiedMemberDeclarationKind::Value;
+		}
+		// A type-only first declaration set is an owned functional-cast
+		// outcome.  Start a fresh graph generation because the value probe
+		// above may have marked the same inline-namespace scopes.
+		begin_lookup();
+		const TypeId type = lookup_type_graph(cursor, name, false, point);
+		if (type.valid())
+		{
+			if (declaration_scope != NULL)
+				*declaration_scope = cursor;
+			if (declaration_type != NULL)
+				*declaration_type = type;
+			return UnqualifiedMemberDeclarationKind::Type;
 		}
 		if (cursor == class_scope)
 		{
@@ -211,27 +247,49 @@ ScopeId PA11SemanticModel::unqualified_member_scope(TypeId object,
 		cursor = scopes_[cursor.value].parent;
 	}
 	if (!reached_class)
-		return ScopeId();
+		return UnqualifiedMemberDeclarationKind::None;
 
 	std::vector<NamedRecordId> bases;
 	if (!direct_base_chain(object, &bases))
-		return ScopeId();
+		return UnqualifiedMemberDeclarationKind::None;
 	for (std::size_t i = 0; i < bases.size(); ++i)
 	{
 		const ScopeId base_scope = named_[bases[i].value].scope;
+		const auto record_base_path = [base_path, &bases, i]()
+		{
+			if (base_path != NULL)
+				base_path->assign(bases.begin(), bases.begin() + i + 1);
+		};
 		begin_lookup();
 		std::vector<ValueRef> values;
 		if (lookup_value_graph(base_scope, name, &values, false, point))
 		{
 			for (std::size_t j = 0; j < values.size(); ++j)
 				if (values[j].scope != base_scope)
-					return ScopeId();
-			if (base_path != NULL)
-				base_path->assign(bases.begin(), bases.begin() + i + 1);
-			return base_scope;
+				{
+					if (declaration_scope != NULL)
+						*declaration_scope = base_scope;
+					record_base_path();
+					return UnqualifiedMemberDeclarationKind::Blocked;
+				}
+			if (declaration_scope != NULL)
+				*declaration_scope = base_scope;
+			record_base_path();
+			return UnqualifiedMemberDeclarationKind::Value;
+		}
+		begin_lookup();
+		const TypeId type = lookup_type_graph(base_scope, name, false, point);
+		if (type.valid())
+		{
+			if (declaration_scope != NULL)
+				*declaration_scope = base_scope;
+			if (declaration_type != NULL)
+				*declaration_type = type;
+			record_base_path();
+			return UnqualifiedMemberDeclarationKind::Type;
 		}
 	}
-	return ScopeId();
+	return UnqualifiedMemberDeclarationKind::None;
 }
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
 	ScopeId member_scope, ScopeId access_scope) const
@@ -262,7 +320,11 @@ BindingId PA11SemanticModel::implicit_this_binding(ScopeId scope) const
 ExprInfo PA11SemanticModel::semantic_this_expression(
 	const PA10AstNode& node, ScopeId scope)
 {
-	const BindingId this_id = implicit_this_binding(scope);
+	return semantic_this_expression(node, implicit_this_binding(scope));
+}
+ExprInfo PA11SemanticModel::semantic_this_expression(
+	const PA10AstNode& node, BindingId this_id)
+{
 	if (!this_id.valid())
 		throw std::runtime_error("PA12 this is outside a non-static member function");
 	const Binding& this_binding = binding(this_id);
@@ -594,16 +656,36 @@ ExprInfo PA11SemanticModel::semantic_unqualified_member_call(
 	// the ordinary call resolver; a class/base method set suppresses enclosing
 	// namespace candidates.
 	std::vector<NamedRecordId> base_path;
-	const ScopeId selected_scope = unqualified_member_scope(record_object,
-		member_name.last(), scope, &base_path);
-	if (!selected_scope.valid() || selected_scope.value >= scopes_.size() ||
+	ScopeId selected_scope;
+	TypeId selected_type;
+	const UnqualifiedMemberDeclarationKind declaration_kind =
+		unqualified_member_scope(record_object, member_name.last(), scope,
+			&selected_scope, &selected_type, &base_path);
+	if (declaration_kind == UnqualifiedMemberDeclarationKind::Type)
+	{
+		// Keep the first type declaration set typed through the existing cast
+		// producer.  Do not reopen ordinary enclosing value/ADL lookup after a
+		// class or base has claimed the spelling.
+		if (!selected_type.valid())
+			throw std::runtime_error("PA12 invalid owned functional cast target");
+		return semantic_functional_cast(node, scope, selected_type,
+			node.children.back());
+	}
+	if (declaration_kind == UnqualifiedMemberDeclarationKind::Blocked)
+		throw std::runtime_error("PA12 inherited member name is unsupported");
+	if (declaration_kind != UnqualifiedMemberDeclarationKind::Value ||
+		!selected_scope.valid() || selected_scope.value >= scopes_.size() ||
 		scopes_[selected_scope.value].kind != ScopeKind::Class)
 		return ExprInfo();
 	const std::vector<ValueRef> candidates =
 		member_function_candidates_in_scope(selected_scope, member_name.last());
 	if (candidates.empty())
+	{
+		if (!base_path.empty())
+			throw std::runtime_error("PA12 inherited member name is not callable");
 		return ExprInfo();
-	const ExprInfo object = semantic_this_expression(node, scope);
+	}
+	const ExprInfo object = semantic_this_expression(node, this_id);
 	return semantic_member_call_with_object(node, scope,
 		SimpleTokenType::OP_ARROW, object, record_object, selected_scope,
 		candidates, &base_path);

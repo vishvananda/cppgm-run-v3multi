@@ -6,25 +6,45 @@ This checkpoint keeps one typed production path from PA10 call syntax through
 PA12 semantic facts, PA15, and LowIR.  The member-call probe handles both the
 existing `CallExpression(MemberExpression)` form and an unqualified `id(...)`
 inside a non-static member body.  For the latter, typed lookup checks nearer
-block/function declarations, the direct class scope, and then the ordered
-single direct-base chain before ordinary enclosing lookup can see a namespace
-value.  A found class/base declaration set suppresses unrelated namespace/ADL
-candidates; no declaration is recovered from text.
+block/function declarations, type declarations, the direct class scope, and
+then the ordered single direct-base chain before ordinary enclosing lookup can
+see a namespace value.  At each scope the value declaration set is probed
+before the tag/type set, so a same-scope ordinary method hides a same-spelled
+class or enum tag.  A type-only first declaration set returns its owning
+`TypeId` as an explicit outcome and is consumed by the existing functional-cast
+producer; it cannot reopen enclosing namespace/ADL value lookup.  A found
+class/base declaration set suppresses unrelated namespace/ADL candidates; a
+base-owned value set with no supported non-static method is rejected by its
+nonempty typed base path, while an unsupported imported origin is an explicit
+`Blocked` outcome.  Both cases fail closed.
+Nearer lexical/direct-class values retain the ordinary resolver's existing
+fallback.  No declaration is recovered from text.
 
 `prepare_pa12_member_parameter` owns the exact synthetic first `this`
 parameter in the member Function `Scope`.  A successful call publishes the
 typed `this` value as semantic child zero with `OP_ARROW`, followed by
 converted/defaulted explicit arguments in source order.  Its callable Function
 type has the hidden object pointer first, while the original member Function
-type remains the ABI/signature owner.
+type remains the ABI/signature owner.  The unqualified helper reuses the
+already-selected `BindingId` when creating child zero, so semantic lookup is
+performed once and no name/text recovery is needed.
 
-`direct_base_chain` is keyed by `NamedRecordId`, checks invalid/virtual/cyclic
-metadata with a bounded walk, and supplies the ordered lookup path.  The
-unqualified lookup passes that path to the shared member selector, so an
-inherited call does not re-walk it during semantic candidate selection.  The
-same-owner path returns before chain allocation; inherited selection uses the
-one typed path produced by lookup.  The selector admits only ordinary
-non-static methods from the owner scope, performs the existing implicit-object
+`direct_base_chain` is keyed by `NamedRecordId`, validates class-scope
+back-references and consistent direct-base metadata, and checks
+invalid/virtual/cyclic relations with a bounded walk.  It supplies the
+ordered lookup path.  The unqualified lookup passes that path to the shared
+member selector, so an inherited call does not re-walk it during semantic
+candidate selection.  The same-owner path returns before chain allocation;
+inherited selection uses the one typed path produced by lookup.  Value/type
+ownership is represented by an explicit outcome (`None`, `Value`, `Type`, or
+`Blocked`) plus the selected scope/type, not by an invalid `ScopeId` sentinel.
+A base-owned value set with no supported ordinary non-static method is blocked
+by the nonempty typed base path, while a value origin from an unsupported
+import is `Blocked`; ordinary enclosing lookup cannot reopen in either case.
+Nearer lexical/direct-class values keep their existing ordinary-resolver
+fallback.  The selector admits only ordinary non-static
+methods from the owner scope, performs
+the existing implicit-object
 cv ranking and explicit argument/default handling, and publishes one canonical
 fact.  Its child zero is the synthetic `this` value, with `OP_ARROW`; later
 children are converted/defaulted explicit arguments.  The selected owner
@@ -48,51 +68,49 @@ model or second canonical member-call selector.
 
 ## Failure map and coverage identity
 
-The immutable turn-start evidence at assignment HEAD `25e80541` was `47/243`
-passing, `196` failing, `243/243` covered, and `make test-pa16` exit `2`.  Its
-complete failure map is preserved in
+The supervisor-supplied turn-start evidence at assignment HEAD `b1a9e589` is
+`48/243` passing, `195` failing, `243/243` covered, and `make test-pa16` exit
+`2`.  Its complete failure map is preserved in
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
 
-The authorized full `make test-pa16` run is recorded in
-`/tmp/v3multi-pa16-final.log`: it exited `2` (the suite remains incomplete)
-with `48/243` passing and `195` failing.  All `243/243` checked-in identities
-were covered.  Compared with the immutable baseline, exactly one failure was
-removed and no failure was added; the original `47` passing identities have
-zero regressions.  The focused six-test command measured `2/6` before the
-inherited extension and `3/6` after it.  The retired identity is
-`200-inherited-member-call-hides-outer-type.t`; the remaining focused failures
-are `200-member-call-implicit-this-cv-overload.t`,
-`200-implicit-member-call-suppresses-adl.t`, and
-`200-local-class-direct-init-inherited-member-call.t`.  The four-test direct/
-inherited control set is `4/4`, and the selected PA15 free/indirect control
-set is `3/3`.  Bounded stdin reductions for direct, parenthesized, and local
-name-shadow calls exited successfully and are not additional suite coverage.
-The exact removed-failure set is
-`pa16/tests/general/200-inherited-member-call-hides-outer-type.t`; the added-
-failure set is empty.
+The required through-PA15 command
+`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
+exits `0` with `1167/1167` passing.  The PA16 file audit exits `0` with five
+pre-existing `bad-division` warnings.  `make test-pa16` exits `2` with
+`48/243` passing, `195` failures, and `243/243` coverage.  Comparing its exact
+failure identities with the turn-start `195`-failure map in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` gives
+added set `∅` and removed set `∅`; the complete failure identity set is
+unchanged.  No fixture or reference was changed.
 
 ## Active checkpoint
 
 The active selector checks implicit-object qualification compatibility before
 ranking and reuses the existing explicit-argument conversion/default logic.
-The unqualified probe searches nearer lexical scopes, the direct class, and
-the first matching declaration set in the direct-base chain.  It admits only
-ordinary non-static methods and then publishes the selected `BindingId`, its
-owner `ScopeId`, the hidden-object callable `Function TypeId`, and typed
-children consumed by the existing PA15 `lower_call`.  A successful inherited
-call therefore carries actual `D*` in child zero while its selected callable
-requires owner `B*`; PA15 validates and emits the typed base-subobject
-projection between them.  The semantic tail guard rolls back an unsuccessful
-probe, so no failed speculation can publish a call fact or demand edge.
+The unqualified probe searches nearer lexical scopes, probing values before
+types, then the direct class and the first matching declaration set in the
+direct-base chain.  It admits only ordinary non-static methods and then
+publishes the selected `BindingId`, its owner `ScopeId`, the hidden-object
+callable `Function TypeId`, and typed children consumed by the existing PA15
+`lower_call`.  A type-only result instead carries its selected `TypeId` into
+the existing functional-cast producer, including the focused direct and
+inherited scalar cases, and unsupported targets fail closed.  A base-owned
+non-callable value or unsupported imported value is likewise `Blocked` and
+fails closed; nearer lexical/direct-class values still use the existing
+ordinary fallback.  A successful
+inherited call therefore carries actual `D*` in child zero while its selected
+callable requires owner `B*`; PA15 validates and emits the typed
+base-subobject projection between them.  The semantic tail guard rolls back
+an unsuccessful probe, so no failed speculation can publish a call fact or
+demand edge.
 
 This checkpoint intentionally does not add inherited fields, qualified base
 calls, protected/friend/using-imported access, constructors/lifetime, aggregate
 initialization, ADL or operators, static calls, virtual/ref-qualified methods,
 or broader user-defined conversions.  The supported relation remains one
-non-virtual direct base per class.  The bounded three-level reduction at
-`/tmp/v3multi-pa16-three-level.cc` passed compilation and emitted two ordered
-offset-zero base projections before `@A__f`, while multiple inheritance and
-virtual inheritance remain outside this checkpoint.
+non-virtual direct base per class.  The bounded three-level reduction emitted
+two ordered offset-zero base projections before `@A__f`, while multiple
+inheritance and virtual inheritance remain outside this checkpoint.
 
 ## Performance evidence and uncertainties
 
@@ -109,21 +127,22 @@ is claimed.  The three-level reduction is structural evidence of two ordered
 projection steps, not a benchmark.  No whole-program scan or repeated class
 completion was added.
 
-Measured evidence is the exact inherited handout (`1/1`), the focused six-test
-command (`3/6` after, with the inherited identity removed), the direct/
-inherited controls (`4/4`), the PA15 free/indirect controls (`3/3`), the two
-PA12 functional-cast controls (`2/2`), the successful bounded stdin
-reductions, and the emitted inherited LowIR shape containing
-`index i8 [projection=base_subobject] ... , 0` before `@B__f`.  The full PA16
-run is `48/243` with `195` failures and `243/243` coverage; through-PA15 is
-`1167/1167` with exit `0`; and the file audit exits `0` with five pre-existing
-header-division warnings.  No timing, RSS, allocation, or structural-counter
-measurement is claimed.
+Measured evidence is the focused six-test command (`1/6`, exit `2`), the
+three direct/inherited controls (`3/3`, exit `0`), course regressions 400, 401,
+and 402 (each exit `0`), the new 402 typed tag/method and direct/base type-only
+LowIR assertions plus the rejected inherited-field/outer-call regression, the
+successful bounded reductions, through-PA15
+`1167/1167`, the full PA16 `48/243` with `243/243` coverage, and the five
+file-audit warnings listed in the audit record.  No timing, RSS, allocation,
+or structural-counter measurement is claimed; the performance evidence is
+the bounded structural work and these exact control results.
 
 ## Next checkpoint
 
 The next bounded checkpoint should own the separately deferred inherited-field
-and qualified-base boundaries if supervisor review confirms their scope.
+semantics and qualified-base boundaries if supervisor review confirms their
+scope.  This checkpoint only makes inherited non-callable value sets fail
+closed; it does not implement inherited fields.
 Protected/friend/using access, operators/ADL, constructors/lifetime, virtual
 dispatch, and broader conversion expansion remain separate checkpoints; this
 record does not claim full PA16 completion.
@@ -132,7 +151,7 @@ record does not claim full PA16 completion.
 
 | checkpoint | status |
 | --- | --- |
-| `current checkpoint (completed)` direct + inherited unqualified member-call boundary | Completed typed lexical/direct-base lookup, canonical owner/hidden-`this` facts, shared explicit-member selection with path reuse, and validated PA15 base-subobject projection. Focused six-test result is `3/6`; full PA16 is `48/243` with `195` failures and `243/243` coverage, exactly one removed failure and no additions; through-PA15 is `1167/1167`; file audit passes with five pre-existing warnings. |
+| `b1a9e589` direct + inherited unqualified member-call checkpointAudit | Completed bounded audit and narrow repairs for canonical owner/hidden-`this` facts, value-before-type lookup with explicit `Type`/`Blocked` outcomes, fail-closed base metadata and inherited value-set ownership, shared selection, and PA15 base-subobject validation. Focused six-test result is `1/6` on the same five prerequisite identities; through-PA15 is `1167/1167`, file audit exits `0` with five pre-existing warnings, and full PA16 is `48/243` with `195` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `37265733` typed member projection audit/repair | Completed bounded audit/repair; direct/nested dot and arrow ownership remains traced through PA12, PA11 `RecordLayout::member_offsets`, and PA15 LowIR, with PA16 still incomplete at that checkpoint's existing failure baseline. |
 | `b1e8272d` + PA16 typed implicit-object boundary | Prior landed checkpoint record preserved: canonical Function-scope hidden-object ownership, fail-closed viability, typed demand indexing, direct PA15 lowering, focused `6/6` + `2/2`, and reported final `47/243` with `243/243` coverage. |
 | `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed PA15 reachability, dense FunctionFact/fact metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused controls and course regressions pass; broad gates record through-PA15 `1167/1167`, final PA16 `47/243` with `196` failures and `243/243` coverage, zero failure-identity additions/removals, and PA16 still incomplete. |

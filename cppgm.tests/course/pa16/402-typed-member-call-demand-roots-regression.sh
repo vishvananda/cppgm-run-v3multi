@@ -163,3 +163,93 @@ printf '%s\n' \
   '  return value.choose(1);' \
   '}' >"$ambiguity_source"
 expect_failure "$ambiguity_source"
+
+tag_method_source=$build_dir/member-tag-method-same-spelling.cpp
+printf '%s\n' \
+  'int f() { return 99; }' \
+  'struct Base {' \
+  '  struct f {};' \
+  '  int f() { return 7; }' \
+  '};' \
+  'struct Derived : Base {' \
+  '  int call() { return f(); }' \
+  '};' \
+  'int main() { Derived value; return value.call(); }' \
+  >"$tag_method_source"
+tag_method_output=$build_dir/member-tag-method-same-spelling.lowir
+"$app" --emit-lowir -O0 -o "$tag_method_output" "$tag_method_source"
+if ! rg -Fq 'function @Derived__call(%this : ptr)' "$tag_method_output" ||
+   ! rg -q -e '^    %t[0-9]+ = index i8 \[projection=base_subobject\] %t[0-9]+, 0$' \
+    "$tag_method_output" ||
+   ! rg -q -e '^    %t[0-9]+ = call i32 @Base__f\(%t[0-9]+\)$' \
+    "$tag_method_output"; then
+  echo "same-scope base tag did not leave the ordinary method as the owner" >&2
+  exit 1
+fi
+
+owned_type_body()
+{
+  output=$1
+  body=$build_dir/$(basename "$output").Derived__call
+  sed -n '/^function @Derived__call/,/^}/p' "$output" >"$body"
+  if ! rg -Fq 'function @Derived__call(%this : ptr)' "$output" ||
+     ! rg -Fq 'return i32 0' "$body" ||
+     rg -q 'call .*@f' "$body"; then
+    echo "owned type-only member lookup reopened an outer call" >&2
+    exit 1
+  fi
+}
+
+direct_type_source=$build_dir/member-owned-direct-type.cpp
+printf '%s\n' \
+  'int f() { return 99; }' \
+  'struct Derived {' \
+  '  typedef int f;' \
+  '  int call() { return f(); }' \
+  '};' \
+  'int main() { Derived value; return value.call(); }' \
+  >"$direct_type_source"
+direct_type_output=$build_dir/member-owned-direct-type.lowir
+"$app" --emit-lowir -O0 -o "$direct_type_output" "$direct_type_source"
+owned_type_body "$direct_type_output"
+
+base_type_source=$build_dir/member-owned-base-type.cpp
+printf '%s\n' \
+  'int f() { return 99; }' \
+  'struct Base {' \
+  '  typedef int f;' \
+  '};' \
+  'struct Derived : Base {' \
+  '  int call() { return f(); }' \
+  '};' \
+  'int main() { Derived value; return value.call(); }' \
+  >"$base_type_source"
+base_type_output=$build_dir/member-owned-base-type.lowir
+"$app" --emit-lowir -O0 -o "$base_type_output" "$base_type_source"
+owned_type_body "$base_type_output"
+
+inherited_field_source=$build_dir/member-inherited-field-blocked.cpp
+printf '%s\n' \
+  'int f() { return 99; }' \
+  'struct Base { int f; };' \
+  'struct Derived : Base {' \
+  '  int call() { return f(); }' \
+  '};' \
+  'int main() { Derived value; return value.call(); }' \
+  >"$inherited_field_source"
+inherited_field_output=$build_dir/member-inherited-field-blocked.lowir
+if "$app" --emit-lowir -O0 -o "$inherited_field_output" \
+    "$inherited_field_source"; then
+  inherited_field_status=0
+else
+  inherited_field_status=$?
+fi
+if [ "$inherited_field_status" -ne 1 ]; then
+  echo "inherited non-callable member reopened outer f" >&2
+  exit 1
+fi
+if [ -s "$inherited_field_output" ] &&
+   rg -q 'call .*@f' "$inherited_field_output"; then
+  echo "blocked inherited member emitted an outer f call" >&2
+  exit 1
+fi
