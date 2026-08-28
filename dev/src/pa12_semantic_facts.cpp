@@ -49,6 +49,7 @@ ConversionFactId PA11SemanticModel::add_conversion(TypeId source, TypeId target,
 	fact.base_distance = base_distance;
 	fact.added_cv = choice.added_cv;
 	fact.base_access_checked = choice.base_access_checked;
+	fact.base_access_scope = choice.base_access_scope;
 	if (!base_path.empty())
 	{
 		fact.base_path_begin = conversion_base_paths_.size();

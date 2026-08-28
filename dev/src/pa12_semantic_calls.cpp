@@ -497,6 +497,9 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 		(void)argument_node;
 		if (!found || ambiguous)
 			return ConversionChoice();
+		// The constructor is one user-defined conversion sequence.  Keep the
+		// first standard sequence's rank as metadata only; the shared typed
+		// comparator orders the user-defined category independently of it.
 		ConversionChoice result(true, best_rank,
 			ConversionKind::ReferenceBinding);
 		result.rank_category = ConversionRankCategory::UserDefined;

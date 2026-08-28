@@ -2,7 +2,156 @@
 
 ## Current Checkpoint Review
 
-This final review covers landed commit 9718b98797312753e33023fe97d36d74afd0a84a
+This final review covers landed commit `4efddaaeac6f10d897b7893736c999dd6be06e96`
+(`PA16: add typed derived-to-base conversions`) relative to parent
+`052b47b99da3021b805ef6c1d2f8974dccd657e3`, plus four bounded repair groups
+and the reduced course regression made during this audit. The ownership
+boundary is the typed ordinary pointer/reference derived-to-base path for
+non-virtual single inheritance. No handout test, fixture, `.ref` file,
+test comparator, harness, generated output, or source-set list was changed.
+
+### Contract and ownership
+
+The PA16 boundary admits complete object pointers and references across a
+single non-virtual inheritance chain whose supported direct-base layout is at
+offset zero, with the existing public/protected/private access rules and
+constructor lexical scope. Virtual or multiple inheritance, class-by-value
+transfer, and conversion operators remain outside this checkpoint. The
+standard cross-check is N3485 [conv.ptr], [conv.qual], [dcl.init.ref], and
+[over.ics.rank] in [N3485](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3485.pdf).
+
+The typed fact path is:
+
+PA10/PA11 canonical `TypeId` and `NamedRecordId`
+  -> validated class scope, direct-base/access metadata, and complete
+     zero-offset `RecordLayout`
+  -> PA12 transient `ConversionChoice` with typed endpoints, standard-rank
+     category, cv subset metadata, base distance, and access `ScopeId`
+  -> one final relation/access recheck and the owned `ConversionFact` plus
+     compact `conversion_base_paths_` slice
+  -> PA15 typed path/layout validation and `IPK_BASE_SUBOBJECT` projection
+
+No rendered-name recovery or duplicate semantic type model appears in this
+path. The selected fact owns source/target, rank metadata, the access scope
+that proved the relation, and the complete typed path. PA15 does not
+rediscover this explicit conversion through lookup or text. A separate
+pre-existing implicit-object member-call lowering in
+`dev/src/pa15_lowering_calls.cpp` reconstructs a typed member-object path; it
+does not recover names, but is outside this checkpoint's changed-path
+ownership and remains a later member-call holdout.
+
+The scope-free pointer-common routine is only structural candidate discovery.
+Every selected branch is committed through the scoped `conversion_for` or
+`record_builtin_conversion` path, so common-type discovery cannot become
+semantic convertibility. Initialization, member-initializer, assignment,
+return, conditional, cast, ordinary call, member call, operator, function-id,
+template-candidate, pointer-common, and constructor-probe consumers were
+traced. Constructor member-initializers pass their constructor lexical scope;
+references use addressable storage, and pointer values—including null—remain
+values.
+
+### Findings and bounded repairs
+
+- The landed choice scorer had two narrow ordering defects. An implicit
+  constructor probe carried `UserDefined` category but its first-standard
+  rank was still used as a global numeric tie-break. The typed comparator now
+  orders standard categories above `UserDefined`, `UserDefined` above
+  `Ellipsis`, and leaves two user-defined sequences indistinguishable by that
+  unrelated rank; standard-vs-standard legacy numeric ordering and derived
+  distance/cv ordering remain unchanged. Equal-rank member-object choices
+  now apply cv qualification as a subset relation rather than a bit-count
+  relation. The strengthened course-414 operator regression and course-402
+  member-cv control both pass.
+
+- Public, protected, private, and constructor-context base access remains a
+  typed scope proof. External private conversion and private conditional
+  pointer formation reject; the private-base member-initializer conversion
+  is accepted. Nearer-base overload selection chooses the nearer base.
+
+- `validated_direct_base` and the relation/access walks reject malformed
+  record/scope IDs, invalid direct-base metadata, virtual inheritance, and
+  cycles with bounded arena-based work. Multiple inheritance, class-by-value
+  derived-to-base transfer, and incomplete/unsupported layout fail closed.
+  The class-to-void boundary needed by the landed member-initializer still
+  succeeds.
+
+- PA15 rejects missing fact scope/path ownership, including a scope whose
+  `ScopeId.value` is outside `model_.scopes_`, invalid path ranges, wrong
+  endpoint records, virtual edges, incomplete layouts, and non-zero direct
+  base offsets. A pointer null literal skips zero-offset projection and stays
+  null; a reference conversion projects addressable storage and preserves
+  alias identity.
+
+- Scoring performs no candidate-path allocation. Publication performs one
+  bounded relation/access recheck and one path collection/copy into the
+  arena. The shared direct-base validation and cycle checks are bounded by
+  the named-record/scope arenas. No broad retry, unbounded scan, per-use
+  rendered name, or shortcut keyed to a test was introduced.
+
+### Focused and broad evidence
+
+The turn-start authoritative record is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+`144/243` passed, `99` failed, and all `243/243` identities were covered at
+the start of this audit. The final `make test-pa16` also exits 2 with
+`144/243` passed, `99` failed, and all `243/243` identities covered. Exact
+normalized comparison against the turn-start map reports baseline-only `∅`
+and final-only `∅`; the coverage inventory is exactly 243. Stage progress is
+therefore preserved. The final focused conversion matrix is `8/10`; the two
+unchanged residuals are
+`general/200-pointer-subscript-class-reference-return.t` (scalar-index
+LowIR scaling) and
+`general/200-reference-indexed-pointer-member-access.t` (nested-array
+initializer boundary). The focused access/rank/parser controls are `7/9`;
+the two residuals are
+`general/300-using-base-static-same-signature-derived-preferred.t` and
+`general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`.
+The PA15 conditional controls are `2/2`.
+
+`make -C dev cppgm++` exits 0. The required course 402, 411, and strengthened
+414 checks pass after syntax checks; course 400 remains the pre-existing
+user-declared-destructor lifetime holdout and is outside this conversion
+slice. The final through-PA15 gate is `1167/1167`. The final file audit exits
+0 with six header-division warnings, and `git diff --check` exits 0. Exact
+logs are preserved under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v2`.
+
+### Performance and structural evidence
+
+Durable evidence is at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-evidence-final-v1`.
+Its frozen compiler SHA-256 is
+`5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`.
+`results.tsv` contains nine immutable probes at depths `1/8/32` and
+candidate counts `2/16/64`, each run twice: all 18 exits are zero and all
+repeated hashes match. The current compiler independently reproduced all
+nine expected hashes on both runs after the audit repairs. The final replay
+is preserved at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v2/structural-replay-v2`:
+9 cases x 2 runs, 18 expected-hash matches, 18 zero exits, and zero
+run-pair mismatches. Its current rebuilt compiler SHA-256 is
+`718cad77a9f2e9dbf5e5ffcf66d20e45184388d90689d67fe62cbf5cafd109a7`, kept
+separate from the frozen compiler hash above. The recorded
+source range is 595--5215 bytes; LowIR is 83/2112 through 703/18222
+lines/bytes; observable base projections are 4, 18, and 66 for depths 1, 8,
+and 32. The probes cover direct/transitive pointer and reference conversion,
+nearer-base ranking, and pointer-to-const-void competition. This is
+determinism and structural bounded-work evidence only—not a timing, RSS,
+allocation, speedup, or asymptotic claim.
+
+### Next checkpoint
+
+This checkpoint is complete: the broad PA16 and through-PA15 gates, file
+audit, diff-check, focused controls, and immutable structural replay all have
+the final results recorded above. The next substantive PA16 checkpoint
+remains the residual conversion/LowIR surface and other explicitly staged
+boundaries; unrelated lifetime, static, operator, access, and member
+residuals—including the pre-existing lowering path noted above—remain
+holdouts rather than scope expansion here.
+
+## Historical Member-Function-Definition Declarator Review
+
+This historical review covers landed commit 9718b98797312753e33023fe97d36d74afd0a84a
 (PA16: type member-function definition declarators) relative to parent
 97d1e7a5, plus the bounded follow-up corrections in the PA11 typed
 declarator path. The source audit is limited to pa11_semantic.cpp,
@@ -781,3 +930,4 @@ conversion slices.
 | `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the follow-up corrects exact friend-definition lexical ownership and typed private/protected/public base-reference accessibility while retaining enum identity/promotion ranking, narrow converting-constructor participation, reference/address facts, and typed bool boundaries through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused status is `29/32` with three documented pre-existing holdouts, course 411 passes, and state-matched performance is in `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. No handout, fixture, reference, comparator, or generated output changed. |
 | `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Completed bounded PA10--PA15 audit and repair: canonical typed operation/promotion facts, const-reference temporary ownership, semantic-owner rejection of invalid bit-field references and bool decrement, overload-before-address-of ordering, mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned PA15 projection, and isolated initialization roots. Final PA16 is `131/243` with `112` failures and `243/243` identities; exact comparison to the turn-start `112`-failure map is baseline-only `0`, final-only `0`. Course 412, direct alias control, through-PA15 `1167/1167`, file audit, and diff-check pass; the focused bit-field matrix is `5/11` with six documented LowIR mismatches. Corrected state-matched bit-field performance is in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1` with 30/30 zero-exit runs, 32-owner/544-declaration/832-use scaled counters, final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`, and final wall medians `0.00/0.07/0.00s` for small/large/nested cases. No handout, fixture, reference, comparator, or generated output changed. |
 | `9718b987` member-function-definition declarator audit/follow-up | Final audit/follow-up: the out-of-contract special-member widening is reverted to the parent class-scope-only behavior, while explicit auto-placeholder state and typed/fail-closed ordinary declarator validation are complete. Final `make test-pa16` is `132/243` with `111` failures and `243/243` identities; the exact baseline/final failure sets are identical with baseline-only `∅` and final-only `∅`. Through-PA15 is `1167/1167`; course 413 passes, the focused matrix is `5/7`, the constructor-member-init control is `1/1`, file audit passes with five pre-existing warnings, and diff-check passes. The excluded nested out-of-class constructor fails closed and is not PA16 coverage; next is a later residual audit, not completion. |
+| `4efddaae` typed single-inheritance standard-conversion checkpointAudit | Complete: typed endpoint, access-scope, and path ownership is retained from PA12 publication into PA15; the typed comparator enforces standard > `UserDefined` > `Ellipsis`, leaves user-defined/user-defined first-standard ranks incomparable, and preserves standard legacy plus derived distance/cv ordering. Member-object cv subset ordering, malformed-record bounds checks, final-fact scope-range validation, and the strengthened course-414 operator regression are repaired. Final PA16 is `144/243` with `99` failures and `243/243` identities covered; exact comparison with the turn-start map has baseline-only `∅` and final-only `∅`. Focused conversion is `8/10`, access/rank/parser controls `7/9`, and PA15 conditional controls `2/2`; the residual identities are documented above. Through-PA15 is `1167/1167`; file audit exits `0` with six header-division warnings; diff-check exits `0`. Final immutable replay is 9 cases x 2 with 18 expected-hash matches and zero pair mismatches; frozen compiler SHA-256 is `5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`, current compiler SHA-256 is `718cad77a9f2e9dbf5e5ffcf66d20e45184388d90689d67fe62cbf5cafd109a7`. |

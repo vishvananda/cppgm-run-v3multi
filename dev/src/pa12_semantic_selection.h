@@ -225,15 +225,46 @@ struct ConversionScore
 inline int compare_conversion_scores(const ConversionScore& left,
 	const ConversionScore& right)
 {
+	const bool left_standard =
+		left.rank_category == ConversionRankCategory::Exact ||
+		left.rank_category == ConversionRankCategory::Promotion ||
+		left.rank_category == ConversionRankCategory::Conversion;
+	const bool right_standard =
+		right.rank_category == ConversionRankCategory::Exact ||
+		right.rank_category == ConversionRankCategory::Promotion ||
+		right.rank_category == ConversionRankCategory::Conversion;
+	// [over.ics.rank] compares the standard/user-defined/ellipsis sequence
+	// boundary before any legacy numeric rank.  The latter is the rank of the
+	// first standard sequence inside a user-defined conversion and cannot
+	// order two otherwise indistinguishable user-defined sequences.
+	if (left_standard != right_standard)
+		return left_standard ? -1 : 1;
+	if (!left_standard)
+	{
+		if (left.rank_category != right.rank_category)
+			return left.rank_category == ConversionRankCategory::UserDefined ?
+				-1 : 1;
+		return 0;
+	}
 	const bool left_derived = left.kind == ConversionKind::DerivedToBase;
 	const bool right_derived = right.kind == ConversionKind::DerivedToBase;
 	// Preserve the established numeric ordering for pairs that contain no
-	// class adjustment.  The typed category/path ordering below is only for a
-	// candidate whose standard sequence includes DerivedToBase.
+	// class adjustment, but retain the typed qualification subset when the
+	// score carries cv metadata (notably an implicit member object).  The
+	// category/path ordering below is for a candidate whose standard sequence
+	// includes DerivedToBase.
 	if (!left_derived && !right_derived)
 	{
 		if (left.legacy_rank == right.legacy_rank)
+		{
+			const unsigned int left_extra = left.added_cv & ~right.added_cv;
+			const unsigned int right_extra = right.added_cv & ~left.added_cv;
+			if (left_extra != 0 && right_extra == 0)
+				return 1;
+			if (right_extra != 0 && left_extra == 0)
+				return -1;
 			return 0;
+		}
 		return left.legacy_rank < right.legacy_rank ? -1 : 1;
 	}
 	if (left.rank_category != right.rank_category)
@@ -276,6 +307,7 @@ struct ConversionFact
 	unsigned int base_distance;
 	unsigned int added_cv;
 	bool base_access_checked;
+	ScopeId base_access_scope;
 	std::size_t base_path_begin;
 	std::size_t base_path_count;
 	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
@@ -283,6 +315,7 @@ struct ConversionFact
 		: source(source), target(target), kind(kind), rank(rank),
 		  rank_category(conversion_rank_category(kind, rank)),
 		  base_distance(0), added_cv(0), base_access_checked(false),
+		  base_access_scope(),
 		  base_path_begin(InvalidIdentityValue), base_path_count(0)
 	{}
 };

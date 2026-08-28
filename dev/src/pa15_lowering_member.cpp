@@ -11,6 +11,8 @@ LoweredValue Pa15Lowerer::apply_derived_base_conversion(
 		throw std::runtime_error("PA15 derived-base conversion type is invalid");
 	if (conversion.kind != ConversionKind::DerivedToBase ||
 		!conversion.base_access_checked ||
+		!conversion.base_access_scope.valid() ||
+		conversion.base_access_scope.value >= model_.scopes_.size() ||
 		conversion.base_path_begin == InvalidIdentityValue ||
 		conversion.base_path_count == 0 ||
 		conversion.base_path_begin > model_.conversion_base_paths_.size() ||

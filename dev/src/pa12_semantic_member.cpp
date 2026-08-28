@@ -763,12 +763,15 @@ bool PA11SemanticModel::base_path_accessible(TypeId object, ScopeId target,
 		ScopeId owner) -> bool
 	{
 		if (!derived.valid() || derived.value >= scopes_.size() ||
-			scopes_[derived.value].kind != ScopeKind::Class || !owner.valid())
+			scopes_[derived.value].kind != ScopeKind::Class || !owner.valid() ||
+			owner.value >= scopes_.size())
 			return false;
 		NamedRecordId current = scopes_[derived.value].record;
 		for (std::size_t steps = 0; current.valid() &&
 			steps < named_.size(); ++steps)
 		{
+			if (current.value >= named_.size())
+				return false;
 			const NamedRecord& record = named_[current.value];
 			validated_direct_base(current, &current);
 			if (record.scope == owner)
@@ -829,6 +832,8 @@ bool PA11SemanticModel::base_path_accessible(TypeId object, ScopeId target,
 	for (std::size_t steps = 0; current.valid() &&
 		steps < named_.size(); ++steps)
 	{
+		if (current.value >= named_.size())
+			return false;
 		const NamedRecord& record = named_[current.value];
 		NamedRecordId base;
 		validated_direct_base(current, &base);
