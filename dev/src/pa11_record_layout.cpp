@@ -484,7 +484,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			}
 		}
 		const bool is_union = record.class_tag == ClassTag::Union;
-		bool checkpoint_zero_storage_eligible = !is_union && !record.has_base;
+		bool checkpoint_zero_storage_eligible = !is_union;
 		std::size_t offset = 0;
 		std::size_t largest_member = 0;
 		std::size_t record_alignment = 1;
@@ -494,6 +494,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			if (base_layout.state != RecordLayoutState::Complete ||
 				base_layout.size == 0 || base_layout.alignment == 0)
 				throw std::runtime_error("direct base has no complete layout");
+			if (!base_layout.checkpoint_zero_storage_eligible)
+				checkpoint_zero_storage_eligible = false;
 			layout.has_direct_base = true;
 			layout.direct_base = RecordLayoutBase(record.direct_base, 0);
 			offset = base_layout.size;

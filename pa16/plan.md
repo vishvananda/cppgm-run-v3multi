@@ -2,118 +2,200 @@
 
 ## Stage Design
 
-This checkpoint audits landed commit 9718b98797312753e33023fe97d36d74afd0a84a
-(PA16: type member-function definition declarators) relative to 97d1e7a5,
-plus the bounded follow-up corrections in the PA11 typed declarator path.
-PA10 preserves qualified declarator shape, parameter clauses, cv/noexcept/ref
-suffix nodes, and TrailingReturnType. PA11 carries SpecFact::is_auto,
-DeclaratorBaseKind, and the trailing TypeId as a DeclaratorOp. PA12 and PA15
-consume the canonical ScopeId, NamedRecordId, BindingId, FunctionFact,
-parameter facts, function scope, body scope, and typed return TypeId.
+This checkpoint owns the typed standard-conversion boundary for the PA16
+non-virtual single-inheritance subset. PA11 remains the owner of `TypeId`,
+`NamedRecordId`, validated direct-base metadata, record layout, and access
+facts. PA12 scores a `DerivedToBase` `ConversionChoice` with compact typed
+endpoints, bounded direct-base distance, cv metadata, and access scope; final
+`ConversionFact` publication rechecks that relation and owns the path slice.
+PA15 consumes that fact and emits the already-established offset-zero typed
+base projection. No rendered names, duplicate type model, multiple/virtual
+inheritance, class-by-value transfer, or conversion operators are added.
 
-The PA16 contract includes in-class definitions and qualified out-of-class
-ordinary non-static member definitions, including private nested leading return
-types. It explicitly excludes out-of-class constructor/destructor definitions.
-The 9718 special-member widening was reverted: process_special_member is again
-class-scope-only, and the namespace/root PA12 special-member analysis and
-preparation additions are absent. The existing in-class special-member path
-remains intact.
-
-Spec alignment is direct: spec.md §2 supplies typed fact continuity; §4
-supplies bounded local work and storage discipline; §5 supplies typed PA12/
-PA15 lowering continuity; and §7 supplies executable conformance and
-measurement evidence. N3485 [dcl.fct], [dcl.fct.def], and [class.mfct] supply
-the trailing-return and member-definition rules:
-[N3485](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3485.pdf).
+The governing material is spec.md §§2--5 and §7 and N3485 [conv.ptr],
+[conv.qual], [dcl.init.ref], and [over.ics.rank]. The existing PA16 contract
+requires ordinary object pointer/reference conversions and single inheritance
+at offset zero; inaccessible base paths must remain rejected.
 
 ## Failure Map
 
-The audit-turn starting state is exactly 132/243 passed, 111 failed, and
-243/243 identities covered. The authoritative baseline is
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log. Its
-diagnostic map is 61 expected-success exit mismatches, 2 expected-failure
-exit mismatches, and 48 LowIR comparison mismatches.
+The authoritative clean-HEAD baseline is commit `052b47b99da3` and
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log:
+`132/243` passed, `111` failed, and all `243/243` identities were covered.
+The baseline has 61 expected-success exit mismatches, 2 expected-failure exit
+mismatches, and 48 LowIR comparison mismatches.
 
-Final make test-pa16 is 132/243 passed with 111 failures and all 243 identities
-covered. The exact normalized comparison is in
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/identity-compare.log:
-baseline errors 111, final errors 111, inventory 243, baseline-only empty,
-and final-only empty. No pass identity regressed. The earlier implementation-
-turn delta remains the one baseline-only repair
-general/300-member-function-trailing-return.t; it is included in the unchanged
-failure map comparison.
+The focused conversion command covers these ten identities. It is currently
+`8/10`; the eight baseline failures removed are
+`general/200-derived-pointer-member-init.t`,
+`general/200-derived-pointer-overload-prefers-base-over-void.t`,
+`general/200-function-reference-return-expression-type.t`,
+`general/300-overloaded-unary-deref-base-ref-return.t`,
+`general/300-out-of-class-member-trailing-return.t`,
+`spec/200-const-reference-binds-derived-pointer-prvalue.t`,
+`spec/200-derived-base-reference-overload-rank.t`, and
+`spec/200-conditional-derived-base-lvalue-reference.t`.
+The two unchanged baseline failures are
+`general/200-pointer-subscript-class-reference-return.t` (scalar-index
+LowIR scaling) and `general/200-reference-indexed-pointer-member-access.t`
+(nested-array initializer boundary).
 
-The required prior-through command passed at 1167/1167. The exact file audit
-passed with five pre-existing bad-division header warnings. git diff --check
-passed.
+The focused access/rank/parser control command is currently `7/9`. Its seven
+passing controls are `spec/300-inherited-const-method-base-pointer-cv-bad.t`,
+`general/200-private-base-static-cast-bad.t`,
+`general/200-private-base-static-cast-member.t`,
+`general/300-using-base-same-signature-derived-preferred.t`,
+`general/200-multilevel-qualification-conversion-bad.t`,
+`general/200-const-cast-pointer-reference-alias.t`, and
+`general/300-alignas-derived-base-layout.t`. The two remaining baseline
+failures are `general/300-using-base-static-same-signature-derived-preferred.t`
+and `general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`.
+The final full gate is `144/243` passed and `99` failed, with all `243/243`
+identities covered. The twelve baseline-only failures are
+`general/200-const-member-call-prefers-const-object-overload.t`,
+`general/200-derived-pointer-member-init.t`,
+`general/200-derived-pointer-overload-prefers-base-over-void.t`,
+`general/200-function-reference-return-expression-type.t`,
+`general/200-private-base-static-cast-member.t`,
+`general/300-derived-shift-prefers-free-char-pointer.t`,
+`general/300-member-function-pointer-field-call.t`,
+`general/300-out-of-class-member-trailing-return.t`,
+`general/300-overloaded-unary-deref-base-ref-return.t`,
+`spec/200-conditional-derived-base-lvalue-reference.t`,
+`spec/200-const-reference-binds-derived-pointer-prvalue.t`, and
+`spec/200-derived-base-reference-overload-rank.t`; final-only identities are
+empty. Tests and fixtures remain unchanged.
 
-## Focused Evidence
+## Active Checkpoint
 
-Course 413 passes. It publicly rejects mixed and duplicate auto, cv-qualified
-auto, typedef auto, auto in a parser-accepted trailing TypeId, missing auto,
-non-function arrows, invalid suffix order, unsupported ref qualifiers, auto
-parameters, auto without a trailing return, and auto simple declarations. It
-also accepts a valid static auto trailing-return control and
-auto (*callback)() -> int. The durable log is
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/course-413.log.
+Disposition: completed typed conversion checkpoint. The canonical flow
+is PA11 `TypeId`/`NamedRecordId` plus the validated direct-base relation; PA12's
+transient `ConversionChoice` carries category, legacy rank, cv addition, base
+distance, typed endpoints, and the access scope that proved the relation, but
+no path allocation. At final `ConversionFact` publication PA12 performs one
+count/path walk with that stored scope and distance, then owns the copied
+slice in `conversion_base_paths_`. PA15 validates only that stored slice
+against typed identities and complete offset-zero, non-virtual layout, then
+emits the required `IPK_BASE_SUBOBJECT` projections. It does not rediscover a
+conversion through `derived_base_path`, names, or rendered text. Pointer
+values, including null literals, remain values; object references use
+addressable storage and retain alias identity; class-by-value transfer remains
+rejected.
 
-The exact seven-test matrix is 5/7: passing
-300-member-function-trailing-return.t, 100-out-of-class-methods.t,
-300-out-of-class-private-nested-return-type.t,
-200-constructor-overload-default-arg-nonfirst-argument.t, and
-200-return-preserves-value.t. The two residuals are
-300-out-of-class-member-trailing-return.t (existing PA12 invalid conversion
-in the member-typedef pointer-return path) and the explicitly excluded
-200-nested-out-of-class-constructor-enclosing-type.t (PA11 special member has
-no class owner). The separate 200-constructor-member-init.t control is 1/1.
-The matrix and control logs are in the same final-v2 evidence directory.
+The rank comparator first compares standard rank category when a class
+adjustment participates, then derived-vs-other ordering, nearer base distance,
+and cv subset metadata. Pairs without a derived adjustment retain their
+legacy numeric rank ordering. Ordinary calls, operators, member calls,
+function-id/template resolution, and constructor probes use this typed score.
+Structural pointer-common discovery is deliberately scope-free and is used
+only to form a candidate common type; every resulting branch is committed by
+the scoped `conversion_for`/`record_builtin_conversion` path, so it cannot
+fall through as a semantic conversion.
 
-## Completed Checkpoint
+The work is bounded by one count-only direct-base walk per scored class
+conversion, one access recheck, and one path-collect/copy operation for each
+published derived-base fact. The shared validated edge helper makes walks
+cycle-bounded by the named-record arena; no candidate path vectors, global
+rescans, retries, or per-occurrence rendered names were added.
 
-The bounded repairs are complete and validated: explicit auto-placeholder
-state is threaded through all declarator entry points and nested declarators,
-consumed only by the trailing-return operation, and unrelated invalid TypeIds
-fail closed. spec_fact rejects duplicate/mixed/cv-qualified/typedef auto;
-typed parameter and type-id paths reject auto; suffix and unsupported ref
-qualifiers fail closed. The out-of-contract special-member widening is not
-retained or covered.
+Surface audit disposition:
 
-Completed-row disposition: record 9718b987 as a final audit/follow-up
-milestone, not PA16 completion. PA16 remains incomplete only for later
-residual audit work; the excluded out-of-class constructor is not a repair
-target.
+- `dev/src/pa10_parser_support.cpp`: the 26-line change is a general
+  delimiter-bounded PA10 indexed discriminator for an identifier followed by
+  actual cv qualifiers and, where present, `*`, `&`, or `&&`; pointer/reference
+  tokens alone remain on the existing ambiguity path, so `(x * y)` is not
+  classified as a definite parameter clause. It is not keyed to a fixture name.
+  It implements the accepted `pa16.gram` production
+  `parameter-clause -> '(' parameter-declaration-list? ')'`, with
+  `parameter-declaration -> decl-specifier-seq declarator` and
+  `declarator -> ptr-operator* direct-declarator` (`pa16.gram:287-345`).
+  Without it, the ordinary `Base const *` parameter in the direct overload
+  test is misclassified as an initializer before PA12 sees the pointer type.
+- `dev/src/pa11_record_layout.cpp`: propagates the existing narrow
+  zero-storage summary through a direct base at offset zero; PA15 needs that
+  typed layout fact for address/alias demand.
+- `dev/src/pa11_semantic_core.cpp`: initializes the path arena and separates
+  scope-free structural pointer-common discovery from semantic convertibility;
+  generic `pointer_convertible` cannot reclassify an inaccessible base path.
+- `dev/src/pa11_semantic_model.h`: declares the typed score/fact/path arena,
+  scoped conversion APIs, and the selected-call/cast scope plumbing.
+- `dev/src/pa12_semantic.cpp`: threads access scope through
+  initialization/assignment/return/conditional and pointer common-type
+  boundaries, and keeps class-glvalue conditionals as references.
+- `dev/src/pa12_semantic_calls.cpp`: applies typed scores to ordinary calls
+  and operator candidate sets, including implicit constructor probes.
+- `dev/src/pa12_semantic_construction.cpp`: supplies constructor lexical scope
+  to member-initializer conversions, which is required for allowed private-base
+  member context.
+- `dev/src/pa12_semantic_facts.cpp`: owns final conversion-fact publication,
+  access recheck, and one copied base-path slice; it also retains the scoped
+  unqualified `&member` fact correction.
+- `dev/src/pa12_semantic_member.cpp`: owns the shared validated direct-base
+  edge/relation walk, count-only access proof, and member-call object score
+  while reusing existing member/base facts.
+- `dev/src/pa12_semantic_resolution.cpp`: owns scope-free pointer-common
+  discovery, classifies pointer/reference conversions, stores compact selected
+  endpoints/scope, threads scope through casts/returns, and uses typed
+  comparison for function-id/template resolution.
+- `dev/src/pa12_semantic_selection.h`: defines the shared conversion kind,
+  category, secondary metadata, and comparison boundary.
+- `dev/src/pa15_lowering.cpp` and `dev/src/pa15_lowering.h`: dispatch and
+  declare the final typed conversion path; no lookup or rendered-name recovery
+  occurs at lowering.
+- `dev/src/pa15_lowering_member.cpp`: consumes only the final fact's owned
+  path slice, validates direct edges/layout/access, and emits offset-zero
+  pointer/reference projections while preserving null and alias identity.
+- `dev/src/pa15_lowering_flow.cpp`: treats a derived-to-base alias like a
+  reference for global demand, admits only non-virtual direct-base summaries,
+  and preserves address-context conditional branches.
+
+The explicit class-to-void cast acceptance is retained because the repaired
+member-initializer identity contains `(void)iter`; the unqualified `&member`
+correction is retained because it is exercised by the repaired function-return
+and trailing-return identities. Both are narrow conversion-boundary
+prerequisites, not new general class semantics. Nearby controls include the
+direct overload, private-base rejection/allowed-member pair, inherited cv
+rejection, exact qualification, and overload-rank controls listed above.
+
+Scope plumbing removed during audit was incidental for unary arithmetic,
+member-arrow self-retargeting, indirect function-pointer calls, and
+condition-only boolean conversion; those targets cannot perform this class
+base adjustment.
+
+The final PA15 prior-through gate is `1167/1167`; the exact file audit passes
+with five unchanged header-division warnings, and `git diff --check` passes.
+The two focused holdouts are deliberately outside this slice: scalar index
+scaling/array-initializer lowering. The remaining control failures are the
+unchanged static same-signature and string-literal pointer-rejection paths.
+Ephemeral parser controls for `(x * y)`, `Base const *`, and `Base volatile &`
+all compile successfully; explicit inaccessible implicit and private
+`static_cast` probes reject while the member-context private conversion is
+accepted. No multiple/virtual inheritance, class-by-value transfer,
+conversion operators, or unrelated residual work is included here.
 
 ## Performance Evidence
 
-The current structural/determinism evidence is durable at
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/structure.log.
-The executable SHA-256 is
-375482e808d7c1c1251e9c9ebf186eee8b4ff6014f6e4410c5d2ca5a18d12379 and the
-log SHA-256 is
-bcb4f7ac160a94f1cbb499ca5a823c657d8487659d58d0b55664b1b9f4a4d1a1.
-For existing N=1,4,16,64 member-definition inputs, each run has N
-declarations and N definitions; two semantic runs per size exit 0 with
-identical hashes. Output lines/bytes are 14/468, 32/1227, 104/4269, and
-392/16461; function-record counts are 2, 5, 17, and 65. This is structural
-boundedness and determinism evidence only, with no timing, RSS, allocation,
-or speedup claim.
+Durable structural evidence is at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-evidence-final-v1`.
+The frozen `cppgm++` SHA-256 is
+`5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`.
+`results.tsv` records nine immutable probes (depths `1/8/32`, candidates
+`2/16/64`), each run twice: all 18 exit statuses are zero, all nine repeated
+LowIR hashes match, and `lowir.sha256`/`probes.sha256` records the artifacts.
+Declared base edges are the depth; candidate counts are exact. Source sizes
+range from 595 to 5215 bytes, LowIR from 83/2112 to 703/18222 lines/bytes,
+and observable base projections are 4, 18, or 66 for depths 1, 8, or 32.
+The cases include direct and transitive pointer/reference conversion, nearer
+base selection, and pointer-to-const-void competition. The evidence supports
+allocation-free compact candidate choices, one bounded count/access walk per
+scored candidate, and one bounded path collection/copy for each published
+selected fact; it makes no timing, RSS, speedup, or asymptotic claim.
 
-## Next Checkpoint
-
-The next checkpoint is a later PA16 residual audit, not broad validation,
-focused on the existing member-typedef pointer-return residual and the
-remaining explicitly staged PA16 boundaries. Preserve the current exact
-identity map and do not claim the excluded out-of-class special-member forms.
-
-## Checkpoint ledger
+## checkpoint ledger
 
 | checkpoint | result |
 | --- | --- |
-| Ordinary non-template overloaded-operator boundary | Implemented: typed member/nonmember/fallback calls, hidden-friend identity/visibility, implicit-object ranking, bool boundary, and PA15 ABI consumption; 29 existing PA16 failures removed. |
-| Through PA15 compatibility | `make test-report-through-pa15`: `1167/1167` passed; final log `pa16-operator-followup-through-pa15.log`. |
-| PA16 coverage and regression gate | Final `127/243` passed, `116` failed, `243/243` covered; exact comparison to the `122/243` audit baseline has five baseline-only repairs and zero final-only identities. |
-| Follow-up bool/index audit | Expression-owned typed bool provenance, composite hidden-friend key, corrected same-name performance evidence; all 29 removed identities retained. |
-| File audit and diff check | File audit passed with 5 pre-existing warnings; log `pa16-operator-followup-file-audit.log`; final `git diff --check` is recorded in `pa16-operator-followup-diff-check.log`. |
-| `2d93a5e9` ordinary non-template overloaded-operator checkpoint audit | Completed bounded repair and audit of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the corrective follow-up separates exact friend-definition lexical ownership from access friendship and records typed public/private/protected base-reference accessibility, including a bounded further-derived protected proof. Enum identity/ranking, narrow constructor-backed reference binding, reference/address facts, and typed bool boundaries remain covered. Final PA16 is `127/243` with `116` failures and `243/243` coverage; comparison to the `122/243` audit baseline has five baseline-only repairs and zero final-only failures. Through-PA15 is `1167/1167`; focused status is `29/32` with three documented pre-existing holdouts; course 411 passes; final state-matched performance is `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. |
-| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Complete: PA10--PA15 typed operation/promotion facts, semantic-owner validity checks, const-reference temporaries, overload-before-address-of, owner-stable mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned projection, and isolated initialization roots. Final PA16 is `131/243` passed with `112` failures and `243/243` identities; exact comparison to the turn-start map is baseline-only `0` and final-only `0`. Course 412 and the direct alias control pass; focused matrix is `5/11` with six documented LowIR mismatches; through-PA15 is `1167/1167`; file audit and diff-check pass. Corrected bit-field performance is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1` with 30/30 zero-exit runs, actual bit-field inputs/counters, and final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`; final wall medians small/large/nested are `0.00/0.07/0.00s` and RSS medians `6104/30600/6620` KiB. |
-| `9718b987` member-function-definition declarator audit/follow-up | Final audit/follow-up: special-member widening reverted; explicit auto-placeholder and typed/fail-closed declarator validation remain. Final PA16 is `132/243` with `111` failures, `243/243` identities, and exact failure-set baseline-only/final-only `∅`/`∅`; through-PA15 `1167/1167`, course 413 pass, focused `5/7`, constructor-member-init `1/1`, file audit pass with five pre-existing warnings, and diff-check pass. The excluded nested constructor is a failing non-contract identity. PA16 remains incomplete; next checkpoint is later residual audit. |
+| `2d93a5e9` ordinary non-template overloaded-operator audit | Final PA16 `127/243`, `116` failed, `243/243` covered; through-PA15 `1167/1167`; focused `29/32` with three documented holdouts; deterministic performance evidence hash `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. |
+| `da4252b6` typed bit-field boundary audit | Final PA16 `131/243`, `112` failed, `243/243` covered; through-PA15 `1167/1167`; focused `5/11`; deterministic performance evidence hash `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`; timing/RSS medians remain historical evidence only. |
+| `9718b987` member-function-definition declarator audit | Final PA16 `132/243`, `111` failed, `243/243` covered; through-PA15 `1167/1167`; course 413 and file audit passed; focused `5/7`; excluded out-of-class special-member forms remain out of scope. |
+| Typed single-inheritance standard-conversion boundary | Completed: PA16 `144/243`, `99` failed, `243/243` covered; twelve baseline-only failures and no final-only identities; focused matrix `8/10`, controls `7/9`, PA15 conditional controls `2/2`; through-PA15 `1167/1167`; audit passed with five unchanged warnings; durable evidence `pa16-typed-conversion-evidence-final-v1`, compiler SHA-256 `5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`. |

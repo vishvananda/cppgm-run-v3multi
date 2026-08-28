@@ -224,7 +224,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	compound_facts_(), compound_scope_index_(), statement_facts_(),
 	statement_fact_index_(), substatement_scope_index_(), semantic_facts_(),
 	semantic_children_(), floating_literal_facts_(), floating_literal_bytes_(),
-	conversion_facts_(), declaration_semantic_ids_(),
+	conversion_facts_(), conversion_base_paths_(), declaration_semantic_ids_(),
 	semantic_name_components_(), anonymous_union_fact_index_(),
 	builtin_constant_p_name_(), builtin_abort_name_(),
 	builtin_abort_binding_(), pa12_render_mode_(false),
@@ -581,9 +581,9 @@ TypeId PA11SemanticModel::pointer_subtraction_common_type(TypeId left,
 TypeId PA11SemanticModel::conditional_pointer_common_type(TypeId left,
 	TypeId right)
 {
-	if (pointer_convertible(left, right))
+	if (pointer_common_type_convertible(left, right))
 		return strip_top_cv_type(right);
-	if (pointer_convertible(right, left))
+	if (pointer_common_type_convertible(right, left))
 		return strip_top_cv_type(left);
 	left = strip_top_cv_type(left);
 	right = strip_top_cv_type(right);

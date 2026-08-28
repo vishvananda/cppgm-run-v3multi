@@ -5,6 +5,26 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+bool PA11SemanticModel::pointer_common_type_convertible(TypeId source,
+	TypeId target) const
+{
+	if (pointer_convertible(source, target))
+		return true;
+	source = strip_cv_type(source);
+	target = strip_cv_type(target);
+	if (type_kind(source) != TypeKind::Pointer ||
+		type_kind(target) != TypeKind::Pointer)
+		return false;
+	const TypeId source_pointee = types_[source.value].child;
+	const TypeId target_pointee = types_[target.value].child;
+	if (!object_type(source_pointee) || !object_type(target_pointee) ||
+		(cv_qualifiers(source_pointee) & ~cv_qualifiers(target_pointee)) != 0)
+		return false;
+	// This no-scope walk is a common-type discovery fact only.  The caller must
+	// still commit each branch through conversion_for with its access scope.
+	return derived_base_path(source_pointee, target_pointee, NULL);
+}
+
 ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 	SemanticValueCategory category, TypeId target,
 	const PA10AstNode* source_node, bool source_integer_zero,
@@ -27,13 +47,25 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		const TypeId target_referred = types_[target.value].child;
 		const TypeId source_value = expression_object_type(source);
 		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
-		const auto reference_object_convertible =
-			[this, access_scope](TypeId actual, TypeId required) -> bool
+		const auto derived_base_choice = [this, access_scope](TypeId actual,
+			TypeId required, ConversionChoice* choice) -> bool
 		{
-			if (qualification_convertible(actual, required))
-				return true;
-			const ScopeId required_scope = class_scope_for_type(required);
-			return required_scope.valid() && access_scope.valid() && member_object_convertible(actual, required, required_scope, NULL, access_scope);
+			if (choice == NULL || !access_scope.valid() ||
+				(cv_qualifiers(actual) & ~cv_qualifiers(required)) != 0)
+				return false;
+			unsigned int base_distance = 0;
+			if (!derived_base_relation(actual, required, &base_distance, NULL,
+				access_scope) || base_distance == 0)
+				return false;
+			*choice = make_derived_base_choice(actual, required, base_distance,
+				access_scope,
+				cv_qualifiers(required) & ~cv_qualifiers(actual));
+			return true;
+		};
+		const auto reference_object_convertible =
+			[this](TypeId actual, TypeId required) -> bool
+		{
+			return qualification_convertible(actual, required);
 		};
 		if (target_kind == TypeKind::LvalueReference && source_lvalue)
 		{
@@ -52,6 +84,9 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 				return ConversionChoice(true, 2,
 					ConversionKind::ReferenceBinding);
 			}
+			ConversionChoice base_choice;
+			if (derived_base_choice(source_value, target_referred, &base_choice))
+				return base_choice;
 			if (reference_object_convertible(source_value, target_referred))
 				return ConversionChoice(true,
 					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
@@ -60,6 +95,9 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		}
 		if (target_kind == TypeKind::RvalueReference && !source_lvalue)
 		{
+			ConversionChoice base_choice;
+			if (derived_base_choice(source_value, target_referred, &base_choice))
+				return base_choice;
 			if (reference_object_convertible(source_value, target_referred))
 				return ConversionChoice(true,
 					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
@@ -67,10 +105,10 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 					ConversionKind::ReferenceBinding);
 		}
 		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
-			type_kind(target_referred) == TypeKind::Cv &&
+			cv_qualifiers(target_referred) != 0 &&
 			reference_object_convertible(source_value, target_referred))
 			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
-		if (type_kind(target_referred) == TypeKind::Cv)
+		if (cv_qualifiers(target_referred) != 0)
 		{
 			const ConversionChoice temporary = conversion_for(source, category,
 				target_referred, source_node, source_integer_zero, access_scope,
@@ -210,6 +248,22 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		return ConversionChoice(true, 0,
 			category == SemanticValueCategory::Lvalue ?
 			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
+	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
+		access_scope.valid() &&
+		(cv_qualifiers(types_[strip_cv_type(by_value_source).value].child) &
+			~cv_qualifiers(types_[strip_cv_type(by_value_target).value].child)) == 0)
+	{
+		const TypeId source_element =
+			types_[strip_cv_type(by_value_source).value].child;
+		const TypeId target_element =
+			types_[strip_cv_type(by_value_target).value].child;
+		unsigned int base_distance = 0;
+		if (derived_base_relation(source_element, target_element,
+			&base_distance, NULL, access_scope) && base_distance != 0)
+			return make_derived_base_choice(source_element, target_element,
+				base_distance, access_scope,
+				cv_qualifiers(target_element) & ~cv_qualifiers(source_element));
+	}
 	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
 		pointer_convertible(by_value_source, by_value_target))
 	{
@@ -455,7 +509,9 @@ FunctionIdResolution PA11SemanticModel::resolve_template_function_id_target(
 			SemanticValueCategory::Lvalue, target, &node, false, scope);
 		if (!conversion.valid)
 			continue;
-		if (!have_selected || conversion.rank < selected_conversion.rank)
+		const int comparison = have_selected ? compare_conversion_choices(
+			conversion, selected_conversion) : -1;
+		if (!have_selected || comparison < 0)
 		{
 			have_selected = true;
 			ambiguous = false;
@@ -463,7 +519,7 @@ FunctionIdResolution PA11SemanticModel::resolve_template_function_id_target(
 			selected_arguments = arguments;
 			selected_conversion = conversion;
 		}
-		else if (conversion.rank == selected_conversion.rank)
+		else if (comparison == 0)
 			ambiguous = true;
 	}
 	if (!have_selected || ambiguous)
@@ -497,7 +553,7 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 		TemplateFunctionId function;
 		std::vector<TypeId> arguments;
 		TypeId type;
-		std::vector<unsigned int> ranks;
+		std::vector<ConversionScore> ranks;
 		Candidate() : function(), arguments(), type(), ranks() {}
 	};
 	std::vector<Candidate> viable;
@@ -566,7 +622,7 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 				candidate.ranks.clear();
 				break;
 			}
-			candidate.ranks.push_back(conversion.rank);
+			candidate.ranks.push_back(ConversionScore(conversion));
 		}
 		if (candidate.ranks.size() == arguments.size())
 			viable.push_back(candidate);
@@ -578,9 +634,11 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 		bool strict = false;
 		for (std::size_t i = 0; i < left.ranks.size(); ++i)
 		{
-			if (left.ranks[i] > right.ranks[i])
+			const int comparison = compare_conversion_scores(left.ranks[i],
+				right.ranks[i]);
+			if (comparison > 0)
 				return false;
-			if (left.ranks[i] < right.ranks[i])
+			if (comparison < 0)
 				strict = true;
 		}
 		return strict;
@@ -708,14 +766,16 @@ FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
 				SemanticValueCategory::Lvalue, target, &node, false, scope);
 		if (!conversion.valid)
 			continue;
-		if (!have_selected || conversion.rank < selected_conversion.rank)
+		const int comparison = have_selected ? compare_conversion_choices(
+			conversion, selected_conversion) : -1;
+		if (!have_selected || comparison < 0)
 		{
 			have_selected = true;
 			selected = values[i];
 			selected_conversion = conversion;
 			ambiguous = false;
 		}
-		else if (conversion.rank == selected_conversion.rank)
+		else if (comparison == 0)
 			ambiguous = true;
 	}
 	return have_selected && !ambiguous ? FunctionIdResolution(true, selected,
@@ -1049,7 +1109,8 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 		TypeId(), SemanticValueCategory::Prvalue, node, children);
 }
 ExprInfo PA11SemanticModel::semantic_cast_to_target(
-	const PA10AstNode& node, TypeId target, const ExprInfo& operand)
+	const PA10AstNode& node, ScopeId scope, TypeId target,
+	const ExprInfo& operand)
 {
 	const TypeId source = expression_object_type(operand.type);
 	const TypeKind target_kind = type_kind(target);
@@ -1063,14 +1124,26 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 			throw std::runtime_error(
 				"PA12 non-const reference cannot bind to a bit-field");
 		bool valid = qualification_convertible(source, referred);
+		ConversionKind reference_kind = ConversionKind::ReferenceBinding;
+		ConversionChoice reference_choice(true, 0, reference_kind);
 		if (cast_kind == ExplicitCastKind::Const ||
 			cast_kind == ExplicitCastKind::Functional)
 			valid = cv_cast_compatible(source, referred);
 		else if (cast_kind == ExplicitCastKind::Reinterpret)
 			valid = reinterpret_reference_compatible(source, referred);
-		else if (cast_kind == ExplicitCastKind::Static &&
-			cv_cast_compatible(source, referred))
-			valid = true;
+		else if (cast_kind == ExplicitCastKind::Static)
+		{
+			if (cv_cast_compatible(source, referred))
+				valid = true;
+			else
+			{
+				const ConversionChoice choice = conversion_for(operand, target,
+					semantic_facts_[operand.fact.value].source, scope);
+				valid = choice.valid && choice.kind == ConversionKind::DerivedToBase;
+				if (valid)
+					reference_choice = choice;
+			}
+		}
 		if (!valid)
 			throw std::runtime_error("PA12 invalid reference cast");
 		if (target_kind == TypeKind::LvalueReference &&
@@ -1079,7 +1152,7 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		if (bit_field != NULL)
 		{
 			const ConversionChoice binding = conversion_for(operand, target,
-				semantic_facts_[operand.fact.value].source);
+				semantic_facts_[operand.fact.value].source, scope);
 			if (!binding.valid)
 				throw std::runtime_error(
 					"PA12 bit-field reference cast is not bindable");
@@ -1106,15 +1179,20 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		const SemanticFactId result = make_semantic_fact(fact);
 		set_semantic_children(result,
 			std::vector<SemanticFactId>(1, operand.fact));
+		if (reference_choice.kind == ConversionKind::DerivedToBase)
+			set_fact_conversion(result,
+				add_conversion(operand.type, target, reference_choice));
 		return ExprInfo(result, target, category, false);
 	}
 	bool valid = false;
 	ConversionKind kind = ConversionKind::Integral;
+	ConversionChoice selected_choice;
 	if (cast_kind == ExplicitCastKind::Const)
 	{
 		valid = pointer_id(source) && pointer_id(target) &&
 			cv_cast_compatible(source, target);
 		kind = ConversionKind::PointerQualification;
+		selected_choice = ConversionChoice(true, 0, kind);
 	}
 	else if (cast_kind == ExplicitCastKind::Reinterpret)
 	{
@@ -1124,27 +1202,31 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 			enumeration_id(source) || nullptr_id(source))) ||
 			(integral_id(target) && source_pointer);
 		kind = ConversionKind::Reinterpret;
+		selected_choice = ConversionChoice(true, 0, kind);
 	}
 	else if (void_id(target))
 	{
 		valid = void_id(source) || scalar_id(source) ||
-			type_kind(source) == TypeKind::Function;
+			type_kind(source) == TypeKind::Function || object_type(source);
 		kind = ConversionKind::ToVoid;
+		selected_choice = ConversionChoice(true, 0, kind);
 	}
 	else if (integral_id(target))
 	{
 		if (bool_id(target))
 		{
 			const ConversionChoice choice = conversion_for(operand, target,
-				semantic_facts_[operand.fact.value].source);
+				semantic_facts_[operand.fact.value].source, scope);
 			valid = choice.valid;
 			kind = choice.kind;
+			selected_choice = choice;
 		}
 		else
 		{
 			valid = integral_id(source) || enumeration_id(source) ||
 				nullptr_id(source);
 			kind = ConversionKind::Integral;
+			selected_choice = ConversionChoice(true, 0, kind);
 		}
 	}
 	else if (pointer_id(target) && cast_kind == ExplicitCastKind::CStyle &&
@@ -1154,22 +1236,28 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		// PA12 as the same typed reinterpret boundary used by reinterpret_cast.
 		valid = true;
 		kind = ConversionKind::Reinterpret;
+		selected_choice = ConversionChoice(true, 0, kind);
 	}
 	else if (floating_id(target) || pointer_id(target))
 	{
 		const ConversionChoice choice = conversion_for(operand, target,
-			semantic_facts_[operand.fact.value].source);
+			semantic_facts_[operand.fact.value].source, scope);
 		valid = choice.valid;
 		kind = choice.kind;
+		selected_choice = choice;
 	}
 	else if (type_kind(strip_cv_type(target)) == TypeKind::MemberPointer)
 	{
 		valid = type_kind(strip_cv_type(source)) == TypeKind::MemberPointer &&
 			strip_cv_type(source) == strip_cv_type(target);
 		kind = ConversionKind::Identity;
+		selected_choice = ConversionChoice(true, 0, kind);
 	}
 	else if (type_kind(strip_cv_type(target)) == TypeKind::Named)
+	{
 		valid = integral_id(source) || source == target;
+		selected_choice = ConversionChoice(true, 0, kind);
+	}
 	if (!valid)
 		throw std::runtime_error("PA12 invalid explicit cast");
 	if (node.token == SimpleTokenType::KW_STATIC_CAST &&
@@ -1181,8 +1269,9 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		SemanticFactKind::CastExpression, target,
 		SemanticValueCategory::Prvalue, node,
 		std::vector<SemanticFactId>(1, operand.fact));
-	set_fact_conversion(result,
-		add_conversion(source, target, kind, 0));
+	if (!selected_choice.valid)
+		selected_choice = ConversionChoice(true, 0, kind);
+	set_fact_conversion(result, add_conversion(source, target, selected_choice));
 	return ExprInfo(result, target, SemanticValueCategory::Prvalue, false);
 }
 ExprInfo PA11SemanticModel::semantic_functional_cast(
@@ -1274,6 +1363,6 @@ ExprInfo PA11SemanticModel::semantic_functional_cast(
 	}
 	const ExprInfo operand = semantic_expression(
 		argument_node.children.front(), scope);
-	return semantic_cast_to_target(node, target, operand);
+	return semantic_cast_to_target(node, scope, target, operand);
 }
 } // namespace pa11_semantic_internal

@@ -8,6 +8,67 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+ConversionFactId PA11SemanticModel::add_conversion(TypeId source, TypeId target,
+	ConversionKind kind, unsigned int rank)
+{
+	if (kind == ConversionKind::DerivedToBase)
+		throw std::runtime_error(
+			"PA12 derived-base fact requires a selected conversion choice");
+	const ConversionFactId result(conversion_facts_.size());
+	conversion_facts_.push_back(ConversionFact(source, target, kind, rank));
+	return result;
+}
+ConversionFactId PA11SemanticModel::add_conversion(TypeId source, TypeId target,
+	const ConversionChoice& choice)
+{
+	if (!choice.valid || !source.valid() || !target.valid())
+		throw std::runtime_error("PA12 invalid selected conversion fact");
+	std::vector<NamedRecordId> base_path;
+	unsigned int base_distance = 0;
+	if (choice.kind == ConversionKind::DerivedToBase)
+	{
+		if (!choice.base_access_checked || !choice.base_source.valid() ||
+			!choice.base_target.valid() || !choice.base_access_scope.valid() ||
+			choice.base_distance == 0 ||
+			!derived_base_relation(choice.base_source, choice.base_target,
+				&base_distance, &base_path, choice.base_access_scope) ||
+			base_path.empty() || base_distance != choice.base_distance)
+			throw std::runtime_error("PA12 derived-base conversion path is missing");
+	}
+	if (choice.kind != ConversionKind::DerivedToBase &&
+		(choice.base_source.valid() || choice.base_target.valid() ||
+			choice.base_access_scope.valid() || choice.base_distance != 0 ||
+			choice.added_cv != 0 || choice.base_access_checked))
+		throw std::runtime_error("PA12 non-derived conversion has base metadata");
+	for (std::size_t i = 0; i < base_path.size(); ++i)
+		if (!base_path[i].valid() || base_path[i].value >= named_.size())
+			throw std::runtime_error("PA12 derived-base path identity is invalid");
+	const ConversionFactId result(conversion_facts_.size());
+	ConversionFact fact(source, target, choice.kind, choice.rank);
+	fact.rank_category = choice.rank_category;
+	fact.base_distance = base_distance;
+	fact.added_cv = choice.added_cv;
+	fact.base_access_checked = choice.base_access_checked;
+	if (!base_path.empty())
+	{
+		fact.base_path_begin = conversion_base_paths_.size();
+		fact.base_path_count = base_path.size();
+		conversion_base_paths_.insert(conversion_base_paths_.end(),
+			base_path.begin(), base_path.end());
+	}
+	conversion_facts_.push_back(fact);
+	return result;
+}
+void PA11SemanticModel::set_fact_conversion(SemanticFactId fact, ConversionFactId conversion)
+{
+	SemanticFact& owner = semantic_facts_[fact.value];
+	if (owner.conversion_begin == InvalidIdentityValue)
+		owner.conversion_begin = conversion.value;
+	else if (owner.conversion_begin + owner.conversion_count != conversion.value)
+		throw std::runtime_error("PA12 non-contiguous conversion range");
+	++owner.conversion_count;
+}
+
 namespace
 {
 
@@ -1259,9 +1320,11 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 			throw std::runtime_error("PA12 address-of requires lvalue");
 		if (node.children.front().kind == PA10NodeKind::IdExpression)
 		{
+			const NamePath address_path = name_path(node.children.front());
 			const std::vector<ValueRef> values = lookup_value_path(
-				name_path(node.children.front()), scope);
-			if (values.size() == 1 && operand.fact.valid() &&
+				address_path, scope);
+			if ((address_path.global || address_path.components.size() > 1) &&
+				values.size() == 1 && operand.fact.valid() &&
 				values.front().binding ==
 				semantic_facts_[operand.fact.value].binding &&
 				!is_static_member(values.front().binding) &&

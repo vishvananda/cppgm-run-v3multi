@@ -2188,6 +2188,11 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 		result->lvalue = false;
 		return true;
 	}
+	if (conversion.kind == ConversionKind::DerivedToBase)
+	{
+		*result = apply_derived_base_conversion(*result, conversion, target);
+		return true;
+	}
 	if (conversion.kind == ConversionKind::ArrayToPointer)
 	{
 		// Literal arrays use their typed constant-address lowering.
@@ -2786,42 +2791,12 @@ bool Pa15Lowerer::conditional_address_result(SemanticFactId id) const{
 			return false;
 		for (std::size_t i = 0; i < fact.conversion_count; ++i)
 			if (model_.conversion_facts_[fact.conversion_begin + i].kind ==
-				ConversionKind::ReferenceBinding)
+				ConversionKind::ReferenceBinding ||
+				model_.conversion_facts_[fact.conversion_begin + i].kind ==
+				ConversionKind::DerivedToBase)
 				return true;
 		return false;
 }
-
-LoweredValue Pa15Lowerer::lower_conditional_address(SemanticFactId id){
-		const std::vector<SemanticFactId> facts = children(id);
-		if (facts.size() != 3)
-			throw std::runtime_error("PA15 invalid conditional expression");
-		LowType pointer;
-		pointer.kind = LowType::TYPE_POINTER;
-		const LoweredValue result_slot = generated_slot(pointer, "condaddr");
-		const BlockId then_block = block_id(new_block("condaddr_then"));
-		const BlockId else_block = block_id(new_block("condaddr_else"));
-		const BlockId join_block = block_id(new_block("condaddr_end"));
-		if (has_direct_short_circuit(facts[0]))
-			lower_condition_branch(facts[0], then_block, else_block);
-		else
-		{
-			const LoweredValue condition = lower_condition(facts[0]);
-			emit_branch(condition.value, then_block, else_block);
-		}
-		set_current(then_block);
-		const LoweredValue when_true = lower_address(facts[1]);
-		emit_store(pointer, when_true.value, result_slot.value);
-		if (!terminated(block())) emit_jump(join_block);
-		set_current(else_block);
-		const LoweredValue when_false = lower_address(facts[2]);
-		emit_store(pointer, when_false.value, result_slot.value);
-		if (!terminated(block())) emit_jump(join_block);
-		set_current(join_block);
-		const ValueId value = emit_load(result_slot, pointer);
-		const Instruction& emitted = block().instructions.back();
-		return LoweredValue(temporary_operand(value, emitted.destination_name_id),
-			pointer, false);
-	}
 
 LoweredValue Pa15Lowerer::lower_conditional_value(SemanticFactId id){
 		const std::vector<SemanticFactId> facts = children(id);

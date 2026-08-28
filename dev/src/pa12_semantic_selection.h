@@ -97,6 +97,7 @@ enum class SemanticValueCategory
 enum class ConversionKind
 {
 	Identity,
+	DerivedToBase,
 	LvalueToRvalue,
 	Integral,
 	PointerQualification,
@@ -114,15 +115,175 @@ enum class ConversionKind
 	ToVoid
 };
 
+// Keep the standard-conversion rank category separate from the typed
+// derived-to-base secondary ordering.  In particular, a base-path length is
+// not a rank band: it is only meaningful after the standard category has
+// been compared.
+enum class ConversionRankCategory
+{
+	Exact,
+	Promotion,
+	Conversion,
+	UserDefined,
+	Ellipsis
+};
+
+inline ConversionRankCategory conversion_rank_category(ConversionKind kind,
+	unsigned int rank)
+{
+	switch (kind)
+	{
+	case ConversionKind::Identity:
+	case ConversionKind::LvalueToRvalue:
+	case ConversionKind::PointerQualification:
+	case ConversionKind::ArrayToPointer:
+	case ConversionKind::FunctionToPointer:
+		return ConversionRankCategory::Exact;
+	case ConversionKind::Integral:
+		return rank <= 1 ? ConversionRankCategory::Promotion :
+			ConversionRankCategory::Conversion;
+	case ConversionKind::ReferenceBinding:
+		return rank == 0 ? ConversionRankCategory::Exact :
+			ConversionRankCategory::Conversion;
+	default:
+		return rank == 0 ? ConversionRankCategory::Exact :
+			ConversionRankCategory::Conversion;
+	}
+}
+
 struct ConversionChoice
 {
 	bool valid;
 	unsigned int rank;
 	ConversionKind kind;
+	ConversionRankCategory rank_category;
+	unsigned int base_distance;
+	unsigned int added_cv;
+	bool base_access_checked;
+	TypeId base_source;
+	TypeId base_target;
+	ScopeId base_access_scope;
 
 	ConversionChoice(bool valid = false, unsigned int rank = 0,
 		ConversionKind kind = ConversionKind::Identity)
-		: valid(valid), rank(rank), kind(kind)
+		: valid(valid), rank(rank), kind(kind),
+		  rank_category(conversion_rank_category(kind, rank)),
+		  base_distance(0), added_cv(0), base_access_checked(false),
+		  base_source(), base_target(), base_access_scope()
+	{}
+};
+
+inline ConversionChoice make_derived_base_choice(
+	TypeId source, TypeId target, unsigned int base_distance,
+	ScopeId access_scope, unsigned int added_cv = 0)
+{
+	ConversionChoice result(true, 1, ConversionKind::DerivedToBase);
+	result.rank_category = ConversionRankCategory::Conversion;
+	result.base_distance = base_distance;
+	result.added_cv = added_cv;
+	result.base_access_checked = access_scope.valid();
+	result.base_source = source;
+	result.base_target = target;
+	result.base_access_scope = access_scope;
+	return result;
+}
+
+struct ConversionScore
+{
+	ConversionRankCategory rank_category;
+	ConversionKind kind;
+	unsigned int legacy_rank;
+	unsigned int base_distance;
+	unsigned int added_cv;
+
+	ConversionScore()
+		: rank_category(ConversionRankCategory::Exact),
+		  kind(ConversionKind::Identity), legacy_rank(0), base_distance(0),
+		  added_cv(0)
+	{}
+
+	explicit ConversionScore(const ConversionChoice& choice)
+		: rank_category(choice.rank_category), kind(choice.kind),
+		  legacy_rank(choice.rank), base_distance(choice.base_distance),
+		  added_cv(choice.added_cv)
+	{}
+
+	static ConversionScore ellipsis_score(unsigned int rank)
+	{
+		ConversionScore result;
+		result.rank_category = ConversionRankCategory::Ellipsis;
+		result.kind = ConversionKind::Identity;
+		result.legacy_rank = rank;
+		return result;
+	}
+};
+
+// Return -1 when left is better, 1 when right is better, and 0 when the
+// sequences are indistinguishable (or intentionally incomparable).  The
+// legacy numeric rank remains authoritative for non-class conversions, so
+// this boundary does not perturb the established integral/floating rules.
+inline int compare_conversion_scores(const ConversionScore& left,
+	const ConversionScore& right)
+{
+	const bool left_derived = left.kind == ConversionKind::DerivedToBase;
+	const bool right_derived = right.kind == ConversionKind::DerivedToBase;
+	// Preserve the established numeric ordering for pairs that contain no
+	// class adjustment.  The typed category/path ordering below is only for a
+	// candidate whose standard sequence includes DerivedToBase.
+	if (!left_derived && !right_derived)
+	{
+		if (left.legacy_rank == right.legacy_rank)
+			return 0;
+		return left.legacy_rank < right.legacy_rank ? -1 : 1;
+	}
+	if (left.rank_category != right.rank_category)
+		return static_cast<int>(left.rank_category) <
+			static_cast<int>(right.rank_category) ? -1 : 1;
+	if (left_derived || right_derived)
+	{
+		// [over.ics.rank] gives a derived-to-base pointer/reference conversion
+		// precedence over the competing base/void conversion at this category.
+		if (left_derived != right_derived)
+			return left_derived ? -1 : 1;
+		if (left.base_distance != right.base_distance)
+			return left.base_distance < right.base_distance ? -1 : 1;
+		// Qualification is a subset ordering, not a bit-count ordering.
+		const unsigned int left_extra = left.added_cv & ~right.added_cv;
+		const unsigned int right_extra = right.added_cv & ~left.added_cv;
+		if (left_extra != 0 && right_extra == 0)
+			return 1;
+		if (right_extra != 0 && left_extra == 0)
+			return -1;
+		return 0;
+	}
+	return 0;
+}
+
+inline int compare_conversion_choices(const ConversionChoice& left,
+	const ConversionChoice& right)
+{
+	return compare_conversion_scores(ConversionScore(left),
+		ConversionScore(right));
+}
+
+struct ConversionFact
+{
+	TypeId source;
+	TypeId target;
+	ConversionKind kind;
+	unsigned int rank;
+	ConversionRankCategory rank_category;
+	unsigned int base_distance;
+	unsigned int added_cv;
+	bool base_access_checked;
+	std::size_t base_path_begin;
+	std::size_t base_path_count;
+	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
+		ConversionKind kind = ConversionKind::Identity, unsigned int rank = 0)
+		: source(source), target(target), kind(kind), rank(rank),
+		  rank_category(conversion_rank_category(kind, rank)),
+		  base_distance(0), added_cv(0), base_access_checked(false),
+		  base_path_begin(InvalidIdentityValue), base_path_count(0)
 	{}
 };
 

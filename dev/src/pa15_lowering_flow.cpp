@@ -159,7 +159,9 @@ void Pa15Lowerer::index_global_storage_demands(){
 				{
 					for (std::size_t j = 0; j < fact.conversion_count; ++j)
 						if (model_.conversion_facts_[fact.conversion_begin + j].kind ==
-							ConversionKind::ReferenceBinding)
+							ConversionKind::ReferenceBinding ||
+							model_.conversion_facts_[fact.conversion_begin + j].kind ==
+							ConversionKind::DerivedToBase)
 							required_global_bindings_[binding_id.value] = 1;
 				}
 			}
@@ -168,7 +170,9 @@ void Pa15Lowerer::index_global_storage_demands(){
 			{
 				for (std::size_t j = 0; j < fact.conversion_count; ++j)
 					if (model_.conversion_facts_[fact.conversion_begin + j].kind ==
-						ConversionKind::ReferenceBinding)
+						ConversionKind::ReferenceBinding ||
+						model_.conversion_facts_[fact.conversion_begin + j].kind ==
+						ConversionKind::DerivedToBase)
 					{
 						queue_transparent_cast(SemanticFactId(i));
 						break;
@@ -274,7 +278,7 @@ bool Pa15Lowerer::checkpoint_zero_storage_eligible(TypeId type) const{
 	if (record.kind == NamedKind::Enum)
 		return true;
 	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
-		record.has_base || record.has_virtual_member)
+		record.has_virtual_member || record.direct_base_virtual)
 		return false;
 	const RecordLayout& layout = model_.record_layout(record_id);
 	return layout.state == RecordLayoutState::Complete &&
@@ -960,7 +964,7 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 				// A discarded conversion to void evaluates the source, but its
 				// scalar result is not needed.  Keep that context all the way
 				// through the source so side-effecting lvalues are not reloaded.
-				lower_discarded_expression(operands.front());
+				lower_discarded_expression(operands.front(), true);
 				result = LoweredValue(Operand(), low_type(fact.type), false);
 			}
 			else
@@ -987,7 +991,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			materialize_lvalue, force_integral_literal_conversion);
 	}
 
-void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
+void Pa15Lowerer::lower_discarded_expression(SemanticFactId id,
+	bool materialize_class_lvalue){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		const TypeId object_type = model_.expression_object_type(fact.type);
 		const bool volatile_lvalue =
@@ -1005,6 +1010,15 @@ void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
 			if (binding.kind == BindingKind::Function ||
 				reference_binding(fact.binding))
 				return;
+		}
+		if (materialize_class_lvalue &&
+			fact.category == SemanticValueCategory::Lvalue &&
+			model_.class_scope_for_type(object_type).valid())
+		{
+			const LoweredValue discarded = lower_expression_impl(id, false, false);
+			if (discarded.lvalue)
+				(void)address_of_storage(discarded);
+			return;
 		}
 		if (fact.kind == SemanticFactKind::BinaryExpression &&
 			fact.token == SimpleTokenType::OP_COMMA)
@@ -1042,6 +1056,52 @@ void Pa15Lowerer::lower_discarded_expression(SemanticFactId id){
 			return;
 		}
 		(void)lower_expression_impl(id, false, false);
+}
+
+LoweredValue Pa15Lowerer::lower_conditional_address(SemanticFactId id){
+	const std::vector<SemanticFactId> facts = children(id);
+	if (facts.size() != 3)
+		throw std::runtime_error("PA15 invalid conditional expression");
+	LowType pointer;
+	pointer.kind = LowType::TYPE_POINTER;
+	const LoweredValue result_slot = generated_slot(pointer, "condaddr");
+	const BlockId then_block = block_id(new_block("condaddr_then"));
+	const BlockId else_block = block_id(new_block("condaddr_else"));
+	const BlockId join_block = block_id(new_block("condaddr_end"));
+	if (has_direct_short_circuit(facts[0]))
+		lower_condition_branch(facts[0], then_block, else_block);
+	else
+	{
+		const LoweredValue condition = lower_condition(facts[0]);
+		emit_branch(condition.value, then_block, else_block);
+	}
+	const auto lower_branch_address = [this](SemanticFactId branch) {
+		LoweredValue result = lower_address(branch);
+		const SemanticFact& branch_fact = model_.semantic_facts_[branch.value];
+		if (branch_fact.conversion_begin != InvalidIdentityValue)
+			for (std::size_t i = 0; i < branch_fact.conversion_count; ++i)
+			{
+				const ConversionFact& conversion = model_.conversion_facts_[
+					branch_fact.conversion_begin + i];
+				if (conversion.kind == ConversionKind::DerivedToBase)
+					result = apply_derived_base_conversion(result, conversion,
+						low_type(conversion.target), true);
+			}
+		return result;
+	};
+	set_current(then_block);
+	const LoweredValue when_true = lower_branch_address(facts[1]);
+	emit_store(pointer, when_true.value, result_slot.value);
+	if (!terminated(block())) emit_jump(join_block);
+	set_current(else_block);
+	const LoweredValue when_false = lower_branch_address(facts[2]);
+	emit_store(pointer, when_false.value, result_slot.value);
+	if (!terminated(block())) emit_jump(join_block);
+	set_current(join_block);
+	const ValueId value = emit_load(result_slot, pointer);
+	const Instruction& emitted = block().instructions.back();
+	return LoweredValue(temporary_operand(value, emitted.destination_name_id),
+		pointer, false);
 }
 
 bool Pa15Lowerer::constant_truth(SemanticFactId id, bool* value){

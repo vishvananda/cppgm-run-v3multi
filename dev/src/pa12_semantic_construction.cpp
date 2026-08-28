@@ -467,7 +467,7 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		ExprInfo converted = expression;
 		if (argument->kind != PA10NodeKind::BracedInitList)
 			converted = apply_context_conversion(expression, target_type,
-				semantic_facts_[expression.fact.value].source);
+				semantic_facts_[expression.fact.value].source, function_scope);
 		ConstructorActionFact action(ConstructorActionTarget::Member,
 			NamedRecordId(), member);
 		action.object_type = target_type;

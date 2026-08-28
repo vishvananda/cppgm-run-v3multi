@@ -832,6 +832,37 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 	}
 	if (!fact_identifier_at(tokens, open, 1, work))
 		return NewParameterNone;
+	// A named type may be followed by type cv-qualifiers before its pointer or
+	// reference declarator, as in (Base const *).  The indexed discriminator
+	// must retain that whole group as a parameter-clause; otherwise the main
+	// parser treats the function parentheses as an initializer and fails at the
+	// qualifier token.
+	const std::size_t typed_end = delimiter_close_index[open];
+	std::size_t typed_cursor = open + 2;
+	bool named_type_cv_qualified = false;
+	while (typed_cursor < typed_end &&
+		fact_cv_at(tokens, typed_cursor, work))
+	{
+		named_type_cv_qualified = true;
+		++typed_cursor;
+	}
+	while (typed_cursor < typed_end &&
+		(fact_fixed_at(tokens, typed_cursor, 0, SimpleTokenType::OP_STAR, work) ||
+			fact_fixed_at(tokens, typed_cursor, 0, SimpleTokenType::OP_AMP, work) ||
+			fact_fixed_at(tokens, typed_cursor, 0, SimpleTokenType::OP_LAND, work)))
+	{
+		++typed_cursor;
+		while (typed_cursor < typed_end &&
+			fact_cv_at(tokens, typed_cursor, work))
+			++typed_cursor;
+	}
+	// A pointer/reference token alone is also a valid expression operator, as
+	// in (x * y).  Only the delimiter-bounded cv-qualified named-type shape
+	// above is strong enough to make this indexed decision definite.
+	const bool named_type_declarator_tail = typed_cursor == typed_end ||
+		fact_identifier_at(tokens, typed_cursor, 0, work);
+	if (named_type_cv_qualified && named_type_declarator_tail)
+		return NewParameterDefinite;
 	// A mock type-name parameter list such as (_It, _It, _It) is a
 	// parameter-clause in the syntax-only PA10 boundary.  The delimiter index
 	// bounds this scan to the current group; nested delimiters are not accepted

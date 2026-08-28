@@ -22,7 +22,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		ValueRef value;
 		TypeId type;
 		bool variadic;
-		std::vector<unsigned int> ranks;
+		std::vector<ConversionScore> ranks;
 	};
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
@@ -78,7 +78,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			(!function.variadic && arguments.size() > function.parameters.size()))
 			continue;
 		CandidateScore score = {candidate_ref, candidate_type,
-			function.variadic, std::vector<unsigned int>()};
+			function.variadic, std::vector<ConversionScore>()};
 		score.ranks.reserve(arguments.size());
 		for (std::size_t argument = 0; argument < arguments.size(); ++argument)
 		{
@@ -86,7 +86,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			{
 				if (!arguments[argument].fact.valid())
 					break;
-				score.ranks.push_back(ellipsis_rank);
+				score.ranks.push_back(ConversionScore::ellipsis_score(ellipsis_rank));
 				continue;
 			}
 			ConversionChoice choice;
@@ -113,7 +113,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			}
 			if (!choice.valid)
 				break;
-			score.ranks.push_back(choice.rank);
+			score.ranks.push_back(ConversionScore(choice));
 		}
 		if (score.ranks.size() == arguments.size())
 			viable.push_back(score);
@@ -126,9 +126,11 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		bool strict = false;
 		for (std::size_t i = 0; i < left.ranks.size(); ++i)
 		{
-			if (left.ranks[i] > right.ranks[i])
+			const int comparison = compare_conversion_scores(left.ranks[i],
+				right.ranks[i]);
+			if (comparison > 0)
 				return false;
-			if (left.ranks[i] < right.ranks[i])
+			if (comparison < 0)
 				strict = true;
 		}
 		return strict || (left.variadic != right.variadic && !left.variadic);
@@ -393,9 +395,9 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 		TypeId type;
 		bool member;
 		bool variadic;
-		std::size_t object_base_distance;
 		unsigned int object_cv;
-		std::vector<unsigned int> ranks;
+		ConversionScore object_score;
+		std::vector<ConversionScore> ranks;
 	};
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
@@ -434,6 +436,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 		bool found = false;
 		bool ambiguous = false;
 		unsigned int best_rank = std::numeric_limits<unsigned int>::max();
+		ConversionScore best_score;
 		std::vector<BindingId> seen;
 		for (std::size_t i = 0; i < values->entries.size(); ++i)
 		{
@@ -478,21 +481,26 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				source_fact.source, scope);
 			if (!conversion.valid)
 				continue;
-			const unsigned int rank = conversion.rank <
-				std::numeric_limits<unsigned int>::max() - 3 ?
-				3 + conversion.rank : std::numeric_limits<unsigned int>::max();
-			if (!found || rank < best_rank)
+			const ConversionScore score(conversion);
+			const int comparison = found ? compare_conversion_scores(score,
+				best_score) : -1;
+			if (!found || comparison < 0)
 			{
 				found = true;
 				ambiguous = false;
-				best_rank = rank;
+				best_rank = conversion.rank;
+				best_score = score;
 			}
-			else if (rank == best_rank)
+			else if (comparison == 0)
 				ambiguous = true;
 		}
 		(void)argument_node;
-		return found && !ambiguous ? ConversionChoice(true, best_rank,
-			ConversionKind::ReferenceBinding) : ConversionChoice();
+		if (!found || ambiguous)
+			return ConversionChoice();
+		ConversionChoice result(true, best_rank,
+			ConversionKind::ReferenceBinding);
+		result.rank_category = ConversionRankCategory::UserDefined;
+		return result;
 	};
 	const auto append_scores = [&](const std::vector<ValueRef>& candidates,
 		bool member, const ExprInfo& object,
@@ -568,25 +576,37 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			score.type = candidate.type;
 			score.member = member;
 			score.variadic = function.variadic;
-			score.object_base_distance = 0;
 			score.object_cv = 0;
+			score.object_score = ConversionScore();
 			score.ranks.reserve(initial_arguments.size() + (member ? 1 : 0));
 			if (member)
 			{
 				const TypeId required_object = member_object_type(candidate.type,
 					candidate_ref.scope);
-				std::vector<NamedRecordId> object_path;
-				if (!member_object_convertible(expression_object_type(object.type),
-					required_object, candidate_ref.scope, &object_path, scope))
+				unsigned int object_distance = 0;
+				const TypeId actual_object = expression_object_type(object.type);
+				if (!member_object_convertible(actual_object, required_object,
+					candidate_ref.scope, NULL, scope, &object_distance))
 					throw std::runtime_error(
 						"PA12 operator object conversion changed during scoring");
-				score.object_base_distance = object_path.size();
 				score.object_cv = cv_qualifiers(required_object) &
-					~cv_qualifiers(expression_object_type(object.type));
-				const unsigned int object_rank = object_path.empty() ?
+					~cv_qualifiers(actual_object);
+				const unsigned int object_rank = object_distance == 0 ?
 					0 :
 					1 + (score.object_cv == 0 ? 0 : 1);
-				score.ranks.push_back(object_rank);
+				ConversionChoice object_choice(object_distance == 0, object_rank,
+					ConversionKind::Identity);
+				if (object_distance != 0)
+					object_choice = make_derived_base_choice(actual_object,
+						required_object, object_distance, scope, score.object_cv);
+				else if (score.object_cv != 0)
+				{
+					object_choice = ConversionChoice(true, object_rank,
+						ConversionKind::ReferenceBinding);
+					object_choice.added_cv = score.object_cv;
+				}
+				score.object_score = ConversionScore(object_choice);
+				score.ranks.push_back(score.object_score);
 			}
 			bool arguments_viable = true;
 			for (std::size_t argument = 0; argument < initial_arguments.size();
@@ -599,7 +619,8 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						arguments_viable = false;
 						break;
 					}
-					score.ranks.push_back(ellipsis_rank);
+					score.ranks.push_back(ConversionScore::ellipsis_score(
+						ellipsis_rank));
 					continue;
 				}
 				ConversionChoice choice;
@@ -636,7 +657,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						score.object_cv = cv_qualifiers(required_object) &
 							~cv_qualifiers(actual_object);
 				}
-				score.ranks.push_back(choice.rank);
+				score.ranks.push_back(ConversionScore(choice));
 			}
 			if (arguments_viable)
 			{
@@ -657,26 +678,12 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			return false;
 		for (std::size_t i = 0; i < left.ranks.size(); ++i)
 		{
-			if (left.ranks[i] > right.ranks[i])
+			const int comparison = compare_conversion_scores(left.ranks[i],
+				right.ranks[i]);
+			if (comparison > 0)
 				return false;
-			if (left.ranks[i] < right.ranks[i])
+			if (comparison < 0)
 				strict = true;
-		}
-		if (left.member && right.member &&
-			left.object_base_distance != right.object_base_distance)
-		{
-			if (left.object_base_distance > right.object_base_distance)
-				return false;
-			strict = true;
-		}
-		// Qualification conversions are a subset order, not a bit-count order:
-		// const and volatile remain incomparable while an exact object beats one
-		// that adds either qualifier.
-		if (left.object_cv != right.object_cv)
-		{
-			if ((left.object_cv & ~right.object_cv) != 0)
-				return false;
-			strict = true;
 		}
 		return strict || (left.variadic != right.variadic && !left.variadic);
 	};

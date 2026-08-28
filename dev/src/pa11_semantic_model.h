@@ -865,17 +865,6 @@ enum class ExplicitCastKind
 	Reinterpret,
 	Functional
 };
-struct ConversionFact
-{
-	TypeId source;
-	TypeId target;
-	ConversionKind kind;
-	unsigned int rank;
-	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
-		ConversionKind kind = ConversionKind::Identity, unsigned int rank = 0)
-		: source(source), target(target), kind(kind), rank(rank)
-	{}
-};
 struct ConstantAddressFactId
 {
 	std::size_t value;
@@ -1356,6 +1345,7 @@ private:
 	std::vector<ConstantAddressFact> constant_address_facts_;
 	std::vector<std::uint8_t> constant_address_literal_bytes_;
 	std::vector<ConversionFact> conversion_facts_;
+	std::vector<NamedRecordId> conversion_base_paths_;
 	std::vector<SemanticFactId> declaration_semantic_ids_;
 	std::vector<NameId> semantic_name_components_;
 	FlatIndex<const PA10AstNode*, AnonymousUnionFact, PointerHash>
@@ -1441,17 +1431,20 @@ private:
 	;
 	ScopeId class_scope_for_type(TypeId type) const
 	;
+	bool validated_direct_base(NamedRecordId record, NamedRecordId* base) const;
 	bool direct_base_chain(TypeId object,
 		std::vector<NamedRecordId>* chain) const
 	;
 	bool member_base_path(TypeId object, ScopeId target,
 		std::vector<NamedRecordId>* path) const
 	;
+	bool derived_base_relation(TypeId object, TypeId target, unsigned int* distance,
+		std::vector<NamedRecordId>* path, ScopeId access_scope = ScopeId()) const;
+	bool derived_base_path(TypeId object, TypeId target,
+		std::vector<NamedRecordId>* path, ScopeId access_scope = ScopeId()) const;
 	bool base_path_accessible(TypeId object, ScopeId target, ScopeId access_scope) const;
-	bool member_object_qualification_convertible(TypeId object,
-		TypeId required) const
-	;
-	bool member_object_convertible(TypeId object, TypeId required, ScopeId member_scope, std::vector<NamedRecordId>* path = NULL, ScopeId access_scope = ScopeId()) const;
+	bool member_object_qualification_convertible(TypeId object, TypeId required) const;
+	bool member_object_convertible(TypeId object, TypeId required, ScopeId member_scope, std::vector<NamedRecordId>* path = NULL, ScopeId access_scope = ScopeId(), unsigned int* distance = NULL) const;
 	ScopeId scope_for_type(TypeId type) const
 	;
 	bool direct_value_exists(ScopeId scope, NameId name) const
@@ -2029,6 +2022,7 @@ private:
 		const std::vector<NamedRecordId>* base_path = NULL,
 		bool allow_static = false, BindingId implicit_this = BindingId())
 	;
+	ExprInfo finish_member_call(const PA10AstNode& node, ScopeId scope, SimpleTokenType member_token, const ExprInfo& object, TypeId actual_object, std::vector<ExprInfo>& arguments, ValueRef selected, TypeId selected_type, bool selected_static, BindingId implicit_this);
 	ExprInfo semantic_member_call_with_implicit_object(
 		const PA10AstNode& node, ScopeId scope, BindingId this_binding,
 		TypeId actual_object, ScopeId member_scope,
@@ -2100,6 +2094,7 @@ private:
 	;
 	bool pointer_convertible(TypeId source, TypeId target) const
 	;
+	bool pointer_common_type_convertible(TypeId source, TypeId target) const;
 	TypeId pointer_subtraction_common_type(TypeId left, TypeId right)
 	;
 	TypeId conditional_pointer_common_type(TypeId left, TypeId right)
@@ -2130,6 +2125,7 @@ private:
 		std::size_t constant_address_begin_;
 		std::size_t constant_address_bytes_begin_;
 		std::size_t conversion_begin_;
+		std::size_t conversion_base_path_begin_;
 		std::size_t names_begin_;
 		bool active_;
 	};
@@ -2174,8 +2170,9 @@ private:
 		const PA10AstNode& argument_node)
 	;
 	ConversionFactId add_conversion(TypeId source, TypeId target,
-	ConversionKind kind, unsigned int rank)
-	;
+		ConversionKind kind, unsigned int rank);
+	ConversionFactId add_conversion(TypeId source, TypeId target,
+		const ConversionChoice& choice);
 	void set_fact_conversion(SemanticFactId fact, ConversionFactId conversion)
 	;
 	std::string semantic_name(const SemanticFact& fact) const
@@ -2202,8 +2199,8 @@ private:
 		ScopeId scope, const ExprInfo& argument) const
 	;
 	ExprInfo semantic_single_argument_call(const PA10AstNode& node,
-		const FunctionIdResolution& resolution, const ExprInfo& argument)
-	;
+		const FunctionIdResolution& resolution, const ExprInfo& argument,
+		ScopeId scope);
 	ExprInfo semantic_id_expression_selected(const PA10AstNode& node,
 	ScopeId scope, const FunctionIdResolution& resolution)
 	;
@@ -2220,8 +2217,8 @@ private:
 	TypeId integral_operation_type(const ExprInfo& expression) const;
 	TypeId common_arithmetic_type(TypeId left, TypeId right) const;
 	unsigned int floating_rank(TypeId type) const;
-	void record_builtin_conversion(const ExprInfo& expression, TypeId target)
-	;
+	void record_builtin_conversion(const ExprInfo& expression, TypeId target,
+		ScopeId access_scope = ScopeId());
 	SemanticFactId make_expression_fact(SemanticFactKind kind, TypeId type,
 	SemanticValueCategory category, const PA10AstNode& node,
 	const std::vector<SemanticFactId>& children)
@@ -2259,9 +2256,8 @@ private:
 	;
 	ExplicitCastKind explicit_cast_kind(const PA10AstNode& node) const
 	;
-	ExprInfo semantic_cast_to_target(const PA10AstNode& node, TypeId target,
-	const ExprInfo& operand)
-	;
+	ExprInfo semantic_cast_to_target(const PA10AstNode& node, ScopeId scope,
+	TypeId target, const ExprInfo& operand);
 	ExprInfo semantic_functional_cast(const PA10AstNode& node, ScopeId scope,
 	TypeId target, const PA10AstNode& argument_node)
 	;

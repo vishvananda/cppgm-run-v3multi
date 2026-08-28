@@ -3,6 +3,134 @@
 namespace pa11_semantic_internal
 {
 
+LoweredValue Pa15Lowerer::apply_derived_base_conversion(
+	LoweredValue result, const ConversionFact& conversion,
+	const LowType& target, bool address_context)
+{
+	if (!conversion.source.valid() || !conversion.target.valid())
+		throw std::runtime_error("PA15 derived-base conversion type is invalid");
+	if (conversion.kind != ConversionKind::DerivedToBase ||
+		!conversion.base_access_checked ||
+		conversion.base_path_begin == InvalidIdentityValue ||
+		conversion.base_path_count == 0 ||
+		conversion.base_path_begin > model_.conversion_base_paths_.size() ||
+		conversion.base_path_count > model_.conversion_base_paths_.size() -
+			conversion.base_path_begin ||
+		conversion.base_distance != conversion.base_path_count)
+		throw std::runtime_error("PA15 derived-base conversion path is invalid");
+	TypeId source_object = model_.expression_object_type(conversion.source);
+	TypeId target_object = model_.expression_object_type(conversion.target);
+	const bool source_pointer = model_.pointer_id(source_object);
+	const bool target_pointer = model_.pointer_id(target_object);
+	if (source_pointer != target_pointer)
+		throw std::runtime_error("PA15 derived-base conversion category changed");
+	if (source_pointer)
+	{
+		const TypeId source_pointer_type = model_.strip_cv_type(source_object);
+		const TypeId target_pointer_type = model_.strip_cv_type(target_object);
+		if (model_.type_kind(source_pointer_type) != TypeKind::Pointer ||
+			model_.type_kind(target_pointer_type) != TypeKind::Pointer)
+			throw std::runtime_error(
+				"PA15 derived-base pointer conversion type is invalid");
+		source_object = model_.types_[source_pointer_type.value].child;
+		target_object = model_.types_[target_pointer_type.value].child;
+	}
+	source_object = model_.strip_cv_type(source_object);
+	target_object = model_.strip_cv_type(target_object);
+	LoweredValue base;
+	if (source_pointer)
+	{
+		if (result.lvalue)
+			materialize_lvalue_value(&result, result.type);
+		if (!result.type.is_pointer() && !result.physical_type.is_pointer())
+			throw std::runtime_error(
+				"PA15 derived-base pointer conversion has no pointer value");
+		base = result;
+	}
+	else if (address_context)
+	{
+		if (!result.type.is_pointer() && !result.physical_type.is_pointer())
+			throw std::runtime_error(
+				"PA15 derived-base address conversion has no address");
+		base = result;
+	}
+	else
+	{
+		if (!result.lvalue)
+			throw std::runtime_error(
+				"PA15 class-by-value base conversion is outside checkpoint");
+		base = address_of_storage(result);
+	}
+	if (!base.type.is_pointer() && !base.physical_type.is_pointer())
+		throw std::runtime_error("PA15 derived-base projection has no address");
+	const bool null_pointer_literal = source_pointer &&
+		base.value.kind == Operand::OP_INTEGER && base.value.int_value == 0;
+
+	const NamedRecordId source_record =
+		model_.named_record_for_type(source_object);
+	const NamedRecordId target_record =
+		model_.named_record_for_type(target_object);
+	if (!source_record.valid() || !target_record.valid())
+		throw std::runtime_error(
+			"PA15 derived-base projection record identity is invalid");
+	const LowType offset_type = size_low_type();
+	LowType byte;
+	byte.kind = LowType::TYPE_INTEGER;
+	byte.integer_kind = LowType::INTEGER_I8;
+	NamedRecordId current_record = source_record;
+	const std::size_t path_begin = conversion.base_path_begin;
+	for (std::size_t i = 0; i < conversion.base_path_count; ++i)
+	{
+		const NamedRecordId base_record = model_.conversion_base_paths_[
+			path_begin + i];
+		if (!current_record.valid() || current_record.value >=
+			model_.named_.size() || !base_record.valid() ||
+			base_record.value >= model_.named_.size())
+			throw std::runtime_error(
+				"PA15 derived-base projection path is invalid");
+		const NamedRecord& current = model_.named_[current_record.value];
+		if (current.kind != NamedKind::Class || !current.has_base ||
+			current.direct_base_virtual || current.direct_base != base_record)
+			throw std::runtime_error(
+				"PA15 derived-base projection relation is invalid");
+		const RecordLayout& current_layout =
+			model_.record_layout(current_record);
+		if (current_layout.state != RecordLayoutState::Complete ||
+			!current_layout.has_direct_base ||
+			current_layout.direct_base.record != base_record ||
+			current_layout.direct_base.offset != 0)
+			throw std::runtime_error(
+				"PA15 derived-base projection layout is invalid");
+		const RecordLayout& base_layout = model_.record_layout(base_record);
+		if (base_layout.state != RecordLayoutState::Complete)
+			throw std::runtime_error(
+				"PA15 derived-base target layout is incomplete");
+		// Every supported edge is laid out at offset zero.  A runtime null
+		// pointer therefore remains null through the zero projection; a typed
+		// null literal skips even that projection so it cannot become a
+		// fabricated non-null address.
+		if (!null_pointer_literal)
+		{
+			const LoweredValue zero(integer_operand(0, offset_type),
+				offset_type, false);
+			base = emit_index(base, zero, byte,
+				lowir_model::IPK_BASE_SUBOBJECT);
+		}
+		current_record = base_record;
+	}
+	if (current_record != target_record)
+		throw std::runtime_error(
+			"PA15 derived-base projection ended at wrong record");
+	if (address_context)
+		return base;
+	base.type = target;
+	base.physical_type = target;
+	base.lvalue = false;
+	if (null_pointer_literal)
+		base.value.literal_type = target;
+	return base;
+}
+
 LoweredValue Pa15Lowerer::lower_member_address(SemanticFactId id){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		const std::vector<SemanticFactId> facts = children(id);
