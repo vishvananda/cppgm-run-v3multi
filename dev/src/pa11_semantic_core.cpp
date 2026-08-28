@@ -141,7 +141,6 @@ bool PA11SemanticModel::layout_depends_on_template_parameter(TypeId type) const
 		return false;
 	return named_[key.named.value].kind == NamedKind::TemplateParameter;
 }
-
 bool PA11SemanticModel::type_checkpoint_zero_storage_eligible(TypeId type) const
 {
 	if (!type.valid() || type.value >= types_.size())
@@ -181,7 +180,6 @@ bool PA11SemanticModel::type_checkpoint_zero_storage_eligible(TypeId type) const
 	}
 	return false;
 }
-
 template<typename Identity>
 bool append_lookup_candidate(std::vector<Identity>* candidates,
 	Identity candidate)
@@ -240,8 +238,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 		key.fundamental = static_cast<FundamentalType>(i);
 		intern_type(key);
 	}
-	builtin_constant_p_name_ = intern_name("__builtin_constant_p");
-	builtin_abort_name_ = intern_name("__builtin_abort");
+	initialize_builtin_names();
 }
 void PA11SemanticModel::analyze()
 {
@@ -1868,6 +1865,9 @@ TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope
 		const std::size_t argument_count = arguments.children.size();
 		if (callee.kind == PA10NodeKind::IdExpression)
 		{
+			const BuiltinKind builtin = builtin_kind(callee);
+			if (builtin != BuiltinKind::None)
+				return builtin_expression_type(builtin, argument_count);
 			const std::vector<ValueRef> candidates = lookup_value_path(
 				name_path(callee), scope);
 			bool has_direct_function = false;

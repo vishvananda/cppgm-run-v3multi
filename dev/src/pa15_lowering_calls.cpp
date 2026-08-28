@@ -3,6 +3,100 @@
 namespace pa11_semantic_internal
 {
 
+static lowir_model::CallEffectsMode builtin_effects_mode(
+	BuiltinCallEffects effects)
+{
+	switch (effects)
+	{
+	case BuiltinCallEffects::Default:
+		return lowir_model::CFXM_DEFAULT;
+	case BuiltinCallEffects::ReadNone:
+		return lowir_model::CFXM_READNONE;
+	case BuiltinCallEffects::ReadOnly:
+		return lowir_model::CFXM_READONLY;
+	case BuiltinCallEffects::ReadWrite:
+		return lowir_model::CFXM_READWRITE;
+	}
+	throw std::runtime_error("PA15 invalid builtin effects fact");
+}
+
+static lowir_model::CallUnwindMode builtin_unwind_mode(
+	BuiltinCallUnwind unwind)
+{
+	switch (unwind)
+	{
+	case BuiltinCallUnwind::Default:
+		return lowir_model::CUM_DEFAULT;
+	case BuiltinCallUnwind::May:
+		return lowir_model::CUM_MAY;
+	case BuiltinCallUnwind::No:
+		return lowir_model::CUM_NO;
+	}
+	throw std::runtime_error("PA15 invalid builtin unwind fact");
+}
+
+static lowir_model::CallReturnMode builtin_return_mode(
+	BuiltinCallReturn returns)
+{
+	switch (returns)
+	{
+	case BuiltinCallReturn::Default:
+		return lowir_model::CRM_DEFAULT;
+	case BuiltinCallReturn::Returns:
+		return lowir_model::CRM_RETURNS;
+	case BuiltinCallReturn::NoReturn:
+		return lowir_model::CRM_NORETURN;
+	}
+	throw std::runtime_error("PA15 invalid builtin return fact");
+}
+
+static lowir_model::ParamCaptureMode builtin_capture_mode(
+	BuiltinParameterCapture capture)
+{
+	switch (capture)
+	{
+	case BuiltinParameterCapture::Default:
+		return lowir_model::PCM_DEFAULT;
+	case BuiltinParameterCapture::NoCapture:
+		return lowir_model::PCM_NOCAPTURE;
+	case BuiltinParameterCapture::MayCapture:
+		return lowir_model::PCM_MAYCAPTURE;
+	}
+	throw std::runtime_error("PA15 invalid builtin capture fact");
+}
+
+static lowir_model::ParamAccessMode builtin_access_mode(
+	BuiltinParameterAccess access)
+{
+	switch (access)
+	{
+	case BuiltinParameterAccess::Default:
+		return lowir_model::PAM_DEFAULT;
+	case BuiltinParameterAccess::None:
+		return lowir_model::PAM_NONE;
+	case BuiltinParameterAccess::Read:
+		return lowir_model::PAM_READ;
+	case BuiltinParameterAccess::Write:
+		return lowir_model::PAM_WRITE;
+	case BuiltinParameterAccess::ReadWrite:
+		return lowir_model::PAM_READWRITE;
+	}
+	throw std::runtime_error("PA15 invalid builtin access fact");
+}
+
+static lowir_model::ParamAliasMode builtin_alias_mode(
+	BuiltinParameterAlias alias)
+{
+	switch (alias)
+	{
+	case BuiltinParameterAlias::Default:
+		return lowir_model::PALM_DEFAULT;
+	case BuiltinParameterAlias::NoAlias:
+		return lowir_model::PALM_NOALIAS;
+	}
+	throw std::runtime_error("PA15 invalid builtin alias fact");
+}
+
 void Pa15Lowerer::collect_demanded_member_functions(
 	std::vector<unsigned char>* demanded,
 	std::vector<unsigned char>* declarations,
@@ -700,6 +794,63 @@ void Pa15Lowerer::collect_function_declarations(){
 			function_name_ids_[binding_id.value] = declaration.name_id;
 			symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;
 		}
+	}
+	// Compiler-provided functions are intentionally outside ordinary lexical
+	// scope bindings.  Their typed PA12 facts are the sole source for this
+	// declaration boundary; the vector is populated only when a builtin is
+	// semantically selected, so unused helpers do not acquire symbols here.
+	for (std::size_t i = 0; i < model_.builtin_function_facts_.size(); ++i)
+	{
+		const BuiltinFunctionFact& builtin =
+			model_.builtin_function_facts_[i];
+		if (!builtin.binding.valid() || builtin.binding.value >=
+			model_.bindings_.size() || builtin.binding.value >=
+			model_.binding_owners_.size() || !builtin.object_symbol.valid())
+			throw std::runtime_error("PA15 builtin declaration identity is invalid");
+		const Binding& binding = model_.binding(builtin.binding);
+		if (binding.kind != BindingKind::Function ||
+			model_.type_kind(binding.type) != TypeKind::Function)
+			throw std::runtime_error("PA15 builtin declaration type is invalid");
+		if (function_declaration_plans_.find(builtin.binding.value) !=
+			function_declaration_plans_.end())
+			throw std::runtime_error("PA15 builtin declaration is duplicated");
+		const TypeKey& type = model_.types_[binding.type.value];
+		if (type.variadic || builtin.parameters.size() != type.parameters.size())
+			throw std::runtime_error("PA15 builtin declaration boundary is invalid");
+		FunctionDeclaration declaration;
+		declaration.symbol_id = SymbolId(next_symbol_++);
+		declaration.name_id = symbol_spelling(internal_value_name(
+			model_.binding_owners_[builtin.binding.value], binding.name));
+		declaration.return_type = function_result_low_type(type.result);
+		declaration.boundary.arity = lowir_model::CAM_FIXED;
+		declaration.boundary.effects = builtin_effects_mode(builtin.effects);
+		declaration.boundary.unwind = builtin_unwind_mode(builtin.unwind);
+		declaration.boundary.returns = builtin_return_mode(builtin.returns);
+		declaration.metadata.binding = lowir_model::SBM_STRONG;
+		declaration.metadata.object_symbol_id = intern_spelling(
+			model_.name_text(builtin.object_symbol));
+		for (std::size_t parameter = 0; parameter < type.parameters.size();
+			++parameter)
+		{
+			const BuiltinParameterFact& parameter_fact =
+				builtin.parameters[parameter];
+			Parameter parameter_record;
+			std::ostringstream parameter_name;
+			parameter_name << "%arg" << parameter;
+			parameter_record.name_id = intern_spelling(parameter_name.str());
+			parameter_record.type = low_type(type.parameters[parameter]);
+			parameter_record.metadata.capture = builtin_capture_mode(
+				parameter_fact.capture);
+			parameter_record.metadata.access = builtin_access_mode(
+				parameter_fact.access);
+			parameter_record.metadata.alias = builtin_alias_mode(
+				parameter_fact.alias);
+			declaration.params.push_back(parameter_record);
+		}
+		function_declaration_plans_[builtin.binding.value] = declaration;
+		function_symbols_[builtin.binding.value] = declaration.symbol_id;
+		function_name_ids_[builtin.binding.value] = declaration.name_id;
+		symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;
 	}
 }
 

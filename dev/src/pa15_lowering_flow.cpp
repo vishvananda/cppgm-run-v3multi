@@ -590,6 +590,19 @@ void Pa15Lowerer::materialize_function_declarations(){
 					program_.function_declarations.push_back(plan->second);
 			}
 		}
+		for (std::size_t i = 0; i < model_.builtin_function_facts_.size(); ++i)
+		{
+			const BuiltinFunctionFact& builtin =
+				model_.builtin_function_facts_[i];
+			if (demanded_function_declarations_.find(builtin.binding.value) ==
+				demanded_function_declarations_.end())
+				continue;
+			const std::map<std::size_t, FunctionDeclaration>::const_iterator plan =
+				function_declaration_plans_.find(builtin.binding.value);
+			if (plan == function_declaration_plans_.end())
+				throw std::runtime_error("PA15 demanded builtin declaration is missing");
+			program_.function_declarations.push_back(plan->second);
+		}
 	}
 
 LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){

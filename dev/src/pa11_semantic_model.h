@@ -13,6 +13,7 @@
 #include "posttoken.h"
 #include "pa11_semantic_storage.h"
 #include "pa11_semantic_aggregate.h"
+#include "pa12_semantic_builtins.h"
 #include "pa12_semantic_selection.h"
 
 namespace lowir_model
@@ -305,7 +306,6 @@ struct BindingSidecar
 		  template_specialization(), unadjusted_type()
 	{}
 };
-
 struct FriendLexicalScopeRelation
 {
 	ScopeId class_scope; NamedRecordId class_record;
@@ -850,12 +850,6 @@ enum class SemanticFactKind
 	LabeledStatement,
 	GotoStatement
 };
-enum class BuiltinKind
-{
-	None,
-	ConstantP,
-	Abort
-};
 // PA12 uses this local discriminator while validating the source-level cast
 // family.  It is not stored in SemanticFact and has no PA15 presentation role.
 enum class ExplicitCastKind
@@ -1352,8 +1346,10 @@ private:
 	std::vector<NameId> semantic_name_components_;
 	FlatIndex<const PA10AstNode*, AnonymousUnionFact, PointerHash>
 		anonymous_union_fact_index_;
-	NameId builtin_constant_p_name_;
-	NameId builtin_abort_name_;
+	std::vector<BuiltinFunctionFact> builtin_function_facts_;
+	NameId builtin_constant_p_name_, builtin_abort_name_;
+	NameId builtin_strlen_name_, builtin_unreachable_name_, builtin_memcpy_name_,
+		builtin_memmove_name_;
 	BindingId builtin_abort_binding_;
 	bool pa12_render_mode_;
 	LanguageLinkage current_language_linkage_;
@@ -2100,10 +2096,14 @@ private:
 	;
 	bool integer_zero(const PA10AstNode& node) const
 	;
+	void initialize_builtin_names();
 	BuiltinKind builtin_kind(const PA10AstNode& node)
 	;
 	BindingId builtin_binding(BuiltinKind kind)
 	;
+	TypeId builtin_expression_type(BuiltinKind kind, std::size_t argument_count);
+	const BuiltinFunctionFact* builtin_function_fact(BuiltinKind kind) const;
+	const BuiltinFunctionFact* builtin_function_fact(BindingId binding) const;
 	class SemanticTailGuard
 	{
 	public:

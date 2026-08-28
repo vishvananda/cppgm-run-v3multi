@@ -326,35 +326,6 @@ void PA11SemanticModel::validate_switch_initialization(
 	collect_switch_transfer_points(body, scope, &state);
 }
 
-BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
-{
-	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
-		node.global_name || node.name_prefix_count != 0)
-		return BuiltinKind::None;
-	const NamePath path = name_path(node);
-	if (path.components.size() != 1)
-		return BuiltinKind::None;
-	if (path.last() == builtin_constant_p_name_)
-		return BuiltinKind::ConstantP;
-	if (path.last() == builtin_abort_name_)
-		return BuiltinKind::Abort;
-	return BuiltinKind::None;
-}
-BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
-{
-	if (kind != BuiltinKind::Abort)
-		return BindingId();
-	if (builtin_abort_binding_.valid())
-		return builtin_abort_binding_;
-	const TypeId function_type = make_function(std::vector<TypeId>(), false,
-		fundamental(FundamentalType::Void));
-	if (!global_.valid() || global_.value >= scopes_.size()) throw std::runtime_error("builtin binding has no owner scope");
-	const BindingId result(bindings_.size());
-	bindings_.push_back(Binding(BindingKind::Function, builtin_abort_name_,
-		function_type)); binding_owners_.push_back(global_);
-	builtin_abort_binding_ = result;
-	return result;
-}
 PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
 	: model_(model), semantic_begin_(model.semantic_facts_.size()),
 	  children_begin_(model.semantic_children_.size()),
@@ -989,49 +960,6 @@ void PA11SemanticModel::retarget_constexpr_literal(SemanticFactId fact_id, TypeI
 	if ((source.kind == PA10NodeKind::Literal || source.kind == PA10NodeKind::KeywordLiteral) &&
 		integral_id(target) && integral_id(fact.type))
 		fact.type = target;
-}
-ExprInfo PA11SemanticModel::semantic_builtin_call(const PA10AstNode& node, ScopeId scope, BuiltinKind builtin, const PA10AstNode& argument_node)
-{
-	if (builtin == BuiltinKind::ConstantP)
-	{
-		if (argument_node.children.size() != 1)
-			throw std::runtime_error("PA12 invalid __builtin_constant_p arity");
-		const PA10AstNode& operand_node = argument_node.children.front();
-		SemanticTailGuard operand_tail(*this);
-		const ExprInfo operand = semantic_expression(operand_node, scope);
-		const TypeId operand_type = operand.type;
-		operand_tail.discard();
-		const bool integral_operand = integral_id(operand_type);
-		bool constant = false;
-		if (integral_operand)
-		{
-			// Semantic validation is complete.  Only a typed fold failure is a
-			// nonconstant result; malformed or invalid model state must escape.
-			try
-			{
-				constant = eval_constexpr(operand_node, scope).valid;
-			}
-			catch (const NonConstantExpression&)
-			{
-				constant = false;
-			}
-		}
-		SemanticFact fact(SemanticFactKind::Literal, fundamental(FundamentalType::Int),
-			SemanticValueCategory::Prvalue, &node);
-		fact.has_literal_value = true;
-		fact.literal_value = constant ? 1 : 0;
-		const SemanticFactId result = make_semantic_fact(fact);
-		return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, !constant);
-	}
-	if (builtin != BuiltinKind::Abort || !argument_node.children.empty())
-		throw std::runtime_error("PA12 invalid __builtin_abort arity");
-	SemanticFact fact(SemanticFactKind::CallExpression, fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue, &node);
-	fact.has_callee = true;
-	fact.selected_binding = builtin_binding(builtin);
-	fact.selected_scope = global_;
-	const SemanticFactId result = make_semantic_fact(fact);
-	set_semantic_children(result, std::vector<SemanticFactId>());
-	return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, false);
 }
 TypeId PA11SemanticModel::common_integral_type(TypeId left, TypeId right) const
 {
