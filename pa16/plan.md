@@ -22,10 +22,10 @@ template behavior.
 
 ## Failure Map
 
-The clean turn-start is HEAD `f290784f9a63c8723fcf617bfcd36c9dc080de7e`:
+The parent baseline is HEAD `f290784f9a63c8723fcf617bfcd36c9dc080de7e`:
 `167/243` PA16 identities passed, `76` failed, and `243/243` were covered;
-PA1--PA15 were `1167/1167`, and the file audit passed.  The authoritative
-full log is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+PA1--PA15 were `1167/1167`, and the file audit passed.  The exact parent/final
+identity comparison is preserved below and in the durable audit log.
 
 Selected family and diagnosed owner:
 
@@ -47,91 +47,19 @@ An additional same-owner baseline repair is
 qualified nested-class header now uses the same PA10 qualified-name route;
 no access-control behavior was changed.
 
-The complete 76-identity turn-start set (all paths relative to `pa16/tests/`)
-is:
-
-```text
-general/100-function-pointer-nested-param-name-shadow.t
-general/100-global-aggregate-nested-array-initializer.t
-general/100-global-reference-incomplete-referent.t
-general/100-object-member-enumerator-constant.t
-general/100-qualified-typedef-cstyle-cast-same-name-operand.t
-general/200-aliased-base-mem-initializer-match.t
-general/200-const-subobject-member-call.t
-general/200-defaulted-constructor-still-aggregate.t
-general/200-deleted-constructor-still-aggregate.t
-general/200-destructor-body-local-before-base-destruction.t
-general/200-elaborated-member-forward-type.t
-general/200-extern-class-object-declaration.t
-general/200-external-ctor-overload-nonfirst-argument.t
-general/200-friend-derived-access-inherited-protected-field.t
-general/200-friend-derived-private-base-defaulted-constructor.t
-general/200-friend-intermediate-derived-protected-base-method.t
-general/200-global-constructor.t
-general/200-global-function-style-constructor.t
-general/200-inherited-injected-class-name-qualified-type.t
-general/200-local-default-class-array-lifecycle.t
-general/200-member-call-hides-outer-type-declaration.t
-general/200-member-object-lifetime.t
-general/200-mutable-member-const-method.t
-general/200-nested-braced-member-aggregate-init.t
-general/200-nested-class-private-enclosing-access.t
-general/200-nested-out-of-class-constructor-enclosing-type.t
-general/200-nonliteral-field-condition-not-folded.t
-general/200-placement-new-expression-aggregate-brace.t
-general/200-placement-new-expression-constructor-call.t
-general/200-pointer-subscript-class-reference-return.t
-general/200-protected-member-typedef-access-bad.t
-general/200-qualified-friend-function-member-access.t
-general/200-qualified-inherited-member-typedef.t
-general/200-reference-indexed-pointer-member-access.t
-general/200-reference-member-class-init.t
-general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
-general/200-unnamed-namespace-hidden-friend-single-definition.t
-general/300-adl-associated-namespace-does-not-climb-parents.t
-general/300-adl-using-declaration-source-point.t
-general/300-alignas-out-of-class-nested-type.t
-general/300-callable-field-hides-private-base-method.t
-general/300-class-using-declaration-reexposes-protected-field.t
-general/300-compound-assignment-adl-nonmember-after-member-reject.t
-general/300-const-pointer-explicit-destructor-call.t
-general/300-enum-class-nonmember-operator-bitand.t
-general/300-explicit-destructor-call-enclosing-namespace-type.t
-general/300-friend-function-definition-skip.t
-general/300-header-static-class-init.t
-general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t
-general/300-mixed-member-free-shift-stress-chain.t
-general/300-nested-enum-hidden-friend-bitmask-adl.t
-general/300-operator-nullptr-t-from-zero.t
-general/300-operator-shift-stress-chain.t
-general/300-overloaded-deref-user-assignment.t
-general/300-packed-class-layout.t
-general/300-pragma-pack-followed-by-endif.t
-general/300-prvalue-derived-base-friend-operator.t
-general/300-scalar-pseudo-destructor-call.t
-general/300-static-class-member-object-definition.t
-general/300-synthesized-array-member-lifecycle.t
-general/300-thread-local-synthetic-symbol-family-isolation.t
-general/300-unary-address-of-builtin-fallback.t
-general/300-user-defined-string-literal-operator.t
-general/300-using-base-static-same-signature-derived-preferred.t
-general/300-using-declaration-function-hides-tag.t
-general/300-value-init-aggregate-with-nontrivial-member.t
-general/400-bit-field-constructor-member-init.t
-general/400-bit-field-member-access-bad.t
-general/400-bit-field-prefix-postfix-increment.t
-general/400-bitfield-aggregate-init.t
-general/400-signed-bit-field-read.t
-general/400-signed-enum-bit-field-read.t
-general/500-inherited-constructor-using-access.t
-general/500-inheriting-constructors.t
-general/500-inheriting-external-transitive-constructor.t
-spec/100-decltype-qualified-nested-type-local.t
-```
+The exact parent/final identity comparison is retained in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-qualified-type-call-audit-identity-compare.log`:
+`76 -> 70` failures, `243/243` identities covered, six baseline-only
+identities, and final-only `∅`.  The six repaired identities are the five
+qualified-type selections above plus
+`general/200-nested-class-private-enclosing-access.t`; the full residual map
+remains in the durable final result log rather than being duplicated here.
 
 ## Active Checkpoint
 
-The completed coherent increment changes these seven implementation files:
+The landed increment is commit `3b7d8e6a228ec43a54d7eb97f1d5b45b450f6c57`,
+subject `PA16: resolve typed qualified class names`, and changes these seven
+implementation files:
 
 - `dev/src/pa10_ast.cpp`
 - `dev/src/pa10_parser_support.cpp`
@@ -141,13 +69,15 @@ The completed coherent increment changes these seven implementation files:
 - `dev/src/pa11_semantic_model.h`
 - `dev/src/pa11_semantic_types.cpp`
 
-It also updates this plan.  It repairs all five selected identities plus the
-additional same-owner nested-class header identity without adding tests or
-changing fixtures.  The preservation controls cover qualified method
-definitions, inherited unqualified typedefs, injected-name hiding, lazy
-enclosing aliases, and source-point using-directive behavior.  The final
-implementation keeps PA11 as the typed lookup owner and leaves PA12/PA15 as
-TypeId/ScopeId/BindingId consumers.
+The bounded audit adds the minimal PA12 owner repair in
+`dev/src/pa12_semantic_resolution.cpp` and course control
+`cppgm.tests/course/pa16/417-qualified-parenthesized-type-call-regression.sh`.
+It repairs six handout identities without changing fixtures.  The
+preservation controls cover qualified method definitions, inherited
+unqualified typedefs, injected-name hiding, lazy enclosing aliases, and
+source-point using-directive behavior.  PA11 remains the typed lookup owner;
+PA12/PA15 consume TypeId/ScopeId/BindingId facts without spelling
+reconstruction.
 
 ## Performance Evidence
 
@@ -157,7 +87,9 @@ the translation unit.  PA11 first probes the requested class scope and then
 walks the validated single-inheritance chain once, with the existing marked
 lookup graph handling only relevant using/inline edges.  Thus the structural
 risk is proportional to qualifier depth plus language-relevant base/lookup
-edges, not same-name noise elsewhere in the program.  The representative
+edges, not same-name noise elsewhere in the program.  The PA12 repair unwraps
+only the finite parenthesized callee chain and performs the existing typed
+value/type lookups once.  The representative
 `owner::mask` cast has the same terminal spelling as its operand, and
 `Derived::Base`/`I::T` exercise typed inherited-owner edges.
 
@@ -187,31 +119,35 @@ recovery, host compiler, reference binary, or shell-out is used.
 
 ## Validation
 
-Final validation on the audited tree:
+Final validation after the bounded PA12 call-shape repair recorded:
 
 - `make -C dev cppgm++ CC_FLAGS='-std=gnu++11 -Wall -O3'` — exit `0`.
-- Focused `make -C pa16 check` over the five selected failures, the additional
-  same-owner case, and six preservation controls — `PASS (12/12)`.
+- Focused `make -C pa16 check` over the six repaired identities and six
+  preservation controls — `PASS (12/12)`.
+- Course control `417-qualified-parenthesized-type-call-regression.sh` — exit
+  `0`; namespace-qualified conversion and namespace-function-call controls
+  pass, with the existing class-qualified same-spelling cast.
 - `make test-pa16` — expected residual-test exit `2`, summary `173/243`,
   `70` failures, and `243/243` identities covered.  Durable log:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-qualified-type-final-correction.log`.
-- Exact baseline comparison (`last-test.log` versus the durable final log):
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-qualified-type-call-audit-final.log`.
+- Exact baseline comparison (the frozen parent map versus the durable final
+  log):
   `76` baseline failures, `70` final failures, six baseline-only identities
   (the five selected plus the additional same-owner case), and an empty
   final-only set.  The durable comparison is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-qualified-type-final-correction-identity-compare.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-qualified-type-call-audit-identity-compare.log`.
 - `rg --files pa16/tests | rg '\.t$' | wc -l` — `243` test identities;
   the final PA16 summary covers all `243`.
 - Required `n=16` through-PA15 report — exit `0`, `1167/1167`.
-  Durable log: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/through-pa15-qualified-type-final-correction.log`.
+  Durable log: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/through-pa15-qualified-type-call-audit-final.log`.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` — exit `0`,
   passed with the five known nonfatal division warnings.  Durable log:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/file-audit-qualified-type-final-correction.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/file-audit-pa16-qualified-type-call-audit-final.log`.
 - `git diff --check` — exit `0`.
 
-All five selected identities and the additional same-owner identity are
-repaired; no selected identity remains.  The remaining 70 failures are
-outside this checkpoint's canonical qualified-type owner/data flow.
+All six selected handout identities are repaired; no selected identity
+remains.  The remaining 70 failures are outside this checkpoint's canonical
+qualified-type owner/data flow.
 
 ## Next Checkpoint
 
@@ -229,4 +165,4 @@ parser recovery, and broad template behavior are not qualified-type repairs.
 | `3c2114b6` aggregate audit / typed-builtin turn-start | Clean historical state at `164/243`, `79` failures, `243/243` covered; the exact residual map was carried forward. |
 | `d7ed98aa` typed builtin boundary | Added the demand-driven typed builtin semantic owner and PA15 path; `167/243` passing, `76` failures, `243/243` covered, with PA1--PA15 `1167/1167`. |
 | `f290784f` typed builtin audit (turn start) | Clean current baseline: `167/243` passing, `76` failures, `243/243` covered; PA1--PA15 and file audit pass. |
-| PA16 qualified-type checkpoint | Final `173/243` passing, `70` failures, `243/243` covered; all five selected identities plus the same-owner nested-class identity are baseline-only; final-only set empty; focused `12/12`, through-PA15 `1167/1167`, file audit and diff check pass. |
+| `3b7d8e6a` qualified-type checkpoint | Completed bounded audit of the qualified-type increment plus the PA12 parenthesized-callee repair: `173/243` passing, `70` failures, `243/243` covered; six baseline-only identities and final-only `∅`; focused repaired/control matrix `12/12`, course control 417 pass; through-PA15 `1167/1167`, file audit pass with five pre-existing warnings, and diff-check pass. |

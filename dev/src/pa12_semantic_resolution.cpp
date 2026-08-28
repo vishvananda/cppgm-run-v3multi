@@ -791,10 +791,15 @@ bool PA11SemanticModel::functional_cast_target(const PA10AstNode& node,
 		*target = type_from_type_id(node, scope);
 		return target->valid();
 	}
-	if (node.kind != PA10NodeKind::IdExpression || node.has_token)
+	const PA10AstNode* target_node = &node;
+	while (target_node->kind == PA10NodeKind::ParenthesizedExpression &&
+		target_node->children.size() == 1)
+		target_node = &target_node->children.front();
+	if (target_node->kind != PA10NodeKind::IdExpression ||
+		target_node->has_token)
 		return false;
-	const NamePath path = name_path(node);
-	if (!lookup_value_path(path, scope).empty())
+	const NamePath path = name_path(*target_node, scope);
+	if (!path.decltype_root.valid() && !lookup_value_path(path, scope).empty())
 		return false;
 	*target = lookup_type_path(path, scope);
 	return target->valid();
