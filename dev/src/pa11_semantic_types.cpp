@@ -4,6 +4,137 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+NamePath PA11SemanticModel::name_path(const PA10AstNode& node, ScopeId scope)
+{
+	NamePath result;
+	result.global = node.global_name;
+	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
+	{
+		const PA10NameComponent& part = node.name_parts[i];
+		if (part.has_template_id)
+			unsupported("template-ids");
+		result.components.push_back(name_from_spelling(part.spelling));
+	}
+	if (result.components.empty() && node.producer_spelling != 0)
+		result.components.push_back(name_from_spelling(node.producer_spelling));
+	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
+		result.components.push_back(operator_name(node.operator_function_kind,
+			node.operator_token));
+	if (node.name_prefix_count != 0)
+	{
+		if (!scope.valid() || node.name_prefix_count != 1 ||
+			node.name_prefix_begin > ast_.name_prefix_nodes.size() ||
+			node.name_prefix_count > ast_.name_prefix_nodes.size() -
+				node.name_prefix_begin)
+			throw std::runtime_error("invalid typed decltype qualifier");
+		result.decltype_root = decltype_type(ast_.name_prefix_nodes[
+			node.name_prefix_begin], scope);
+		if (!result.decltype_root.valid())
+			throw std::runtime_error("unresolved typed decltype qualifier");
+	}
+	if (result.components.empty())
+		throw std::runtime_error("PA11 name has no semantic component");
+	return result;
+}
+
+TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name,
+	SourcePoint point, BindingId* declaration) const
+{
+	begin_lookup();
+	const TypeId direct = lookup_type_graph(scope, name, true, point,
+		declaration);
+	if (direct.valid())
+		return direct;
+	if (!scope.valid() || scope.value >= scopes_.size() ||
+		scopes_[scope.value].kind != ScopeKind::Class ||
+		!scopes_[scope.value].record.valid())
+		return TypeId();
+	const NamedRecordId owner_record = scopes_[scope.value].record;
+	if (owner_record.value < named_.size() &&
+		named_[owner_record.value].kind == NamedKind::Class &&
+		named_[owner_record.value].name == name)
+		return named_type(owner_record);
+	std::vector<NamedRecordId> bases;
+	if (!direct_base_chain(named_type(scopes_[scope.value].record), &bases))
+		throw std::runtime_error("qualified type lookup base relation is invalid");
+	for (std::size_t i = 0; i < bases.size(); ++i)
+	{
+		if (!bases[i].valid() || bases[i].value >= named_.size() ||
+			!named_[bases[i].value].scope.valid())
+			throw std::runtime_error("qualified type lookup base owner is invalid");
+		begin_lookup();
+		BindingId base_declaration;
+		const TypeId inherited = lookup_type_graph(
+			named_[bases[i].value].scope, name, true, point,
+			&base_declaration);
+		if (!inherited.valid())
+		{
+			const NamedRecord& base = named_[bases[i].value];
+			if (base.kind != NamedKind::Class || base.name != name)
+				continue;
+			if (declaration != NULL)
+				*declaration = BindingId();
+			return named_type(bases[i]);
+		}
+		if (declaration != NULL)
+			*declaration = base_declaration;
+		return inherited;
+	}
+	return TypeId();
+}
+
+TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
+	SourcePoint point, BindingId* declaration) const
+{
+	if (declaration != NULL)
+		*declaration = BindingId();
+	if (path.components.empty())
+		return TypeId();
+	if (!point.valid())
+		point = lookup_source_point(start);
+	if (path.components.size() == 1 && !path.decltype_root.valid())
+	{
+		const TypeId found = path.global ?
+			lookup_type_qualified(global_, path.last(), point, declaration) :
+			lookup_type_unqualified(start, path.last(), point, declaration);
+		if (found.valid())
+			return found;
+		if (name_text(path.last()) == "nullptr_t")
+			return fundamental(FundamentalType::NullptrT);
+		return found;
+	}
+	ScopeId scope;
+	if (path.decltype_root.valid())
+	{
+		scope = scope_for_type(path.decltype_root);
+		if (!scope.valid())
+			return TypeId();
+		for (std::size_t i = 0; i + 1 < path.components.size(); ++i)
+		{
+			begin_lookup();
+			const ScopeId next_namespace = lookup_namespace_graph(scope,
+				path.components[i], true, point);
+			if (next_namespace.valid())
+				scope = next_namespace;
+			else
+				scope = scope_for_type(lookup_type_qualified(scope,
+					path.components[i], point));
+			if (!scope.valid())
+				return TypeId();
+		}
+	}
+	else
+	{
+		std::vector<NameId> prefix(path.components.begin(),
+			path.components.end() - 1);
+		scope = path.global ?
+			resolve_global_qualifier_scope(prefix, point) :
+			resolve_qualifier_scope(prefix, start, point);
+	}
+	return !scope.valid() ? TypeId() :
+		lookup_type_qualified(scope, path.last(), point, declaration);
+}
+
 TypeId PA11SemanticModel::make_cv(TypeId child, unsigned int qualifiers)
 {
 	if (qualifiers == 0)
@@ -256,7 +387,7 @@ DeclaratorOp PA11SemanticModel::pointer_op(const PA10AstNode& node,
 {
 	if (!node.name_parts.empty() || node.global_name)
 	{
-		const TypeId owner_type = lookup_type_path(name_path(node), scope);
+		const TypeId owner_type = lookup_type_path(name_path(node, scope), scope);
 		const NamedRecordId owner = named_record_for_type(owner_type);
 		if (!owner.valid() || owner.value >= named_.size() ||
 			named_[owner.value].kind != NamedKind::Class)

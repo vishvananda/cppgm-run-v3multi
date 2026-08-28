@@ -465,7 +465,7 @@ private:
 	{
 		if (fixed(SimpleTokenType::KW_NAMESPACE) || fixed(SimpleTokenType::KW_USING) || fixed(SimpleTokenType::KW_STATIC_ASSERT) || fixed(SimpleTokenType::KW_TEMPLATE) ||
 			fixed(SimpleTokenType::KW_CLASS) || fixed(SimpleTokenType::KW_STRUCT) || fixed(SimpleTokenType::KW_UNION) ||
-			fixed(SimpleTokenType::KW_ENUM) || fixed(SimpleTokenType::OP_SEMICOLON))
+			fixed(SimpleTokenType::KW_ENUM) || fixed(SimpleTokenType::KW_DECLTYPE) || fixed(SimpleTokenType::OP_SEMICOLON))
 			return true;
 		if (look().kind == PA10TokenKind::Fixed &&
 			PA10ParserSupport::is_decl_specifier(look().fixed))
@@ -613,20 +613,11 @@ private:
 };
 bool PA10Parser::decltype_qualified_name_start()
 {
-	if (!fixed(SimpleTokenType::KW_DECLTYPE))
-		return false;
-	charge();
-	if (!fixed(SimpleTokenType::OP_LPAREN, 1))
-		return false;
-	const std::size_t open = position_ + 1;
-	if (open >= delimiter_close_index_.size())
-		return false;
-	const std::size_t close = delimiter_close_index_[open];
-	if (close >= tokens_.size() || close + 1 >= tokens_.size())
-		return false;
-	charge();
-	return tokens_[close + 1].kind == PA10TokenKind::Fixed &&
-		tokens_[close + 1].fixed == SimpleTokenType::OP_COLON2;
+	std::size_t charged_work = 0;
+	const bool result = PA10ParserSupport::decltype_qualified_name_start(tokens_, delimiter_close_index_, position_, &charged_work);
+	for (std::size_t i = 0; i < charged_work; ++i)
+		charge();
+	return result;
 }
 bool PA10Parser::template_suffix_candidate()
 {
@@ -1200,10 +1191,19 @@ PA10AstNode PA10Parser::parse_decl_specifier_seq(bool type_context)
 		}
 		if (fixed(SimpleTokenType::KW_DECLTYPE) && !saw_type)
 		{
-			PA10AstNode decltype_specifier = parse_decltype_specifier();
-			if (!type_context)
-				decltype_specifier.kind = PA10NodeKind::DeclSpecifier;
-			result.children.push_back(std::move(decltype_specifier));
+			PA10AstNode decltype_child;
+			if (decltype_qualified_name_start())
+			{
+				const PA10Name name = parse_name(true);
+				decltype_child = name_node(type_context ? PA10NodeKind::TypeName : PA10NodeKind::DeclSpecifier, name);
+			}
+			else
+			{
+				decltype_child = parse_decltype_specifier();
+				if (!type_context)
+					decltype_child.kind = PA10NodeKind::DeclSpecifier;
+			}
+			result.children.push_back(std::move(decltype_child));
 			consumed = true;
 			saw_type = true;
 			continue;
@@ -1856,8 +1856,7 @@ bool PA10Parser::looks_like_c_style_cast() const
 {
 	if (!fixed(SimpleTokenType::OP_LPAREN))
 		return false;
-	const std::size_t local_close = position_ < delimiter_close_index_.size() ?
-		delimiter_close_index_[position_] : tokens_.size();
+	const std::size_t local_close = position_ < delimiter_close_index_.size() ? delimiter_close_index_[position_] : tokens_.size();
 	if (local_close == tokens_.size() || local_close <= position_)
 		return false;
 	std::size_t close = 1;
@@ -1874,10 +1873,10 @@ bool PA10Parser::looks_like_c_style_cast() const
 	const bool named_type = identifier_type && name_scopes_.is_type(look(1).spelling);
 	if (!simple_type && !identifier_type)
 		return false;
-	if (!simple_type)
-		close = 2;
-	const bool pointer_shape = fixed(SimpleTokenType::OP_STAR, close) ||
-		fixed(SimpleTokenType::OP_AMP, close) || fixed(SimpleTokenType::OP_LAND, close);
+	if (!simple_type &&
+		!PA10ParserSupport::qualified_cast_close(tokens_, template_close_index_, rshift_piece1_nested_close_, position_, local_close, &close))
+		return false;
+	const bool pointer_shape = fixed(SimpleTokenType::OP_STAR, close) || fixed(SimpleTokenType::OP_AMP, close) || fixed(SimpleTokenType::OP_LAND, close);
 	close += pointer_shape;
 	if (!fixed(SimpleTokenType::OP_RPAREN, close))
 		return false;

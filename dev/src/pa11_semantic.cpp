@@ -316,7 +316,7 @@ void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 		throw std::runtime_error("virtual inheritance is outside PA16");
 	if (base_name == NULL)
 		throw std::runtime_error("base specifier has no name");
-	const TypeId base_type = lookup_type_path(name_path(*base_name), scope,
+	const TypeId base_type = lookup_type_path(name_path(*base_name, scope), scope,
 		SourcePoint(node.source_begin));
 	if (!base_type.valid())
 		throw std::runtime_error("unknown PA11 direct base type");

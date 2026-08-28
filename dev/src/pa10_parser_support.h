@@ -16,6 +16,13 @@ bool token_identifier_at(const std::vector<PA10Token>& tokens,
 	std::size_t absolute, std::size_t offset = 0);
 bool token_fixed_at(const std::vector<PA10Token>& tokens,
 	std::size_t absolute, std::size_t offset, SimpleTokenType type);
+bool qualified_cast_close(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& template_close_index,
+	const std::vector<unsigned char>& rshift_piece1_nested_close,
+	std::size_t position, std::size_t local_close, std::size_t* close);
+bool decltype_qualified_name_start(const std::vector<PA10Token>& tokens,
+	const std::vector<std::size_t>& delimiter_close_index,
+	std::size_t position, std::size_t* charged_work);
 
 enum class PA10NameKind : unsigned char
 {

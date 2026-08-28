@@ -386,6 +386,7 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node)
 		throw std::runtime_error("PA11 name has no semantic component");
 	return result;
 }
+
 TypeId PA11SemanticModel::strip_cv_type(TypeId type) const
 {
 	return type_kind(type) == TypeKind::Cv ? types_[type.value].child : type;
@@ -1032,12 +1033,7 @@ TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name,
 	}
 	return TypeId();
 }
-TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name,
-	SourcePoint point, BindingId* declaration) const
-{
-	begin_lookup();
-	return lookup_type_graph(scope, name, true, point, declaration);
-}
+
 bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 	std::vector<ValueRef>* result, bool include_using, SourcePoint point) const
 {
@@ -1227,32 +1223,7 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 	}
 	return scope;
 }
-TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
-	SourcePoint point, BindingId* declaration) const
-{
-	if (declaration != NULL) *declaration = BindingId();
-	if (path.components.empty())
-		return TypeId();
-	if (!point.valid())
-		point = lookup_source_point(start);
-	if (path.components.size() == 1)
-	{
-		const TypeId found = path.global ?
-			lookup_type_qualified(global_, path.last(), point, declaration) :
-			lookup_type_unqualified(start, path.last(), point, declaration);
-		if (found.valid())
-			return found;
-		if (name_text(path.last()) == "nullptr_t")
-			return fundamental(FundamentalType::NullptrT);
-		return found;
-	}
-	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
-	const ScopeId scope = path.global ?
-		resolve_global_qualifier_scope(prefix, point) :
-		resolve_qualifier_scope(prefix, start, point);
-	return !scope.valid() ? TypeId() :
-		lookup_type_qualified(scope, path.last(), point, declaration);
-}
+
 ScopeId PA11SemanticModel::resolve_global_qualifier_scope(
 	const std::vector<NameId>& components, SourcePoint point) const
 {
@@ -2181,7 +2152,7 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			(child.kind == PA10NodeKind::DeclSpecifier &&
 				(!child.name_parts.empty() || child.producer_spelling != 0)))
 		{
-			const NamePath name = name_path(child);
+			const NamePath name = name_path(child, scope);
 			const TypeId type = lookup_type_path(name, scope);
 			if (!type.valid())
 				throw std::runtime_error("unknown PA11 type name");

@@ -120,10 +120,9 @@ struct TypeKeyHash
 struct NamePath
 {
 	bool global;
+	TypeId decltype_root; // typed decltype owner for qualified lookup
 	std::vector<NameId> components;
-
-	NamePath() : global(false), components() {}
-
+	NamePath() : global(false), decltype_root(), components() {}
 	bool empty() const { return components.empty(); }
 	NameId last() const
 	{
@@ -1409,6 +1408,7 @@ private:
 	;
 	NamePath name_path(const PA10AstNode& node)
 	;
+	NamePath name_path(const PA10AstNode& node, ScopeId scope);
 	bool find_declarator_name(const PA10AstNode& node, DeclaratorName* result)
 	;
 	DeclaratorName declarator_name(const PA10AstNode& node)
