@@ -736,6 +736,9 @@ bool PA11SemanticModel::record_inheriting_constructor_using(
 	const PA10AstNode& node, ScopeId scope, const NamePath& target_name,
 	TypeId type)
 {
+	if (!scope.valid() || scope.value >= scopes_.size() ||
+		target_name.components.size() < 2)
+		return false;
 	const Scope& current = scopes_[scope.value];
 	const NamedRecordId current_record = current.kind == ScopeKind::Class ?
 		current.record : NamedRecordId();
@@ -749,9 +752,18 @@ bool PA11SemanticModel::record_inheriting_constructor_using(
 	const NameId introduced = target_name.last();
 	if (!current_record.valid() || !direct_base.valid() ||
 		direct_base.value >= named_.size() || nominated_record != direct_base ||
-		target_name.components.size() < 2 ||
 		introduced != named_[direct_base.value].name)
 		return false;
+	const NamedRecord& base = named_[direct_base.value];
+	if (base.kind != NamedKind::Class || !base.name.valid() ||
+		!base.scope.valid() || base.scope.value >= scopes_.size() ||
+		scopes_[base.scope.value].kind != ScopeKind::Class ||
+		scopes_[base.scope.value].record != direct_base)
+		return false;
+	const SourcePoint declaration_point(node.source_begin);
+	if (!declaration_point.valid())
+		throw std::runtime_error(
+			"PA12 inheriting constructor source point is invalid");
 	NamedRecordSidecar sidecar;
 	const NamedRecordSidecar* existing = named_record_sidecar(current_record);
 	if (existing != NULL)
@@ -760,7 +772,7 @@ bool PA11SemanticModel::record_inheriting_constructor_using(
 		if (sidecar.inheriting_constructors[i].base_record == direct_base)
 			return true;
 	sidecar.inheriting_constructors.push_back(
-		InheritingConstructorRelation{direct_base, SourcePoint(node.source_begin)});
+		InheritingConstructorRelation{direct_base, declaration_point});
 	set_named_record_sidecar(current_record, sidecar);
 	return true;
 }

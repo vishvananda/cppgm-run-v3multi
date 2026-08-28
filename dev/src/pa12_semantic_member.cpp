@@ -177,6 +177,46 @@ bool PA11SemanticModel::implicit_default_type_supported(TypeId type,
 			FunctionDeclarationKind::Deleted :
 			!has_constructor_declaration(key.named);
 		const NamedRecord& current = named_[key.named.value];
+		if (!result && current.scope.valid() && current.scope.value < scopes_.size() &&
+			current.name.valid())
+		{
+			const ValueList* constructor_values =
+				scopes_[current.scope.value].values.find(current.name);
+			FlatIndex<BindingId, bool, IdentityHash<BindingId> > seen;
+			if (constructor_values != NULL)
+				for (std::size_t i = 0;
+					i < constructor_values->entries.size() && !result; ++i)
+				{
+					const ValueEntry& entry = constructor_values->entries[i];
+					const BindingId candidate_id = entry.binding;
+					if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+						candidate_id.value >= binding_owners_.size() ||
+						binding_owners_[candidate_id.value] != current.scope ||
+						entry.origin != current.scope)
+						throw std::runtime_error(
+							"PA12 implicit default constructor value index is invalid");
+					if (seen.find(candidate_id) != NULL)
+						throw std::runtime_error(
+							"PA12 duplicate implicit default constructor value index");
+					seen.set(candidate_id, true);
+					const Binding& candidate = binding(candidate_id);
+					const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+					const FunctionFact* function =
+						function_fact_for_binding(candidate_id);
+					if (candidate.kind != BindingKind::Function ||
+						!candidate.type.valid() || candidate.type.value >= types_.size() ||
+						type_kind(candidate.type) != TypeKind::Function ||
+						sidecar == NULL || sidecar->constructor_record != key.named ||
+						function == NULL || function->inheriting_constructor ||
+						function_declaration_kind(candidate_id) ==
+							FunctionDeclarationKind::Deleted)
+						continue;
+					const TypeKey signature = types_[candidate.type.value];
+					if (inherited_constructor_minimum_arity(candidate_id,
+						signature) == 0)
+						result = true;
+				}
+		}
 		if (result && current.has_base)
 			result = implicit_default_type_supported(
 				named_type(current.direct_base), active);

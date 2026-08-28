@@ -2,6 +2,204 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `30d69fc3df2a493fc84eeb52b6be87da18fe429a`
+(`PA16: implement inheriting constructors`) relative to parent
+`05c36f56`.  It is bounded to the single-inheritance `using Base::Base`
+constructor path: direct and transitive selection, selected-base access,
+typed/reference parameters, external declarations, complete/base-entry ABI
+identity, demand-driven emission, and derived-member initialization.  Virtual
+or multiple inheritance, copy/move or by-value transfer, variadic and broader
+constructor families, and unrelated PA16 residuals remain outside this
+checkpoint.  The landed increment is committed.  This review covers the
+completed bounded audit repair and documentation diff; no handout test, `.ref`
+fixture, harness, comparator, reference output, or source-set list changed.
+One narrow course regression was added under `cppgm.tests/course/pa16/`.
+
+### Contract and ownership
+
+The path is checked against `spec.md` §§2--5 and 7 and the PA16 README
+boundary: one typed pipeline, one canonical owner, no textual downgrade,
+bounded work, source-point-aware visibility, and deterministic
+lookup/emission.  The representative ownership trace is:
+
+```text
+PA10 UsingDeclaration (`Base::Base`) and source offsets
+  -> PA11 typed NamePath lookup and InheritingConstructorRelation
+     (derived/base NamedRecordId plus declaration SourcePoint)
+  -> PA12 direct-base candidate set, direct hiding, typed callable/reference
+     parameters, deduplicated derived FunctionFact/constructor-action wrapper,
+     and original-base access walk
+  -> PA12 deduplicated constructor base-entry binding with explicit argument
+     and default-fact forwarding
+  -> PA15 demand worklist, complete/base-object plans, zero-offset projection,
+     deterministic ABI aliases and external declarations
+  -> LowIR retains typed bindings, TypeIds, action ranges, and slots
+```
+
+The relation is recorded only when the typed nominated record is the current
+class's validated direct base and the final component is that base's class
+name.  PA12 scans the canonical class-name value lists, skips inherited
+wrappers when forming the direct set, and applies direct-signature hiding and
+explicit `Copy` filtering independently to every notional inherited
+candidate.  For a typed base signature with trailing defaults, the allowed
+nonzero prefix arities are derived from the validated base FunctionFact range;
+each wrapper is keyed by `(derived, base, base-constructor, wrapper TypeId)` and
+has exactly that shortened signature with no inherited default range.  The
+omitted typed default facts are arguments only to the full-signature base-entry
+callable.  A zero-argument use follows the separate implicit-default
+constructor path, not a zero-arity inherited wrapper.  Transitive selection
+recursively materializes the relevant immediate-base relation candidates before
+scanning that base's class-name value list.  The walk copies typed candidate
+references across nested publication, visits only the relevant direct-base
+lists, validates each record/relation/value owner, and uses an active-record
+cycle/depth bound.  It is entered only by actual non-forced derived
+construction, so a transitive `Hard` construction discovers `Soft` and its
+library base regardless of whether `Soft` was previously constructed.  Access
+is checked at the
+original selected base constructor.  Base entries preserve the source callable
+type; complete wrappers add the derived object identity and forward explicit
+arguments.  PA15 uses the saved per-function slot map when lowering each
+collected function, so nested collection cannot leave a prior function's slot
+ownership active.
+
+### Findings and bounded repairs
+
+- N3485 §12.9 paragraphs 1--6 and the D1/D2 example show that default
+  arguments are not inherited: trailing defaults create distinct notional
+  inherited signatures, while the derived class's implicit default constructor
+  remains separate.  The final repair derives every allowed nonzero prefix
+  arity from the typed base default range, publishes a shortened typed wrapper
+  for each arity, gives it no default facts, and forwards the omitted typed
+  default facts only in its base action.  This preserves the distinct D2()
+  implicit-default path and gives D2(int,int) and D2(int) separate identities.
+
+- Transitive inherited discovery was order-dependent when an immediate base's
+  inherited wrapper had not yet been selected for construction: a `Hard`-only
+  or `Hard`-before-`Soft` use could not see the library-base constructor.  The
+  repair adds `expand_inheriting_constructor_candidates`, which recursively
+  materializes each relevant immediate-base relation before the derived scan,
+  validates typed owners and identities, and rejects cycles or excessive
+  single-inheritance depth.  It remains demand-driven from the actual derived
+  selection and never scans unrelated scope or translation-unit bindings.  The
+  strengthened course 418 control proves the hard-only path, typed reference
+  forwarding, shortened per-layer wrapper identity, and the omitted default at
+  the full base entry.
+
+- The landed wrapper published only its base action.  A derived scalar DMI and
+  a derived class member needing a runtime default constructor were therefore
+  absent from the wrapper.  The repair makes
+  `append_constructor_member_actions` the shared typed owner used by ordinary
+  and inherited constructors.  It copies the declaration-ordered layout
+  members before nested demand, preserves explicit mem-initializer precedence,
+  selects scalar DMI and runtime class defaults, and collects local actions and
+  argument IDs before publishing one contiguous base-then-member range.
+  Nested demand cannot interleave unrelated actions into that range.
+
+- Inherited explicit constructors were added to the candidate set even for
+  copy-initialization.  The repair applies the same `Copy` exclusion to the
+  original base sidecar before a wrapper is published; `CopyList` retains the
+  selected-explicit diagnostic boundary.
+
+- The using-declaration type and value lookups now use the declaration's
+  `SourcePoint`, rather than the enclosing-scope fallback.  Relation formation
+  validates scope, direct-base class ownership, and source-point identity;
+  wrapper creation validates parameter owners/types and inherited-chain
+  identities, with a bounded cycle walk.  These are fail-closed guards, not
+  textual recovery paths.
+
+The existing base-entry map, external-declaration path, zero-offset
+projection, deterministic ABI component, and per-function slot restoration
+were audited and retained.  The focused repair stays within the landed
+inheriting-constructor ownership path; it does not broaden the PA16 boundary.
+
+### Focused and broad evidence
+
+The authoritative turn-start result after the landed commit is `176/243`
+passed, `67` failed, and `243/243` identities covered, from
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The parent baseline before commit `30d69fc3` was `173/243` passed and `70`
+failed.  The exact three baseline-only identities are:
+
+- `pa16/tests/general/500-inherited-constructor-using-access.t`
+- `pa16/tests/general/500-inheriting-constructors.t`
+- `pa16/tests/general/500-inheriting-external-transitive-constructor.t`
+
+Thus the current `67`-failure map is the authoritative log with those three
+identities removed.  The final broad run below preserves that exact map.
+
+This audit's focused evidence is:
+
+- `make -C dev cppgm++` — exit `0` after the final source-organization repair.
+- The seven selected handout identities and controls via `make -C pa16 check
+  CPPGM_SKIP_DEV_REBUILD=1 TEST='...'` — `PASS (7/7)`.
+- `cppgm.tests/course/pa16/403-typed-inherited-member-field-regression.sh`,
+  `408-typed-constructor-explicit-context-regression.sh`,
+  `409-typed-constructor-boundary-regression.sh`, and the new
+  `418-typed-inherited-constructor-wrapper-regression.sh` — all exit `0`;
+  `sh -n` also passes for 418.  The new regression covers the N3485-style
+  D1/D2 notional signatures, the shortened wrapper/base-entry argument split,
+  scalar DMI, a runtime-default class member, inherited explicit copy
+  rejection, and hard-only order-independent transitive expansion.
+- The existing external structural probe was compiled four times with the
+  repository compiler only, using strict exit checking.  All outputs are 68
+  lines with SHA-256
+  `02de5e72c8fccc4a0aa6304231b0bed5d29cbeabea1c9b33bd35a67827d78592`;
+  no-noise/noise and both reruns compare byte-for-byte equal.  The follow-up
+  replay is recorded at
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-structural-20260829.log`.
+- `make test-pa16` — exit `2`, `176/243` passing, `67` failures, and
+  `243/243` identities covered.  Durable output:
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-final-20260829.log`.
+  Extracting and sorting the `pa16/tests/...` identities from both the
+  turn-start and final `ERROR` lines gives 67 identities in each set;
+  `comm -3` is empty and both sorted sets have SHA-256
+  `4fac6d8249a367e090b700fe08efc6a28439d701c2d2f9bab328ffc3e4ce846e`.
+  Therefore there are no final-only failures, and the 176 passes plus 67
+  failures cover all 243 identities.
+- The exact sorted identity comparison is recorded at
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-identity-compare-20260829.log`.
+- The exact `n=16` through-PA15 command — exit `0`,
+  `===== ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167) =====`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` — exit `0`
+  with the five known header-division warnings.  The repair keeps
+  `pa11_semantic.cpp` at 3000 lines and `pa11_semantic_model.h` at 2400 lines,
+  within the hard size limits.
+- `git diff --check` — exit `0`.
+
+No timing, RSS, allocation, or speedup claim is made.  No handout fixture,
+reference binary, or comparator/harness behavior was changed.
+
+### Performance and structural bounds
+
+Constructor selection visits the direct class-name candidate lists and the
+relevant direct-base relation/value lists, rather than scanning unrelated
+scope bindings.  Recursive transitive expansion is bounded by the active
+single-inheritance chain and happens before the derived scan, so discovery is
+independent of prior construction order without becoming an eager whole-scope
+or whole-translation-unit pass.  Wrapper identity is checked against typed
+relation/base-constructor facts plus the concrete notional wrapper TypeId; the
+existing 64-unrelated-class structural probe leaves output size and hash
+unchanged.  The inherited wrapper now collects member actions in a local
+vector, so nested constructor demand is bounded by the selected member graph
+and cannot expand the wrapper's range accidentally.  The base-entry map and
+PA15 function worklists remain deduplicated; base-entry declarations are
+created only when a selected action is demanded.  The size-limit repair also
+leaves the source audit within its declared bounds.  All observations here
+are structural and deterministic, not timing or speed claims.
+
+### Boundaries, residuals, and next checkpoint
+
+PA16 remains incomplete with the same 67 residual identities as the
+turn-start map; the selected inheriting-constructor ownership path has no new
+broad failure.  Virtual/multiple inheritance, copy/move/by-value, variadic
+and broader constructor families, and unrelated object-model, aggregate,
+lifetime, access, operator, and template residuals remain excluded.  This
+checkpoint's focused, broad, through-PA15, file-audit, and diff evidence is
+complete; the next checkpoint should select another residual family while
+preserving these inheriting-constructor exclusions.
+
+## Historical Qualified-Type Review
+
 This review covers landed commit `3b7d8e6a228ec43a54d7eb97f1d5b45b450f6c57`
 (`PA16: resolve typed qualified class names`) relative to parent
 `f290784f9a63c8723fcf617bfcd36c9dc080de7e`.  It is bounded to qualified
@@ -1081,6 +1279,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `30d69fc3` inheriting-constructor checkpointAudit | Completed bounded review of the landed PA10--PA15 inheriting-constructor path relative to `05c36f56`: typed relation/source-point ownership, direct/transitive candidate selection and access, reference parameters, complete/base-entry ABI identity, external declarations, demand/slot behavior, and structural noise bounds are traced. The repair is N3485-correct for trailing defaults: each allowed nonzero arity gets a distinct shortened typed wrapper with no inherited default facts, omitted typed defaults reach only the full-signature base entry, and no-argument construction follows the separate implicit-default path. Derived DMI/runtime member actions use one shared declaration-ordered typed owner, with local action/argument ranges and base-before-member order. Recursive expansion now materializes relevant immediate-base typed relation candidates before each derived scan, validates identities, bounds the active single-inheritance walk, and makes hard-only transitive discovery independent of prior `Soft` construction while remaining demand-driven. Focused build, seven selected handout identities (`7/7`), course 403/408/409/418 including the hard-only control, strict structural probe, and diff-check pass; the probe remains deterministic and byte-identical at 68 lines/hash `02de5e72...d78592`. Final PA16 is `176/243` with `67` failures and `243/243` coverage; exact sorted failure sets match the turn-start map with no final-only identities. Durable broad logs are `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-final-20260829.log` and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-identity-compare-20260829.log`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings. No handout, fixture, `.ref`, harness, comparator, or source-set file changed. |
 | `3b7d8e6a` qualified-type checkpointAudit | Bounded audit of the PA10 qualified-component/decltype-root path and the PA11 source-point-aware typed owner: delimiter/template/rshift bounds, qualified cast and elaborated-header routing, injected identities, inherited typedefs, validated direct-base traversal, and PA12/PA15 typed consumption are traced. The audit repair extends the existing PA12 functional-cast target owner to unwrap parenthesized qualified callees, perform ordinary typed value lookup before typed type lookup, and distinguish `(N::T)(0)` from `(N::f)(0)` without spelling reconstruction. The authoritative result is `173/243` passing, `70` failures, and `243/243` coverage versus parent `167/243`, `76` failures; exact comparison has six baseline-only identities and final-only `∅`. Focused build, six-repair/six-control evidence, and course control 417 pass; broad PA16 exits `2` with the same `70` residuals, through-PA15 exits `0` at `1167/1167`, file audit exits `0` with five pre-existing warnings, and diff-check passes. No handout, fixture, reference, harness, comparator, or source-set list changed. |
 | `d7ed98aa` typed builtin call-boundary checkpointAudit | Bounded audit of the landed PA11--PA15 path: exact fixed builtin identities/signatures, ordinary PA12 typed selection/conversion, append-only `BuiltinFunctionFact` ownership, PA15 demand/declaration planning, and LowIR declaration/call boundary consistency are traced; memcpy and memmove alias facts remain distinct and truthful. The audit repairs lookup bypass for visible typed-builtin spellings and arity-only validation in type-only `decltype` calls, with course 416 covering both. Final PA16 is `167/243` with `76` failures and `243/243` coverage versus `164/243` and `79` failures at the parent; exact baseline-only fixes are the three named metadata identities and final-only is `∅`. Final broad PA16 exits `2` with that expected residual set; through-PA15 exits `0` at `1167/1167`; file audit exits `0` with five known warnings; focused controls and diff-check pass. One known address-of-builtin LowIR mismatch remains. PA16 remains incomplete; no handout, fixture, reference, harness, comparator, or source-set list changed. |
 | `dea01c52` aggregate-initialization checkpointAudit | Completed bounded PA10--PA15 aggregate audit and repair: RecordLayout now owns declaration order/indexes, PA12 arena values survive reallocating publication, aggregate facts remain sparse and typed, global/runtime demand visitation is independent, pending global actions preserve source order, and the global aggregate inliner is checked and falls back to demanded helpers when unsupported. Final PA16 is `164/243` with `79` failures and `243/243` identities covered versus the authoritative `159/243` and `84` failures at turn start; the exact delta is five baseline-only repairs and final-only `∅`. The exact focus is `12/17` with `17/17` covered; course 404/409/412/415, through-PA15 `1167/1167`, file audit, and diff-check pass. Final structural replay is preserved in `pa16-aggregate-init-audit-final-v1` with `30/30` zero-status runs, zero repeated-hash mismatches, and no timing/RSS claim. The unknown-bound namespace string-record handout now passes. No handout, fixture, reference, comparator, harness, or source-set list changed. |

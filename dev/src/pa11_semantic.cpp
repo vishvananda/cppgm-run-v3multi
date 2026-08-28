@@ -2063,12 +2063,13 @@ void PA11SemanticModel::validate_qualified_class_static_definition(
 }
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
 {
-	if (node.children.size() != 1)
+	if (!scope.valid() || scope.value >= scopes_.size() || node.children.size() != 1)
 		throw std::runtime_error("invalid PA11 using declaration");
 	const NamePath target_name = name_path(node.children.front());
+	const SourcePoint declaration_point(node.source_begin);
+	if (!declaration_point.valid()) throw std::runtime_error("invalid PA11 using declaration source point");
 	BindingId origin;
-	const TypeId type = lookup_type_path(target_name, scope, SourcePoint(),
-		&origin);
+	const TypeId type = lookup_type_path(target_name, scope, declaration_point, &origin);
 	const NameId introduced = target_name.last();
 	Scope& current = scopes_[scope.value];
 	if (record_inheriting_constructor_using(node, scope, target_name, type)) return;
@@ -2091,7 +2092,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 			introduced_binding);
 		return;
 	}
-	const std::vector<ValueRef> values = lookup_value_path(target_name, scope);
+	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
 	if (values.empty())
 		throw std::runtime_error("using declaration target is not a binding");
 	const ValueList* existing = current.values.find(introduced);
@@ -2490,7 +2491,6 @@ void emit_pa11_types(const PA10Ast& ast, std::ostream& output)
 	model.analyze();
 	model.dump(output);
 }
-
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;

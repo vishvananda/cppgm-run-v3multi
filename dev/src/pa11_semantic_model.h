@@ -1351,6 +1351,7 @@ private:
 	BindingId builtin_abort_binding_;
 	bool pa12_render_mode_;
 	LanguageLinkage current_language_linkage_;
+	typedef FlatIndex<BindingId, const PA10AstNode*, IdentityHash<BindingId> > ConstructorMemberInitializerIndex;
 	static void unsupported(const char* feature)
 	;
 	NameId intern_name(const std::string& name)
@@ -1642,8 +1643,8 @@ private:
 	void record_automatic_lifetime(BindingId object, TypeId object_type,
 		ScopeId scope)
 	;
-	ConstructorSelection select_constructor(NamedRecordId record, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool allow_implicit_default, ConstructorInitializationContext context, BindingId forced_binding = BindingId())
-	;
+	ConstructorSelection select_constructor(NamedRecordId record, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool allow_implicit_default, ConstructorInitializationContext context, BindingId forced_binding = BindingId());
+	void expand_inheriting_constructor_candidates(NamedRecordId record, ConstructorInitializationContext context, std::vector<ValueRef>& candidates, std::vector<NamedRecordId>& active);
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
 	;
 	const AnonymousUnionFact* anonymous_union_fact(
@@ -1858,6 +1859,7 @@ private:
 	SemanticFactId function_default_argument(BindingId binding,
 		std::size_t parameter) const
 	;
+	std::size_t inherited_constructor_minimum_arity(BindingId binding, const TypeKey& signature) const;
 	const NamespaceFact* namespace_fact(const PA10AstNode& node) const
 	;
 	ScopeId compound_scope(const PA10AstNode& node) const
@@ -1883,23 +1885,21 @@ private:
 	;
 	void analyze_special_member(const PA10AstNode& node, ScopeId scope)
 	;
-	void build_constructor_actions(FunctionFactId function)
-	;
+	void append_constructor_action(std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments, const ConstructorActionFact& action, const std::vector<SemanticFactId>& action_arguments);
+	void append_constructor_class_action(ScopeId function_scope, ConstructorActionTarget target_kind, NamedRecordId base, BindingId member, const PA10AstNode* argument, std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments);
+	void append_constructor_scalar_action(ScopeId function_scope, BindingId member, const PA10AstNode* argument, std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments);
+	void append_constructor_member_actions(NamedRecordId record, ScopeId function_scope, const ConstructorMemberInitializerIndex& member_initializers, std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments);
+	void build_constructor_actions(FunctionFactId function);
 	BindingId ensure_aggregate_constructor(NamedRecordId record);
-	BindingId ensure_inheriting_constructor(NamedRecordId derived, NamedRecordId base, BindingId base_constructor); BindingId ensure_constructor_base_entry(BindingId constructor);
-	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
-	;
-	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
-	;
-	void prepare_pa12_labels(const PA10AstNode& body, FunctionFact& function)
-	;
+	BindingId ensure_inheriting_constructor(NamedRecordId derived, NamedRecordId base, BindingId base_constructor, std::size_t parameter_count);
+	BindingId ensure_constructor_base_entry(BindingId constructor);
+	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent);
+	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope);
+	void prepare_pa12_labels(const PA10AstNode& body, FunctionFact& function);
 	void collect_pa12_labels(const PA10AstNode& node,
-		FunctionLabelTable& table)
-	;
-	LabelId label_for_name(const FunctionFact& function, NameId name) const
-	;
-	bool simple_declaration_has_initializer(const PA10AstNode& node) const
-	;
+		FunctionLabelTable& table);
+	LabelId label_for_name(const FunctionFact& function, NameId name) const;
+	bool simple_declaration_has_initializer(const PA10AstNode& node) const;
 	void collect_switch_transfer_points(const PA10AstNode& node,
 		ScopeId scope, SwitchInitializationState* state) const
 	;

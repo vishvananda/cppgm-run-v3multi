@@ -574,7 +574,8 @@ BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor
 }
 
 BindingId PA11SemanticModel::ensure_inheriting_constructor(
-	NamedRecordId derived_id, NamedRecordId base_id, BindingId base_constructor)
+	NamedRecordId derived_id, NamedRecordId base_id, BindingId base_constructor,
+	std::size_t parameter_count)
 {
 	if (!derived_id.valid() || derived_id.value >= named_.size() ||
 		!base_id.valid() || base_id.value >= named_.size() ||
@@ -622,13 +623,20 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 		scopes_[base_function_copy.function_scope.value];
 	const BindingId base_this = base_function_scope.implicit_object_binding;
 	if (!base_this.valid() || base_this.value >= bindings_.size() ||
-		binding(base_this).kind != BindingKind::Parameter)
+		base_this.value >= binding_owners_.size() ||
+		binding_owners_[base_this.value] != base_function_copy.function_scope ||
+		binding(base_this).kind != BindingKind::Parameter ||
+		binding(base_this).type != member_object_pointer_type(
+			base_binding.type, base.scope))
 		throw std::runtime_error("PA12 inherited constructor object is missing");
 	std::vector<Binding> base_parameters;
 	for (std::size_t i = 0; i < base_function_scope.bindings.size(); ++i)
 	{
 		const BindingId parameter_id = base_function_scope.bindings[i];
-		if (!parameter_id.valid() || parameter_id.value >= bindings_.size())
+		if (!parameter_id.valid() || parameter_id.value >= bindings_.size() ||
+			parameter_id.value >= binding_owners_.size() ||
+			binding_owners_[parameter_id.value] !=
+				base_function_copy.function_scope)
 			throw std::runtime_error(
 				"PA12 inherited constructor parameter identity is invalid");
 		const Binding& parameter = binding(parameter_id);
@@ -637,6 +645,21 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 	}
 	if (base_parameters.size() != base_signature.parameters.size())
 		throw std::runtime_error("PA12 inherited constructor parameter count mismatch");
+	for (std::size_t i = 0; i < base_parameters.size(); ++i)
+		if (base_parameters[i].type != base_signature.parameters[i])
+			throw std::runtime_error(
+				"PA12 inherited constructor parameter type mismatch");
+	const std::size_t minimum_arity =
+		inherited_constructor_minimum_arity(base_constructor, base_signature);
+	if (parameter_count == 0 || parameter_count > base_parameters.size() ||
+		parameter_count < minimum_arity)
+		throw std::runtime_error(
+			"PA12 inherited constructor notional arity is invalid");
+	std::vector<TypeId> wrapper_signature_parameters(
+		base_signature.parameters.begin(),
+		base_signature.parameters.begin() + parameter_count);
+	const TypeId wrapper_type = make_function(wrapper_signature_parameters, false,
+		base_signature.result, base_signature.cv);
 
 	SourcePoint declaration_point;
 	const NamedRecordSidecar* derived_sidecar =
@@ -671,13 +694,12 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 				candidate->inherited_base_record != base_id ||
 				candidate->inherited_base_constructor != base_constructor)
 				continue;
-			if (binding(entry.binding).type != base_binding.type)
-				throw std::runtime_error(
-					"PA12 inherited constructor signature changed");
+			if (binding(entry.binding).type != wrapper_type)
+				continue;
 			return entry.binding;
 		}
 
-	Binding wrapper(BindingKind::Function, derived.name, base_binding.type);
+	Binding wrapper(BindingKind::Function, derived.name, wrapper_type);
 	wrapper.has_definition = true;
 	wrapper.language_linkage = base_binding.language_linkage;
 	const BindingId wrapper_id = store_binding(derived.scope, wrapper);
@@ -704,9 +726,12 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 	wrapper_function.inheriting_constructor = true;
 	wrapper_function.inherited_base_record = base_id;
 	wrapper_function.inherited_base_constructor = base_constructor;
+	// Default arguments are not inherited.  Each wrapper has one concrete
+	// notional parameter list, and omitted base parameters are forwarded by its
+	// base action below.
 	prepare_pa12_member_parameter(wrapper_function);
 	std::vector<BindingId> wrapper_parameters;
-	for (std::size_t i = 0; i < base_parameters.size(); ++i)
+	for (std::size_t i = 0; i < parameter_count; ++i)
 	{
 		const BindingId parameter = store_binding(wrapper_scope,
 			Binding(BindingKind::Parameter, base_parameters[i].name,
@@ -720,7 +745,8 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 	function_facts_.push_back(wrapper_function);
 	function_binding_fact_index_.set(wrapper_id, wrapper_function_id);
 
-	const std::size_t argument_begin = constructor_arguments_.size();
+	std::vector<SemanticFactId> base_arguments;
+	base_arguments.reserve(base_signature.parameters.size());
 	for (std::size_t i = 0; i < wrapper_parameters.size(); ++i)
 	{
 		TypeId expression_type = base_parameters[i].type;
@@ -731,23 +757,67 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 		SemanticFact parameter_fact(SemanticFactKind::IdExpression,
 			expression_type, SemanticValueCategory::Lvalue, NULL);
 		parameter_fact.binding = wrapper_parameters[i];
-		constructor_arguments_.push_back(make_semantic_fact(parameter_fact));
+		base_arguments.push_back(make_semantic_fact(parameter_fact));
 	}
-	const BindingId base_entry = ensure_constructor_base_entry(base_constructor);
-	const std::size_t action_begin = constructor_actions_.size();
-	ConstructorActionFact action(ConstructorActionTarget::Base, base_id,
-		BindingId(), base_entry);
-	action.object_type = named_type(base_id);
-	action.callable_type = constructor_callable_type(base_entry);
-	if (!wrapper_parameters.empty())
+	for (std::size_t i = parameter_count; i < base_signature.parameters.size(); ++i)
 	{
-		action.argument_begin = argument_begin;
-		action.argument_count = wrapper_parameters.size();
+		const SemanticFactId default_fact =
+			function_default_argument(base_constructor, i);
+		if (!default_fact.valid() || default_fact.value >= semantic_facts_.size())
+			throw std::runtime_error(
+				"PA12 inherited constructor default fact is missing");
+		base_arguments.push_back(default_fact);
 	}
-	constructor_actions_.push_back(action);
+	if (constructor_arguments_.size() > std::numeric_limits<std::size_t>::max() -
+		base_arguments.size())
+		throw std::runtime_error(
+			"PA12 inherited constructor argument arena overflow");
+	const std::size_t argument_begin = constructor_arguments_.size();
+	constructor_arguments_.insert(constructor_arguments_.end(),
+		base_arguments.begin(), base_arguments.end());
+	const BindingId base_entry = ensure_constructor_base_entry(base_constructor);
+	ConstructorActionFact base_action(ConstructorActionTarget::Base, base_id,
+		BindingId(), base_entry);
+	base_action.object_type = named_type(base_id);
+	base_action.callable_type = constructor_callable_type(base_entry);
+	if (!base_arguments.empty())
+	{
+		base_action.argument_begin = argument_begin;
+		base_action.argument_count = base_arguments.size();
+	}
+
+	std::vector<ConstructorActionFact> member_actions;
+	std::vector<SemanticFactId> member_arguments;
+	const ConstructorMemberInitializerIndex no_member_initializers;
+	// The shared helper collects direct members in declaration order.  It uses
+	// local action/argument arenas because nested member selection can publish
+	// additional facts before this wrapper's range is committed.
+	append_constructor_member_actions(derived_id, wrapper_scope,
+		no_member_initializers, member_actions, member_arguments);
+	if (member_arguments.size() > std::numeric_limits<std::size_t>::max() -
+		constructor_arguments_.size())
+		throw std::runtime_error(
+			"PA12 inherited constructor member argument arena overflow");
+	const std::size_t member_argument_begin = constructor_arguments_.size();
+	constructor_arguments_.insert(constructor_arguments_.end(),
+		member_arguments.begin(), member_arguments.end());
+	for (std::size_t i = 0; i < member_actions.size(); ++i)
+		if (member_actions[i].argument_begin != InvalidIdentityValue)
+		{
+			if (member_actions[i].argument_begin >
+				std::numeric_limits<std::size_t>::max() - member_argument_begin)
+				throw std::runtime_error(
+					"PA12 inherited constructor member argument range overflow");
+			member_actions[i].argument_begin += member_argument_begin;
+		}
+	const std::size_t action_begin = constructor_actions_.size();
+	constructor_actions_.push_back(base_action);
+	constructor_actions_.insert(constructor_actions_.end(),
+		member_actions.begin(), member_actions.end());
 	function_facts_[wrapper_function_id.value].constructor_action_begin =
 		action_begin;
-	function_facts_[wrapper_function_id.value].constructor_action_count = 1;
+	function_facts_[wrapper_function_id.value].constructor_action_count =
+		1 + member_actions.size();
 	synthetic_function_facts_.push_back(
 		SyntheticFunctionFact(derived_id, wrapper_id));
 	return wrapper_id;
@@ -1059,6 +1129,43 @@ SemanticFactId PA11SemanticModel::function_default_argument(
 	if (index >= function_default_arguments_.size())
 		return SemanticFactId();
 	return function_default_arguments_[index];
+}
+
+std::size_t PA11SemanticModel::inherited_constructor_minimum_arity(
+	BindingId binding_id, const TypeKey& signature) const
+{
+	const FunctionFact* function = function_fact_for_binding(binding_id);
+	if (function == NULL || !function->is_constructor ||
+		function->binding != binding_id ||
+		function->default_argument_begin == InvalidIdentityValue)
+	{
+		if (function != NULL && function->default_argument_count != 0)
+			throw std::runtime_error(
+				"PA12 inherited constructor default range is invalid");
+		return signature.parameters.size();
+	}
+	if (function->default_argument_count != signature.parameters.size() ||
+		function->default_argument_begin > function_default_arguments_.size() ||
+		function->default_argument_count > function_default_arguments_.size() -
+			function->default_argument_begin)
+		throw std::runtime_error(
+			"PA12 inherited constructor default range is invalid");
+	for (std::size_t i = 0; i < signature.parameters.size(); ++i)
+	{
+		const SemanticFactId default_fact = function_default_argument(binding_id, i);
+		if (default_fact.valid() && default_fact.value >= semantic_facts_.size())
+			throw std::runtime_error(
+				"PA12 inherited constructor default fact is invalid");
+	}
+	std::size_t minimum = signature.parameters.size();
+	while (minimum != 0 &&
+		function_default_argument(binding_id, minimum - 1).valid())
+		--minimum;
+	for (std::size_t i = 0; i < minimum; ++i)
+		if (function_default_argument(binding_id, i).valid())
+			throw std::runtime_error(
+				"PA12 inherited constructor default is not trailing");
+	return minimum;
 }
 
 bool PA11SemanticModel::has_function_default_argument(
