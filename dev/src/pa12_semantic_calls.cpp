@@ -965,7 +965,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	if (argument_node.kind != PA10NodeKind::ArgumentList &&
 		argument_node.kind != PA10NodeKind::ParenArgumentList)
 		throw std::runtime_error("PA12 invalid argument list");
-	const BuiltinKind builtin = builtin_kind(callee_node);
+	const BuiltinKind builtin = builtin_kind(callee_node, scope);
 	if (builtin != BuiltinKind::None)
 		return semantic_builtin_call(node, scope, builtin, argument_node);
 	std::vector<ValueRef> qualified_static_candidates;

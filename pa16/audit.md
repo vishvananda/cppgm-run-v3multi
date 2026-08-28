@@ -2,6 +2,132 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `d7ed98aa800637aaa5509b5eb20a8f72208aed05`
+(`PA16: add typed demand-driven builtin call boundaries`) relative to parent
+`3c2114b6ddd911989c45f52b36890743adbbd490`, plus the bounded audit repairs
+completed in this checkpoint and course control 416.  It is limited to the four typed builtin
+call boundaries, ordinary PA12 lookup/selection and conversion, the immutable
+PA12 builtin facts, PA15 demand/declaration planning, and typed LowIR call and
+boundary metadata.  Legacy `__builtin_constant_p`/`__builtin_abort`, ordinary
+user lookup and reserved-prefix behavior, direct free-function `noexcept`
+sidecars, and unrelated PA16 surfaces are controls or boundaries, not new
+implementation scope.  No handout test, `.ref` fixture, harness, comparator,
+reference output, or source-set list changed.
+
+### Contract and ownership
+
+The path is checked against spec.md §§1--5 and 7 and the PA13 LowIR metadata
+contract: one typed pipeline, one canonical owner, no textual downgrade,
+demand-driven bounded work, and deterministic emission.  The representative
+fact trace is:
+
+```text
+PA10 exact unqualified IdExpression call
+  -> PA12 lookup-aware builtin identity (ordinary visible values shadow only
+     the four typed fallback names)
+  -> ordinary PA12 typed argument facts/conversions and selected BindingId
+  -> append-only BuiltinFunctionFact for the selected typed helper
+  -> PA15 binding/type/object-symbol declaration plan and demand edge
+  -> LowIR direct call selects the same declaration and receives its boundary
+     metadata
+```
+
+`__builtin_strlen` owns `const char* -> unsigned long int`, `readonly`,
+`unwind=no`, and parameter `nocapture/read`.  `__builtin_unreachable` owns
+`void()`, `readnone`, `unwind=no`, and `noreturn`.  `__builtin_memcpy` and
+`__builtin_memmove` own `void*(void*, const void*, unsigned long int)` and
+`readwrite`/`unwind=no`; memcpy records destination `write` and source `read`,
+both `noalias`, while memmove records destination `readwrite` and source
+`read` without inventing a no-alias fact.  PA15 takes these typed facts as the
+sole metadata source and uses the retained `object_symbol` for the ABI
+sidecar; it does not recover builtin spelling from LowIR text.  Builtin
+bindings remain outside lexical scope, so unused facts do not materialize
+declarations or calls.
+
+### Findings and bounded repairs
+
+- The landed classifier recognized a typed builtin before ordinary value
+  lookup.  A visible user function or local value named `__builtin_strlen`,
+  `__builtin_memcpy`, `__builtin_memmove`, or `__builtin_unreachable` could
+  therefore be bypassed.  The classifier now consults the same ordinary
+  `lookup_value_path` used by PA12 and only retains the compiler fallback when
+  that value set is empty.  Legacy builtin recognition and broad
+  `__builtin_*` reserved-prefix behavior remain unchanged.
+
+- `expression_type` previously checked only typed builtin arity.  The
+  type-only `decltype` path now runs the same PA12 typed selector/conversion
+  through `SemanticTailGuard`, preserving validation while discarding
+  temporary semantic facts.  An invalid `decltype(__builtin_strlen(7))` now
+  fails, while a valid unevaluated call remains demand-free in LowIR.
+
+- The repair is bounded to the existing PA11/PA12 owner and does not add a
+  second selector, source-text recovery, or a PA15 special case.  The PA12
+  legacy builtin controls pass; no PA15 legacy-abort behavior was widened.
+
+### Focused and broad evidence
+
+The authoritative landed result remains `167/243` passed, `76` failed, and
+`243/243` identities covered, versus the parent baseline `164/243`, `79`
+failed, and `243/243` covered.  Exact comparison has these three baseline-only
+identities and no final-only identity:
+
+- `general/200-function-boundary-metadata-emission.t`
+- `general/200-parameter-access-metadata-emission.t`
+- `general/200-parameter-alias-metadata-emission.t`
+
+The complete exact current 76-identity map is preserved in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-builtin-final-A6D3WT/failure-map.txt`
+and the authoritative current log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Final validation preserves the same exact failure set: `make test-pa16` exits
+`2` with `167/243` passing, `76` failing, and `243/243` covered; comparison
+against the authoritative current map has `final-only=0` and
+`missing-authoritative=0`.  The exact through-PA15 gate exits `0` at
+`1167/1167`, and the final file audit exits `0` with the five known warnings.
+
+This turn's focused evidence is:
+
+- `make -C dev cppgm++` — exit `0`.
+- The three named PA16 boundary tests — `3/3` pass.
+- PA12 legacy builtin controls — `3/3` pass.
+- PA16 prefix/noexcept controls — `4/4` pass.
+- Course control 416 — pass: ordinary exact/reserved-prefix declarations
+  win lookup, a local shadow is rejected, invalid `decltype` arguments are
+  rejected, and a valid unevaluated `decltype` emits no builtin marker.
+- Post-repair structural probes — unused fixed-builtin declarations/calls
+  `0/0`; one `strlen` declaration/call `1/1`; repeated LowIR hash
+  `849f81f6e3117a83c74e7f622aad199812090e621c040e3a23f969ade7678274`.
+- `git diff --check` — exit `0`.
+
+The five-test preservation batch that also included the known
+`general/300-unary-address-of-builtin-fallback.t` mismatch was `4/5`; that
+existing LowIR mismatch was not changed by this checkpoint.
+
+### Performance and structural bounds
+
+The four-entry builtin fact arena and its linear binding/fact scans are fixed
+and bounded.  The new shadow check performs one ordinary lookup only after an
+exact typed builtin spelling is recognized; type-only validation walks its
+argument list once and reuses the existing selector under a tail guard.  PA15
+iterates only instantiated facts and demanded declarations.  The post-repair
+compiler hash is
+`55c53f1721c44d639247dac675ebb4abd71438c4a4b3d197dc1e812ca38d100c`.
+These are structural/deterministic observations only: no timing, RSS,
+allocation, or speedup claim was measured.
+
+### Boundaries, residuals, and next checkpoint
+
+PA16 remains incomplete with the authoritative 76 residual identities; the
+exact set is not claimed as repaired by this audit.  The known address-of
+builtin LowIR mismatch remains open, as do all other unrelated object-model,
+aggregate, lifetime, inheritance, operator, and parser residuals.  The next
+checkpoint should be selected from that residual map after this completed
+checkpoint;
+it must preserve this typed builtin boundary and must not treat the current
+focused result as stage completion.
+
+## Historical Aggregate Initialization Review
+
 This review covers landed commit `dea01c52089fe78b8d23cce0b72ecbe8686ddb26`
 (`PA16: lower typed recursive aggregate initialization`) relative to parent
 `36b93869`, plus the bounded checkpoint-audit repairs and course control 415.
@@ -929,6 +1055,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `d7ed98aa` typed builtin call-boundary checkpointAudit | Bounded audit of the landed PA11--PA15 path: exact fixed builtin identities/signatures, ordinary PA12 typed selection/conversion, append-only `BuiltinFunctionFact` ownership, PA15 demand/declaration planning, and LowIR declaration/call boundary consistency are traced; memcpy and memmove alias facts remain distinct and truthful. The audit repairs lookup bypass for visible typed-builtin spellings and arity-only validation in type-only `decltype` calls, with course 416 covering both. Final PA16 is `167/243` with `76` failures and `243/243` coverage versus `164/243` and `79` failures at the parent; exact baseline-only fixes are the three named metadata identities and final-only is `∅`. Final broad PA16 exits `2` with that expected residual set; through-PA15 exits `0` at `1167/1167`; file audit exits `0` with five known warnings; focused controls and diff-check pass. One known address-of-builtin LowIR mismatch remains. PA16 remains incomplete; no handout, fixture, reference, harness, comparator, or source-set list changed. |
 | `dea01c52` aggregate-initialization checkpointAudit | Completed bounded PA10--PA15 aggregate audit and repair: RecordLayout now owns declaration order/indexes, PA12 arena values survive reallocating publication, aggregate facts remain sparse and typed, global/runtime demand visitation is independent, pending global actions preserve source order, and the global aggregate inliner is checked and falls back to demanded helpers when unsupported. Final PA16 is `164/243` with `79` failures and `243/243` identities covered versus the authoritative `159/243` and `84` failures at turn start; the exact delta is five baseline-only repairs and final-only `∅`. The exact focus is `12/17` with `17/17` covered; course 404/409/412/415, through-PA15 `1167/1167`, file audit, and diff-check pass. Final structural replay is preserved in `pa16-aggregate-init-audit-final-v1` with `30/30` zero-status runs, zero repeated-hash mismatches, and no timing/RSS claim. The unknown-bound namespace string-record handout now passes. No handout, fixture, reference, comparator, harness, or source-set list changed. |
 | `fb4348b6` typed parameterized class-constructor checkpointAudit | Complete: bounded PA10--PA15 constructor audit repaired canonical hidden-destination callable typing, protected-constructor access, shared candidate owner validation, and aggregate copy/direct-list dispatch for explicitly-defaulted/deleted constructors. The focused constructor matrix is `17/17`; course controls 400--409 pass with syntax checks, including new self-pointer/protected/private and aggregate field/helper coverage. The two aggregate handout controls retain the known LowIR address/bool shape comparison difference. Final PA16 is `91/243` with `152` failures and `243/243` coverage; failure and coverage identity additions/removals are both `∅`/`∅`. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing warnings; diff-check passes; representative scale smoke is recorded above. No handout, fixture, reference, or `.ref` changed. |
 | `32c45463` typed class-object construction checkpointAudit | Completed bounded audit of the landed typed construction increment relative to `a2ac5256`: repaired canonical empty named-class constructor identity, fail-closed FunctionFact ownership, value-initialization zeroing semantics, aggregate DMI fallback, typed range/owner/index validation, demand-driven empty-helper elision, and the course-404 ordering controls. Focused copied handout comparison is `10/11`; course controls 400--407 are green; final PA16 is `80/243` with `163` failures and `243/243` coverage, with exact failure and coverage additions/removals `∅`/`∅`; construction stress smoke is five successful `0.00s` runs with RSS `5824--6056KB` (timings in `/tmp/codex-pa16-stress-final.Tn9MSH/stress-1.time` through `stress-5.time`), 14 constructor helpers, 14 constructor calls, 13 base projections, 45 field projections, and 45 stores. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing header-division warnings; no handout, fixture, reference, or `.ref` changed. |

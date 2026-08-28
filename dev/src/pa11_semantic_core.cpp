@@ -1865,9 +1865,9 @@ TypeId PA11SemanticModel::expression_type(const PA10AstNode& node, ScopeId scope
 		const std::size_t argument_count = arguments.children.size();
 		if (callee.kind == PA10NodeKind::IdExpression)
 		{
-			const BuiltinKind builtin = builtin_kind(callee);
+			const BuiltinKind builtin = builtin_kind(callee, scope);
 			if (builtin != BuiltinKind::None)
-				return builtin_expression_type(builtin, argument_count);
+				return builtin_expression_type(node, scope, builtin, arguments);
 			const std::vector<ValueRef> candidates = lookup_value_path(
 				name_path(callee), scope);
 			bool has_direct_function = false;

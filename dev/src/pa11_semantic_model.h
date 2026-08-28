@@ -2097,11 +2097,11 @@ private:
 	bool integer_zero(const PA10AstNode& node) const
 	;
 	void initialize_builtin_names();
-	BuiltinKind builtin_kind(const PA10AstNode& node)
-	;
+	BuiltinKind builtin_kind(const PA10AstNode& node, ScopeId scope);
 	BindingId builtin_binding(BuiltinKind kind)
 	;
-	TypeId builtin_expression_type(BuiltinKind kind, std::size_t argument_count);
+	TypeId builtin_expression_type(const PA10AstNode& node, ScopeId scope,
+		BuiltinKind kind, const PA10AstNode& argument_node);
 	const BuiltinFunctionFact* builtin_function_fact(BuiltinKind kind) const;
 	const BuiltinFunctionFact* builtin_function_fact(BindingId binding) const;
 	class SemanticTailGuard

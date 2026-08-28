@@ -13,7 +13,8 @@ void PA11SemanticModel::initialize_builtin_names()
 	builtin_memmove_name_ = intern_name("__builtin_memmove");
 }
 
-BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
+BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node,
+	ScopeId scope)
 {
 	if (node.kind != PA10NodeKind::IdExpression || node.has_token ||
 		node.global_name || node.name_prefix_count != 0)
@@ -21,19 +22,29 @@ BuiltinKind PA11SemanticModel::builtin_kind(const PA10AstNode& node)
 	const NamePath path = name_path(node);
 	if (path.components.size() != 1)
 		return BuiltinKind::None;
+	BuiltinKind kind = BuiltinKind::None;
 	if (path.last() == builtin_constant_p_name_)
-		return BuiltinKind::ConstantP;
-	if (path.last() == builtin_abort_name_)
-		return BuiltinKind::Abort;
-	if (path.last() == builtin_strlen_name_)
-		return BuiltinKind::Strlen;
-	if (path.last() == builtin_unreachable_name_)
-		return BuiltinKind::Unreachable;
-	if (path.last() == builtin_memcpy_name_)
-		return BuiltinKind::Memcpy;
-	if (path.last() == builtin_memmove_name_)
-		return BuiltinKind::Memmove;
-	return BuiltinKind::None;
+		kind = BuiltinKind::ConstantP;
+	else if (path.last() == builtin_abort_name_)
+		kind = BuiltinKind::Abort;
+	else if (path.last() == builtin_strlen_name_)
+		kind = BuiltinKind::Strlen;
+	else if (path.last() == builtin_unreachable_name_)
+		kind = BuiltinKind::Unreachable;
+	else if (path.last() == builtin_memcpy_name_)
+		kind = BuiltinKind::Memcpy;
+	else if (path.last() == builtin_memmove_name_)
+		kind = BuiltinKind::Memmove;
+	if (kind == BuiltinKind::Strlen || kind == BuiltinKind::Unreachable ||
+		kind == BuiltinKind::Memcpy || kind == BuiltinKind::Memmove)
+	{
+		// The typed helpers are compiler-provided fallbacks, not declarations in
+		// the ordinary value namespace.  A visible user value therefore owns
+		// this spelling and must flow through normal lookup and selection.
+		if (!lookup_value_path(path, scope).empty())
+			return BuiltinKind::None;
+	}
+	return kind;
 }
 
 const BuiltinFunctionFact* PA11SemanticModel::builtin_function_fact(
@@ -163,31 +174,33 @@ BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
 	return result;
 }
 
-TypeId PA11SemanticModel::builtin_expression_type(BuiltinKind builtin,
-	std::size_t argument_count)
+TypeId PA11SemanticModel::builtin_expression_type(const PA10AstNode& node,
+	ScopeId scope, BuiltinKind builtin, const PA10AstNode& argument_node)
 {
 	if (builtin == BuiltinKind::ConstantP)
 	{
-		if (argument_count != 1)
+		if (argument_node.children.size() != 1)
 			throw std::runtime_error("invalid __builtin_constant_p arity");
 		return fundamental(FundamentalType::Int);
 	}
 	if (builtin == BuiltinKind::Abort)
 	{
-		if (argument_count != 0)
+		if (!argument_node.children.empty())
 			throw std::runtime_error("invalid __builtin_abort arity");
 		return fundamental(FundamentalType::Void);
 	}
 	if (builtin == BuiltinKind::None)
 		throw std::runtime_error("invalid builtin expression type");
-	const BindingId binding_id = builtin_binding(builtin);
-	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
-		type_kind(binding(binding_id).type) != TypeKind::Function)
-		throw std::runtime_error("invalid typed builtin binding");
-	const TypeKey& type = types_[binding(binding_id).type.value];
-	if (argument_count != type.parameters.size())
-		throw std::runtime_error("invalid typed builtin arity");
-	return type.result;
+	// decltype and other type-only callers still need the same argument
+	// validation and conversion boundary as an evaluated call.  Keep the
+	// temporary semantic facts out of the canonical arena while reusing the
+	// ordinary PA12 selector instead of maintaining a second type checker.
+	SemanticTailGuard type_check(*this);
+	const ExprInfo expression = semantic_builtin_call(node, scope, builtin,
+		argument_node);
+	const TypeId result = expression.type;
+	type_check.discard();
+	return result;
 }
 
 ExprInfo PA11SemanticModel::semantic_builtin_call(const PA10AstNode& node,
