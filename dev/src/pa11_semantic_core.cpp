@@ -1957,12 +1957,22 @@ TypeId PA11SemanticModel::sizeof_operand_type(const PA10AstNode& node, ScopeId s
 		const std::vector<ValueRef> values = lookup_value_path(
 			name_path(operand), scope);
 		if (!values.empty())
+		{
+			for (std::size_t i = 0; i < values.size(); ++i)
+				if (bit_field_fact(values[i].binding) != NULL)
+					throw std::runtime_error("sizeof cannot apply to a bit-field");
+			if (values.size() != 1)
+				throw std::runtime_error("sizeof operand is overloaded");
 			return binding(values.front().binding).type;
+		}
 		const TypeId type = lookup_type_path(name_path(operand), scope);
 		if (type.valid())
 			return type;
 	}
-	return expression_type(operand, scope);
+	const ExprInfo expression = semantic_expression(operand, scope);
+	if (bit_field_fact_for_expression(expression) != NULL)
+		throw std::runtime_error("sizeof cannot apply to a bit-field");
+	return expression.type;
 }
 TypeId PA11SemanticModel::decltype_type(const PA10AstNode& node, ScopeId scope)
 {

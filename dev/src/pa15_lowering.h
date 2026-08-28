@@ -557,6 +557,8 @@ private:
 	LoweredValue literal(const SemanticFact& fact);
 	LoweredValue apply_reinterpret_conversion(LoweredValue result,
 		const LowType& target);
+	bool apply_bit_field_reference_conversion(LoweredValue* result,
+		const ConversionFact& conversion, const LowType& target);
 	LoweredValue apply_conversions(SemanticFactId id, LoweredValue result,
 		bool omit_boolean_context = false, bool materialize_lvalue = true,
 		bool force_integral_literal_conversion = false);

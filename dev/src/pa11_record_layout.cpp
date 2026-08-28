@@ -33,6 +33,27 @@ const BitFieldFact* PA11SemanticModel::bit_field_fact(BindingId binding_id) cons
 	return binding_id.valid() ? bit_field_facts_.find(binding_id) : NULL;
 }
 
+const BitFieldFact* PA11SemanticModel::bit_field_fact_for_expression(
+	const ExprInfo& expression) const
+{
+	if (!expression.fact.valid() || expression.fact.value >= semantic_facts_.size())
+		return NULL;
+	const SemanticFact& fact = semantic_facts_[expression.fact.value];
+	if (fact.category != SemanticValueCategory::Lvalue ||
+		(fact.kind != SemanticFactKind::IdExpression &&
+			fact.kind != SemanticFactKind::MemberExpression))
+		return NULL;
+	const BindingId binding_id = fact.binding.valid() ? fact.binding :
+		fact.selected_binding;
+	const BitFieldFact* result = bit_field_fact(binding_id);
+	if (result == NULL)
+		return NULL;
+	if (!result->named || result->binding != binding_id ||
+		!result->operation_type.valid())
+		throw std::runtime_error("invalid PA11 bit-field expression fact");
+	return result;
+}
+
 void PA11SemanticModel::set_bit_field_fact(BindingId binding_id,
 	const BitFieldFact& fact)
 {
@@ -234,9 +255,30 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 		{
 			BitFieldFact fact = declaration.bit;
 			if (fact.owner_record != record_id || !fact.declared_type.valid() ||
-				!fact.storage_type.valid() || fact.storage_unit_size == 0 ||
-				fact.storage_width == 0 || fact.storage_width > 64)
+				!fact.storage_type.valid() || !fact.operation_type.valid() ||
+				fact.storage_unit_size == 0 ||
+				fact.storage_unit_size > 8 || fact.storage_width == 0 ||
+				fact.storage_width > 64 ||
+				fact.storage_width != fact.storage_unit_size * 8 ||
+				fact.value_width > fact.storage_width ||
+				(fact.width != 0 && fact.value_width == 0) ||
+				(fact.width != 0 && fact.zero_width) ||
+				(fact.width == 0 && !fact.zero_width) ||
+				(fact.width == 0 && fact.allocation_size != 0) ||
+				(fact.width != 0 && (fact.allocation_size <
+					fact.storage_unit_size || fact.allocation_size %
+					fact.storage_unit_size != 0)))
 				throw std::runtime_error("record bit-field fact is invalid");
+			if (fact.width != 0)
+			{
+				const std::size_t unit_count = fact.width /
+					fact.storage_width + (fact.width % fact.storage_width == 0 ? 0 : 1);
+				if (unit_count == 0 || unit_count >
+					std::numeric_limits<std::size_t>::max() /
+					fact.storage_unit_size || fact.allocation_size !=
+					unit_count * fact.storage_unit_size)
+					throw std::runtime_error("record bit-field allocation is invalid");
+			}
 			if (fact.named)
 			{
 				if (!fact.binding.valid())
@@ -262,8 +304,8 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 				fact.storage_offset = 0;
 				fact.bit_offset = 0;
 				fact.storage_mask = fact.zero_width ? 0 : fact.value_mask;
-				if (!fact.zero_width && fact.storage_unit_size > largest_member)
-					largest_member = fact.storage_unit_size;
+				if (!fact.zero_width && fact.allocation_size > largest_member)
+					largest_member = fact.allocation_size;
 			}
 			else if (fact.zero_width)
 			{
@@ -274,12 +316,31 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 				fact.bit_offset = 0;
 				fact.storage_mask = 0;
 			}
+			else if (fact.allocation_size > fact.storage_unit_size)
+			{
+				// A declaration wider than the physical scalar occupies a private
+				// sequence of physical units.  Its value projection remains in the
+				// first unit; the remaining bits are padding and cannot be packed
+				// with a following declaration.
+				flush_bit_unit();
+				if (!align_up_checked(offset, field_layout.alignment,
+					&fact.storage_offset))
+					throw std::runtime_error("record layout size overflow");
+				fact.bit_offset = 0;
+				if (fact.value_width > fact.storage_width)
+					throw std::runtime_error("wide bit-field value projection is invalid");
+				fact.storage_mask = fact.value_mask;
+				if (fact.storage_offset > std::numeric_limits<std::size_t>::max() -
+					fact.allocation_size)
+					throw std::runtime_error("record layout size overflow");
+				offset = fact.storage_offset + fact.allocation_size;
+			}
 			else
 			{
 				if (!bit_unit_active || bit_unit_size != fact.storage_unit_size ||
 					bit_unit_alignment != field_layout.alignment ||
 					bit_cursor > bit_unit_width ||
-					fact.value_width > bit_unit_width - bit_cursor)
+					fact.width > bit_unit_width - bit_cursor)
 				{
 					flush_bit_unit();
 					if (!align_up_checked(offset, field_layout.alignment,
@@ -297,9 +358,7 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 					64 - fact.bit_offset)
 					throw std::runtime_error("bit-field mask is too wide");
 				fact.storage_mask = fact.value_mask << fact.bit_offset;
-				const std::size_t consumed = fact.width < bit_unit_width ?
-					fact.width : bit_unit_width;
-				bit_cursor += consumed;
+				bit_cursor += fact.width;
 			}
 			if (fact.named)
 			{

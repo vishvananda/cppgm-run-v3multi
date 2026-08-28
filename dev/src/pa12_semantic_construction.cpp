@@ -464,13 +464,14 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		}
 		const ExprInfo expression = semantic_expression_for_target(*expression_node,
 			function_scope, target_type);
+		ExprInfo converted = expression;
 		if (argument->kind != PA10NodeKind::BracedInitList)
-			apply_context_conversion(expression, target_type,
+			converted = apply_context_conversion(expression, target_type,
 				semantic_facts_[expression.fact.value].source);
 		ConstructorActionFact action(ConstructorActionTarget::Member,
 			NamedRecordId(), member);
 		action.object_type = target_type;
-		action.initializer = expression.fact;
+		action.initializer = converted.fact;
 		append_action(action, std::vector<SemanticFactId>());
 	};
 	if (record.has_base)

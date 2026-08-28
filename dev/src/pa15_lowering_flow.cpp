@@ -932,13 +932,28 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			if (target_kind == TypeKind::LvalueReference ||
 				target_kind == TypeKind::RvalueReference)
 			{
-				// PA12 owns reference-cast validity and keeps the typed source
-				// fact.  Preserve the address here; materialization and any
-				// contextual reference binding remain ordinary typed conversions.
-				const LoweredValue address = lower_address(children(id).front());
-				result = LoweredValue(address.value,
-					low_reference_value_type(fact.type), true,
-					address.physical_type);
+				const SemanticFact& operand_fact = model_.semantic_facts_[
+					operands.front().value];
+				const BindingId operand_binding = operand_fact.binding.valid() ?
+					operand_fact.binding : operand_fact.selected_binding;
+				if (model_.bit_field_fact(operand_binding) != NULL)
+				{
+					// PA12 represents a bit-field reference cast as a typed value
+					// temporary followed by ReferenceBinding.  Defer the child
+					// conversions so the first LvalueToRvalue uses the canonical
+					// operation type and cannot take the packed-unit address.
+					result = lower_expression_impl(operands.front(), false, true,
+						false, true);
+				}
+				else
+				{
+					// PA12 owns reference-cast validity and keeps the typed source
+					// fact.  Preserve the address for ordinary reference casts.
+					const LoweredValue address = lower_address(operands.front());
+					result = LoweredValue(address.value,
+						low_reference_value_type(fact.type), true,
+						address.physical_type);
+				}
 			}
 			else if (model_.void_id(fact.type))
 			{
@@ -960,7 +975,11 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			result.type = low_type(fact.type);
 		if (defer_conversions)
 		{
-			if (materialize_lvalue && result.lvalue && !result.type.is_object())
+			// Keep a bit-field lvalue tagged until its first PA12 conversion is
+			// applied.  That conversion carries the semantic operation type and
+			// lets the projection load use the exact requested result width.
+			if (materialize_lvalue && result.lvalue && !result.type.is_object() &&
+				!result.bit_field_lvalue)
 				materialize_lvalue_value(&result, result.type);
 			return result;
 		}

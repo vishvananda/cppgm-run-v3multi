@@ -96,9 +96,8 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 					throw std::runtime_error("PA12 function argument fact is invalid");
 				const SemanticFact& fact =
 					semantic_facts_[arguments[argument].fact.value];
-				choice = conversion_for(arguments[argument].type,
-					arguments[argument].category, function.parameters[argument],
-					fact.source, arguments[argument].integer_zero, scope);
+				choice = conversion_for(arguments[argument],
+					function.parameters[argument], fact.source, scope);
 			}
 			else
 			{
@@ -475,9 +474,8 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				continue;
 			if (!member_accessible(candidate_id, record.scope, scope, object))
 				continue;
-			const ConversionChoice conversion = conversion_for(argument.type,
-				argument.category, parameter, source_fact.source,
-				argument.integer_zero, scope);
+			const ConversionChoice conversion = conversion_for(argument, parameter,
+				source_fact.source, scope);
 			if (!conversion.valid)
 				continue;
 			const unsigned int rank = conversion.rank <
@@ -606,11 +604,10 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				}
 				ConversionChoice choice;
 				if (initial_arguments[argument].fact.valid())
-					choice = conversion_for(initial_arguments[argument].type,
-						initial_arguments[argument].category,
+					choice = conversion_for(initial_arguments[argument],
 						function.parameters[argument],
 						semantic_facts_[initial_arguments[argument].fact.value].source,
-						initial_arguments[argument].integer_zero, scope);
+						scope);
 				else
 				{
 					const PA10AstNode* function_id = target_function_id(
@@ -721,10 +718,9 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			(type_kind(parameter) == TypeKind::LvalueReference ||
 				type_kind(parameter) == TypeKind::RvalueReference) &&
 			class_scope_for_type(types_[parameter.value].child).valid() &&
-			!conversion_for(arguments[argument].type, arguments[argument].category,
-				parameter,
+			!conversion_for(arguments[argument], parameter,
 				semantic_facts_[arguments[argument].fact.value].source,
-				arguments[argument].integer_zero, scope).valid)
+				scope).valid)
 			arguments[argument] = semantic_expression_for_target(
 				*argument_nodes[argument], scope, parameter);
 		if (!arguments[argument].fact.valid())
@@ -857,7 +853,7 @@ void PA11SemanticModel::apply_call_argument_conversions(
 		}
 		else if (integral_id(source))
 		{
-			const TypeId promoted = promote_integral_type(source);
+			const TypeId promoted = integral_operation_type(arguments[arg]);
 			arguments[arg] = apply_context_conversion(arguments[arg], promoted,
 				fact.source, scope);
 		}

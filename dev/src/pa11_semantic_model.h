@@ -621,15 +621,15 @@ struct RecordLayoutBase
 struct BitFieldFact
 {
 	BindingId binding; ScopeId owner_scope; NamedRecordId owner_record;
-	TypeId declared_type; TypeId storage_type;
-	std::size_t width, value_width, storage_offset, storage_unit_size;
+	TypeId declared_type; TypeId storage_type; TypeId operation_type;
+	std::size_t width, value_width, storage_offset, storage_unit_size, allocation_size;
 	std::size_t bit_offset, storage_width;
 	std::uint64_t value_mask, storage_mask;
 	bool named, zero_width, is_signed;
 	BitFieldFact() : binding(), owner_scope(), owner_record(), declared_type(),
-		storage_type(), width(0), value_width(0), storage_offset(0),
-		storage_unit_size(0), bit_offset(0), storage_width(0), value_mask(0),
-		storage_mask(0), named(false), zero_width(false), is_signed(false) {}
+		storage_type(), operation_type(), width(0), value_width(0), storage_offset(0),
+		storage_unit_size(0), allocation_size(0), bit_offset(0), storage_width(0),
+		value_mask(0), storage_mask(0), named(false), zero_width(false), is_signed(false) {}
 };
 
 struct RecordMemberDeclaration
@@ -1381,6 +1381,7 @@ private:
 	NamedRecordId append_named_record(const NamedRecord& record)
 	;
 	const BitFieldFact* bit_field_fact(BindingId binding) const;
+	const BitFieldFact* bit_field_fact_for_expression(const ExprInfo& expression) const;
 	void set_bit_field_fact(BindingId binding, const BitFieldFact& fact);
 	void append_record_member(NamedRecordId record, BindingId binding);
 	void append_record_bit_field(NamedRecordId record, const BitFieldFact& fact);
@@ -2189,9 +2190,10 @@ private:
 	;
 	TypeId callable_function_type(TypeId type) const
 	;
-	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId()) const;
-	const PA10AstNode* target_function_id(const PA10AstNode& node,
-	ScopeId scope)
+	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId(), TypeId source_operation_type = TypeId(), BindingId source_binding = BindingId()) const;
+	ConversionChoice conversion_for(const ExprInfo& expression, TypeId target, const PA10AstNode* source_node, ScopeId access_scope = ScopeId()) const;
+	ExprInfo make_bit_field_reference_temporary(const ExprInfo& expression, TypeId target, const PA10AstNode* source_node, ScopeId access_scope, const ConversionChoice& binding);
+	const PA10AstNode* target_function_id(const PA10AstNode& node, ScopeId scope)
 	;
 	FunctionIdResolution resolve_function_id_target(const PA10AstNode& node,
 		ScopeId scope, TypeId target)
@@ -2214,12 +2216,10 @@ private:
 	void retarget_constexpr_literal(SemanticFactId fact, TypeId target)
 	;
 	ExprInfo apply_context_conversion(const ExprInfo& expression, TypeId target, const PA10AstNode* source_node, ScopeId access_scope = ScopeId());
-	TypeId common_integral_type(TypeId left, TypeId right) const
-	;
-	TypeId common_arithmetic_type(TypeId left, TypeId right) const
-	;
-	unsigned int floating_rank(TypeId type) const
-	;
+	TypeId common_integral_type(TypeId left, TypeId right) const;
+	TypeId integral_operation_type(const ExprInfo& expression) const;
+	TypeId common_arithmetic_type(TypeId left, TypeId right) const;
+	unsigned int floating_rank(TypeId type) const;
 	void record_builtin_conversion(const ExprInfo& expression, TypeId target)
 	;
 	SemanticFactId make_expression_fact(SemanticFactKind kind, TypeId type,

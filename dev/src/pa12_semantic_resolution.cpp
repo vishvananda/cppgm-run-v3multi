@@ -5,6 +5,227 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
+	SemanticValueCategory category, TypeId target,
+	const PA10AstNode* source_node, bool source_integer_zero,
+	ScopeId access_scope, TypeId source_operation_type,
+	BindingId source_binding) const
+{
+	if (!source.valid() || !target.valid())
+		return ConversionChoice();
+	const BitFieldFact* source_bit_field = source_binding.valid() ?
+		bit_field_fact(source_binding) : NULL;
+	if (source_binding.valid() && (source_bit_field == NULL ||
+		!source_bit_field->named || source_bit_field->binding != source_binding ||
+		!source_bit_field->operation_type.valid() ||
+		source_operation_type != source_bit_field->operation_type))
+		throw std::runtime_error("PA12 bit-field conversion fact is invalid");
+	const TypeKind target_kind = type_kind(target);
+	if (target_kind == TypeKind::LvalueReference ||
+		target_kind == TypeKind::RvalueReference)
+	{
+		const TypeId target_referred = types_[target.value].child;
+		const TypeId source_value = expression_object_type(source);
+		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
+		const auto reference_object_convertible =
+			[this, access_scope](TypeId actual, TypeId required) -> bool
+		{
+			if (qualification_convertible(actual, required))
+				return true;
+			const ScopeId required_scope = class_scope_for_type(required);
+			return required_scope.valid() && access_scope.valid() && member_object_convertible(actual, required, required_scope, NULL, access_scope);
+		};
+		if (target_kind == TypeKind::LvalueReference && source_lvalue)
+		{
+			if (source_bit_field != NULL)
+			{
+				// [class.bit] forbids a non-const reference to a bit-field.  A
+				// const reference is a value temporary, even when the declared
+				// type is otherwise qualification-compatible with the target.
+				if ((cv_qualifiers(target_referred) & 1u) == 0)
+					return ConversionChoice();
+				const ConversionChoice temporary = conversion_for(source, category,
+					target_referred, source_node, source_integer_zero, access_scope,
+					source_operation_type, source_binding);
+				if (!temporary.valid)
+					return ConversionChoice();
+				return ConversionChoice(true, 2,
+					ConversionKind::ReferenceBinding);
+			}
+			if (reference_object_convertible(source_value, target_referred))
+				return ConversionChoice(true,
+					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
+						0 : 1,
+					ConversionKind::ReferenceBinding);
+		}
+		if (target_kind == TypeKind::RvalueReference && !source_lvalue)
+		{
+			if (reference_object_convertible(source_value, target_referred))
+				return ConversionChoice(true,
+					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
+						0 : 1,
+					ConversionKind::ReferenceBinding);
+		}
+		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
+			type_kind(target_referred) == TypeKind::Cv &&
+			reference_object_convertible(source_value, target_referred))
+			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
+		if (type_kind(target_referred) == TypeKind::Cv)
+		{
+			const ConversionChoice temporary = conversion_for(source, category,
+				target_referred, source_node, source_integer_zero, access_scope,
+				source_operation_type, source_binding);
+			const bool same_lvalue_value = source_lvalue &&
+				temporary.kind == ConversionKind::LvalueToRvalue &&
+				temporary.rank == 0;
+			if (temporary.valid &&
+				(target_kind != TypeKind::RvalueReference || !same_lvalue_value))
+				return ConversionChoice(true,
+					temporary.rank + (target_kind == TypeKind::LvalueReference ? 1 : 0),
+					ConversionKind::ReferenceBinding);
+		}
+		return ConversionChoice();
+	}
+	const TypeId by_value_target = strip_cv_type(expression_object_type(target));
+	const TypeId declared_source = strip_cv_type(expression_object_type(source));
+	TypeId by_value_source = declared_source;
+	if (source_bit_field != NULL && source_operation_type.valid())
+	{
+		const TypeId operation_source = strip_cv_type(
+			expression_object_type(source_operation_type));
+		// A bit-field retains its declared identity for an exact typed target
+		// (notably an enum overload); promotion is a value conversion only when
+		// the target requires a different operation type.
+		if (by_value_target != declared_source)
+			by_value_source = operation_source;
+	}
+	const bool bit_field_promotion = source_bit_field != NULL &&
+		source_operation_type.valid() && by_value_source != declared_source;
+	const bool null_integer = source_integer_zero || (source_node != NULL && integer_zero(*source_node));
+	if (by_value_source == by_value_target)
+	{
+		if (bit_field_promotion)
+			return ConversionChoice(true, 1, ConversionKind::Integral);
+		return ConversionChoice(true, 0,
+			category == SemanticValueCategory::Lvalue ?
+			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
+	}
+	// A target enum accepts only its own named enum identity.
+	const NamedRecordId target_record = named_record_for_type(by_value_target);
+	if (target_record.valid() && target_record.value < named_.size() &&
+		named_[target_record.value].kind == NamedKind::Enum)
+	{
+		const NamedRecordId source_record =
+			named_record_for_type(by_value_source);
+		if (source_record != target_record)
+			return ConversionChoice();
+	}
+	// Rank unscoped-enum promotion from its typed PA11 representation.
+	if (integral_id(by_value_source) && enumeration_id(by_value_source))
+	{
+		const TypeId promoted = promote_integral_type(by_value_source);
+		FundamentalType target_fundamental;
+		if (fundamental_of(by_value_target, &target_fundamental) &&
+			integral_type(target_fundamental))
+		{
+			const unsigned int source_rank = integral_rank(promoted);
+			const unsigned int target_rank = integral_rank(by_value_target);
+			return ConversionChoice(true,
+				by_value_target == promoted ? 1 :
+				2 + (target_rank > source_rank ? target_rank - source_rank : 0),
+				ConversionKind::Integral);
+		}
+	}
+	if (type_kind(by_value_source) == TypeKind::Array &&
+		type_kind(by_value_target) == TypeKind::Pointer)
+	{
+		const TypeId element = types_[by_value_source.value].child;
+		const TypeId target_element = types_[by_value_target.value].child;
+		if (qualification_convertible(element, target_element))
+			return ConversionChoice(true, 1, ConversionKind::ArrayToPointer);
+	}
+	if (type_kind(by_value_source) == TypeKind::Function &&
+		type_kind(by_value_target) == TypeKind::Pointer &&
+		qualification_convertible(by_value_source,
+			types_[by_value_target.value].child))
+		return ConversionChoice(true, 1, ConversionKind::FunctionToPointer);
+	FundamentalType target_fundamental;
+	if (null_integer &&
+		fundamental_of(by_value_target, &target_fundamental) &&
+		target_fundamental == FundamentalType::NullptrT)
+		return ConversionChoice(true, 2, ConversionKind::NullIntegerToNullptr);
+	FundamentalType source_fundamental;
+	if (fundamental_of(by_value_source, &source_fundamental) &&
+		fundamental_of(by_value_target, &target_fundamental) &&
+		integral_type(source_fundamental) &&
+		integral_type(target_fundamental))
+	{
+		const unsigned int source_rank = integral_rank(promote_integral_type(by_value_source));
+		const unsigned int target_rank = integral_rank(by_value_target);
+		unsigned int rank = 1 + (target_rank > source_rank ?
+			target_rank - source_rank : 0);
+		// Once a bit-field has crossed its PA11 promotion boundary, a target
+		// other than that promoted type is at least an ordinary conversion.  In
+		// particular, promotion to int must beat conversion to same-rank
+		// unsigned int for enum/bool/narrow unsigned fields.
+		if (bit_field_promotion && by_value_target != by_value_source && rank < 2)
+			rank = 2;
+		return ConversionChoice(true, rank,
+			ConversionKind::Integral);
+	}
+	if (integral_id(by_value_source) && integral_id(by_value_target))
+		return ConversionChoice(true, 1, ConversionKind::Integral);
+	if ((floating_id(by_value_source) && floating_id(by_value_target)) ||
+		(integral_id(by_value_source) && floating_id(by_value_target)) ||
+		(floating_id(by_value_source) && integral_id(by_value_target)))
+	{
+		const unsigned int source_rank = floating_rank(by_value_source);
+		const unsigned int target_rank = floating_rank(by_value_target);
+		unsigned int rank = 1 + (target_rank > source_rank ?
+			target_rank - source_rank : 0);
+		if (bit_field_promotion && by_value_target != by_value_source && rank < 2)
+			rank = 2;
+		return ConversionChoice(true, rank,
+			floating_id(by_value_target) ? ConversionKind::Floating :
+			ConversionKind::Integral);
+	}
+	if (type_kind(by_value_source) == TypeKind::Fundamental &&
+		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
+		pointer_id(by_value_target))
+		return ConversionChoice(true, 1, ConversionKind::NullptrToPointer);
+	if (type_kind(by_value_source) == TypeKind::Fundamental &&
+		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
+		bool_id(by_value_target))
+		return ConversionChoice(true, 1, ConversionKind::NullptrToBool);
+	if (null_integer &&
+		pointer_id(by_value_target))
+		return ConversionChoice(true, 1, ConversionKind::NullIntegerToPointer);
+	// Top-level cv belongs to the pointer object and is discarded by
+	// lvalue-to-rvalue conversion; pointee qualification remains typed.
+	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
+		types_[by_value_source.value].child ==
+			types_[by_value_target.value].child &&
+			types_[by_value_source.value].cv !=
+			types_[by_value_target.value].cv)
+		return ConversionChoice(true, 0,
+			category == SemanticValueCategory::Lvalue ?
+			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
+	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
+		pointer_convertible(by_value_source, by_value_target))
+	{
+		FundamentalType target_pointee;
+		const TypeId target_element = types_[strip_cv_type(by_value_target).value].child;
+		const bool to_void = fundamental_of(target_element, &target_pointee) &&
+			target_pointee == FundamentalType::Void;
+		return ConversionChoice(true, to_void ? 2 : 1,
+			to_void ? ConversionKind::PointerToVoid :
+			ConversionKind::PointerQualification);
+	}
+	if (bool_id(by_value_target) && pointer_id(by_value_source))
+		return ConversionChoice(true, 3, ConversionKind::PointerToBool);
+	return ConversionChoice();
+}
+
 bool PA11SemanticModel::has_template_id(const PA10AstNode& node) const
 {
 	for (std::size_t i = 0; i < node.name_parts.size(); ++i)
@@ -337,10 +558,9 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 		candidate.ranks.reserve(arguments.size());
 		for (std::size_t arg = 0; arg < arguments.size(); ++arg)
 		{
-			const ConversionChoice conversion = conversion_for(arguments[arg].type,
-				arguments[arg].category, specialized_function.parameters[arg],
-				semantic_facts_[arguments[arg].fact.value].source,
-				arguments[arg].integer_zero, scope);
+			const ConversionChoice conversion = conversion_for(arguments[arg],
+				specialized_function.parameters[arg],
+				semantic_facts_[arguments[arg].fact.value].source, scope);
 			if (!conversion.valid)
 			{
 				candidate.ranks.clear();
@@ -668,10 +888,8 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 				const TypeId object = strip_cv_type(
 					expression_object_type(referred));
 				const NamedRecordId record = named_record_for_type(object);
-				const ConversionChoice direct = conversion_for(expression.type,
-					expression.category, target,
-					semantic_facts_[expression.fact.value].source,
-					expression.integer_zero, scope);
+				const ConversionChoice direct = conversion_for(expression, target,
+					semantic_facts_[expression.fact.value].source, scope);
 				if (record.valid() && record.value < named_.size() &&
 					named_[record.value].kind == NamedKind::Class && !direct.valid)
 				{
@@ -815,9 +1033,13 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 			if (needs_canonical_bool_materialization)
 				set_fact_conversion(expression.fact, add_conversion(
 					expression.type, result_type, ConversionKind::Identity, 0));
-			else if (!exact_prvalue_bool)
+			if (!needs_canonical_bool_materialization && !exact_prvalue_bool)
 				apply_context_conversion(expression, result_type,
 					semantic_facts_[expression.fact.value].source, scope);
+			// Keep the return expression rooted at its expression-owned fact.  The
+			// conversion range is still attached above, while replacing this root
+			// with a generic conversion temporary changes established reference
+			// alias lowering (notably const_cast pointer aliases).
 			children.push_back(expression.fact);
 		}
 	}
@@ -836,6 +1058,10 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		target_kind == TypeKind::RvalueReference)
 	{
 		const TypeId referred = types_[target.value].child;
+		const BitFieldFact* bit_field = bit_field_fact_for_expression(operand);
+		if (bit_field != NULL && (cv_qualifiers(referred) & 1u) == 0)
+			throw std::runtime_error(
+				"PA12 non-const reference cannot bind to a bit-field");
 		bool valid = qualification_convertible(source, referred);
 		if (cast_kind == ExplicitCastKind::Const ||
 			cast_kind == ExplicitCastKind::Functional)
@@ -850,6 +1076,16 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 		if (target_kind == TypeKind::LvalueReference &&
 			operand.category != SemanticValueCategory::Lvalue)
 			throw std::runtime_error("PA12 invalid reference cast category");
+		if (bit_field != NULL)
+		{
+			const ConversionChoice binding = conversion_for(operand, target,
+				semantic_facts_[operand.fact.value].source);
+			if (!binding.valid)
+				throw std::runtime_error(
+					"PA12 bit-field reference cast is not bindable");
+			return make_bit_field_reference_temporary(operand, target,
+				semantic_facts_[operand.fact.value].source, ScopeId(), binding);
+		}
 		const SemanticValueCategory category = target_kind ==
 			TypeKind::RvalueReference ? SemanticValueCategory::Xvalue :
 			SemanticValueCategory::Lvalue;
@@ -899,10 +1135,8 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	{
 		if (bool_id(target))
 		{
-			const ConversionChoice choice = conversion_for(source,
-				operand.category, target,
-				semantic_facts_[operand.fact.value].source,
-				operand.integer_zero);
+			const ConversionChoice choice = conversion_for(operand, target,
+				semantic_facts_[operand.fact.value].source);
 			valid = choice.valid;
 			kind = choice.kind;
 		}
@@ -923,10 +1157,8 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	}
 	else if (floating_id(target) || pointer_id(target))
 	{
-		const ConversionChoice choice = conversion_for(source,
-			operand.category, target,
-			semantic_facts_[operand.fact.value].source,
-			operand.integer_zero);
+		const ConversionChoice choice = conversion_for(operand, target,
+			semantic_facts_[operand.fact.value].source);
 		valid = choice.valid;
 		kind = choice.kind;
 	}

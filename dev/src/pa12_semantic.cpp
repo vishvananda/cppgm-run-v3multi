@@ -841,181 +841,70 @@ TypeId PA11SemanticModel::callable_function_type(TypeId type) const
 	type = strip_cv_type(type);
 	return type_kind(type) == TypeKind::Function ? type : TypeId();
 }
-ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
-	SemanticValueCategory category, TypeId target,
-	const PA10AstNode* source_node, bool source_integer_zero, ScopeId access_scope) const
+ConversionChoice PA11SemanticModel::conversion_for(const ExprInfo& expression,
+	TypeId target, const PA10AstNode* source_node, ScopeId access_scope) const
 {
-	if (!source.valid() || !target.valid())
-		return ConversionChoice();
-	const TypeKind target_kind = type_kind(target);
-	if (target_kind == TypeKind::LvalueReference ||
-		target_kind == TypeKind::RvalueReference)
-	{
-		const TypeId target_referred = types_[target.value].child;
-		const TypeId source_value = expression_object_type(source);
-		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
-		const auto reference_object_convertible =
-			[this, access_scope](TypeId actual, TypeId required) -> bool
-		{
-			if (qualification_convertible(actual, required))
-				return true;
-			const ScopeId required_scope = class_scope_for_type(required);
-			return required_scope.valid() && access_scope.valid() && member_object_convertible(actual, required, required_scope, NULL, access_scope);
-		};
-		if (target_kind == TypeKind::LvalueReference && source_lvalue)
-		{
-			if (reference_object_convertible(source_value, target_referred))
-				return ConversionChoice(true,
-					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
-						0 : 1,
-					ConversionKind::ReferenceBinding);
-		}
-		if (target_kind == TypeKind::RvalueReference && !source_lvalue)
-		{
-			if (reference_object_convertible(source_value, target_referred))
-				return ConversionChoice(true,
-					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
-						0 : 1,
-					ConversionKind::ReferenceBinding);
-		}
-		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
-			type_kind(target_referred) == TypeKind::Cv &&
-			reference_object_convertible(source_value, target_referred))
-			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
-		if (type_kind(target_referred) == TypeKind::Cv)
-		{
-			const ConversionChoice temporary = conversion_for(source, category, target_referred, source_node, source_integer_zero, access_scope);
-			const bool same_lvalue_value = source_lvalue &&
-				temporary.kind == ConversionKind::LvalueToRvalue &&
-				temporary.rank == 0;
-			if (temporary.valid &&
-				(target_kind != TypeKind::RvalueReference || !same_lvalue_value))
-				return ConversionChoice(true,
-					temporary.rank + (target_kind == TypeKind::LvalueReference ? 1 : 0),
-					ConversionKind::ReferenceBinding);
-		}
-		return ConversionChoice();
-	}
-	const TypeId by_value_source = strip_cv_type(expression_object_type(source));
-	const TypeId by_value_target = strip_cv_type(expression_object_type(target));
-	const bool null_integer = source_integer_zero || (source_node != NULL && integer_zero(*source_node));
-	if (by_value_source == by_value_target)
-	{
-		return ConversionChoice(true, 0,
-			category == SemanticValueCategory::Lvalue ?
-			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
-	}
-	// A target enum accepts only its own named enum identity.
-	const NamedRecordId target_record = named_record_for_type(by_value_target);
-	if (target_record.valid() && target_record.value < named_.size() &&
-		named_[target_record.value].kind == NamedKind::Enum)
-	{
-		const NamedRecordId source_record =
-			named_record_for_type(by_value_source);
-		if (source_record != target_record)
-			return ConversionChoice();
-	}
-	// Rank unscoped-enum promotion from its typed PA11 representation.
-	if (integral_id(by_value_source) && enumeration_id(by_value_source))
-	{
-		const TypeId promoted = promote_integral_type(by_value_source);
-		FundamentalType target_fundamental;
-		if (fundamental_of(by_value_target, &target_fundamental) &&
-			integral_type(target_fundamental))
-		{
-			const unsigned int source_rank = integral_rank(promoted);
-			const unsigned int target_rank = integral_rank(by_value_target);
-			return ConversionChoice(true,
-				by_value_target == promoted ? 1 :
-				2 + (target_rank > source_rank ? target_rank - source_rank : 0),
-				ConversionKind::Integral);
-		}
-	}
-	if (type_kind(by_value_source) == TypeKind::Array &&
-		type_kind(by_value_target) == TypeKind::Pointer)
-	{
-		const TypeId element = types_[by_value_source.value].child;
-		const TypeId target_element = types_[by_value_target.value].child;
-		if (qualification_convertible(element, target_element))
-			return ConversionChoice(true, 1, ConversionKind::ArrayToPointer);
-	}
-	if (type_kind(by_value_source) == TypeKind::Function &&
-		type_kind(by_value_target) == TypeKind::Pointer &&
-		qualification_convertible(by_value_source,
-			types_[by_value_target.value].child))
-		return ConversionChoice(true, 1, ConversionKind::FunctionToPointer);
-	FundamentalType target_fundamental;
-	if (null_integer &&
-		fundamental_of(by_value_target, &target_fundamental) &&
-		target_fundamental == FundamentalType::NullptrT)
-		return ConversionChoice(true, 2, ConversionKind::NullIntegerToNullptr);
-	FundamentalType source_fundamental;
-	if (fundamental_of(by_value_source, &source_fundamental) &&
-		fundamental_of(by_value_target, &target_fundamental) &&
-		integral_type(source_fundamental) &&
-		integral_type(target_fundamental))
-	{
-		const unsigned int source_rank = integral_rank(promote_integral_type(by_value_source));
-		const unsigned int target_rank = integral_rank(by_value_target);
-		return ConversionChoice(true,
-			1 + (target_rank > source_rank ? target_rank - source_rank : 0),
-			ConversionKind::Integral);
-	}
-	if (integral_id(by_value_source) && integral_id(by_value_target))
-		return ConversionChoice(true, 1, ConversionKind::Integral);
-	if ((floating_id(by_value_source) && floating_id(by_value_target)) ||
-		(integral_id(by_value_source) && floating_id(by_value_target)) ||
-		(floating_id(by_value_source) && integral_id(by_value_target)))
-	{
-		const unsigned int source_rank = floating_rank(by_value_source);
-		const unsigned int target_rank = floating_rank(by_value_target);
-		return ConversionChoice(true,
-			1 + (target_rank > source_rank ? target_rank - source_rank : 0),
-			floating_id(by_value_target) ? ConversionKind::Floating :
-			ConversionKind::Integral);
-	}
-	if (type_kind(by_value_source) == TypeKind::Fundamental &&
-		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
-		pointer_id(by_value_target))
-		return ConversionChoice(true, 1, ConversionKind::NullptrToPointer);
-	if (type_kind(by_value_source) == TypeKind::Fundamental &&
-		types_[by_value_source.value].fundamental == FundamentalType::NullptrT &&
-		bool_id(by_value_target))
-		return ConversionChoice(true, 1, ConversionKind::NullptrToBool);
-	if (null_integer &&
-		pointer_id(by_value_target))
-		return ConversionChoice(true, 1, ConversionKind::NullIntegerToPointer);
-	// Top-level cv belongs to the pointer object and is discarded by
-	// lvalue-to-rvalue conversion; pointee qualification remains typed.
-	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
-		types_[by_value_source.value].child ==
-			types_[by_value_target.value].child &&
-		types_[by_value_source.value].cv !=
-		types_[by_value_target.value].cv)
-		return ConversionChoice(true, 0,
-			category == SemanticValueCategory::Lvalue ?
-			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
-	if (pointer_id(by_value_source) && pointer_id(by_value_target) &&
-		pointer_convertible(by_value_source, by_value_target))
-	{
-		FundamentalType target_pointee;
-		const TypeId target_element = types_[strip_cv_type(by_value_target).value].child;
-		const bool to_void = fundamental_of(target_element, &target_pointee) &&
-			target_pointee == FundamentalType::Void;
-		return ConversionChoice(true, to_void ? 2 : 1,
-			to_void ? ConversionKind::PointerToVoid :
-			ConversionKind::PointerQualification);
-	}
-	if (bool_id(by_value_target) && pointer_id(by_value_source))
-		return ConversionChoice(true, 3, ConversionKind::PointerToBool);
-	return ConversionChoice();
+	const BitFieldFact* bit_field = bit_field_fact_for_expression(expression);
+	return conversion_for(expression.type, expression.category, target,
+		source_node, expression.integer_zero, access_scope,
+		bit_field == NULL ? TypeId() : bit_field->operation_type,
+		bit_field == NULL ? BindingId() : bit_field->binding);
+}
+ExprInfo PA11SemanticModel::make_bit_field_reference_temporary(
+	const ExprInfo& expression, TypeId target, const PA10AstNode* source_node,
+	ScopeId access_scope, const ConversionChoice& binding)
+{
+	if (!binding.valid || !expression.fact.valid() ||
+		expression.fact.value >= semantic_facts_.size() || !target.valid() ||
+		(target.value >= types_.size()) ||
+		(type_kind(target) != TypeKind::LvalueReference &&
+			type_kind(target) != TypeKind::RvalueReference))
+		throw std::runtime_error("PA12 bit-field reference temporary is invalid");
+	const BitFieldFact* bit_field = bit_field_fact_for_expression(expression);
+	if (bit_field == NULL)
+		throw std::runtime_error("PA12 bit-field reference owner is missing");
+	const TypeId referred = types_[target.value].child;
+	const ConversionChoice value = conversion_for(expression, referred,
+		source_node, access_scope);
+	const PA10AstNode* cast_source = source_node != NULL ? source_node :
+		semantic_facts_[expression.fact.value].source;
+	if (!value.valid || cast_source == NULL)
+		throw std::runtime_error("PA12 bit-field reference value is invalid");
+	const SemanticValueCategory category = type_kind(target) ==
+		TypeKind::RvalueReference ? SemanticValueCategory::Xvalue :
+		SemanticValueCategory::Lvalue;
+	const SemanticFactId cast = make_expression_fact(
+		SemanticFactKind::CastExpression, target, category, *cast_source,
+		std::vector<SemanticFactId>(1, expression.fact));
+	set_fact_conversion(cast, add_conversion(expression.type, referred,
+		value.kind, value.rank));
+	set_fact_conversion(cast, add_conversion(referred, target,
+		binding.kind, binding.rank));
+	return ExprInfo(cast, target, category, false);
 }
 ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	TypeId target, const PA10AstNode* source_node, ScopeId access_scope)
 {
-	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source_node, expression.integer_zero, access_scope);
+	const ConversionChoice choice = conversion_for(expression, target, source_node,
+		access_scope);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid conversion");
+	const TypeKind target_kind = type_kind(target);
+	if (expression.type == target &&
+		((target_kind == TypeKind::LvalueReference &&
+			expression.category == SemanticValueCategory::Lvalue) ||
+		 (target_kind == TypeKind::RvalueReference &&
+			expression.category == SemanticValueCategory::Xvalue)))
+	{
+		// An expression-owned typed temporary already carries its complete
+		// conversion range.  Ordinary exact reference roots still need the
+		// established ReferenceBinding fact so PA15 preserves the alias address.
+		const bool has_owned_conversions = expression.fact.valid() &&
+			expression.fact.value < semantic_facts_.size() &&
+			semantic_facts_[expression.fact.value].conversion_count != 0;
+		if (has_owned_conversions)
+			return expression;
+	}
 	bool logical_value = false;
 	if (expression.fact.valid() && expression.fact.value < semantic_facts_.size())
 	{
@@ -1036,27 +925,31 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	{
 		const TypeId referred = types_[target.value].child;
 		const TypeId source_value = expression_object_type(expression.type);
+		const BitFieldFact* bit_field = bit_field_fact_for_expression(expression);
 		if (type_kind(referred) == TypeKind::Cv &&
-			!qualification_convertible(source_value, referred))
+			(bit_field != NULL || !qualification_convertible(source_value, referred)))
 		{
-				const ConversionChoice temporary = conversion_for(expression.type, expression.category, referred, source_node, expression.integer_zero, access_scope);
+			if (bit_field != NULL)
+				return make_bit_field_reference_temporary(expression, target,
+					source_node, access_scope, choice);
+			const ConversionChoice temporary = conversion_for(expression, referred,
+				source_node, access_scope);
 			const PA10AstNode* cast_source = source_node != NULL ? source_node :
 				semantic_facts_[expression.fact.value].source;
-			if (temporary.valid && cast_source != NULL)
-			{
-				const SemanticFactId cast = make_expression_fact(
-					SemanticFactKind::CastExpression, referred,
-					SemanticValueCategory::Prvalue, *cast_source,
-					std::vector<SemanticFactId>(1, expression.fact));
-				set_fact_conversion(cast, add_conversion(expression.type, referred,
-					temporary.kind, temporary.rank));
-				set_fact_conversion(cast, add_conversion(referred, target,
-					choice.kind, choice.rank));
-				return ExprInfo(cast, referred, SemanticValueCategory::Prvalue,
-					false);
+			if (!temporary.valid || cast_source == NULL)
+				throw std::runtime_error("PA12 reference temporary conversion is invalid");
+			const SemanticFactId cast = make_expression_fact(
+				SemanticFactKind::CastExpression, referred,
+				SemanticValueCategory::Prvalue, *cast_source,
+				std::vector<SemanticFactId>(1, expression.fact));
+			set_fact_conversion(cast, add_conversion(expression.type, referred,
+				temporary.kind, temporary.rank));
+			set_fact_conversion(cast, add_conversion(referred, target,
+				choice.kind, choice.rank));
+			return ExprInfo(cast, referred, SemanticValueCategory::Prvalue,
+				false);
 		}
 	}
-}
 	const ConversionFactId conversion = add_conversion(expression.type, target,
 		choice.kind, choice.rank);
 	set_fact_conversion(expression.fact, conversion);
@@ -1157,6 +1050,13 @@ TypeId PA11SemanticModel::common_integral_type(TypeId left, TypeId right) const
 	}
 	return left_rank > right_rank ? left : right;
 }
+TypeId PA11SemanticModel::integral_operation_type(
+	const ExprInfo& expression) const
+{
+	const BitFieldFact* bit_field = bit_field_fact_for_expression(expression);
+	return bit_field == NULL ? promote_integral_type(expression.type) :
+		bit_field->operation_type;
+}
 unsigned int PA11SemanticModel::floating_rank(TypeId type) const
 {
 	FundamentalType fundamental_type;
@@ -1190,7 +1090,7 @@ void PA11SemanticModel::record_builtin_conversion(const ExprInfo& expression,
 	const PA10AstNode* source = expression.fact.valid() &&
 		expression.fact.value < semantic_facts_.size() ?
 		semantic_facts_[expression.fact.value].source : NULL;
-	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source, expression.integer_zero);
+	const ConversionChoice choice = conversion_for(expression, target, source);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid built-in conversion");
 	// A cast owns its selected source-to-target conversion.  An exact-target
@@ -1402,9 +1302,18 @@ ExprInfo PA11SemanticModel::semantic_postfix_expression(const PA10AstNode& node,
 		(!integral_id(operand.type) && !floating_id(operand.type) &&
 			!pointer_id(operand.type)))
 		throw std::runtime_error("PA12 postfix requires modifiable lvalue");
+	if (node.token == SimpleTokenType::OP_DEC)
+	{
+		const BitFieldFact* bit_field = bit_field_fact_for_expression(operand);
+		FundamentalType storage_fundamental;
+		if (bit_field != NULL && fundamental_of(bit_field->storage_type,
+			&storage_fundamental) && storage_fundamental == FundamentalType::Bool)
+			throw std::runtime_error(
+				"PA12 decrement of a bool bit-field is not allowed");
+	}
 	const TypeId type = strip_top_cv_type(operand.type);
 	record_builtin_conversion(operand, integral_id(operand.type) ?
-		promote_integral_type(operand.type) : type);
+		integral_operation_type(operand) : type);
 	return ExprInfo(make_expression_fact(SemanticFactKind::PostfixExpression,
 		type, SemanticValueCategory::Prvalue, node,
 		std::vector<SemanticFactId>(1, operand.fact)), type,
@@ -1431,6 +1340,14 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	const bool right_pointer = pointer_id(right.type) || right_array;
 	const bool left_arithmetic = integral_id(left.type) || floating_id(left.type);
 	const bool right_arithmetic = integral_id(right.type) || floating_id(right.type);
+	const TypeId left_integral_operation = integral_id(left.type) ?
+		integral_operation_type(left) : left.type;
+	const TypeId right_integral_operation = integral_id(right.type) ?
+		integral_operation_type(right) : right.type;
+	const TypeId left_arithmetic_operation = integral_id(left.type) ?
+		left_integral_operation : left.type;
+	const TypeId right_arithmetic_operation = integral_id(right.type) ?
+		right_integral_operation : right.type;
 	const bool left_size_type = semantic_facts_[left.fact.value].kind ==
 		SemanticFactKind::SizeofExpression ||
 		semantic_facts_[left.fact.value].size_type_derived;
@@ -1475,7 +1392,7 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 			type = left_pointer_type;
 			operation_type = type;
 			record_builtin_conversion(left, left_pointer_type);
-			record_builtin_conversion(right, promote_integral_type(right.type));
+			record_builtin_conversion(right, right_integral_operation);
 		}
 		else if (node.token == SimpleTokenType::OP_PLUS &&
 			right_pointer && integral_id(left.type))
@@ -1483,7 +1400,7 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 			type = right_pointer_type;
 			operation_type = type;
 			record_builtin_conversion(right, right_pointer_type);
-			record_builtin_conversion(left, promote_integral_type(left.type));
+			record_builtin_conversion(left, left_integral_operation);
 		}
 		else if (left_pointer && right_pointer &&
 			node.token == SimpleTokenType::OP_MINUS)
@@ -1499,7 +1416,8 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 		}
 		else if (left_arithmetic && right_arithmetic)
 		{
-			type = common_arithmetic_type(left.type, right.type);
+			type = common_arithmetic_type(left_arithmetic_operation,
+				right_arithmetic_operation);
 			operation_type = type;
 			record_builtin_conversion(left, type);
 			record_builtin_conversion(right, type);
@@ -1511,7 +1429,8 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	case SimpleTokenType::OP_DIV:
 		if (left_arithmetic && right_arithmetic)
 		{
-			type = common_arithmetic_type(left.type, right.type);
+			type = common_arithmetic_type(left_arithmetic_operation,
+				right_arithmetic_operation);
 			operation_type = type;
 			record_builtin_conversion(left, type);
 			record_builtin_conversion(right, type);
@@ -1525,7 +1444,8 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	case SimpleTokenType::OP_AMP:
 		if (!integral_id(left.type) || !integral_id(right.type))
 			throw std::runtime_error("PA12 invalid integral operands");
-		type = common_integral_type(left.type, right.type);
+		type = common_integral_type(left_integral_operation,
+			right_integral_operation);
 		operation_type = type;
 		record_builtin_conversion(left, type);
 		record_builtin_conversion(right, type);
@@ -1535,8 +1455,8 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	{
 		if (!integral_id(left.type) || !integral_id(right.type))
 			throw std::runtime_error("PA12 invalid shift operands");
-		const TypeId promoted_left = promote_integral_type(left.type);
-		const TypeId promoted_right = promote_integral_type(right.type);
+		const TypeId promoted_left = left_integral_operation;
+		const TypeId promoted_right = right_integral_operation;
 		record_builtin_conversion(left, promoted_left);
 		record_builtin_conversion(right, promoted_right);
 		type = promoted_left;
@@ -1599,7 +1519,8 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 		}
 		else if (left_arithmetic && right_arithmetic)
 		{
-			type = common_arithmetic_type(left.type, right.type);
+			type = common_arithmetic_type(left_arithmetic_operation,
+				right_arithmetic_operation);
 			operation_type = type;
 			record_builtin_conversion(left, type);
 			record_builtin_conversion(right, type);
@@ -1646,6 +1567,10 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 	const ExprInfo right = node.token == SimpleTokenType::OP_ASS ?
 		semantic_expression_for_target(node.children[1], scope, target) :
 		semantic_expression(node.children[1], scope);
+	const TypeId left_operation = integral_id(target) ?
+		integral_operation_type(left) : target;
+	const TypeId right_operation = integral_id(right.type) ?
+		integral_operation_type(right) : right.type;
 	if (node.token == SimpleTokenType::OP_ASS)
 		apply_context_conversion(right, target, semantic_facts_[right.fact.value].source);
 	else
@@ -1678,7 +1603,7 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 			if (!integral_id(right.type))
 				throw std::runtime_error("PA12 pointer compound assignment requires integral");
 			record_builtin_conversion(left, target);
-			record_builtin_conversion(right, promote_integral_type(right.type));
+			record_builtin_conversion(right, right_operation);
 		}
 		else
 		{
@@ -1706,15 +1631,15 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 				(node.token == SimpleTokenType::OP_LSHIFTASS ||
 					node.token == SimpleTokenType::OP_RSHIFTASS))
 			{
-				record_builtin_conversion(left, promote_integral_type(target));
+				record_builtin_conversion(left, left_operation);
 				record_builtin_conversion(right,
-					promote_integral_type(right.type));
+					right_operation);
 			}
 			else
 			{
 				const TypeId operation_type = integral_operator ?
-					common_integral_type(target, right.type) :
-					common_arithmetic_type(target, right.type);
+					common_integral_type(left_operation, right_operation) :
+					common_arithmetic_type(left_operation, right_operation);
 				record_builtin_conversion(left, operation_type);
 				record_builtin_conversion(right, operation_type);
 			}
@@ -1738,6 +1663,10 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 	record_builtin_conversion(condition, fundamental(FundamentalType::Bool));
 	const ExprInfo when_true = semantic_expression(node.children[1], scope);
 	const ExprInfo when_false = semantic_expression(node.children[2], scope);
+	const TypeId true_arithmetic_operation = integral_id(when_true.type) ?
+		integral_operation_type(when_true) : when_true.type;
+	const TypeId false_arithmetic_operation = integral_id(when_false.type) ?
+		integral_operation_type(when_false) : when_false.type;
 	TypeId type;
 	SemanticValueCategory category = SemanticValueCategory::Prvalue;
 	const TypeId true_object = expression_object_type(when_true.type);
@@ -1775,7 +1704,8 @@ ExprInfo PA11SemanticModel::semantic_conditional_expression(const PA10AstNode& n
 	else if ((integral_id(when_true.type) || floating_id(when_true.type)) &&
 		(integral_id(when_false.type) || floating_id(when_false.type)))
 	{
-		type = common_arithmetic_type(when_true.type, when_false.type);
+		type = common_arithmetic_type(true_arithmetic_operation,
+			false_arithmetic_operation);
 		record_builtin_conversion(when_true, type);
 		record_builtin_conversion(when_false, type);
 	}
@@ -2022,7 +1952,7 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 			throw std::runtime_error("PA12 invalid subscript operands");
 		record_builtin_conversion(sequence_expression, sequence);
 		record_builtin_conversion(index_expression,
-			promote_integral_type(index_expression.type));
+			integral_operation_type(index_expression));
 		// The array-to-pointer conversion above gives PA12 enough typed
 		// context to publish a literal address fact.  PA15 can then consume
 		// the decoded payload through the normal address path without looking
@@ -2109,12 +2039,12 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		}
 		const ExprInfo expression = semantic_expression_for_target(
 			*clause, declaration->scope, value.type);
-		apply_context_conversion(expression, value.type,
+		const ExprInfo converted = apply_context_conversion(expression, value.type,
 			semantic_facts_[expression.fact.value].source);
 		if (declaration->is_constexpr)
-			retarget_constexpr_literal(expression.fact, value.type);
+			retarget_constexpr_literal(converted.fact, value.type);
 		set_semantic_children(variable,
-			std::vector<SemanticFactId>(1, expression.fact));
+			std::vector<SemanticFactId>(1, converted.fact));
 		declaration->semantic_begin = declaration_semantic_ids_.size();
 		declaration->semantic_count = 1;
 		declaration_semantic_ids_.push_back(variable);
@@ -2226,20 +2156,19 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		SemanticFactId initializer_fact;
 		if (special_function_initializer)
 		{
-			// Default/delete are typed PA11 properties, not PA12 expressions.
 		}
 		else if (!constructor_initializer && direct_operand_initializer)
 		{
 			const ExprInfo expression = semantic_expression_for_target(
 				*direct_operand, declaration->scope, value.type);
-			apply_context_conversion(expression, value.type,
+			const ExprInfo converted = apply_context_conversion(expression, value.type,
 				semantic_facts_[expression.fact.value].source);
-			if (expression.fact.valid() &&
-				semantic_facts_[expression.fact.value].literal_element_count != 0)
-				record_constant_address(expression.fact, declaration->scope);
+			if (converted.fact.valid() &&
+				semantic_facts_[converted.fact.value].literal_element_count != 0)
+				record_constant_address(converted.fact, declaration->scope);
 			set_semantic_children(variable,
-				std::vector<SemanticFactId>(1, expression.fact));
-			initializer_fact = expression.fact;
+				std::vector<SemanticFactId>(1, converted.fact));
+			initializer_fact = converted.fact;
 		}
 		else if (!constructor_initializer && init.children.size() > 1)
 		{
@@ -2259,17 +2188,18 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 					declaration->scope, value.type) :
 				semantic_expression_for_target(*expression_clause,
 					declaration->scope, value.type);
+			ExprInfo converted = expression;
 			if (expression_clause->kind != PA10NodeKind::BracedInitList)
-				apply_context_conversion(expression, value.type,
+				converted = apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
-			if (expression.fact.valid() &&
-				semantic_facts_[expression.fact.value].literal_element_count != 0)
-				record_constant_address(expression.fact, declaration->scope);
+			if (converted.fact.valid() &&
+				semantic_facts_[converted.fact.value].literal_element_count != 0)
+				record_constant_address(converted.fact, declaration->scope);
 			if (declaration->is_constexpr)
-				retarget_constexpr_literal(expression.fact, value.type);
+				retarget_constexpr_literal(converted.fact, value.type);
 			set_semantic_children(variable,
-				std::vector<SemanticFactId>(1, expression.fact));
-			initializer_fact = expression.fact;
+				std::vector<SemanticFactId>(1, converted.fact));
+			initializer_fact = converted.fact;
 		}
 		else if (anonymous_union_object || legacy_empty_default_object ||
 			(default_object && constructor_requires_runtime(record)))
@@ -2317,7 +2247,9 @@ FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(
 		const TypeKey& function = types_[candidate.type.value];
 		if (function.parameters.size() != 1)
 			continue;
-		const ConversionChoice choice = conversion_for(argument.type, argument.category, function.parameters.front(), semantic_facts_[argument.fact.value].source, argument.integer_zero);
+		const ConversionChoice choice = conversion_for(argument,
+			function.parameters.front(),
+			semantic_facts_[argument.fact.value].source);
 		if (!choice.valid)
 			continue;
 		if (!have_selected || choice.rank < selected_conversion.rank)
@@ -2435,8 +2367,9 @@ SemanticFactId PA11SemanticModel::semantic_condition(const PA10AstNode& node,
 				SemanticValueCategory::Lvalue, false);
 			const TypeId condition_target = switch_condition ?
 				switch_condition_type(type) : fundamental(FundamentalType::Bool);
-			apply_context_conversion(condition, condition_target,
-				semantic_facts_[variable.value].source);
+			const ExprInfo converted = apply_context_conversion(condition,
+				condition_target, semantic_facts_[variable.value].source);
+			(void)converted;
 			children.push_back(make_expression_fact(
 				SemanticFactKind::ConditionDeclaration, TypeId(),
 				SemanticValueCategory::Prvalue, child,
@@ -2450,9 +2383,9 @@ SemanticFactId PA11SemanticModel::semantic_condition(const PA10AstNode& node,
 				throw std::runtime_error("PA12 switch condition is not integral");
 			const TypeId condition_target = switch_condition ?
 				switch_condition_type(type) : fundamental(FundamentalType::Bool);
-			apply_context_conversion(expression, condition_target,
-				semantic_facts_[expression.fact.value].source);
-			children.push_back(expression.fact);
+			const ExprInfo converted = apply_context_conversion(expression,
+				condition_target, semantic_facts_[expression.fact.value].source);
+			children.push_back(converted.fact);
 		}
 	}
 	return make_expression_fact(SemanticFactKind::Condition, TypeId(),

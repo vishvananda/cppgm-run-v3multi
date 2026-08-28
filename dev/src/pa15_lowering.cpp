@@ -2205,6 +2205,8 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	}
 	if (conversion.kind == ConversionKind::ReferenceBinding)
 	{
+		if (result->bit_field_lvalue)
+			return apply_bit_field_reference_conversion(result, conversion, target);
 		const TypeId referred_type = model_.strip_cv_type(
 			model_.expression_object_type(conversion.target));
 		const bool reference_to_function = referred_type.valid() &&
@@ -2624,6 +2626,16 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 			throw std::runtime_error("PA15 invalid increment fact");
 		const LoweredValue left = lower_lvalue(operands.front());
 		LowType target_type = left.type;
+		if (left.bit_field_lvalue && fact_token(id) == SimpleTokenType::OP_DEC)
+		{
+			const BitFieldFact* bit_field = model_.bit_field_fact(
+				left.bit_field_binding);
+			FundamentalType storage_fundamental;
+			if (bit_field != NULL && model_.fundamental_of(bit_field->storage_type,
+				&storage_fundamental) && storage_fundamental == FundamentalType::Bool)
+				throw std::runtime_error(
+					"PA15 decrement of a bool bit-field is not allowed");
+		}
 		LoweredValue old;
 		if (left.bit_field_lvalue)
 			old = emit_bit_field_load(left, left.bit_field_binding, target_type);

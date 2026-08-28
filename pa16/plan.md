@@ -3,115 +3,56 @@
 ## Stage Design
 
 This increment implements the ordinary PA16 bit-field boundary as one typed
-pipeline. PA10 already preserves `BitFieldDeclaration` and
-`BitFieldDeclarator`; PA11 now validates the integral/enum declaration and
-constant width, creates one canonical `BitFieldFact` per named field, and
-records ordinary and unnamed bit-field events in a vector owned by each
-`NamedRecordId`. The fact carries owner scope/record, binding, declared and
-effective storage types, width, value width, unit size/offset, bit offset,
-masks, and effective signedness. Layout consumes that owner-stable stream in
-declaration order, packs adjacent fields into addressable units, advances on
-unnamed zero-width fields, and leaves the existing named anonymous aggregate
-owner paths intact.
+pipeline. PA10 preserves `BitFieldDeclaration` and `BitFieldDeclarator`; PA11
+validates the integral/enum declaration and constant width, creates one
+canonical `BitFieldFact` per named field, and records ordinary and unnamed
+events in a vector owned by each `NamedRecordId`. The fact carries owner and
+binding identity, declared/storage/operation types, declared/value widths,
+physical unit and allocation span, offsets, masks, and effective signedness.
+The operation type follows the C++11 converted-bit-field promotion boundary:
+bool, int/signed int/unsigned int, and lower-rank fields select the typed int
+or unsigned-int result; narrow long/long long retain their declared type.
+The declaration/extra-padding model follows C++11
+[class.bit](https://timsong-cpp.github.io/cppwp/n3337/class.bit) and the
+promotion model follows
+[conv.prom](https://timsong-cpp.github.io/cppwp/n3337/conv.prom).
 
-PA12 keeps the selected bit-field binding on member glvalues through
-member access, assignment, and built-in prefix/postfix increment; built-in
-address-of rejects the projection. Aggregate and constructor initialization
-uses the same typed binding and layout facts. PA15 projects the storage unit
-for reads and masked updates, including sign extension for explicitly signed
-integral and signed-underlying enum fields and zero extension for unsigned
-underlying enums. No lowering decision recovers a width, owner, mask, or
-signedness from rendered text.
+Layout consumes that owner-stable stream in declaration order, packs adjacent
+compatible fields, flushes around ordinary/zero-width boundaries, and gives
+oversized declarations a checked multi-unit allocation whose excess is
+padding. PA12 owns member glvalues, semantic conversion/operator validity,
+const-reference temporaries, address-of ordering, assignment/inc/dec, and
+aggregate/constructor facts. PA15 projects only the <=64-bit physical unit for
+masked reads and updates, with typed sign/zero extension and fresh
+root-scoped initialization contexts. No lowering decision recovers width,
+owner, mask, signedness, or promotion from rendered text.
 
-The per-record event vector and the binding-owner index make nested class
-definitions deterministic and prevent an inner declaration from entering an
-outer record's layout stream. Ordinary members share one append predicate for
-both event recording and alignment metadata; layout also checks the filtered
-ordinary binding order for omissions or duplicates. This checkpoint does not
-add class-by-value transfer, copy/move, virtual/multiple inheritance, or
-general conversion semantics, and it preserves the earlier operator-boundary
-work recorded in the ledger below.
+Nested records retain their own event owner, unions use the checked allocation
+span, and ordinary members share the same owner-checked append/alignment path.
+This checkpoint does not add class-by-value transfer, copy/move, virtual or
+multiple inheritance, templates, general conversions, or unrelated PA16
+semantics.
 
 ## Failure Map
 
-The original implementation baseline, before the `23a26df5` operator landing,
-was `93/243` passed and `150` failed.  The audit turn-start baseline after the
-landed implementation and `2d93a5e9` tightening was `122/243` passed and
-`121` failed, with all `243/243` identities covered; its authoritative log is
+The authoritative turn-start baseline after `da4252b6` is `131/243` passed,
+`112` failed, and `243/243` identities covered in
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The final audit run is `127/243` passed, `116` failed, and `243/243` covered;
-it exits `2` because PA16 still has failures.  The durable final log and exact
-identity comparison are:
+The final `make test-pa16` has the same `131/243`, `112`, and `243/243`
+state.  The durable final log and exact normalized comparison are:
 
 ```text
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-test-pa16.log
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-identity-compare.log
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-test-pa16.log
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-identity-comparison.log
 ```
 
-The comparison has five baseline-only repaired identities:
-
-```text
-pa16/tests/general/200-inherited-member-overload-set.t
-pa16/tests/general/300-basic-operator-overloads.t
-pa16/tests/general/300-enum-operator-adl-selects-matching-overload.t
-pa16/tests/general/300-hidden-friend-operator-nullptr-compare.t
-pa16/tests/general/300-stream-shift-selection-chain.t
-```
-
-Final-only is `0`; the failure count is therefore no greater than the audit
-turn-start `121`, and coverage remains exactly `243`.  The final direct
-focused matrix is `29/32` in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-focused-final.log`:
-the original 29-row operator matrix is `28/29`, and the three mismatches in
-the extended matrix are the pre-existing `nullptr_t`, private-base static-cast
-member, and inherited-protected-field friend controls.  Course 411 passes
-with the exact lexical-owner/access-friend and public/private/protected
-further-derived cases.  The semantic rows cover member/nonmember ranking,
-enum identity/ADL and nested friend lookup, friend visibility/redeclaration,
-derived/base references, reference-result chaining, fallback, logical
-operators, and shift/string chains.
-
-The bit-field checkpoint started from the required `127/243` passed,
-`116` failed, and `243/243` covered PA16 baseline. The checked-in focused
-matrix was rerun after the final build with:
-
-```text
-make -C pa16 check TEST='tests/general/300-anonymous-bitfield-helper-member.t tests/general/300-bit-field-layout-sizeof.t tests/general/300-zero-width-bit-field-layout.t tests/general/400-bit-field-constructor-member-init.t tests/general/400-bit-field-member-access-bad.t tests/general/400-bit-field-prefix-postfix-increment.t tests/general/400-bit-field-sparse-member-init.t tests/general/400-bitfield-aggregate-init.t tests/general/400-signed-bit-field-read.t tests/general/400-signed-enum-bit-field-read.t tests/general/400-address-of-bit-field-bad.t'
-```
-
-It is `5/11` exact passes. These pass: anonymous helper/layout, ordinary
-`sizeof`, zero-width layout, sparse member initialization, and the
-address-of rejection control. These six remain expected LowIR mismatches:
-`400-bit-field-constructor-member-init.t`,
-`400-bit-field-member-access-bad.t`,
-`400-bit-field-prefix-postfix-increment.t`,
-`400-bitfield-aggregate-init.t`, `400-signed-bit-field-read.t`, and
-`400-signed-enum-bit-field-read.t`. The last two retain required signed
-integral and signed-underlying-enum sign extension; their checked-in LowIR
-references are stale and were not edited. The four other mismatches are
-normal LowIR-shape differences with successful typed compilation; no
-test-identity branch was added.
-
-The full PA16 run is `131/243` passed and `112` failed, with all `243`
-original identities still exercised. The final failure list and comparison to
-the authoritative turn-start log are in:
-
-```text
-/tmp/pa16-bitfield-perf-20260828-v4/full-test-pa16-final.log
-/tmp/pa16-bitfield-perf-20260828-v4/final-failures.txt
-/tmp/pa16-bitfield-perf-20260828-v4/identity-comparison.txt
-```
-
-The exact comparison is `116 -> 112` failures, four baseline-only repaired
-identities (`300-anonymous-bitfield-helper-member.t`,
-`300-bit-field-layout-sizeof.t`, `300-zero-width-bit-field-layout.t`, and
-`400-bit-field-sparse-member-init.t`), zero final-only regressions, and no
-lost original coverage. The turn-start authoritative source is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The bounded public course probe
-`cppgm.tests/course/pa16/412-typed-bit-field-initialization-root-regression.sh`
-also passes; it covers two same-record locals, nested subobjects, and array
-elements without asserting private LowIR shape.
+The comparison is baseline failures `112`, final failures `112`,
+baseline-only `0`, final-only `0`, and test inventory `243`; there is no
+new failure identity and no reduced coverage.  The focused bit-field command
+is the documented 11-test matrix and is `5/11`, with six known LowIR
+presentation mismatches.  Course 412 and the direct
+`200-const-cast-pointer-reference-alias.t` control pass.  The full failure
+map remains intentionally incomplete and is not broadened by this checkpoint.
 
 ## Active Checkpoint
 
@@ -122,28 +63,32 @@ bounded public course probe:
 - `dev/src/pa11_semantic_core.cpp`
 - `dev/src/pa11_record_layout.cpp`
 - `dev/src/pa12_semantic_facts.cpp`
+- `dev/src/pa12_semantic.cpp`
+- `dev/src/pa12_semantic_calls.cpp`
+- `dev/src/pa12_semantic_construction.cpp`
+- `dev/src/pa12_semantic_member.cpp`
+- `dev/src/pa12_semantic_resolution.cpp`
 - `dev/src/pa15_lowering.h`
 - `dev/src/pa15_lowering.cpp`
-- `dev/src/pa15_lowering_construction.cpp`
 - `dev/src/pa15_lowering_flow.cpp`
 - `dev/src/pa15_lowering_member.cpp`
 - `cppgm.tests/course/pa16/412-typed-bit-field-initialization-root-regression.sh`
 
-The typed flow is PA10 bit-field AST -> PA11 declaration validation and one
-`BitFieldFact` per named binding plus one owner-stable declaration vector per
-record -> the shared PA11 layout service -> PA12 member/glvalue provenance,
-address-of rejection, aggregate/constructor facts, assignment, and built-in
-inc/dec -> PA15 masked unit load/store and effective-underlying-type sign or
-zero extension. `BitFieldInitializationContext` is a compact typed current
-unit carried only through one destination/root initialization sequence;
-nested aggregates and array elements receive fresh contexts, so distinct
-locals, subobjects, constructor targets, globals, and repeated sites cannot
-alias state. Named nested aggregates retain their inner record owner, and the
-existing unsupported class-anonymous-union injection boundary is not silently
-widened. Ordinary fields and bit-fields are appended once through their
-owner-checked event path; layout validates the filtered binding order before
-consuming it. No handout test, fixture, reference, comparator, or coverage rule
-is changed.
+The typed flow is PA10 AST -> PA11 canonical declaration facts and
+owner-stable events -> PA11 layout -> PA12 typed member/glvalue provenance,
+promotion and conversion selection, semantic-owner rejection, overload-before-
+address-of, const-reference temporary, assignment/inc/dec, and
+aggregate/constructor facts -> PA15 physical-unit masks, extension, RMW, and
+root-scoped materialization. `BitFieldInitializationContext` is carried only
+through one destination/root sequence; nested aggregates and array elements
+get fresh contexts, so distinct locals, subobjects, globals, and repeated
+sites cannot alias state. Named nested aggregates retain their inner owner, and
+the existing unsupported class-anonymous-union injection boundary is not
+silently widened. Ordinary fields and bit-fields are appended once through
+their owner-checked event path; layout validates filtered order before use. The
+exact-reference alias repair preserves ordinary `ReferenceBinding` roots while
+leaving expression-owned bit-field temporary facts intact. No handout test,
+fixture, reference, comparator, or coverage rule is changed.
 
 ## Performance Evidence
 
@@ -153,33 +98,34 @@ Representative immutable compiler copies and five interleaved O0 runs per
 case are recorded outside the repository:
 
 ```text
-/tmp/pa16-bitfield-perf-20260828-v4/summary.tsv
-/tmp/pa16-bitfield-perf-20260828-v4/hashes.tsv
-/tmp/pa16-bitfield-perf-20260828-v4/compiler-hashes.txt
-/tmp/pa16-bitfield-perf-20260828-v4/runs/
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/manifest.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/timing.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/medians.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/structure.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/determinism.tsv
 ```
 
 Both compiler copies have SHA-256
-`71fe9e1645ccf43efc41bc77515ef0709d9b7d003d98f013c590a8048d18bad8`.
-Small (2 declarations, 2 initialization events, 1 object) has 18 LowIR
-instructions, 0.011764s median wall time, and 5,388 KiB median RSS. Large
-(256 declarations, 512 events, 2 objects) has 3,562 instructions, 0.034294s,
-and 13,120 KiB. Nested (2 declarations, 20 events, 1 outer object with
-nested/array subobjects) has 146 instructions, 0.012777s, and 5,628 KiB.
-Each case has one deterministic LowIR hash across all five runs; structural
-counts are in `summary.tsv`. These are representative whole-compiler
-measurements, not an isolated phase or timeout claim.
+`c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02` and are
+mode `0555`. Small (268 lines, 2 target declarations, 128 target
+expressions) has 131 LowIR functions/256 calls, `0.01s` median wall time, and
+9,860 KiB median RSS. Large (1046 lines, 12 declarations, 512 expressions)
+has 525 functions/1024 calls, `0.07s`, and 22,200 KiB. Same-name-noise
+(1804 lines, 2 target declarations, 256 unrelated hidden friends, 128 target
+expressions) has 387 functions/256 calls, `0.05s`, and 17,960 KiB. Each
+variant/case has one output hash across all five runs and final/immutable
+hashes match. These are representative whole-compiler measurements, not an
+isolated phase or timeout claim.
 
 ## Next Checkpoint
 
-The PA16 bit-field increment is complete, but work remains in PA16. Freeze the
-`131/243` passed, `112`-failure, `243/243` coverage map and the six focused
-LowIR mismatches documented above; the signed-reference mismatch is
-intentionally retained until its fixture contract is refreshed. Classify and
-implement the next coherent PA16 boundary against this map. Do not begin PA17
-until `make test-report-through-pa16` is clean; the address-of rejection,
-nested/anonymous owner boundaries, and `1167/1167` through-PA15 result remain
-preserved.
+The PA16 bit-field checkpoint is complete, but work remains in PA16. Freeze the
+`131/243` passed, `112`-failure, `243/243` coverage map and six focused LowIR
+mismatches. Classify the unchanged residual identities by ownership before
+opening another surface; preserve this bit-field path, its exact-reference
+alias behavior, and its bounded exclusions. Do not begin PA17 until
+`make test-report-through-pa16` is clean; the `1167/1167` through-PA15 result
+remains preserved.
 
 ## Checkpoint ledger
 
@@ -191,4 +137,4 @@ preserved.
 | Follow-up bool/index audit | Expression-owned typed bool provenance, composite hidden-friend key, corrected same-name performance evidence; all 29 removed identities retained. |
 | File audit and diff check | File audit passed with 5 pre-existing warnings; log `pa16-operator-followup-file-audit.log`; final `git diff --check` is recorded in `pa16-operator-followup-diff-check.log`. |
 | `2d93a5e9` ordinary non-template overloaded-operator checkpoint audit | Completed bounded repair and audit of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the corrective follow-up separates exact friend-definition lexical ownership from access friendship and records typed public/private/protected base-reference accessibility, including a bounded further-derived protected proof. Enum identity/ranking, narrow constructor-backed reference binding, reference/address facts, and typed bool boundaries remain covered. Final PA16 is `127/243` with `116` failures and `243/243` coverage; comparison to the `122/243` audit baseline has five baseline-only repairs and zero final-only failures. Through-PA15 is `1167/1167`; focused status is `29/32` with three documented pre-existing holdouts; course 411 passes; final state-matched performance is `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. |
-| Ordinary typed bit-field boundary | Complete: owner-stable per-record declaration events, canonical typed facts, packed/zero-width layout, PA12 provenance/address-of rejection, aggregate/constructor initialization, masked PA15 reads/writes, effective-underlying signedness, root-scoped initialization context, and the public distinct-object probe. Full PA16 is `131/243` passed with `112` failures, four baseline failures repaired, zero final-only regressions, and `243/243` original identities covered; focused matrix is `5/11` with six documented LowIR mismatches. Through-PA15 is `1167/1167`; file audit and diff check pass. |
+| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Complete: PA10--PA15 typed operation/promotion facts, semantic-owner validity checks, const-reference temporaries, overload-before-address-of, owner-stable mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned projection, and isolated initialization roots. Final PA16 is `131/243` passed with `112` failures and `243/243` identities; exact comparison to the turn-start map is baseline-only `0` and final-only `0`. Course 412 and the direct alias control pass; focused matrix is `5/11` with six documented LowIR mismatches; through-PA15 is `1167/1167`; file audit and diff-check pass. State-matched performance uses final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`. |

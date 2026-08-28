@@ -2,202 +2,174 @@
 
 ## Current Checkpoint Review
 
-This review covers the active ordinary, non-template overloaded-operator
-checkpoint.  The implementation span began at landed commit
-`23a26df5299ef51ed5ff1b419ca7e05888e46e9e`, relative to
-`20f14d30c8aa3ee71a2ebdb11a36d1f785d85adc`, and was tightened at the latest
-landed commit `2d93a5e90f383652ffd22469620476248d639e8d`, relative to
-`23a26df5299ef51ed5ff1b419ca7e05888e46e9e`.  The bounded audit repairs in
-this checkpoint are limited to the ordinary operator ownership path in
-`pa11_semantic.cpp`, `pa11_semantic_core.cpp`, `pa12_semantic.cpp`,
-`pa12_semantic_calls.cpp`, `pa12_semantic_facts.cpp`,
-`pa12_semantic_member.cpp`, `pa12_semantic_resolution.cpp`, and the focused
-course regression
-`cppgm.tests/course/pa16/411-typed-operator-lexical-base-access-regression.sh`;
-no handout, fixture, reference, comparator, or generated output was changed.
+This review covers landed commit `da4252b669cbb14cf083b768619e13a2354d8505`
+(`PA16: implement typed bit-field boundary`) relative to
+`ad0f44f7fb84ba85030e20b7d87f836be736f5ca`, plus bounded follow-up repairs in
+the PA11--PA15 ownership path.  The implementation and audit span is limited
+to `pa11_semantic_model.h`, `pa11_semantic_core.cpp`,
+`pa11_record_layout.cpp`, the PA12 semantic fact/conversion/member/call/
+construction/resolution modules, the PA15 bit-field flow/member path, and
+`cppgm.tests/course/pa16/412-typed-bit-field-initialization-root-regression.sh`.
+No handout test, fixture, `.ref`, comparator, or generated repository output
+was changed.
 
-The contract and exclusions are the PA16 ordinary operator boundary: templates,
-class by-value/copy/move/assignment semantics, conversion operators, member
-pointers, virtual or multiple inheritance, and unrelated lifetime or global
-initialization work remain outside this audit.  The constructor-path support
-below is only the narrow implicit construction of a class reference argument
-needed by an operator call; it does not open general value construction.
+The bounded contract is typed integral and enumeration bit-fields: declaration
+and declarator validation, owner-stable layout, member glvalue/provenance,
+address-of and reference validity, built-in assignment/inc/dec, aggregate and
+constructor initialization, and packed PA15 load/store projection.  General
+class value transfer/copy/move, virtual or multiple inheritance, templates,
+general conversions, and unrelated PA16 residuals remain excluded.
 
 The ownership trace is:
 
 ```text
-PA10 operator token/name metadata
-  -> PA11 typed operator kind/token, canonical BindingId/ScopeId, friend
-     relation, declaration-point visibility, and sparse (namespace ScopeId,
-     NameId) hidden-friend key
-  -> PA12 member + ordinary lookup + ADL/hidden-friend union, deterministic
-     candidate identity, implicit-object cv/base/access ranking, enum identity
-     and promotion ranking, fallback, converted arguments, one canonical
-     CallExpression, and expression-owned bool provenance
-  -> PA15 typed call demand and operator ABI lowering, bool materialization or
-     value-producing logical behavior, and LowIR call/result
+PA10 BitFieldDeclaration/BitFieldDeclarator
+  -> PA11 declaration validation, canonical BindingId/owner NamedRecordId,
+     declared/storage/operation types, effective signedness, value width,
+     allocation span, and one owner-stable per-record event stream
+  -> PA11 layout packing with ordinary members, unnamed/zero-width boundaries,
+     nested/anonymous ownership, unions, alignment, and checked overflow
+  -> PA12 typed member glvalues and conversion/operator formation, built-in
+     address-of ordering, const-reference temporaries, assignment/inc/dec,
+     aggregate/constructor facts, and isolated initialization roots
+  -> PA15 physical-unit projection, masks, sign/zero extension, read-modify-
+     write stores, and aggregate/constructor/root-scoped materialization
 ```
 
 ### Findings and bounded repairs
 
-- Friend definitions retain their namespace-owned canonical binding and scope,
-	while parameter types and the body retain the introducing class as their
-	lexical type scope.  PA11 records one typed
-	`Function ScopeId -> (class ScopeId, NamedRecordId)` relation only when
-	`process_function_definition` sees the in-class friend definition.  The
-	ordinary type/value lookup path consumes that exact relation; it never scans
-	`BindingSidecar::friend_records`, which remains the access-friend set merged
-	across redeclarations.  Direct declarations, inherited type lookup,
-	declaration-point filtering, hidden-only visibility, visible redeclaration
-	identity, and malformed relation identity all remain typed and fail closed;
-	no parent-scope rewrite or whole-scope rescan was added.  Course 411 proves
-	that two access friends do not broaden the defining class's nested type/value
-	lookup, while the defining friend still accesses the other class's private
-	member.
-- `conversion_for` now preserves canonical named-enum identity before applying
-  integral promotion: an exact enum target wins its matching overload, while a
-  different enum or integer-to-enum conversion is nonviable.  Unscoped enum
-  promotion retains a worse rank than exact identity and still distinguishes
-  the promoted representation from other integral destinations.  A targeted
-  PA15 probe caught the first rank formulation's `int`/`unsigned` regression;
-  the final formulation restores both unscoped-enum promotion cases and the
-  earlier scalar overload behavior.
-- Reference binding uses the existing typed qualification and
-	`member_object_convertible` access/base machinery.  PA11 retains each
-	direct base's parsed `MemberAccess` on the canonical `NamedRecord`; PA12
-	checks that fact on the bounded base path with the actual access scope.
-	Public edges are always viable, private edges require the edge-owning class
-	or its access friend, and protected edges additionally require an enclosing
-	or friend class proven by typed single-inheritance ancestry to derive from
-	the edge owner.  Unrelated namespace code and malformed, ambiguous, or
-	invalid paths fail closed.  Same-class cv is exact while a base path is
-	ranked after it; member/nonmember selection therefore uses one typed
-	implicit-object comparison.
-- Operator candidate discovery unions the relevant member, ordinary-lookup,
-  ADL, and hidden-friend candidates without a category shortcut.  Unary,
-  postfix, binary, subscript, call, and shift forms retain their operator-kind
-  and token metadata.  Nonmember class/enum requirements, hidden-only
-  qualified-lookup rejection, visible friend redeclaration reuse, and
-  nonviable built-in fallback are checked before one selected call is formed.
-- A failed direct conversion to a class reference parameter may use one
-  non-explicit, accessible, single-parameter constructor selected through the
-  existing constructor index and `Copy` context.  The selected operator's
-  argument is then represented by the existing constructor-action/call fact
-  path.  Class-by-value constructor parameters, variadic/multi-parameter
-  constructors, explicit/deleted/inaccessible constructors, and general
-  copy/move/value transfer remain excluded.
-- PA12 keeps direct typed bool call/comparison results at their expression-owned
-  boundary, while built-in `&&`/`||` still materialize the established logical
-  representation and retain short-circuit lowering.  Overloaded logical
-  operators remain ordinary calls and are not short-circuited.  Reference
-  return chaining and address-of fallback use object types, not references;
-  literal constant addresses are recorded at the owning declaration boundary.
-- The complete path was checked for deterministic bounded behavior.  The
-	hidden-friend lookup is keyed by exact namespace scope/name identity, the
-	lexical relation is sparse, candidate vectors are bounded by language-
-	relevant declarations, and lookup state is guarded by existing bounded
-	traversal.  Base-access ancestry is likewise bounded by the typed scope and
-	named-record counts.  There is no rendered-name or function-category
-	branching, fixture-specific branch, whole-scope scan, retry lowering,
-	incomplete key, unbounded cache, or shortcut in this ownership path.
+- `BitFieldFact` is the single PA11 owner record for a named field.  It retains
+  declared type, physical storage type, canonical operation type, declared and
+  value widths, allocation span, unit/bit offsets, masks, owner/binding
+  identity, and storage signedness.  Unscoped enums use their typed underlying
+  representation for operations while exact enum targets retain enum identity;
+  signedness comes from the effective underlying storage, including signed
+  enums and bool.
+- The PA12 operation type implements the C++11 converted-bit-field promotion
+  boundary from typed facts: bool, int/signed int/unsigned int, and lower-rank
+  fields select int or unsigned int according to representability, while narrow
+  long and long long retain their declared rank/type.  PA15 consumes this fact
+  and does not infer promotion from field width.  This follows C++11
+  [conv.prom](https://timsong-cpp.github.io/cppwp/n3337/conv.prom) and keeps
+  enum-underlying identity typed.
+- Non-const lvalue-reference binding to a bit-field is rejected by PA12
+  conversion selection and explicit-cast formation, for both direct-member and
+  implicit-this/id expressions.  A viable const-reference binding creates a
+  typed temporary with value and reference conversions; PA15 materializes the
+  scalar into a generated reference slot and never exposes the packed unit.
+  The bool-bit-field decrement rule is likewise checked after overload
+  resolution at the PA12 operator owner, with PA15 retaining a consistency
+  guard.
+- Built-in address-of rejection is ordered after `semantic_operator_call`.
+  Therefore a viable overloaded unary `operator&` for an enum bit-field is
+  selected and lowered as a call; only the built-in packed-field projection is
+  rejected.  The public course control covers the supported ordinary-operator
+  boundary.
+- Width validation no longer treats 64 as a language ceiling.  A physical
+  scalar unit remains at most 8 bytes because PA15's checked load/store
+  projection is at most 64 bits; a wider declaration gets a checked multiple-
+  unit allocation span, with only the low physical value representation
+  projected and extra bits treated as padding.  Allocation, alignment, unit
+  count, offsets, union largest-member size, and overflow are checked before
+  layout publishes the fact.  Mixed ordinary members, following fields,
+  unnamed oversized fields, zero-width separators, and unions were exercised
+  by bounded controls.
+- The exact-reference fast path is restricted to expression-owned conversion
+  facts.  Ordinary exact reference roots still publish the established
+  `ReferenceBinding`, preserving pre-checkpoint pointer/reference alias
+  LowIR; typed bit-field temporary facts avoid duplicate deferred
+  materialization.  Return and initializer roots remain expression-owned, so
+  unrelated initializer aliases are not globally retargeted.
+- Per-record layout consumes one validated declaration event stream.  Adjacent
+  compatible fields pack; ordinary members flush the unit; unnamed and
+  zero-width fields create typed boundaries; nested records and anonymous
+  ownership stay attached to their own `NamedRecordId`; unions use the checked
+  allocation span.  PA15 carries a fresh initialization context for each
+  destination/root sequence, reuses it only for the same packed unit, and
+  recomputes nested/array paths, preventing state leakage or duplicate deferred
+  materialization across locals, subobjects, arrays, globals, and repeated
+  sites.
+- The path is C++11/fail-closed: every identity, owner, type, width, mask,
+  conversion range, and address path is bounds-checked; candidate/event
+  ordering is deterministic.  The audit found no textual downgrade,
+  test-name/fixture branch, reference or host-compiler shell-out, duplicate
+  production owner/model, incomplete cache key, retry loop, whole-scope
+  rescan, or unbounded state.  Event append and the normal layout walk remain
+  linear in the owning record's declarations.
 
 ### Focused and full evidence
 
-The final source build is `make -B -C dev cppgm++`, exit `0`, recorded in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-final-build.log`.
-`sh -n cppgm.tests/course/pa16/411-typed-operator-lexical-base-access-regression.sh`
-and the course script both exit `0`; the durable course log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-course411.log`.
-The final direct focused matrix and its command description are in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-focused-final.log`.
-It covers 32 status rows: the original 29-row operator matrix matches `28/29`
-(the sole mismatch is the documented `nullptr_t` parser holdout), while the
-added public/private/protected and inherited-access controls preserve their
-expected statuses.  The complete focused status count is `29/32`, with all
-three mismatches being pre-existing documented holdouts.  The semantic rows
-also cover member/nonmember cv/base ranking, enum identity and ADL, nested
-friend lookup, friend visibility/redeclaration, reference-result chaining,
-fallback, logical operators, and shift/string chains.
+The focused source build `make -B -C dev cppgm++` exits `0`; the durable log
+is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-build.log`.
+The required shell syntax check, direct const-cast pointer/reference alias
+control, course 412, and the exact 11-test bit-field matrix were rerun after
+that build.  Their logs are `pa16-bitfield-audit-final-source-syntax.log`,
+`pa16-bitfield-audit-final-source-direct.log`,
+`pa16-bitfield-audit-final-source-course412.log`, and
+`pa16-bitfield-audit-final-source-focused-11.log` in the same external
+directory.  The direct control and course 412 pass; the matrix is `5/11`.
+Its six known misses are LowIR presentation mismatches in constructor/member
+access/increment/aggregate and signed-read fixtures; no fixture was changed.
 
-The full final command `make test-pa16` exited `2`, with
-`127/243` passed, `116` failed, and all `243/243` identities covered.  Its
-durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-test-pa16.log`.
-The exact identity comparison against the authoritative turn-start
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-identity-compare.log`:
-the baseline was `122/243` with `121` failures, baseline-only is exactly
-these five repaired identities,
-
-```text
-pa16/tests/general/200-inherited-member-overload-set.t
-pa16/tests/general/300-basic-operator-overloads.t
-pa16/tests/general/300-enum-operator-adl-selects-matching-overload.t
-pa16/tests/general/300-hidden-friend-operator-nullptr-compare.t
-pa16/tests/general/300-stream-shift-selection-chain.t
-```
-
-and final-only is `0`.  Thus the final failure count is no greater than the
-`121` no-regression baseline; the five extra passes do not mask a new failure.
+The final `make test-pa16` exits `2` with `131/243` passed and `112`
+failures.  The durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-test-pa16.log`.
+The exact normalized failure comparison against the authoritative turn-start
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-identity-comparison.log`:
+baseline `112`, final `112`, baseline-only `0`, final-only `0`, and the
+unchanged `243`-test inventory.  All original identities remain covered;
+there is no final-only regression and no coverage reduction.
 
 The required command
 `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
 exited `0` at `1167/1167`; its log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-through-pa15.log`.
-The final file audit exits `0` with only the five known header-division
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-through.log`.
+The final file audit exits `0` with only the five existing header-division
 warnings (`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
 `pa11_semantic_model.h`, and `pa15_lowering.h`); its durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-file-audit.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-file-audit.log`.
 The final `git diff --check` log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-diff-check.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-diff-check.log`.
 
 ### Performance and residual boundaries
 
-The state-matched immutable executable is mode `0555` at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf-followup-v5/cppgm++-immutable`.
-It byte-matches the final `dev/cppgm++`; both SHA-256 values are
-`e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`.
+The state-matched immutable executable copies are mode `0555` at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/cppgm++-final`
+and `cppgm++-immutable`.  They byte-match `dev/cppgm++`; all three SHA-256
+values are
+`c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`.
 Five interleaved final/immutable rounds for small, large, and same-name-noise
 inputs measured whole compiler invocations with `/usr/bin/time`, including
-parsing and LowIR output.  Raw inputs and rows are preserved in the `input/`
-and `timing.tsv` files; medians are in `medians.tsv`, and structural counts
-are in `structure.tsv` under that directory.
+parsing and LowIR output.  Raw rows are in `timing.tsv`, medians in
+`medians.tsv`, deterministic hash checks in `determinism.tsv`, and structural
+counts in `structure.tsv` under that directory.
 
 | input | lines | target decls | unrelated same-name hidden friends | target expressions | LowIR functions/calls | wall median (range) | RSS median (range) |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.02s (0.02..0.02)` | `9352 (9336..9544) KiB` |
-| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.11s (0.11..0.11)` | `21932 (21892..22076) KiB` |
-| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.08s (0.08..0.08)` | `17668 (17560..17832) KiB` |
+| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.01s (0.01..0.01)` | `9860 (9680..9944) KiB` |
+| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.07s (0.06..0.07)` | `22200 (21824..22248) KiB` |
+| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.05s (0.05..0.05)` | `17960 (17892..17968) KiB` |
 
 The same-name-noise case preserves the target expression/call counts while
 adding 256 unrelated same-name hidden friends, which structurally corroborates
 exact-key bounded discovery.  These whole-compile timings are representative
 evidence, not an isolated phase or timeout proof.
 
-The three direct focused status mismatches are honest pre-existing holdouts:
-`pa16/tests/general/300-operator-nullptr-t-from-zero.t`,
-`pa16/tests/general/200-private-base-static-cast-member.t`, and
-`pa16/tests/general/200-friend-derived-access-inherited-protected-field.t`.
-The first is not an operator-resolution failure.  Its reference expects
-success, but the final compiler reports `ERROR: unexpected fixed token at
-token 13` while parsing the `nullptr_t` declaration, before PA11/PA12
-operator lookup.  PA12 already has the typed `nullptr_t` fallback and
-integer-zero-to-nullptr conversion; making this declaration parse requires a
-PA10 grammar/token repair outside this checkpoint's authorized ownership and
-would widen conversion/value semantics.  The other two are unchanged legacy
-parser/access controls also present in the turn-start failure map; course 411
-separately proves the public/private/protected operator-reference boundary,
-including further-derived protected access and external rejection.  The
-nullptr classification command, source text, and parser result are preserved
-in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-nullptr-classification.log`.
-The focused relaxed LowIR presentation differences likewise are not converted
-into unsupported standard-coverage claims.
+The six focused LowIR mismatches are intentionally retained: constructor
+member-init, member access, prefix/postfix increment, aggregate init, signed
+integral read, and signed-underlying-enum read.  The signed cases retain the
+required sign extension in the typed implementation; their checked-in
+presentation fixtures were not edited.  These are not converted into claims
+of broader PA16 completion.  The remaining full-stage failures likewise stay
+outside this bounded checkpoint, including general class value transfer,
+copy/move, templates, virtual/multiple inheritance, general conversions, and
+unrelated PA16 ownership surfaces.
 
-The next checkpoint is a separately authorized PA16 residual audit: first
-classify the remaining full-stage identities by ownership, keeping this
-ordinary-operator map frozen; only a PA10 `nullptr_t` checkpoint may address
-the holdout if PA10 scope is explicitly opened.  Do not advance this path to
-PA17 on the unchanged full-stage failure map alone.
+The next checkpoint is a separately authorized PA16 residual audit: classify
+the unchanged 112 identities by ownership while keeping this typed bit-field
+path and its exclusions frozen.  Do not advance to PA17 until the through-
+PA16 gate is clean.
 
 ## Historical Fixed-Bound Array-Lifetime Checkpoint Review
 
@@ -814,3 +786,4 @@ conversion slices.
 | `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed reachable member demand, dense PA15 reachability metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `0a6be82d` typed fixed-bound local/synthesized array lifetime checkpointAudit | Completed bounded audit/repair: typed lifetime ownership and destructor continuity are validated once, dense `ScopeId` flags replace the former per-function lifetime scan, checked array paths/actions and arena-safe recursive cleanup are retained, and lexical/control-exit/EH state is covered by course 410. Final PA16 is `93/243` with the exact turn-start `150` failure identities and `243/243` coverage; through-PA15 is `1167/1167`; the file audit passes with five existing warnings; diff-check passes; current structural and interleaved smoke/scale evidence is recorded above. |
 | `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the follow-up corrects exact friend-definition lexical ownership and typed private/protected/public base-reference accessibility while retaining enum identity/promotion ranking, narrow converting-constructor participation, reference/address facts, and typed bool boundaries through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused status is `29/32` with three documented pre-existing holdouts, course 411 passes, and state-matched performance is in `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. No handout, fixture, reference, comparator, or generated output changed. |
+| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Completed bounded PA10--PA15 audit and repair: canonical typed operation/promotion facts, const-reference temporary ownership, semantic-owner rejection of invalid bit-field references and bool decrement, overload-before-address-of ordering, mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned PA15 projection, and isolated initialization roots. Final PA16 is `131/243` with `112` failures and `243/243` identities; exact comparison to the turn-start `112`-failure map is baseline-only `0`, final-only `0`. Course 412, direct alias control, through-PA15 `1167/1167`, file audit, and diff-check pass; the focused bit-field matrix is `5/11` with six documented LowIR mismatches. State-matched five-round performance uses final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`. No handout, fixture, reference, comparator, or generated output changed. |

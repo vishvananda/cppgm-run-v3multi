@@ -1683,10 +1683,8 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 			}
 			ConversionChoice choice;
 			if (arguments[arg].fact.valid())
-				choice = conversion_for(arguments[arg].type,
-					arguments[arg].category, function.parameters[arg],
-					semantic_facts_[arguments[arg].fact.value].source,
-					arguments[arg].integer_zero, scope);
+				choice = conversion_for(arguments[arg], function.parameters[arg],
+					semantic_facts_[arguments[arg].fact.value].source, scope);
 			else
 			{
 				const PA10AstNode* function_id = target_function_id(

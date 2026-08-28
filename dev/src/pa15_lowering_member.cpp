@@ -136,6 +136,53 @@ void Pa15Lowerer::materialize_lvalue_value(LoweredValue* result,
 	result->lvalue = false;
 }
 
+bool Pa15Lowerer::apply_bit_field_reference_conversion(
+	LoweredValue* result, const ConversionFact& conversion, const LowType& target)
+{
+	if (result == NULL || !result->bit_field_lvalue)
+		throw std::runtime_error("PA15 bit-field reference result is invalid");
+	const BitFieldFact* bit_field = model_.bit_field_fact(
+		result->bit_field_binding);
+	if (bit_field == NULL || !bit_field->named ||
+		bit_field->binding != result->bit_field_binding ||
+		!conversion.target.valid() || conversion.target.value >= model_.types_.size())
+		throw std::runtime_error("PA15 bit-field reference fact is invalid");
+	const TypeKind target_kind = model_.type_kind(conversion.target);
+	if (target_kind != TypeKind::LvalueReference &&
+		target_kind != TypeKind::RvalueReference)
+		throw std::runtime_error("PA15 bit-field reference target is invalid");
+	const TypeId referred_id = model_.types_[conversion.target.value].child;
+	// A non-const reference cannot bind to a bit-field.  A const reference binds
+	// to a value temporary, never to the packed unit.
+	if ((model_.cv_qualifiers(referred_id) & 1u) == 0)
+		throw std::runtime_error("PA15 non-const reference cannot bind to a bit-field");
+	materialize_lvalue_value(result, result->type);
+	const LowType referred = low_reference_value_type(conversion.target);
+	if (result->physical_type != referred)
+	{
+		if (!result->physical_type.is_integer() || !referred.is_integer())
+			throw std::runtime_error("PA15 bit-field reference temporary is not integral");
+		Instruction instruction;
+		instruction.kind = Instruction::IK_CONVERT;
+		instruction.source_type = result->physical_type;
+		instruction.first = result->value;
+		instruction.conversion_operator = result->physical_type.integer_width() >
+			referred.integer_width() ? lowir_model::COP_TRUNC :
+			bit_field->is_signed ? lowir_model::COP_SEXT : lowir_model::COP_ZEXT;
+		const ValueId value = destination(referred, &instruction);
+		block().instructions.push_back(instruction);
+		*result = LoweredValue(temporary_operand(value,
+			instruction.destination_name_id), referred, false);
+	}
+	const LoweredValue temporary = generated_slot(referred, "refarg");
+	emit_store(referred, result->value, temporary.value);
+	*result = address_of_storage(temporary);
+	result->type = target;
+	result->physical_type = target;
+	result->lvalue = false;
+	return true;
+}
+
 void Pa15Lowerer::emit_store(const LowType& type, const Operand& value,
 	const Operand& storage)
 {
@@ -152,21 +199,14 @@ LoweredValue Pa15Lowerer::mark_bit_field_address(
 {
 	const BitFieldFact* fact = model_.bit_field_fact(binding_id);
 	if (fact == NULL || !fact->named || fact->binding != binding_id ||
-		!address.type.is_pointer())
+		!fact->operation_type.valid() || !address.type.is_pointer())
 		throw std::runtime_error("PA15 bit-field address fact is invalid");
-	LowType value_type = low_type(fact->declared_type);
-	const TypeId int_type = model_.fundamental(FundamentalType::Int);
-	const LowType promoted_type = low_type(int_type);
-	// Integral bit-fields narrower than int undergo the ordinary integral
-	// promotion at a value boundary.  Keep the declared type in BitFieldFact,
-	// but expose the promoted operation type to PA15 so a same-width storage
-	// load can preserve the glvalue's projection without a text-based guess.
-	if (promoted_type.is_integer() && value_type.is_integer() &&
-		fact->value_width < static_cast<std::size_t>(
-			promoted_type.integer_width()) &&
-		model_.integral_rank(fact->storage_type) <=
-		model_.integral_rank(int_type))
-		value_type = promoted_type;
+	// PA12 publishes the converted bit-field operation type.  PA15 only
+	// consumes that typed fact; it must not reconstruct language promotion from
+	// a width or a physical storage rank.
+	const LowType value_type = low_type(fact->operation_type);
+	if (!value_type.is_integer())
+		throw std::runtime_error("PA15 bit-field operation type is not integral");
 	LoweredValue result(address.value, value_type, true);
 	result.bit_field_lvalue = true;
 	result.bit_field_binding = binding_id;
