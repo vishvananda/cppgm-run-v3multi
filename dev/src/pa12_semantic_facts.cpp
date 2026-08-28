@@ -365,6 +365,116 @@ BindingId PA11SemanticModel::ensure_implicit_default_constructor(
 	return binding_id;
 }
 
+BindingId PA11SemanticModel::ensure_aggregate_constructor(
+	NamedRecordId record_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag == ClassTag::Union ||
+		!aggregate_class_initialization_supported(record_id))
+		throw std::runtime_error("PA12 aggregate constructor record is invalid");
+	const NamedRecord& record = named_[record_id.value];
+	if (!record.name.valid() || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
+		throw std::runtime_error("PA12 aggregate constructor owner is invalid");
+	const NamedRecordSidecar* existing = named_record_sidecar(record_id);
+	if (existing != NULL && existing->aggregate_constructor_binding.valid())
+		return existing->aggregate_constructor_binding;
+
+	// Capture the direct member sequence once.  The synthetic function below
+	// forwards exactly this typed sequence; it does not rediscover member
+	// appertainment while lowering an array element.
+	std::vector<BindingId> members;
+	const Scope& class_scope = scopes_[record.scope.value];
+	for (std::size_t i = 0; i < class_scope.bindings.size(); ++i)
+	{
+		const BindingId member_id = class_scope.bindings[i];
+		if (!member_id.valid() || member_id.value >= bindings_.size() ||
+			member_id.value >= binding_owners_.size() ||
+			binding_owners_[member_id.value] != record.scope)
+			throw std::runtime_error(
+				"PA12 aggregate constructor member identity is invalid");
+		const Binding& member = binding(member_id);
+		if (member.kind == BindingKind::Variable &&
+			!is_static_member(member_id))
+			members.push_back(member_id);
+	}
+	std::vector<TypeId> parameters;
+	parameters.reserve(members.size());
+	for (std::size_t i = 0; i < members.size(); ++i)
+		parameters.push_back(normalize_parameter_type(
+			binding(members[i]).type));
+	const TypeId constructor_type = make_function(parameters, false,
+		fundamental(FundamentalType::Void));
+	Binding helper(BindingKind::Function, record.name, constructor_type);
+	helper.has_definition = true;
+	helper.language_linkage = LanguageLinkage::Cxx;
+	const BindingId binding_id = store_binding(record.scope, helper);
+	BindingSidecar constructor_sidecar;
+	const BindingSidecar* existing_binding = binding_sidecar(binding_id);
+	if (existing_binding != NULL)
+		constructor_sidecar = *existing_binding;
+	constructor_sidecar.constructor_record = record_id;
+	set_binding_sidecar(binding_id, constructor_sidecar);
+	NamedRecordSidecar record_sidecar;
+	if (existing != NULL)
+		record_sidecar = *existing;
+	record_sidecar.aggregate_constructor_binding = binding_id;
+	set_named_record_sidecar(record_id, record_sidecar);
+
+	const ScopeId function_scope = create_scope(ScopeKind::Function,
+		record.scope, record.name);
+	function_bindings_.set(function_scope, binding_id);
+	FunctionFact function(NULL, record.scope, binding_id, function_scope,
+		ScopeId());
+	function.is_constructor = true;
+	function.synthetic = true;
+	function.constructor_record = record_id;
+	prepare_pa12_member_parameter(function);
+	std::vector<BindingId> parameter_bindings;
+	parameter_bindings.reserve(parameters.size());
+	for (std::size_t i = 0; i < members.size(); ++i)
+	{
+		const Binding& member = binding(members[i]);
+		const BindingId parameter = store_binding(function_scope,
+			Binding(BindingKind::Parameter, member.name, parameters[i]));
+		if (member.name.valid())
+			append_value_index(function_scope, member.name, parameter,
+				ScopeId(), SourcePoint());
+		parameter_bindings.push_back(parameter);
+	}
+	const FunctionFactId function_id(function_facts_.size());
+	function_facts_.push_back(function);
+	function_binding_fact_index_.set(binding_id, function_id);
+
+	const std::size_t action_begin = constructor_actions_.size();
+	for (std::size_t i = 0; i < members.size(); ++i)
+	{
+		const TypeId member_type = binding(members[i]).type;
+		TypeId expression_type = member_type;
+		const TypeKind member_kind = type_kind(expression_type);
+		if (member_kind == TypeKind::LvalueReference ||
+			member_kind == TypeKind::RvalueReference)
+			expression_type = types_[expression_type.value].child;
+		SemanticFact parameter_fact(SemanticFactKind::IdExpression,
+			expression_type, SemanticValueCategory::Lvalue, NULL);
+		parameter_fact.binding = parameter_bindings[i];
+		const SemanticFactId initializer = make_semantic_fact(parameter_fact);
+		ConstructorActionFact action(ConstructorActionTarget::Member,
+			NamedRecordId(), members[i], BindingId(), initializer);
+		action.object_type = member_type;
+		constructor_actions_.push_back(action);
+	}
+	FunctionFact& stored = function_facts_[function_id.value];
+	stored.constructor_action_begin = action_begin;
+	stored.constructor_action_count = members.size();
+	synthetic_function_facts_.push_back(
+		SyntheticFunctionFact(record_id, binding_id));
+	return binding_id;
+}
+
 BindingId PA11SemanticModel::ensure_implicit_destructor(NamedRecordId record_id)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
@@ -1191,8 +1301,24 @@ void PA11SemanticModel::record_constant_initializer(SemanticFactId fact_id,
 		scopes_[scope.value].kind != ScopeKind::Namespace)
 		return;
 	SemanticFact& fact = semantic_facts_[fact_id.value];
-	if (fact.kind == SemanticFactKind::Variable ||
-		fact.kind == SemanticFactKind::BracedInitList)
+	if (fact.kind == SemanticFactKind::BracedInitList)
+	{
+		const AggregateFactRange* range = aggregate_ranges_.find(fact_id);
+		if (range != NULL)
+		{
+			if (range->count != 0 &&
+				(range->begin == InvalidIdentityValue ||
+					range->begin > aggregate_elements_.size() ||
+					range->count > aggregate_elements_.size() - range->begin))
+				throw std::runtime_error(
+					"PA12 aggregate constant range is invalid");
+			for (std::size_t i = 0; i < range->count; ++i)
+				record_constant_initializer(
+					aggregate_elements_[range->begin + i].initializer, scope);
+			return;
+		}
+	}
+	if (fact.kind == SemanticFactKind::Variable)
 	{
 		if (fact.child_count == 0 || fact.child_begin == InvalidIdentityValue)
 			return;

@@ -1963,7 +1963,10 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					model_.semantic_facts_[facts.front().value];
 				if (initializer.kind == SemanticFactKind::ConstructorAction)
 				{
-					if (!constructor_action_is_noop(initializer))
+					if (initializer.value_initialize)
+						initialize_constructor_value(model_.binding(fact.binding).type,
+							facts.front(), address_of_storage(storage));
+					else if (!constructor_action_is_noop(initializer))
 						(void)lower_expression(facts.front());
 				}
 				else if (storage.type.is_object() &&
@@ -1975,8 +1978,12 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					if (model_.type_kind(object_type) == TypeKind::Array)
 						initialize_array(fact.binding, facts.front(), storage);
 					else
+					{
+						const LoweredValue address = address_of_storage(storage);
+						const std::vector<ConstructorAddressStep> empty_path;
 						initialize_constructor_value(declared_type, facts.front(),
-							address_of_storage(storage));
+							address, NULL, &empty_path, NULL, &storage, declared_type);
+					}
 				}
 				else
 				{

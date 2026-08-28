@@ -292,6 +292,9 @@ bool PA11SemanticModel::aggregate_class_initialization_supported(
 		scopes_[record.scope.value].kind != ScopeKind::Class ||
 		scopes_[record.scope.value].record != record_id)
 		throw std::runtime_error("PA12 aggregate constructor owner is invalid");
+	const NamedRecordSidecar* record_sidecar = named_record_sidecar(record_id);
+	if (record_sidecar != NULL && record_sidecar->has_default_member_initializer)
+		return false;
 	// An implicitly generated constructor is not a user-declared constructor
 	// and must not change aggregate eligibility after it is materialized.
 	const bool declared = has_constructor_declaration(record_id);
@@ -338,6 +341,21 @@ bool PA11SemanticModel::aggregate_class_initialization_supported(
 		throw std::runtime_error(
 			"PA12 aggregate constructor identity is missing");
 	return true;
+}
+
+void PA11SemanticModel::mark_default_member_initializer(ScopeId class_scope)
+{
+	if (!class_scope.valid() || class_scope.value >= scopes_.size() ||
+		scopes_[class_scope.value].kind != ScopeKind::Class ||
+		!scopes_[class_scope.value].record.valid())
+		throw std::runtime_error("PA12 default member initializer owner is invalid");
+	const NamedRecordId record = scopes_[class_scope.value].record;
+	NamedRecordSidecar sidecar;
+	const NamedRecordSidecar* existing = named_record_sidecar(record);
+	if (existing != NULL)
+		sidecar = *existing;
+	sidecar.has_default_member_initializer = true;
+	set_named_record_sidecar(record, sidecar);
 }
 
 bool PA11SemanticModel::classify_constructor_runtime(NamedRecordId record_id)

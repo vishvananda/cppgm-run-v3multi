@@ -12,6 +12,7 @@
 #include "pa10_ast.h"
 #include "posttoken.h"
 #include "pa11_semantic_storage.h"
+#include "pa11_semantic_aggregate.h"
 #include "pa12_semantic_selection.h"
 
 namespace lowir_model
@@ -684,9 +685,9 @@ struct NamedRecordSidecar
 {
 	bool local_object_name;
 	BindingId backing_storage;
-	BindingId constructor_binding; BindingId default_constructor_binding;
+	BindingId aggregate_constructor_binding; BindingId constructor_binding; BindingId default_constructor_binding;
 	BindingId destructor_binding;
-	bool has_constructor_declaration; bool has_destructor_declaration;
+	bool has_constructor_declaration; bool has_destructor_declaration; bool has_default_member_initializer;
 	bool has_display_path;
 	NamePath display_path;
 	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions;
@@ -697,9 +698,10 @@ struct NamedRecordSidecar
 		BindingId default_constructor_binding = BindingId(),
 		bool has_constructor_declaration = false)
 		: local_object_name(local_object_name), backing_storage(backing_storage),
-		  constructor_binding(constructor_binding), default_constructor_binding(default_constructor_binding),
+		  aggregate_constructor_binding(), constructor_binding(constructor_binding),
+		  default_constructor_binding(default_constructor_binding),
 		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
-		  has_destructor_declaration(false),
+		  has_destructor_declaration(false), has_default_member_initializer(false),
 		  has_display_path(false),
 		  display_path(), hidden_friend_functions()
 	{}
@@ -1241,10 +1243,9 @@ public:
 	;
 	void lower_pa15(lowir_model::Program& program) const
 	;
-
 private:
 	friend class Pa15Lowerer;
-
+	struct AggregateAppertainer;
 	const PA10Ast& ast_;
 	std::vector<std::string> names_;
 	FlatIndex<std::string, NameId, StringHash> name_ids_;
@@ -1339,7 +1340,8 @@ private:
 	FlatIndex<const PA10AstNode*, ScopeId, PointerHash>
 		substatement_scope_index_;
 	std::vector<SemanticFact> semantic_facts_;
-	std::vector<SemanticFactId> semantic_children_;
+	std::vector<SemanticFactId> semantic_children_; std::vector<AggregateElementFact> aggregate_elements_;
+	FlatIndex<SemanticFactId, AggregateFactRange, IdentityHash<SemanticFactId> > aggregate_ranges_;
 	std::vector<FloatingLiteralFact> floating_literal_facts_;
 	std::vector<std::uint8_t> floating_literal_bytes_;
 	std::vector<ConstantAddressFact> constant_address_facts_;
@@ -1645,11 +1647,7 @@ private:
 	void record_automatic_lifetime(BindingId object, TypeId object_type,
 		ScopeId scope)
 	;
-	ConstructorSelection select_constructor(NamedRecordId record,
-		ScopeId access_scope,
-		const std::vector<const PA10AstNode*>& argument_nodes,
-		bool allow_implicit_default,
-		ConstructorInitializationContext context)
+	ConstructorSelection select_constructor(NamedRecordId record, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool allow_implicit_default, ConstructorInitializationContext context, BindingId forced_binding = BindingId())
 	;
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
 	;
@@ -1892,6 +1890,7 @@ private:
 	;
 	void build_constructor_actions(FunctionFactId function)
 	;
+	BindingId ensure_aggregate_constructor(NamedRecordId record);
 	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
 	;
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)
@@ -2120,6 +2119,7 @@ private:
 		PA11SemanticModel& model_;
 		std::size_t semantic_begin_;
 		std::size_t children_begin_;
+		std::size_t aggregate_begin_; std::size_t aggregate_range_entries_begin_;
 		std::size_t floating_literal_begin_;
 		std::size_t floating_literal_bytes_begin_;
 		std::size_t constant_address_begin_;
@@ -2134,6 +2134,7 @@ private:
 	void set_semantic_children(SemanticFactId fact,
 	const std::vector<SemanticFactId>& children)
 	;
+	void set_semantic_aggregate_elements(SemanticFactId fact, const std::vector<AggregateElementFact>& elements, std::size_t total_count);
 	void set_semantic_name(SemanticFactId fact, const NamePath& path)
 	;
 	bool has_template_id(const PA10AstNode& node) const
@@ -2276,9 +2277,11 @@ private:
 	ExprInfo semantic_braced_init_list(const PA10AstNode& node,
 		TypeId target, ScopeId scope)
 	;
+	ExprInfo semantic_aggregate_constructor_value(const PA10AstNode& source, TypeId target, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool value_initialize);
 	ExprInfo semantic_empty_braced_init_list(const PA10AstNode& node,
 		TypeId target)
 	;
+	void mark_default_member_initializer(ScopeId class_scope);
 	SemanticFactId semantic_declaration(const PA10AstNode& node, ScopeId scope)
 	;
 	SemanticFactId semantic_declaration_statement(const PA10AstNode& node,
@@ -2344,6 +2347,7 @@ private:
 	void dump_pa12_fact(std::ostream& output, SemanticFactId id,
 	std::size_t depth) const
 	;
+	void dump_pa12_aggregate_fact(std::ostream& output, SemanticFactId id, std::size_t depth) const;
 	void dump_pa12_function(std::ostream& output, const PA10AstNode& node,
 	std::size_t depth) const
 	;

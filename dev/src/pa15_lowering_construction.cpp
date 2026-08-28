@@ -44,7 +44,15 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 		case SemanticFactKind::MemberExpression:
 			if (model_.bit_field_fact(fact.selected_binding) != NULL)
 				throw std::runtime_error("PA15 address-of bit-field is not allowed");
-			return lower_member_address(id);
+		{
+			const LoweredValue member_address = lower_member_address(id);
+			if (!reference_binding(fact.selected_binding))
+				return member_address;
+			const ValueId referent = emit_load(member_address, member_address.type);
+			const Instruction& load = block().instructions.back();
+			return LoweredValue(temporary_operand(referent,
+				load.destination_name_id), member_address.type, false);
+		}
 		case SemanticFactKind::UnaryExpression:
 			if (facts.size() != 1) throw std::runtime_error("PA15 invalid address unary fact");
 			if (fact.token == SimpleTokenType::OP_AMP)
@@ -82,8 +90,38 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 			sequence_type = model_.strip_cv_type(sequence_type);
 			const bool array = sequence_type.valid() &&
 				model_.type_kind(sequence_type) == TypeKind::Array;
+			if (array)
+			{
+				const TypeId child = model_.types_[sequence_type.value].child;
+				const TypeId child_object = model_.strip_cv_type(
+					model_.expression_object_type(child));
+				const bool byte_projection = (child_object.valid() &&
+					model_.type_kind(child_object) == TypeKind::Array) ||
+					class_object_type(child);
+				if (!byte_projection)
+					return emit_index(sequence, index, low_type(child),
+						lowir_model::IPK_ARRAY_ELEMENT);
+				const LowType element = array_element_instruction_type(child);
+				const std::size_t stride = model_.type_size(child);
+				LoweredValue offset = index;
+				if (stride != 1)
+				{
+					if (stride > static_cast<std::size_t>(
+						std::numeric_limits<long long>::max()))
+						throw std::runtime_error(
+							"PA15 subscript element stride is invalid");
+					const TypeId index_type = model_.semantic_facts_[
+						facts.back().value].type;
+					offset = emit_binary_value(lowir_model::BOP_MUL,
+						size_low_type(), integer_i64(index, index_type),
+						LoweredValue(integer_operand(static_cast<long long>(stride),
+							size_low_type()), size_low_type(), false));
+				}
+				return emit_index(sequence, offset, element,
+					lowir_model::IPK_ARRAY_ELEMENT);
+			}
 			const LowType element = low_type(fact.type);
-			return emit_index(sequence, index, element, array ? lowir_model::IPK_ARRAY_ELEMENT : lowir_model::IPK_NONE);
+			return emit_index(sequence, index, element, lowir_model::IPK_NONE);
 		}
 		case SemanticFactKind::AssignmentExpression:
 				return address_of_storage(lower_assignment(id, true));
@@ -124,52 +162,81 @@ bool Pa15Lowerer::pointer_like(TypeId type) const{
 
 void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer,
 		const LoweredValue& storage){
-		if (!initializer.valid() || initializer.value >= model_.semantic_facts_.size())
-			throw std::runtime_error("PA15 array initializer fact is invalid");
-		const SemanticFact& init_fact = model_.semantic_facts_[initializer.value];
-		if (init_fact.kind != SemanticFactKind::BracedInitList)
-			throw std::runtime_error("PA15 unsupported array initializer");
-		TypeId array_type = model_.strip_cv_type(model_.binding(binding).type);
-		if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
-			throw std::runtime_error("PA15 array initializer target is not an array");
-		if (model_.types_[array_type.value].unknown_bound)
-			throw std::runtime_error("PA15 array initializer target is incomplete");
-		const LowType element_type = low_type(model_.types_[array_type.value].child);
-		const LoweredValue base = address_of_storage(storage);
-		const std::vector<SemanticFactId> values = children(initializer);
-		const std::size_t bound = model_.types_[array_type.value].bound.value;
+	if (!binding.valid() || binding.value >= model_.bindings_.size() ||
+		model_.binding(binding).kind != BindingKind::Variable)
+		throw std::runtime_error("PA15 array initializer storage is invalid");
+	const TypeId array_type = model_.strip_cv_type(
+		model_.binding(binding).type);
+	if (!array_type.valid() || model_.type_kind(array_type) != TypeKind::Array)
+		throw std::runtime_error("PA15 array initializer target is not an array");
+	const TypeId element = model_.types_[array_type.value].child;
+	const TypeId element_object = model_.strip_cv_type(
+		model_.expression_object_type(element));
+	if (!element_object.valid() || element_object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 array initializer element is invalid");
+	// Aggregate facts own the typed clause edges.  Scalar arrays retain the
+	// established compact store/address sequence while deriving omitted values
+	// from the destination type and sparse range.
+	if (model_.type_kind(element_object) != TypeKind::Array &&
+		!class_object_type(element))
+	{
+		std::size_t element_count = 0;
+		std::size_t total_count = 0;
+		const AggregateElementFact* elements = aggregate_elements(initializer,
+			&element_count, &total_count);
+		const TypeKey& array = model_.types_[array_type.value];
+		const LowType element_type = low_type(element);
+		const std::size_t element_size = element_type.storage_size();
 		const std::size_t max_offset = static_cast<std::size_t>(
 			std::numeric_limits<long long>::max());
-		if (bound > max_offset || element_type.storage_size() == 0 ||
-			element_type.storage_size() > max_offset)
-			throw std::runtime_error("PA15 array initializer index is out of range");
-		if (values.size() > bound)
-			throw std::runtime_error("PA15 array initializer exceeds bound");
-		for (std::size_t i = 0; i < bound; ++i)
+		if (array.unknown_bound || total_count != array.bound.value ||
+			element_size == 0 || element_size > max_offset ||
+			array.bound.value > max_offset)
+			throw std::runtime_error("PA15 scalar array initializer range is invalid");
+		const LoweredValue base = address_of_storage(storage);
+		std::size_t next_element = 0;
+		for (std::size_t i = 0; i < array.bound.value; ++i)
 		{
-			if (i > max_offset / element_type.storage_size())
-				throw std::runtime_error("PA15 array initializer offset is out of range");
-			LoweredValue destination_address = base;
+			if (i > max_offset / element_size)
+				throw std::runtime_error("PA15 scalar array initializer offset is invalid");
+			LoweredValue destination = base;
 			if (i != 0)
 			{
 				LowType i64;
 				i64.kind = LowType::TYPE_INTEGER;
 				i64.integer_kind = LowType::INTEGER_I64;
-				LoweredValue offset(integer_operand(static_cast<long long>(i) *
-					static_cast<long long>(element_type.storage_size()), i64), i64, false);
+				const LoweredValue offset(integer_operand(
+					static_cast<long long>(i) * static_cast<long long>(element_size),
+					i64), i64, false);
 				LowType byte;
 				byte.kind = LowType::TYPE_INTEGER;
 				byte.integer_kind = LowType::INTEGER_I8;
-				destination_address = emit_index(base, offset, byte, lowir_model::IPK_NONE);
+				destination = emit_index(base, offset, byte,
+					lowir_model::IPK_NONE);
 			}
-			if (i < values.size() && model_.semantic_facts_[values[i].value].kind ==
-				SemanticFactKind::BracedInitList)
-				throw std::runtime_error("PA15 nested array initializer is outside checkpoint");
-			const Operand value = i < values.size() ?
-				lower_expression(values[i]).value : integer_operand(0, element_type);
-			emit_store(element_type, value, destination_address.value);
+			if (next_element < element_count && elements[next_element].index == i)
+			{
+				const SemanticFactId value_id = elements[next_element++].initializer;
+				if (!value_id.valid() || value_id.value >= model_.semantic_facts_.size())
+					throw std::runtime_error(
+						"PA15 scalar array initializer fact is invalid");
+				const Operand value = lower_expression(value_id).value;
+				emit_store(element_type, value, destination.value);
+			}
+			else
+				emit_store(element_type, integer_operand(0, element_type),
+					destination.value);
 		}
+		if (next_element != element_count)
+			throw std::runtime_error("PA15 scalar array sparse index is invalid");
+		return;
 	}
+	const LoweredValue address = address_of_storage(storage);
+	const std::vector<ConstructorAddressStep> empty_path;
+	initialize_constructor_value(model_.binding(binding).type, initializer,
+		address, NULL, &empty_path, NULL, &storage,
+		model_.binding(binding).type);
+}
 
 LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 {
@@ -212,8 +279,12 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 			if (model_.type_kind(object_type) == TypeKind::Array)
 				initialize_array(fact.binding, initializer.front(), storage);
 			else
+			{
+				const LoweredValue address = address_of_storage(storage);
+				const std::vector<ConstructorAddressStep> empty_path;
 				initialize_constructor_value(declared_type, initializer.front(),
-					address_of_storage(storage));
+					address, NULL, &empty_path, NULL, &storage, declared_type);
+			}
 		}
 		else
 		{
@@ -422,6 +493,72 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 			byte, lowir_model::IPK_FIELD);
 		if (model_.bit_field_fact(path[i].member) != NULL)
 			result = mark_bit_field_address(result, path[i].member);
+		current_type = model_.binding(path[i].member).type;
+	}
+	return result;
+}
+
+LoweredValue Pa15Lowerer::aggregate_path_address(const LoweredValue& storage,
+	TypeId root_type, const std::vector<ConstructorAddressStep>& path)
+{
+	LoweredValue result = address_of_storage(storage);
+	TypeId current_type = root_type;
+	const LowType offset_type = size_low_type();
+	LowType byte;
+	byte.kind = LowType::TYPE_INTEGER;
+	byte.integer_kind = LowType::INTEGER_I8;
+	for (std::size_t i = 0; i < path.size(); ++i)
+	{
+		const TypeId object = model_.strip_cv_type(
+			model_.expression_object_type(current_type));
+		if (!object.valid() || object.value >= model_.types_.size())
+			throw std::runtime_error("PA15 aggregate path type is invalid");
+		if (path[i].array_element)
+		{
+			if (model_.type_kind(object) != TypeKind::Array ||
+				model_.types_[object.value].unknown_bound ||
+				path[i].index >= model_.types_[object.value].bound.value)
+				throw std::runtime_error("PA15 aggregate path array is invalid");
+			(void)checked_array_element_offset(object, path[i].index);
+			const TypeId child = model_.types_[object.value].child;
+			const TypeId child_object = model_.strip_cv_type(
+				model_.expression_object_type(child));
+			const bool byte_projection = (child_object.valid() &&
+				model_.type_kind(child_object) == TypeKind::Array) ||
+				class_object_type(child);
+			const LoweredValue array_offset = byte_projection ?
+				emit_array_element_offset(object, path[i].index) :
+				LoweredValue(integer_operand(static_cast<long long>(path[i].index),
+					size_low_type()), size_low_type(), false);
+			result = emit_index(emit_decay(result), array_offset,
+				array_element_instruction_type(child),
+				lowir_model::IPK_ARRAY_ELEMENT);
+			current_type = child;
+			continue;
+		}
+		if (model_.type_kind(object) != TypeKind::Named ||
+			!path[i].member.valid() || path[i].member.value >=
+			model_.bindings_.size())
+			throw std::runtime_error("PA15 aggregate path member is invalid");
+		const NamedRecordId record = model_.named_record_for_type(object);
+		if (!record.valid() || record.value >= model_.named_.size() ||
+			model_.named_[record.value].kind != NamedKind::Class)
+			throw std::runtime_error("PA15 aggregate path class is invalid");
+		const RecordLayout& layout = model_.record_layout(record);
+		if (layout.state != RecordLayoutState::Complete ||
+			path[i].member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[path[i].member.value] !=
+				model_.named_[record.value].scope ||
+			model_.binding(path[i].member).kind != BindingKind::Variable ||
+			model_.is_static_member(path[i].member))
+			throw std::runtime_error("PA15 aggregate path member owner is invalid");
+		const std::size_t* offset = layout.member_offsets.find(path[i].member);
+		if (offset == NULL || *offset > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 aggregate path member offset is invalid");
+		result = emit_index(result, LoweredValue(integer_operand(
+			static_cast<long long>(*offset), offset_type), offset_type, false),
+			byte, lowir_model::IPK_FIELD);
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
@@ -1173,7 +1310,9 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 	const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
 	const std::vector<ConstructorAddressStep>* path,
-	BitFieldInitializationContext* context)
+	BitFieldInitializationContext* context,
+	const LoweredValue* aggregate_root_storage,
+	TypeId aggregate_root_type)
 {
 	BitFieldInitializationContext local_context;
 	if (context == NULL)
@@ -1200,7 +1339,7 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 			const LowType element_type = array_element_instruction_type(array.child);
 			LoweredValue element;
 			std::vector<ConstructorAddressStep> element_path;
-			if (root_action != NULL && path != NULL)
+			if (path != NULL)
 			{
 				element_path = *path;
 				element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
@@ -1209,6 +1348,10 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 			{
 				element = constructor_path_address(*root_action, element_path);
 			}
+			else if (aggregate_root_storage != NULL && path != NULL &&
+				(path->empty() || i != 0))
+				element = aggregate_path_address(*aggregate_root_storage,
+					aggregate_root_type, element_path);
 			else
 				element = emit_index(sequence,
 					byte_projection ? emit_array_element_offset(object, i) :
@@ -1216,8 +1359,8 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 						size_low_type()), size_low_type(), false), element_type,
 					lowir_model::IPK_ARRAY_ELEMENT);
 			zero_initialize_constructor_value(array.child, element,
-				root_action, root_action != NULL && path != NULL ?
-				&element_path : NULL, NULL);
+				root_action, path != NULL ? &element_path : NULL, NULL,
+				aggregate_root_storage, aggregate_root_type);
 		}
 		return;
 	}
@@ -1239,11 +1382,9 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 		LowType byte;
 		byte.kind = LowType::TYPE_INTEGER;
 		byte.integer_kind = LowType::INTEGER_I8;
-		const std::vector<BindingId> class_members =
-			model_.scopes_[scope.value].bindings;
-		for (std::size_t i = 0; i < class_members.size(); ++i)
+		for (std::size_t i = 0; i < layout.members.size(); ++i)
 		{
-			const BindingId member = class_members[i];
+			const BindingId member = layout.members[i].binding;
 			if (!member.valid() || member.value >= model_.bindings_.size() ||
 				member.value >= model_.binding_owners_.size() ||
 				model_.binding_owners_[member.value] != scope)
@@ -1256,13 +1397,17 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				std::numeric_limits<long long>::max()))
 				throw std::runtime_error("PA15 zero constructor member offset is invalid");
 			std::vector<ConstructorAddressStep> member_path;
-			if (root_action != NULL && path != NULL)
+			if (path != NULL)
 			{
 				member_path = *path;
 				member_path.push_back(ConstructorAddressStep(member));
 			}
 			LoweredValue member_value = root_action != NULL && path != NULL &&
 				i != 0 ? constructor_path_address(*root_action, member_path) :
+				aggregate_root_storage != NULL && path != NULL &&
+				(path->empty() || i != 0) ?
+				aggregate_path_address(*aggregate_root_storage,
+					aggregate_root_type, member_path) :
 				emit_index(destination_value, LoweredValue(integer_operand(
 					static_cast<long long>(*offset), size_low_type()), size_low_type(),
 					false), byte, lowir_model::IPK_FIELD);
@@ -1279,13 +1424,13 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 						"PA15 zero constructor default member initializer is invalid");
 				initialize_constructor_value(model_.binding(member).type,
 					sidecar->default_member_initializer, member_value,
-					root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL, member_context);
+					root_action, path != NULL ? &member_path : NULL,
+					member_context, aggregate_root_storage, aggregate_root_type);
 			}
 			else
 				zero_initialize_constructor_value(model_.binding(member).type,
-					member_value, root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL, member_context);
+					member_value, root_action, path != NULL ? &member_path : NULL,
+					member_context, aggregate_root_storage, aggregate_root_type);
 		}
 		return;
 	}
@@ -1312,7 +1457,9 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	SemanticFactId initializer, const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
 	const std::vector<ConstructorAddressStep>* path,
-	BitFieldInitializationContext* context)
+	BitFieldInitializationContext* context,
+	const LoweredValue* aggregate_root_storage,
+	TypeId aggregate_root_type)
 {
 	BitFieldInitializationContext local_context;
 	if (context == NULL)
@@ -1322,8 +1469,7 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	const SemanticFact& fact = model_.semantic_facts_[initializer.value];
 	if (fact.kind == SemanticFactKind::ConstructorAction)
 	{
-		if (!fact.has_callee || !fact.selected_binding.valid() ||
-			fact.child_count != 0)
+		if (!fact.has_callee || !fact.selected_binding.valid())
 			throw std::runtime_error("PA15 nested constructor initializer is unsupported");
 		const TypeId object = model_.strip_cv_type(
 			model_.expression_object_type(target));
@@ -1359,11 +1505,53 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 		if (constructor.synthetic && constructor.constructor_action_count == 0)
 			return;
 		emit_constructor_call(fact.selected_binding, destination_value,
-			InvalidIdentityValue, 0);
+			children(initializer));
 		return;
 	}
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 constructor target is invalid");
 	if (fact.kind != SemanticFactKind::BracedInitList)
 	{
+		if (fact.kind == SemanticFactKind::Literal &&
+			fact.literal_element_count != 0 &&
+			model_.type_kind(object) == TypeKind::Array)
+		{
+			if (fact.source == NULL || fact.source->kind != PA10NodeKind::Literal ||
+				fact.source->literal.type != FundamentalType::Char ||
+				fact.source->literal.bytes.size() != fact.literal_element_count)
+				throw std::runtime_error("PA15 string literal payload is invalid");
+			const TypeKey& array = model_.types_[object.value];
+			if (array.unknown_bound || fact.literal_element_count > array.bound.value)
+				throw std::runtime_error("PA15 string literal does not fit array");
+			const LowType element_type = low_type(array.child);
+			if (element_type.storage_size() != 1)
+				throw std::runtime_error("PA15 string literal element type is invalid");
+			const LoweredValue sequence = emit_decay(destination_value);
+			for (std::size_t i = 0; i < array.bound.value; ++i)
+			{
+				LoweredValue element;
+				if (aggregate_root_storage != NULL && path != NULL &&
+					(path->empty() || i != 0))
+				{
+					std::vector<ConstructorAddressStep> byte_path = *path;
+					byte_path.push_back(ConstructorAddressStep(BindingId(), i, true));
+					element = aggregate_path_address(*aggregate_root_storage,
+						aggregate_root_type, byte_path);
+				}
+				else
+					element = emit_index(sequence,
+						LoweredValue(integer_operand(static_cast<long long>(i),
+							size_low_type()), size_low_type(), false), element_type,
+						lowir_model::IPK_ARRAY_ELEMENT);
+				const long long value = i < fact.literal_element_count ?
+					static_cast<long long>(fact.source->literal.bytes[i]) : 0;
+				emit_store(element_type, integer_operand(value, element_type),
+					element.value);
+			}
+			return;
+		}
 		const LoweredValue value = lower_expression(initializer);
 		if (destination_value.bit_field_lvalue)
 			initialize_bit_field(destination_value,
@@ -1372,163 +1560,14 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			emit_store(low_type(target), value.value, destination_value.value);
 		return;
 	}
-	const TypeId object = model_.strip_cv_type(
-		model_.expression_object_type(target));
-	if (!object.valid() || object.value >= model_.types_.size())
-		throw std::runtime_error("PA15 braced constructor target is invalid");
-	const std::vector<SemanticFactId> values = children(initializer);
-	if (model_.type_kind(object) == TypeKind::Array)
+	if (fact.kind == SemanticFactKind::BracedInitList)
 	{
-		const TypeKey& array = model_.types_[object.value];
-		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
-			std::numeric_limits<long long>::max()) ||
-			values.size() > array.bound.value)
-			throw std::runtime_error("PA15 braced constructor array bound is invalid");
-		const bool recompute_path = root_action != NULL && path != NULL;
-		const LoweredValue sequence = emit_decay(destination_value);
-		const TypeId child_object = model_.strip_cv_type(
-			model_.expression_object_type(array.child));
-		const bool byte_projection = (child_object.valid() &&
-			model_.type_kind(child_object) == TypeKind::Array) ||
-			class_object_type(array.child);
-		for (std::size_t i = 0; i < array.bound.value; ++i)
-		{
-			const LowType element_type = array_element_instruction_type(array.child);
-			std::vector<ConstructorAddressStep> element_path;
-			LoweredValue element;
-			if (recompute_path)
-			{
-				element_path = *path;
-				element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
-			}
-			if (recompute_path && i != 0)
-			{
-				element = constructor_path_address(*root_action, element_path);
-			}
-			else
-				element = emit_index(sequence,
-					byte_projection ? emit_array_element_offset(object, i) :
-					LoweredValue(integer_operand(static_cast<long long>(i),
-						size_low_type()), size_low_type(), false), element_type,
-					lowir_model::IPK_ARRAY_ELEMENT);
-			if (i < values.size())
-			{
-				const SemanticFact& value = model_.semantic_facts_[values[i].value];
-				if (value.kind == SemanticFactKind::BracedInitList)
-					initialize_constructor_value(array.child, values[i], element,
-						root_action, recompute_path ? &element_path : NULL, NULL);
-				else
-				{
-					const LoweredValue lowered = lower_expression(values[i]);
-					emit_store(element_type, lowered.value, element.value);
-				}
-			}
-			else
-				zero_initialize_constructor_value(array.child, element, root_action,
-					recompute_path ? &element_path : NULL, NULL);
-		}
+		initialize_aggregate_value(target, initializer, destination_value,
+			root_action, path, context, aggregate_root_storage,
+			aggregate_root_type);
 		return;
 	}
-	if (model_.type_kind(object) != TypeKind::Named)
-		throw std::runtime_error("PA15 braced constructor target is not aggregate");
-	const NamedRecordId record = model_.named_record_for_type(object);
-	if (!record.valid() || record.value >= model_.named_.size() ||
-		model_.named_[record.value].kind != NamedKind::Class ||
-		model_.named_[record.value].class_tag == ClassTag::Union ||
-		model_.named_[record.value].has_base)
-		throw std::runtime_error("PA15 braced constructor class is unsupported");
-	const ScopeId scope = model_.named_[record.value].scope;
-	const RecordLayout& layout = model_.record_layout(record);
-	if (!scope.valid() || scope.value >= model_.scopes_.size() ||
-		model_.scopes_[scope.value].kind != ScopeKind::Class ||
-		model_.scopes_[scope.value].record != record ||
-		layout.state != RecordLayoutState::Complete || values.size() >
-		model_.scopes_[scope.value].bindings.size())
-		throw std::runtime_error("PA15 braced constructor class layout is invalid");
-	LowType byte;
-	byte.kind = LowType::TYPE_INTEGER;
-	byte.integer_kind = LowType::INTEGER_I8;
-	std::vector<BindingId> members;
-	const std::vector<BindingId> class_members =
-		model_.scopes_[scope.value].bindings;
-	for (std::size_t i = 0; i < class_members.size(); ++i)
-	{
-		const BindingId member = class_members[i];
-		if (!member.valid() || member.value >= model_.bindings_.size() ||
-			member.value >= model_.binding_owners_.size() ||
-			model_.binding_owners_[member.value] != scope)
-			throw std::runtime_error("PA15 braced constructor member identity is invalid");
-		if (model_.binding(member).kind == BindingKind::Variable &&
-			!model_.is_static_member(member))
-			members.push_back(member);
-	}
-	if (values.size() > members.size())
-		throw std::runtime_error("PA15 braced constructor has too many members");
-	for (std::size_t i = 0; i < members.size(); ++i)
-	{
-		const BindingId member = members[i];
-		const std::size_t* offset = layout.member_offsets.find(member);
-		if (offset == NULL || *offset > static_cast<std::size_t>(
-			std::numeric_limits<long long>::max()))
-			throw std::runtime_error("PA15 braced constructor member offset is invalid");
-		std::vector<ConstructorAddressStep> member_path;
-		if (root_action != NULL && path != NULL)
-		{
-			member_path = *path;
-			member_path.push_back(ConstructorAddressStep(member));
-		}
-		LoweredValue encoded;
-		const bool encoded_bit_field = i < values.size() &&
-			model_.bit_field_fact(member) != NULL;
-		const bool encode_before_address = encoded_bit_field &&
-			!bit_field_initialization_preserves_existing(member, *context);
-		if (encode_before_address)
-			encoded = encode_bit_field_value(member, lower_expression(values[i]),
-				true);
-		LoweredValue member_value = root_action != NULL && path != NULL &&
-			i != 0 ? constructor_path_address(*root_action, member_path) :
-			emit_index(destination_value, LoweredValue(integer_operand(
-				static_cast<long long>(*offset), size_low_type()), size_low_type(),
-				false), byte, lowir_model::IPK_FIELD);
-		if (model_.bit_field_fact(member) != NULL)
-			member_value = mark_bit_field_address(member_value, member);
-		if (encoded_bit_field)
-		{
-			if (encode_before_address)
-				initialize_encoded_bit_field(member_value, member, encoded,
-					*context);
-			else
-				initialize_bit_field(member_value, member,
-					lower_expression(values[i]), *context);
-		}
-		else if (i < values.size())
-			initialize_constructor_value(model_.binding(member).type, values[i],
-				member_value, root_action, root_action != NULL && path != NULL ?
-				&member_path : NULL, NULL);
-		else
-		{
-			BitFieldInitializationContext* member_context =
-				model_.bit_field_fact(member) != NULL ? context : NULL;
-			const BindingSidecar* sidecar = model_.binding_sidecar(member);
-			if (sidecar != NULL && sidecar->default_member_initializer.valid())
-			{
-				if (sidecar->default_member_initializer.value >=
-					model_.semantic_facts_.size())
-					throw std::runtime_error(
-						"PA15 aggregate default member initializer is invalid");
-				initialize_constructor_value(model_.binding(member).type,
-					sidecar->default_member_initializer, member_value,
-					root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL, member_context);
-			}
-			else
-				zero_initialize_constructor_value(model_.binding(member).type,
-					member_value, root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL, member_context);
-		}
-	}
 }
-
 void Pa15Lowerer::lower_constructor_action(
 	const ConstructorActionFact& action,
 	BitFieldInitializationContext& context)

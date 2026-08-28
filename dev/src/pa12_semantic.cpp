@@ -358,6 +358,8 @@ BindingId PA11SemanticModel::builtin_binding(BuiltinKind kind)
 PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
 	: model_(model), semantic_begin_(model.semantic_facts_.size()),
 	  children_begin_(model.semantic_children_.size()),
+	  aggregate_begin_(model.aggregate_elements_.size()),
+	  aggregate_range_entries_begin_(model.aggregate_ranges_.entry_count()),
 	  floating_literal_begin_(model.floating_literal_facts_.size()),
 	  floating_literal_bytes_begin_(model.floating_literal_bytes_.size()),
 	  constant_address_begin_(model.constant_address_facts_.size()),
@@ -378,8 +380,10 @@ void PA11SemanticModel::SemanticTailGuard::discard()
 {
 	if (!active_)
 		return;
+	model_.aggregate_ranges_.truncate(aggregate_range_entries_begin_);
 	model_.semantic_facts_.resize(semantic_begin_);
 	model_.semantic_children_.resize(children_begin_);
+	model_.aggregate_elements_.resize(aggregate_begin_);
 	model_.floating_literal_facts_.resize(floating_literal_begin_);
 	model_.floating_literal_bytes_.resize(floating_literal_bytes_begin_);
 	model_.constant_address_facts_.resize(constant_address_begin_);
@@ -773,6 +777,22 @@ void PA11SemanticModel::set_semantic_children(SemanticFactId fact,
 	owner.child_count = children.size();
 	semantic_children_.insert(semantic_children_.end(), children.begin(),
 		children.end());
+}
+void PA11SemanticModel::set_semantic_aggregate_elements(SemanticFactId fact,
+	const std::vector<AggregateElementFact>& elements,
+	std::size_t total_count)
+{
+	if (!fact.valid() || fact.value >= semantic_facts_.size())
+		throw std::runtime_error("PA12 aggregate fact identity is invalid");
+	if (elements.size() > total_count)
+		throw std::runtime_error("PA12 aggregate element count exceeds destination");
+	if (aggregate_ranges_.find(fact) != NULL)
+		throw std::runtime_error("PA12 aggregate fact range is already published");
+	const std::size_t begin = aggregate_elements_.size();
+	aggregate_elements_.insert(aggregate_elements_.end(), elements.begin(),
+		elements.end());
+	aggregate_ranges_.set(fact, AggregateFactRange(begin, elements.size(),
+		total_count));
 }
 void PA11SemanticModel::set_semantic_name(SemanticFactId fact, const NamePath& path)
 {
@@ -1831,92 +1851,6 @@ ExprInfo PA11SemanticModel::semantic_cast_expression(
 		operand = semantic_expression(operand_node, scope);
 	return semantic_cast_to_target(node, scope, target, operand);
 }
-ExprInfo PA11SemanticModel::semantic_braced_init_list(
-	const PA10AstNode& node, TypeId target, ScopeId scope)
-{
-	if (node.kind != PA10NodeKind::BracedInitList)
-		throw std::runtime_error("PA12 expected braced initializer");
-	const TypeId object = strip_top_cv_type(target);
-	if (type_kind(object) == TypeKind::Named)
-	{
-		const NamedRecordId record = named_record_for_type(object);
-		if (record.valid() && record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Class)
-		{
-			if (named_[record.value].class_tag == ClassTag::Union ||
-				named_[record.value].has_base)
-				throw std::runtime_error(
-					"PA12 aggregate initializer target is unsupported");
-			const ScopeId class_scope = named_[record.value].scope;
-			if (!class_scope.valid() || class_scope.value >= scopes_.size())
-				throw std::runtime_error("PA12 aggregate initializer class scope is missing");
-			std::vector<BindingId> members;
-			bool has_default_member_initializer = false;
-			const Scope& owner = scopes_[class_scope.value];
-			for (std::size_t i = 0; i < owner.bindings.size(); ++i)
-			{
-				const BindingId member_id = owner.bindings[i];
-				const Binding& member = binding(member_id);
-				if (member.kind == BindingKind::Variable &&
-					!is_static_member(member_id))
-				{
-					members.push_back(member_id);
-					const BindingSidecar* sidecar = binding_sidecar(member_id);
-					if (sidecar != NULL && sidecar->has_default_member_initializer)
-						has_default_member_initializer = true;
-				}
-			}
-			if (has_default_member_initializer && !node.children.empty())
-				throw std::runtime_error(
-					"PA12 class with default member initializer is not an aggregate");
-			if (node.children.size() > members.size())
-				throw std::runtime_error(
-					"PA12 aggregate initializer has too many elements");
-			std::vector<SemanticFactId> children;
-			for (std::size_t i = 0; i < node.children.size(); ++i)
-			{
-				const TypeId member_type = binding(members[i]).type;
-				children.push_back(semantic_expression_for_target(node.children[i],
-					scope, member_type).fact);
-			}
-			return ExprInfo(make_expression_fact(SemanticFactKind::BracedInitList,
-				object, SemanticValueCategory::Lvalue, node, children), object,
-				SemanticValueCategory::Lvalue, false);
-		}
-	}
-	if (type_kind(object) != TypeKind::Array)
-	{
-		if (node.children.empty())
-			return semantic_empty_braced_init_list(node, target);
-		if (node.children.size() != 1)
-			throw std::runtime_error("PA12 scalar braced initializer needs one value");
-		const ExprInfo expression = semantic_expression_for_target(
-			node.children.front(), scope, object);
-		return apply_context_conversion(expression, object,
-			semantic_facts_[expression.fact.value].source, scope);
-	}
-	const TypeKey& array = types_[object.value];
-	if (array.unknown_bound || node.children.size() > array.bound.value)
-		throw std::runtime_error("PA12 braced initializer bound mismatch");
-	std::vector<SemanticFactId> children;
-	for (std::size_t i = 0; i < node.children.size(); ++i)
-	{
-		if (node.children[i].kind == PA10NodeKind::BracedInitList)
-		{
-			children.push_back(semantic_braced_init_list(
-				node.children[i], array.child, scope).fact);
-			continue;
-		}
-		const ExprInfo expression = semantic_expression_for_target(
-			node.children[i], scope, array.child);
-		apply_context_conversion(expression, array.child,
-			semantic_facts_[expression.fact.value].source, scope);
-		children.push_back(expression.fact);
-	}
-	return ExprInfo(make_expression_fact(SemanticFactKind::BracedInitList,
-		object, SemanticValueCategory::Lvalue, node, children), object,
-		SemanticValueCategory::Lvalue, false);
-}
 ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId scope)
 {
 	switch (node.kind)
@@ -2092,8 +2026,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		declaration_semantic_ids_.push_back(variable);
 		return variable;
 	}
-	if (node.children.size() != 2 ||
-		node.children[1].kind != PA10NodeKind::InitDeclaratorList)
+	if (node.children.size() != 2 || node.children[1].kind != PA10NodeKind::InitDeclaratorList)
 		throw std::runtime_error("PA12 invalid declaration fact");
 	const PA10AstNode& list = node.children[1];
 	if (list.children.size() != declaration->binding_count)
@@ -2263,6 +2196,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			sidecar.has_default_member_initializer = true;
 			sidecar.default_member_initializer = initializer_fact;
 			set_binding_sidecar(binding_id, sidecar);
+			mark_default_member_initializer(declaration->scope);
 		}
 		if (value.kind == BindingKind::Variable && declaration->automatic_storage &&
 			!declaration->is_static && !declaration->is_thread_local)

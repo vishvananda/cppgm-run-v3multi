@@ -240,6 +240,31 @@ public:
 		const std::size_t entry = entries_.size() - 1;
 		slots_[slot_for_key(key)] = entry;
 	}
+
+	// Semantic fact construction uses append-only arenas with transactional
+	// tails.  A sparse sidecar keyed by a fact identity rolls back by entry
+	// count, so all rolled-back keys disappear together and the probe table is
+	// rebuilt once.  This also keeps a later fact that reuses an identity from
+	// observing a stale range.
+	std::size_t entry_count() const
+	{
+		return entries_.size();
+	}
+
+	void truncate(std::size_t count)
+	{
+		if (count > entries_.size())
+			throw std::runtime_error("PA11 flat index truncate overflow");
+		if (count == entries_.size())
+			return;
+		entries_.erase(entries_.begin() + count, entries_.end());
+		if (entries_.empty())
+		{
+			slots_.clear();
+			return;
+		}
+		rehash(slots_.size());
+	}
 };
 
 enum class LookupGraphKind

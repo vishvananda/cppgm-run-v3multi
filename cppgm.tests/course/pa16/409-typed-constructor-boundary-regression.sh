@@ -104,3 +104,28 @@ if [ "$(rg -c 'store i32 41,' "$aggregate_output" || true)" -ne 1 ] ||
   echo "defaulted/deleted aggregate initialization lost field stores or emitted a constructor" >&2
   exit 1
 fi
+
+aggregate_then_default_source=$build_dir/aggregate-then-default.cpp
+printf '%s\n' \
+  'struct Pair { int first; int second; };' \
+  'int main() {' \
+  '  Pair rows[1] = {{1, 2}};' \
+  '  Pair value = Pair();' \
+  '  return rows[0].first == 1 && rows[0].second == 2 &&' \
+  '         value.first == 0 && value.second == 0 ? 0 : 1;' \
+  '}' >"$aggregate_then_default_source"
+aggregate_then_default_output=$build_dir/aggregate-then-default.lowir
+if "$app" --emit-lowir -O0 -o "$aggregate_then_default_output" \
+    "$aggregate_then_default_source" \
+    >"$aggregate_then_default_output.stdout" \
+    2>"$aggregate_then_default_output.stderr"; then
+  status=0
+else
+  status=$?
+fi
+if [ "$status" -ne 0 ] ||
+   [ "$(rg -c 'call void @Pair__Pair' "$aggregate_then_default_output" || true)" -ne 1 ] ||
+   ! rg -Fq 'call void @Pair__Pair' "$aggregate_then_default_output"; then
+  echo "aggregate forwarding helper leaked into later ordinary value construction" >&2
+  exit 1
+fi

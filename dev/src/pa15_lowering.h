@@ -85,6 +85,59 @@ struct PendingGlobalInitializer
 		: global(global), target(target), index(index), element_type(element_type) {}
 };
 
+// A namespace/static aggregate whose typed initializer cannot be represented
+// by constant data is lowered once from its PA12 root.  The root fact remains
+// canonical; this queue only records the destination storage and never copies
+// aggregate edges or reconstructs source appertainment.
+struct PendingGlobalAggregateInitializer
+{
+	SymbolId global;
+	TypeId type;
+	SemanticFactId initializer;
+
+	PendingGlobalAggregateInitializer(SymbolId global = SymbolId(),
+		TypeId type = TypeId(), SemanticFactId initializer = SemanticFactId())
+		: global(global), type(type), initializer(initializer) {}
+};
+
+// Literal backing storage is interned by typed payload identity.  The bytes
+// remain owned by PA11's decoded constant-address arena; a collision bucket
+// retains only the source fact identity and the LowIR symbol identity.
+struct LiteralContentKey
+{
+	TypeId element_type;
+	std::size_t element_count;
+	std::size_t byte_count;
+	std::uint64_t byte_hash;
+
+	LiteralContentKey(TypeId element_type = TypeId(),
+		std::size_t element_count = 0, std::size_t byte_count = 0,
+		std::uint64_t byte_hash = 0)
+		: element_type(element_type), element_count(element_count),
+		  byte_count(byte_count), byte_hash(byte_hash) {}
+
+	bool operator<(const LiteralContentKey& other) const
+	{
+		if (element_type != other.element_type)
+			return element_type < other.element_type;
+		if (element_count != other.element_count)
+			return element_count < other.element_count;
+		if (byte_count != other.byte_count)
+			return byte_count < other.byte_count;
+		return byte_hash < other.byte_hash;
+	}
+};
+
+struct LiteralContentIdentity
+{
+	ConstantAddressFactId fact;
+	SymbolId symbol;
+
+	LiteralContentIdentity(ConstantAddressFactId fact = ConstantAddressFactId(),
+		SymbolId symbol = SymbolId())
+		: fact(fact), symbol(symbol) {}
+};
+
 struct LabelRecoveryWork
 {
 	// The parent/index ancestry is shared by fact identity.  Keeping only
@@ -301,6 +354,7 @@ public:
 	Pa15Lowerer(const PA11SemanticModel& model, Program& program);
 	void run();
 private:
+	struct TypedGlobalDataAppender;
 	const PA11SemanticModel& model_;
 	Program& program_;
 	std::map<std::string, SpellingId> spelling_ids_;
@@ -322,6 +376,8 @@ private:
 	std::set<std::size_t> emitted_tls_wrappers_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
 	std::map<std::size_t, SymbolId> literal_address_symbols_;
+	std::map<LiteralContentKey, std::vector<LiteralContentIdentity> >
+		literal_content_symbols_;
 	std::vector<BlockId> label_blocks_;
 	std::vector<unsigned char> label_referenced_;
 	std::vector<unsigned char> label_subtrees_;
@@ -361,6 +417,8 @@ private:
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
 	std::vector<PendingGlobalInitializer> pending_global_initializers_;
+	std::vector<PendingGlobalAggregateInitializer>
+		pending_global_aggregate_initializers_;
 	bool needs_trivial_namespace_object_init_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
@@ -452,8 +510,8 @@ private:
 		long long* addend, const ConstantAddressFact** relocation);
 	std::string internal_value_name(ScopeId owner, NameId name) const;
 	SpellingId symbol_name_for(SymbolId target) const;
-	void append_array_data(GlobalDefinition* global, TypeId array_type,
-		const std::vector<SemanticFactId>& initializers, ScopeId scope);
+	bool append_typed_global_data(GlobalDefinition* global, TypeId type,
+		SemanticFactId initializer);
 	void collect_globals();
 	void materialize_pending_global_initializers();
 	void index_function_scope_variables();
@@ -548,6 +606,8 @@ private:
 	LoweredValue emit_decay(const LoweredValue& address);
 	LoweredValue storage_for(BindingId binding) const;
 	std::vector<SemanticFactId> children(SemanticFactId id) const;
+	const AggregateElementFact* aggregate_elements(SemanticFactId id,
+		std::size_t* count, std::size_t* total_count) const;
 	LowType lvalue_type(SemanticFactId id) const;
 	bool reference_binding(BindingId binding) const;
 	LoweredValue generated_slot(const LowType& type, const std::string& prefix);
@@ -600,6 +660,8 @@ private:
 		const ConstructorActionFact& action);
 	LoweredValue constructor_path_address(const ConstructorActionFact& action,
 		const std::vector<ConstructorAddressStep>& path);
+	LoweredValue aggregate_path_address(const LoweredValue& storage,
+		TypeId root_type, const std::vector<ConstructorAddressStep>& path);
 	std::size_t checked_array_element_offset(TypeId array, std::size_t index) const;
 	LowType array_element_instruction_type(TypeId element) const;
 	LoweredValue emit_array_element_offset(TypeId array, std::size_t index);
@@ -636,14 +698,24 @@ private:
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
 		const std::vector<ConstructorAddressStep>* path = NULL,
-		BitFieldInitializationContext* context = NULL);
+		BitFieldInitializationContext* context = NULL,
+		const LoweredValue* aggregate_root_storage = NULL,
+		TypeId aggregate_root_type = TypeId());
+	void initialize_aggregate_value(TypeId target, SemanticFactId initializer,
+		const LoweredValue& destination,
+		const ConstructorActionFact* root_action,
+		const std::vector<ConstructorAddressStep>* path,
+		BitFieldInitializationContext* context,
+		const LoweredValue* aggregate_root_storage, TypeId aggregate_root_type);
 	void zero_initialize_value_initialized_object(TypeId target,
 		const LoweredValue& destination);
 	void zero_initialize_constructor_value(TypeId target,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
 		const std::vector<ConstructorAddressStep>* path = NULL,
-		BitFieldInitializationContext* context = NULL);
+		BitFieldInitializationContext* context = NULL,
+		const LoweredValue* aggregate_root_storage = NULL,
+		TypeId aggregate_root_type = TypeId());
 	bool constructor_action_is_noop(const SemanticFact& action) const;
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action,

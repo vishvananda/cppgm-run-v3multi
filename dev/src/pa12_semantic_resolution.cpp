@@ -1302,12 +1302,18 @@ ExprInfo PA11SemanticModel::semantic_functional_cast(
 			call.selected_binding = selection.binding;
 			call.selected_scope = selection.scope;
 			call.callable_type = selection.callable_type;
+			call.value_initialize = true;
 			const SemanticFactId call_id = make_semantic_fact(call);
 			set_semantic_children(call_id, selection.arguments);
 			SemanticFact temporary(SemanticFactKind::ConstructorAction, target,
 				SemanticValueCategory::Prvalue, &node);
 			temporary.has_callee = true;
 			temporary.temporary_object = true;
+			// A zero-argument functional construction is value-initialization,
+			// even when the selected implicit constructor has an empty action
+			// list.  The destination owner performs the zero-initialization;
+			// PA15 must not materialize a throwaway constructor temporary.
+			temporary.value_initialize = true;
 			temporary.selected_binding = selection.binding;
 			temporary.selected_scope = selection.scope;
 			temporary.callable_type = selection.callable_type;

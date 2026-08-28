@@ -14,7 +14,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  global_symbols_(), global_name_ids_(),
 		  thread_local_by_binding_(), required_global_bindings_(),
 		  emitted_tls_wrappers_(),
-		  symbol_name_ids_(), literal_address_symbols_(), label_blocks_(),
+		  symbol_name_ids_(), literal_address_symbols_(), literal_content_symbols_(), label_blocks_(),
 		  label_referenced_(), label_subtrees_(), label_index_states_(),
 		  label_subtree_states_(), label_lowered_(), label_block_generations_(),
 		  label_referenced_generations_(), fact_index_generations_(),
@@ -35,6 +35,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_initializers_(),
+		  pending_global_aggregate_initializers_(),
 		  needs_trivial_namespace_object_init_(false),
 		  function_scope_variables_(), next_symbol_(0),
 		  literal_backing_ordinal_(0), next_value_(program.values.size()),
@@ -750,98 +751,6 @@ bool Pa15Lowerer::typed_pointer_zero(SemanticFactId id,
 			model_.strip_cv_type(destination);
 	}
 
-bool Pa15Lowerer::map_constant_address(SemanticFactId id, SymbolId* target,
-		long long* addend, const ConstantAddressFact** relocation){
-		if (relocation != NULL) *relocation = NULL;
-		if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
-			target == NULL || addend == NULL)
-			return false;
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (!fact.constant_address.valid() ||
-			fact.constant_address.value >= model_.constant_address_facts_.size())
-			return false;
-		const ConstantAddressFact& value =
-			model_.constant_address_facts_[fact.constant_address.value];
-		if (!value.evaluated || !value.valid ||
-			value.kind == ConstantAddressKind::None)
-			return false;
-		if (value.kind == ConstantAddressKind::Literal)
-		{
-			std::map<std::size_t, SymbolId>::const_iterator found =
-				literal_address_symbols_.find(fact.constant_address.value);
-			if (found != literal_address_symbols_.end())
-			{
-				*target = found->second;
-				*addend = value.byte_addend;
-				if (relocation != NULL) *relocation = &value;
-				return true;
-			}
-			if (!value.element_type.valid() || value.literal_element_count == 0 ||
-				value.literal_byte_begin == InvalidIdentityValue ||
-				value.literal_byte_begin >
-				model_.constant_address_literal_bytes_.size() ||
-				value.literal_byte_count >
-				model_.constant_address_literal_bytes_.size() -
-				value.literal_byte_begin)
-				return false;
-			const LowType element_type = low_type(value.element_type);
-			const std::size_t element_size = element_type.storage_size();
-			if (element_size == 0 || value.literal_element_count >
-				std::numeric_limits<std::size_t>::max() / element_size ||
-			value.literal_byte_count != value.literal_element_count *
-				element_size)
-				return false;
-			GlobalDefinition literal_global;
-			literal_global.symbol_id = SymbolId(next_symbol_++);
-			std::ostringstream name;
-			name << "__strlit__" << ++literal_backing_ordinal_;
-			literal_global.name_id = symbol_spelling(name.str());
-			literal_global.structured = true;
-			literal_global.metadata.binding = lowir_model::SBM_INTERNAL;
-			for (std::size_t i = 0; i < value.literal_element_count; ++i)
-			{
-				std::uint64_t bits = 0;
-				for (std::size_t byte = 0; byte < element_size; ++byte)
-					bits |= static_cast<std::uint64_t>(
-						model_.constant_address_literal_bytes_[
-							value.literal_byte_begin + i * element_size + byte]) <<
-						(byte * 8);
-				GlobalDefinition::DataItem item;
-				item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
-				item.type = element_type;
-				item.literal_operand = integer_operand(
-					static_cast<long long>(bits), element_type);
-				literal_global.data_items.push_back(item);
-			}
-			literal_address_symbols_[fact.constant_address.value] =
-				literal_global.symbol_id;
-			symbol_name_ids_[literal_global.symbol_id.index] =
-				literal_global.name_id;
-			program_.globals.push_back(literal_global);
-			*target = literal_global.symbol_id;
-			*addend = value.byte_addend;
-			if (relocation != NULL) *relocation = &value;
-			return true;
-		}
-		if (!value.target.valid())
-			return false;
-		std::map<std::size_t, SymbolId>::const_iterator global =
-			global_symbols_.find(value.target.value);
-		if (global != global_symbols_.end())
-			*target = global->second;
-		else
-		{
-			std::map<std::size_t, SymbolId>::const_iterator function =
-				function_symbols_.find(value.target.value);
-			if (function == function_symbols_.end()) return false;
-			demand_function_declaration(BindingId(value.target.value));
-			*target = function->second;
-		}
-		*addend = value.byte_addend;
-		if (relocation != NULL) *relocation = &value;
-		return true;
-	}
-
 std::string Pa15Lowerer::internal_value_name(ScopeId owner, NameId name) const{
 		const std::vector<std::string> components = value_components(owner, name);
 		std::string result;
@@ -858,63 +767,6 @@ SpellingId Pa15Lowerer::symbol_name_for(SymbolId target) const{
 			symbol_name_ids_.find(target.index);
 		if (found != symbol_name_ids_.end()) return found->second;
 		return SpellingId();
-	}
-
-void Pa15Lowerer::append_array_data(GlobalDefinition* global, TypeId array_type,
-		const std::vector<SemanticFactId>& initializers, ScopeId scope){
-		TypeId element = model_.types_[array_type.value].child;
-		const LowType element_type = low_type(element);
-		const std::size_t bound = model_.types_[array_type.value].bound.value;
-		std::size_t pending_zero_bytes = 0;
-		const auto flush_zeroes = [&]() {
-			if (pending_zero_bytes == 0) return;
-			GlobalDefinition::DataItem zero;
-			zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
-			zero.zero_bytes = pending_zero_bytes;
-			global->data_items.push_back(zero);
-			pending_zero_bytes = 0;
-		};
-		for (std::size_t i = 0; i < bound; ++i)
-		{
-			if (i >= initializers.size())
-			{
-				pending_zero_bytes += element_type.storage_size();
-				continue;
-			}
-			const SemanticFactId initializer = initializers[i];
-			if (element_type.is_pointer() && typed_pointer_zero(initializer,
-				element))
-			{
-				pending_zero_bytes += element_type.storage_size();
-				continue;
-			}
-			flush_zeroes();
-			SymbolId target;
-			long long addend = 0;
-			if (element_type.is_pointer() && map_constant_address(
-				initializer, &target, &addend, NULL))
-			{
-				GlobalDefinition::DataItem item;
-				item.kind = GlobalDefinition::DataItem::ITEM_ADDR;
-				item.type = element_type;
-				item.symbol_id = target;
-				item.addr_addend = addend;
-				item.symbol_name_id = symbol_name_for(target);
-				if (!item.symbol_name_id.valid())
-					throw std::runtime_error("PA15 global address target has no name");
-				global->data_items.push_back(item);
-				continue;
-			}
-			Operand value;
-			if (!constant_integer(initializer, element_type, &value))
-				throw std::runtime_error("PA15 nonconstant global array initializer");
-			GlobalDefinition::DataItem item;
-			item.kind = GlobalDefinition::DataItem::ITEM_INTEGER;
-			item.type = element_type;
-			item.literal_operand = value;
-			global->data_items.push_back(item);
-		}
-		flush_zeroes();
 	}
 
 void Pa15Lowerer::collect_globals(){
@@ -1018,14 +870,35 @@ void Pa15Lowerer::collect_globals(){
 				{
 					if (model_.types_[object_type.value].unknown_bound)
 						throw std::runtime_error("PA15 unknown-bound array needs an extern declaration");
+					const LowType entry_type = low_type(object_type);
 					entry.structured = true;
-					if (initializers.size() == 1 && model_.semantic_facts_[initializers.front().value].kind ==
-						SemanticFactKind::BracedInitList)
-						append_array_data(&entry, object_type, children(initializers.front()),
-							ScopeId(scope_index));
+					if (initializers.empty())
+					{
+						GlobalDefinition::DataItem zero;
+						zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
+						zero.zero_bytes = entry_type.storage_size();
+						entry.data_items.push_back(zero);
+					}
 					else
-						append_array_data(&entry, object_type, std::vector<SemanticFactId>(),
-							ScopeId(scope_index));
+					{
+						if (initializers.size() != 1)
+							throw std::runtime_error(
+								"PA15 global aggregate initializer arity is invalid");
+						GlobalDefinition candidate = entry;
+						if (append_typed_global_data(&candidate, object_type,
+							initializers.front()))
+							entry.data_items.swap(candidate.data_items);
+						else
+						{
+							GlobalDefinition::DataItem zero;
+							zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
+							zero.zero_bytes = entry_type.storage_size();
+							entry.data_items.push_back(zero);
+							pending_global_aggregate_initializers_.push_back(
+								PendingGlobalAggregateInitializer(symbol, binding.type,
+									initializers.front()));
+						}
+					}
 				}
 				else
 				{
@@ -1034,18 +907,38 @@ void Pa15Lowerer::collect_globals(){
 					{
 						// Emit zero storage only after the conservative typed checkpoint
 						// check; do not synthesize lifetime or initializer actions.
-						if (!initializers.empty())
-							throw std::runtime_error(
-								"PA15 initialized class global is outside layout checkpoint");
-						if (!checkpoint_zero_storage_eligible(binding.type))
-							throw std::runtime_error(
-								"PA15 namespace class zero storage is not proven trivial");
 						entry.structured = true;
-						GlobalDefinition::DataItem zero;
-						zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
-						zero.zero_bytes = entry.type.object_bytes;
-						entry.data_items.push_back(zero);
-						needs_trivial_namespace_object_init_ = true;
+						if (initializers.empty())
+						{
+							if (!checkpoint_zero_storage_eligible(binding.type))
+								throw std::runtime_error(
+									"PA15 namespace class zero storage is not proven trivial");
+							GlobalDefinition::DataItem zero;
+							zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
+							zero.zero_bytes = entry.type.object_bytes;
+							entry.data_items.push_back(zero);
+							needs_trivial_namespace_object_init_ = true;
+						}
+						else
+						{
+							if (initializers.size() != 1)
+								throw std::runtime_error(
+									"PA15 global class initializer arity is invalid");
+							GlobalDefinition candidate = entry;
+							if (append_typed_global_data(&candidate, binding.type,
+								initializers.front()))
+								entry.data_items.swap(candidate.data_items);
+							else
+							{
+								GlobalDefinition::DataItem zero;
+								zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
+								zero.zero_bytes = entry.type.object_bytes;
+								entry.data_items.push_back(zero);
+								pending_global_aggregate_initializers_.push_back(
+									PendingGlobalAggregateInitializer(symbol, binding.type,
+									initializers.front()));
+							}
+						}
 					}
 					else if (initializers.empty())
 						entry.init_kind = GlobalDefinition::INIT_ZERO;
@@ -1111,6 +1004,7 @@ void Pa15Lowerer::collect_globals(){
 
 void Pa15Lowerer::materialize_pending_global_initializers(){
 		if (pending_global_initializers_.empty() &&
+			pending_global_aggregate_initializers_.empty() &&
 			!needs_trivial_namespace_object_init_)
 			return;
 		Function init;
@@ -1154,6 +1048,22 @@ void Pa15Lowerer::materialize_pending_global_initializers(){
 			pointer.kind = LowType::TYPE_POINTER;
 			emit_store(pointer, element.value,
 				global_operand(pending.global, global_name));
+		}
+		for (std::size_t i = 0; i < pending_global_aggregate_initializers_.size(); ++i)
+		{
+			const PendingGlobalAggregateInitializer& pending =
+				pending_global_aggregate_initializers_[i];
+			const SpellingId global_name = symbol_name_for(pending.global);
+			if (!global_name.valid() || !pending.type.valid() ||
+				!pending.initializer.valid())
+				throw std::runtime_error("PA15 aggregate init target is incomplete");
+			const LowType object_type = low_type(pending.type);
+			LoweredValue storage(global_operand(pending.global, global_name),
+				object_type, true);
+			const LoweredValue address = address_of_storage(storage);
+			const std::vector<ConstructorAddressStep> empty_path;
+			initialize_constructor_value(pending.type, pending.initializer,
+				address, NULL, &empty_path, NULL, &storage, pending.type);
 		}
 		Instruction ret;
 		ret.kind = Instruction::IK_RETURN;
@@ -1973,6 +1883,15 @@ LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 			model_.bit_field_fact(fact.selected_binding) != NULL)
 			return mark_bit_field_address(lower_member_address(id),
 				fact.selected_binding);
+		if (fact.kind == SemanticFactKind::MemberExpression &&
+			reference_binding(fact.selected_binding))
+		{
+			const LoweredValue address = lower_member_address(id);
+			const ValueId referent = emit_load(address, address.type);
+			const Instruction& load = block().instructions.back();
+			return LoweredValue(temporary_operand(referent,
+				load.destination_name_id), lvalue_type(id), true, address.type);
+		}
 		const LoweredValue address = lower_address(id);
 		return LoweredValue(address.value, lvalue_type(id), true);
 	}

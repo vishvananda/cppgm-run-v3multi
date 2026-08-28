@@ -2723,7 +2723,7 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 	case SemanticFactKind::BracedInitList:
 		output << "braced-init-list " << semantic_category_name(fact.category) <<
 			' ' << type << '\n';
-		break;
+		dump_pa12_aggregate_fact(output, id, depth); return;
 	case SemanticFactKind::SizeofExpression:
 		output << "sizeof-expression " << semantic_category_name(fact.category) <<
 			' ' << type << '\n';

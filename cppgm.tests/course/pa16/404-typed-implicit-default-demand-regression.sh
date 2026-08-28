@@ -91,15 +91,20 @@ else
   status=$?
 fi
 empty_aggregate_body=$build_dir/empty-aggregate-dmi.main
-sed -n '/^function @main/,/^}/p' "$empty_aggregate_output" >"$empty_aggregate_body"
+empty_main_body=$build_dir/empty-aggregate-dmi.main-function
+sed -n '/^function @Aggregate__Aggregate/,/^}/p' "$empty_aggregate_output" >"$empty_aggregate_body"
+sed -n '/^function @main/,/^}/p' "$empty_aggregate_output" >"$empty_main_body"
 empty_zero_line=$(rg -n -m1 'store [^ ]+ 0,' "$empty_aggregate_body" | cut -d: -f1 || true)
 empty_dmi_line=$(rg -n -m1 'store [^ ]+ 5,' "$empty_aggregate_body" | cut -d: -f1 || true)
 if [ "$status" -ne 0 ] ||
    rg -q -e 'function @Empty__Empty|call void @Empty__Empty' \
-     "$empty_aggregate_output" ||
+      "$empty_aggregate_output" ||
+   [ "$(rg -c '^function @main' "$empty_aggregate_output" || true)" -ne 1 ] ||
+   [ "$(rg -c 'call void @Aggregate__Aggregate' "$empty_main_body" || true)" -ne 1 ] ||
+   [ "$(rg -c '^function @Aggregate__Aggregate' "$empty_aggregate_output" || true)" -ne 1 ] ||
    [ -z "$empty_zero_line" ] || [ -z "$empty_dmi_line" ] ||
    [ "$empty_zero_line" -ge "$empty_dmi_line" ]; then
-  echo "aggregate Empty DMI did not preserve zero/DMI ordering" >&2
+  echo "non-aggregate DMI constructor was not uniquely reached with zero/DMI ordering" >&2
   exit 1
 fi
 
@@ -238,14 +243,33 @@ else
   status=$?
 fi
 aggregate_body=$build_dir/aggregate-value.main
+aggregate_holder_body=$build_dir/aggregate-value.holder
+aggregate_member_body=$build_dir/aggregate-value.member
 sed -n '/^function @main/,/^}/p' "$aggregate_output" >"$aggregate_body"
+sed -n '/^function @AggregateHolder__AggregateHolder/,/^}/p' \
+  "$aggregate_output" >"$aggregate_holder_body"
+sed -n '/^function @AggregateValue__AggregateValue/,/^}/p' \
+  "$aggregate_output" >"$aggregate_member_body"
 aggregate_zero_line=$(rg -n -m1 'store [^ ]+ 0,' "$aggregate_body" | cut -d: -f1 || true)
-aggregate_dmi_line=$(rg -n -m1 'store [^ ]+ 5,' "$aggregate_body" | cut -d: -f1 || true)
-aggregate_tail_line=$(rg -n -m1 'store [^ ]+ 7,' "$aggregate_body" | cut -d: -f1 || true)
+aggregate_member_dmi_line=$(rg -n -m1 'store [^ ]+ 5,' \
+  "$aggregate_member_body" | cut -d: -f1 || true)
+aggregate_member_call_line=$(rg -n -m1 'call void @AggregateValue__AggregateValue' \
+  "$aggregate_holder_body" | cut -d: -f1 || true)
+aggregate_tail_line=$(rg -n -m1 'store [^ ]+ 7,' "$aggregate_holder_body" | \
+  cut -d: -f1 || true)
+aggregate_holder_call_line=$(rg -n -m1 'call void @AggregateHolder__AggregateHolder' \
+  "$aggregate_body" | cut -d: -f1 || true)
 if [ "$status" -ne 0 ] || [ -z "$aggregate_zero_line" ] ||
-   [ -z "$aggregate_dmi_line" ] || [ -z "$aggregate_tail_line" ] ||
-   [ "$aggregate_zero_line" -ge "$aggregate_dmi_line" ] ||
-   [ "$aggregate_dmi_line" -ge "$aggregate_tail_line" ]; then
-  echo "aggregate empty-brace initialization did not preserve DMI ordering" >&2
+   [ -z "$aggregate_member_dmi_line" ] ||
+   [ -z "$aggregate_member_call_line" ] || [ -z "$aggregate_tail_line" ] ||
+   [ -z "$aggregate_holder_call_line" ] ||
+   [ "$(rg -c '^function @main' "$aggregate_output" || true)" -ne 1 ] ||
+   [ "$(rg -c '^function @AggregateHolder__AggregateHolder' "$aggregate_output" || true)" -ne 1 ] ||
+   [ "$(rg -c '^function @AggregateValue__AggregateValue' "$aggregate_output" || true)" -ne 1 ] ||
+   [ "$(rg -c 'call void @AggregateHolder__AggregateHolder' "$aggregate_body" || true)" -ne 1 ] ||
+   [ "$(rg -c 'call void @AggregateValue__AggregateValue' "$aggregate_holder_body" || true)" -ne 1 ] ||
+   [ "$aggregate_zero_line" -ge "$aggregate_holder_call_line" ] ||
+   [ "$aggregate_member_call_line" -ge "$aggregate_tail_line" ]; then
+  echo "aggregate empty-brace initialization was not uniquely reached with DMI ordering" >&2
   exit 1
 fi

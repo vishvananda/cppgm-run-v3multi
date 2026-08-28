@@ -146,17 +146,59 @@ bool PA11SemanticModel::semantic_local_class_initializer(
 		arguments.reserve(clause->children.size());
 		for (std::size_t i = 0; i < clause->children.size(); ++i)
 			arguments.push_back(&clause->children[i]);
-		set_semantic_children(variable, std::vector<SemanticFactId>(1,
-			semantic_constructor_action(storage, source, arguments, access_scope)));
+		const SemanticFactId action = semantic_constructor_action(storage, source,
+			arguments, access_scope);
+		if (clause->kind == PA10NodeKind::ParenInitializer &&
+			clause->children.empty())
+			semantic_facts_[action.value].value_initialize = true;
+		set_semantic_children(variable, std::vector<SemanticFactId>(1, action));
 		return true;
 	}
 	return false;
 }
 
+ExprInfo PA11SemanticModel::semantic_aggregate_constructor_value(
+	const PA10AstNode& source, TypeId target, ScopeId access_scope,
+	const std::vector<const PA10AstNode*>& argument_nodes,
+	bool value_initialize)
+{
+	const TypeId object = strip_top_cv_type(target);
+	const NamedRecordId record = named_record_for_type(object);
+	if (!record.valid() || record.value >= named_.size() ||
+		named_[record.value].kind != NamedKind::Class ||
+		named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error(
+			"PA12 aggregate constructor target is not a supported class");
+	BindingId aggregate_binding;
+	if (!argument_nodes.empty() && !has_constructor_declaration(record) &&
+		aggregate_class_initialization_supported(record))
+		aggregate_binding = ensure_aggregate_constructor(record);
+	const ConstructorSelection selection = select_constructor(record,
+		access_scope, argument_nodes, true,
+		ConstructorInitializationContext::Direct, aggregate_binding);
+	if (!selection.valid())
+		throw std::runtime_error("PA12 aggregate constructor selection is incomplete");
+	if (function_declaration_kind(selection.binding) ==
+		FunctionDeclarationKind::Deleted)
+		throw std::runtime_error(
+			"PA12 aggregate constructor selects a deleted constructor");
+	SemanticFact fact(SemanticFactKind::ConstructorAction, target,
+		SemanticValueCategory::Lvalue, &source);
+	fact.has_callee = true;
+	fact.value_initialize = value_initialize;
+	fact.selected_binding = selection.binding;
+	fact.selected_scope = selection.scope;
+	fact.callable_type = selection.callable_type;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_children(result, selection.arguments);
+	return ExprInfo(result, target, SemanticValueCategory::Lvalue, false);
+}
+
 ConstructorSelection PA11SemanticModel::select_constructor(
 	NamedRecordId record_id, ScopeId access_scope,
 	const std::vector<const PA10AstNode*>& argument_nodes,
-	bool allow_implicit_default, ConstructorInitializationContext context)
+	bool allow_implicit_default, ConstructorInitializationContext context,
+	BindingId forced_binding)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class ||
@@ -175,36 +217,56 @@ ConstructorSelection PA11SemanticModel::select_constructor(
 	// scan the owning scope's unrelated fields, types, or methods on every use.
 	// The list is copied into ValueRefs before implicit-default publication so
 	// no reference into an arena-backed container survives that growth.
-	const ValueList* constructor_values =
-		scopes_[class_scope.value].values.find(record.name);
 	FlatIndex<BindingId, bool, IdentityHash<BindingId> > seen;
-	if (constructor_values != NULL)
+	if (forced_binding.valid())
 	{
-		for (std::size_t i = 0; i < constructor_values->entries.size(); ++i)
+		if (forced_binding.value >= bindings_.size() ||
+			forced_binding.value >= binding_owners_.size() ||
+			binding_owners_[forced_binding.value] != class_scope)
+			throw std::runtime_error(
+				"PA12 forced constructor owner is invalid");
+		const Binding& candidate = binding(forced_binding);
+		const BindingSidecar* sidecar = binding_sidecar(forced_binding);
+		if (candidate.kind != BindingKind::Function ||
+			!candidate.type.valid() || candidate.type.value >= types_.size() ||
+			type_kind(candidate.type) != TypeKind::Function || sidecar == NULL ||
+			sidecar->constructor_record != record_id)
+			throw std::runtime_error("PA12 forced constructor identity is invalid");
+		seen.set(forced_binding, true);
+		candidates.push_back(ValueRef(class_scope, forced_binding));
+	}
+	else
+	{
+		const ValueList* constructor_values =
+			scopes_[class_scope.value].values.find(record.name);
+		if (constructor_values != NULL)
 		{
-			const ValueEntry& entry = constructor_values->entries[i];
-			const BindingId candidate_id = entry.binding;
-			if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
-				candidate_id.value >= binding_owners_.size() ||
-				binding_owners_[candidate_id.value] != class_scope ||
-				entry.origin != class_scope)
-				throw std::runtime_error(
-					"PA12 constructor value index identity is invalid");
-			if (seen.find(candidate_id) != NULL)
-				throw std::runtime_error(
-					"PA12 duplicate constructor value index entry");
-			seen.set(candidate_id, true);
-			const Binding& candidate = binding(candidate_id);
-			if (candidate.kind != BindingKind::Function ||
-				!candidate.type.valid() || candidate.type.value >= types_.size() ||
-				type_kind(candidate.type) != TypeKind::Function)
-				continue;
-			const BindingSidecar* sidecar = binding_sidecar(candidate_id);
-			if (sidecar == NULL || sidecar->constructor_record != record_id ||
-				(context == ConstructorInitializationContext::Copy &&
-					sidecar->explicit_constructor))
-				continue;
-			candidates.push_back(ValueRef(class_scope, candidate_id));
+			for (std::size_t i = 0; i < constructor_values->entries.size(); ++i)
+			{
+				const ValueEntry& entry = constructor_values->entries[i];
+				const BindingId candidate_id = entry.binding;
+				if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+					candidate_id.value >= binding_owners_.size() ||
+					binding_owners_[candidate_id.value] != class_scope ||
+					entry.origin != class_scope)
+					throw std::runtime_error(
+						"PA12 constructor value index identity is invalid");
+				if (seen.find(candidate_id) != NULL)
+					throw std::runtime_error(
+						"PA12 duplicate constructor value index entry");
+				seen.set(candidate_id, true);
+				const Binding& candidate = binding(candidate_id);
+				if (candidate.kind != BindingKind::Function ||
+					!candidate.type.valid() || candidate.type.value >= types_.size() ||
+					type_kind(candidate.type) != TypeKind::Function)
+					continue;
+				const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+				if (sidecar == NULL || sidecar->constructor_record != record_id ||
+					(context == ConstructorInitializationContext::Copy &&
+						sidecar->explicit_constructor))
+					continue;
+				candidates.push_back(ValueRef(class_scope, candidate_id));
+			}
 		}
 	}
 	if (candidates.empty() && argument_nodes.empty() &&
@@ -451,6 +513,14 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 					strip_top_cv_type(target_type),
 					SemanticValueCategory::Lvalue, *argument,
 					std::vector<SemanticFactId>());
+				const TypeId array_type = strip_top_cv_type(target_type);
+				if (!array_type.valid() || array_type.value >= types_.size() ||
+					types_[array_type.value].unknown_bound)
+					throw std::runtime_error(
+						"PA12 empty array initializer has no complete bound");
+				std::vector<AggregateElementFact> elements;
+				set_semantic_aggregate_elements(empty_initializer, elements,
+					types_[array_type.value].bound.value);
 				ConstructorActionFact action(ConstructorActionTarget::Member,
 					NamedRecordId(), member);
 				action.object_type = target_type;
