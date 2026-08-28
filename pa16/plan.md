@@ -14,7 +14,9 @@ inheritance, class-by-value transfer, or conversion operators are added.
 The audit also repaired the constructor-probe rank boundary, the
 equal-rank member-object cv subset comparison, malformed-record bounds checks,
 and final-fact access-scope retention; it added only a reduced course-414
-operator regression.
+operator regression. Comparator bodies are owned by the already-linked
+`pa12_semantic_calls.cpp`; `pa12_semantic_selection.h` retains the typed
+declarations.
 
 The governing material is spec.md §§2--5 and §7 and N3485 [conv.ptr],
 [conv.qual], [dcl.init.ref], and [over.ics.rank]. The existing PA16 contract
@@ -138,8 +140,9 @@ Surface audit disposition:
   discovery, classifies pointer/reference conversions, stores compact selected
   endpoints/scope, threads scope through casts/returns, and uses typed
   comparison for function-id/template resolution.
-- `dev/src/pa12_semantic_selection.h`: defines the shared conversion kind,
-  category, secondary metadata, and comparison boundary.
+- `dev/src/pa12_semantic_selection.h`: declares the shared conversion kind,
+  category, secondary metadata, and comparison boundary; the comparison
+  bodies are owned by `dev/src/pa12_semantic_calls.cpp`.
 - `dev/src/pa15_lowering.cpp` and `dev/src/pa15_lowering.h`: dispatch and
   declare the final typed conversion path; no lookup or rendered-name recovery
   occurs at lowering.
@@ -164,10 +167,11 @@ condition-only boolean conversion; those targets cannot perform this class
 base adjustment.
 
 The final through-PA15 record is `1167/1167`; the final file audit exits `0`
-with six header-division warnings in `dev/src/abi_mangle.h`,
+with five header-division warnings in `dev/src/abi_mangle.h`,
 `dev/src/cpp_semantic_core.h`, `dev/src/lowir_model.h`,
-`dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic_selection.h`, and
-`dev/src/pa15_lowering.h`. `git diff --check` exits `0`. The two
+`dev/src/pa11_semantic_model.h`, and `dev/src/pa15_lowering.h`;
+`dev/src/pa12_semantic_selection.h` is not among them. `git diff --check`
+exits `0`. The two
 focused holdouts are deliberately outside this slice: scalar index
 scaling/array-initializer lowering. The remaining control failures are the
 unchanged static same-signature and string-literal pointer-rejection paths.
@@ -194,10 +198,10 @@ and observable base projections are 4, 18, or 66 for depths 1, 8, or 32.
 The cases include direct and transitive pointer/reference conversion, nearer
 base selection, and pointer-to-const-void competition. The final replay is
 preserved at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v2/structural-replay-v2`:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v3/structural-replay-v3`:
 9 cases x 2 runs, 18 expected-hash matches, 18 zero exits, and zero
 run-pair mismatches. The current rebuilt compiler SHA-256 is
-`718cad77a9f2e9dbf5e5ffcf66d20e45184388d90689d67fe62cbf5cafd109a7`, kept
+`d1352cd1c16bcd58587ee9ad201a56665819e671933db979c8df1aea6124c41b`, kept
 separate from the frozen hash above. This is deterministic structural
 evidence only; it makes no timing, RSS, speedup, allocation, or asymptotic
 claim.
@@ -218,4 +222,4 @@ access, and member residuals remain documented holdouts.
 | `2d93a5e9` ordinary non-template overloaded-operator audit | Final PA16 `127/243`, `116` failed, `243/243` covered; through-PA15 `1167/1167`; focused `29/32` with three documented holdouts; deterministic performance evidence hash `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. |
 | `da4252b6` typed bit-field boundary audit | Final PA16 `131/243`, `112` failed, `243/243` covered; through-PA15 `1167/1167`; focused `5/11`; deterministic performance evidence hash `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`; timing/RSS medians remain historical evidence only. |
 | `9718b987` member-function-definition declarator audit | Final PA16 `132/243`, `111` failed, `243/243` covered; through-PA15 `1167/1167`; course 413 and file audit passed; focused `5/7`; excluded out-of-class special-member forms remain out of scope. |
-| `4efddaae` typed single-inheritance standard-conversion checkpointAudit | Complete: typed endpoint/scope/path ownership is retained through PA12 publication into PA15; the typed comparator enforces standard > `UserDefined` > `Ellipsis`, leaves user-defined/user-defined first-standard ranks incomparable, and preserves standard legacy plus derived distance/cv ordering. Member-object cv subset ordering, malformed-ID guards, final-fact scope-range validation, and the strengthened course-414 operator regression are repaired. Final PA16 is `144/243` with `99` failures and `243/243` identities covered; exact comparison with the turn-start map has baseline-only `∅` and final-only `∅`. Focused conversion is `8/10`, access/rank/parser controls `7/9`, and PA15 conditional controls `2/2`; residuals are documented above. Through-PA15 is `1167/1167`; file audit exits `0` with six header-division warnings; diff-check exits `0`. Final immutable replay is 9 cases x 2 with 18 expected-hash matches and zero pair mismatches; frozen compiler SHA-256 is `5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`, current compiler SHA-256 is `718cad77a9f2e9dbf5e5ffcf66d20e45184388d90689d67fe62cbf5cafd109a7`. |
+| `4efddaae` typed single-inheritance standard-conversion checkpointAudit | Complete: typed endpoint/scope/path ownership is retained through PA12 publication into PA15; the typed comparator enforces standard > `UserDefined` > `Ellipsis`, leaves user-defined/user-defined first-standard ranks incomparable, and preserves standard legacy plus derived distance/cv ordering. Member-object cv subset ordering, malformed-ID guards, final-fact scope-range validation, and the strengthened course-414 operator regression are repaired. Comparator bodies are owned by `pa12_semantic_calls.cpp` while declarations remain in `pa12_semantic_selection.h`, restoring the prior file-audit warning set. Final PA16 is `144/243` with `99` failures and `243/243` identities covered; exact comparison with the turn-start map has baseline-only `∅` and final-only `∅`. Focused conversion is `8/10`, access/rank/parser controls `7/9`, and PA15 conditional controls `2/2`; residuals are documented above. Through-PA15 is `1167/1167`; file audit exits `0` with five header-division warnings; diff-check exits `0`. Final-v3 immutable replay is 9 cases x 2 with 18 expected-hash matches and zero pair mismatches; frozen compiler SHA-256 is `5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`, current compiler SHA-256 is `d1352cd1c16bcd58587ee9ad201a56665819e671933db979c8df1aea6124c41b`. |

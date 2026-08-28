@@ -5,6 +5,81 @@
 namespace pa11_semantic_internal
 {
 
+// [over.ics.rank] compares the standard/user-defined/ellipsis sequence
+// boundary before any legacy numeric rank.  The latter is the rank of the
+// first standard sequence inside a user-defined conversion and cannot order
+// two otherwise indistinguishable user-defined sequences.
+int compare_conversion_scores(const ConversionScore& left,
+	const ConversionScore& right)
+{
+	const bool left_standard =
+		left.rank_category == ConversionRankCategory::Exact ||
+		left.rank_category == ConversionRankCategory::Promotion ||
+		left.rank_category == ConversionRankCategory::Conversion;
+	const bool right_standard =
+		right.rank_category == ConversionRankCategory::Exact ||
+		right.rank_category == ConversionRankCategory::Promotion ||
+		right.rank_category == ConversionRankCategory::Conversion;
+	if (left_standard != right_standard)
+		return left_standard ? -1 : 1;
+	if (!left_standard)
+	{
+		if (left.rank_category != right.rank_category)
+			return left.rank_category == ConversionRankCategory::UserDefined ?
+				-1 : 1;
+		return 0;
+	}
+	const bool left_derived = left.kind == ConversionKind::DerivedToBase;
+	const bool right_derived = right.kind == ConversionKind::DerivedToBase;
+	// Preserve the established numeric ordering for pairs that contain no
+	// class adjustment, but retain the typed qualification subset when the
+	// score carries cv metadata (notably an implicit member object).  The
+	// category/path ordering below is for a candidate whose standard sequence
+	// includes DerivedToBase.
+	if (!left_derived && !right_derived)
+	{
+		if (left.legacy_rank == right.legacy_rank)
+		{
+			const unsigned int left_extra = left.added_cv & ~right.added_cv;
+			const unsigned int right_extra = right.added_cv & ~left.added_cv;
+			if (left_extra != 0 && right_extra == 0)
+				return 1;
+			if (right_extra != 0 && left_extra == 0)
+				return -1;
+			return 0;
+		}
+		return left.legacy_rank < right.legacy_rank ? -1 : 1;
+	}
+	if (left.rank_category != right.rank_category)
+		return static_cast<int>(left.rank_category) <
+			static_cast<int>(right.rank_category) ? -1 : 1;
+	if (left_derived || right_derived)
+	{
+		// [over.ics.rank] gives a derived-to-base pointer/reference conversion
+		// precedence over the competing base/void conversion at this category.
+		if (left_derived != right_derived)
+			return left_derived ? -1 : 1;
+		if (left.base_distance != right.base_distance)
+			return left.base_distance < right.base_distance ? -1 : 1;
+		// Qualification is a subset ordering, not a bit-count ordering.
+		const unsigned int left_extra = left.added_cv & ~right.added_cv;
+		const unsigned int right_extra = right.added_cv & ~left.added_cv;
+		if (left_extra != 0 && right_extra == 0)
+			return 1;
+		if (right_extra != 0 && left_extra == 0)
+			return -1;
+		return 0;
+	}
+	return 0;
+}
+
+int compare_conversion_choices(const ConversionChoice& left,
+	const ConversionChoice& right)
+{
+	return compare_conversion_scores(ConversionScore(left),
+		ConversionScore(right));
+}
+
 TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	const std::vector<ValueRef>& candidates,
 	const std::vector<const PA10AstNode*>& argument_nodes,
