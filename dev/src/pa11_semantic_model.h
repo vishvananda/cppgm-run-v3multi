@@ -618,6 +618,34 @@ struct RecordLayoutBase
 	{}
 };
 
+struct BitFieldFact
+{
+	BindingId binding; ScopeId owner_scope; NamedRecordId owner_record;
+	TypeId declared_type; TypeId storage_type;
+	std::size_t width, value_width, storage_offset, storage_unit_size;
+	std::size_t bit_offset, storage_width;
+	std::uint64_t value_mask, storage_mask;
+	bool named, zero_width, is_signed;
+	BitFieldFact() : binding(), owner_scope(), owner_record(), declared_type(),
+		storage_type(), width(0), value_width(0), storage_offset(0),
+		storage_unit_size(0), bit_offset(0), storage_width(0), value_mask(0),
+		storage_mask(0), named(false), zero_width(false), is_signed(false) {}
+};
+
+struct RecordMemberDeclaration
+{
+	NamedRecordId owner_record; bool bit_field; BindingId binding;
+	BitFieldFact bit;
+	RecordMemberDeclaration(NamedRecordId owner_record = NamedRecordId(),
+		BindingId binding = BindingId())
+		: owner_record(owner_record), bit_field(false), binding(binding), bit()
+	{}
+	static RecordMemberDeclaration make_bit_field(const BitFieldFact& value) {
+		RecordMemberDeclaration result(value.owner_record, value.binding);
+		result.bit_field = true; result.bit = value; return result;
+	}
+};
+
 struct RecordLayout
 {
 	RecordLayoutState state;
@@ -676,19 +704,16 @@ struct NamedRecordSidecar
 		  display_path(), hidden_friend_functions()
 	{}
 };
-
 struct AnonymousUnionFact
 {
 	NamedRecordId record;
 	ScopeId owner;
 	BindingId storage;
-
 	AnonymousUnionFact(NamedRecordId record = NamedRecordId(),
 		ScopeId owner = ScopeId(), BindingId storage = BindingId())
 		: record(record), owner(owner), storage(storage)
 	{}
 };
-
 struct DumpBindingView
 {
 	ScopeId parent;
@@ -697,7 +722,6 @@ struct DumpBindingView
 	NamePath qualified_name;
 	BindingId binding;
 };
-
 struct DumpScopeView
 {
 	ScopeId parent;
@@ -705,17 +729,14 @@ struct DumpScopeView
 	NamedRecordId record;
 	NamePath qualified_name;
 };
-
 struct ParamFact
 {
 	NameId name;
 	TypeId type;
-
 	ParamFact(NameId name = NameId(), TypeId type = TypeId())
 		: name(name), type(type)
 	{}
 };
-
 struct SpecFact
 {
 	TypeId base;
@@ -727,34 +748,29 @@ struct SpecFact
 	bool is_static;
 	bool is_extern;
 	bool is_thread_local;
-
 	SpecFact()
 		: base(), has_base(false), anonymous_record(), cv(0),
 		  is_typedef(false), is_constexpr(false), is_static(false),
 		  is_extern(false), is_thread_local(false)
 	{}
 };
-
 struct ConstValue
 {
 	bool valid;
 	bool is_unsigned;
 	__int128 value;
 	TypeId type;
-
 	ConstValue(bool valid = false, __int128 value = 0,
 		bool is_unsigned = false, TypeId type = TypeId())
 		: valid(valid), is_unsigned(is_unsigned), value(value), type(type)
 	{}
 };
-
 struct NonConstantExpression : std::runtime_error
 {
 	explicit NonConstantExpression(const char* message)
 		: std::runtime_error(message)
 	{}
 };
-
 struct DeclaratorName
 {
 	bool found;
@@ -762,13 +778,11 @@ struct DeclaratorName
 	bool operator_function;
 	PA10OperatorFunctionKind operator_function_kind;
 	SimpleTokenType operator_token;
-
 	DeclaratorName()
 		: found(false), path(), operator_function(false),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON) {}
 };
-
 struct DeclaratorOp
 {
 	enum Kind
@@ -779,20 +793,17 @@ struct DeclaratorOp
 		Array,
 		Function
 	};
-
 	Kind kind;
 	unsigned int cv;
 	bool unknown_bound;
 	ArrayBound bound;
 	const PA10AstNode* parameter_clause;
 	NamedRecordId member_owner;
-
 	DeclaratorOp(Kind kind = Pointer)
 		: kind(kind), cv(0), unknown_bound(false), bound(),
 		  parameter_clause(NULL), member_owner()
 	{}
 };
-
 // PA12 facts are owned by the PA11 model.  The hot representation contains
 // only typed IDs, enums, and arena ranges; source text is retained through
 // the PA10 node pointer and rendered once at the requested dump boundary.
@@ -836,14 +847,12 @@ enum class SemanticFactKind
 	LabeledStatement,
 	GotoStatement
 };
-
 enum class BuiltinKind
 {
 	None,
 	ConstantP,
 	Abort
 };
-
 // PA12 uses this local discriminator while validating the source-level cast
 // family.  It is not stored in SemanticFact and has no PA15 presentation role.
 enum class ExplicitCastKind
@@ -855,31 +864,25 @@ enum class ExplicitCastKind
 	Reinterpret,
 	Functional
 };
-
 struct ConversionFact
 {
 	TypeId source;
 	TypeId target;
 	ConversionKind kind;
 	unsigned int rank;
-
 	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
 		ConversionKind kind = ConversionKind::Identity, unsigned int rank = 0)
 		: source(source), target(target), kind(kind), rank(rank)
 	{}
 };
-
 struct ConstantAddressFactId
 {
 	std::size_t value;
-
 	explicit ConstantAddressFactId(std::size_t value = InvalidIdentityValue)
 		: value(value)
 	{}
-
 	bool valid() const { return value != InvalidIdentityValue; }
 };
-
 enum class ConstantAddressKind
 {
 	None,
@@ -887,14 +890,12 @@ enum class ConstantAddressKind
 	ArrayElement,
 	Literal
 };
-
 enum class ConstantAddressContext
 {
 	Value,
 	ObjectAddress,
 	ArrayDecay
 };
-
 // PA12 owns the one-time typed relocation decision for a namespace-scope
 // initializer.  The target remains a semantic BindingId until PA15 allocates
 // the LowIR symbol identity.  ArrayElement retains the typed projection that
@@ -914,7 +915,6 @@ struct ConstantAddressFact
 	std::size_t literal_element_count;
 	std::size_t literal_byte_begin;
 	std::size_t literal_byte_count;
-
 	ConstantAddressFact()
 		: evaluated(false), valid(false), kind(ConstantAddressKind::None),
 		  target(), byte_addend(0), element_type(), index_type(), index_fact(),
@@ -922,7 +922,6 @@ struct ConstantAddressFact
 		  literal_byte_begin(InvalidIdentityValue), literal_byte_count(0)
 	{}
 };
-
 // Floating literal bytes are already typed by PA2.  Keep them in a sparse
 // sidecar because only floating literal facts need the payload and the
 // payload must retain the source f32/f64/f80 representation exactly.
@@ -931,14 +930,12 @@ struct FloatingLiteralFact
 	FundamentalType type;
 	std::size_t byte_begin;
 	std::size_t byte_count;
-
 	FloatingLiteralFact(FundamentalType type = FundamentalType::Float,
 		std::size_t byte_begin = InvalidIdentityValue,
 		std::size_t byte_count = 0)
 		: type(type), byte_begin(byte_begin), byte_count(byte_count)
 	{}
 };
-
 struct SemanticFact
 {
 	SemanticFactKind kind;
@@ -985,7 +982,6 @@ struct SemanticFact
 	// A direct member call stores its typed implicit object as child zero.
 	bool has_implicit_object;
 	bool temporary_object;
-
 	SemanticFact(SemanticFactKind kind = SemanticFactKind::Variable,
 		TypeId type = TypeId(),
 		SemanticValueCategory category = SemanticValueCategory::Prvalue,
@@ -1013,7 +1009,6 @@ struct SemanticFact
 			has_implicit_object(false), temporary_object(false)
 	{}
 };
-
 struct DeclarationFact
 {
 	const PA10AstNode* node;
@@ -1028,7 +1023,6 @@ struct DeclarationFact
 	bool is_static;
 	bool is_thread_local;
 	std::size_t lifetime_begin, lifetime_count;
-
 	DeclarationFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope), binding_begin(InvalidIdentityValue),
 		  binding_count(0), semantic_begin(InvalidIdentityValue),
@@ -1037,9 +1031,7 @@ struct DeclarationFact
 		  lifetime_begin(InvalidIdentityValue), lifetime_count(0)
 	{}
 };
-
 enum class ConstructorActionTarget { Base, Member };
-
 struct ConstructorActionFact
 {
 	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
@@ -1055,7 +1047,6 @@ struct ConstructorActionFact
 		  value_initialize(false), object_type()
 	{}
 };
-
 struct DestructorActionFact
 {
 	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
@@ -1273,6 +1264,9 @@ private:
 	// Parallel to named_: NamedRecordId is the sole key for this semantic
 	// fact.  Non-class records retain the default incomplete entry.
 	std::vector<RecordLayout> record_layouts_;
+	std::vector<std::vector<RecordMemberDeclaration> > record_member_declarations_;
+	FlatIndex<BindingId, NamedRecordId, IdentityHash<BindingId> > record_member_event_owners_;
+	FlatIndex<BindingId, BitFieldFact, IdentityHash<BindingId> > bit_field_facts_;
 	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
 		named_record_sidecars_;
 	FlatIndex<NamedRecordId, NamedRecordAlignmentFact,
@@ -1386,6 +1380,10 @@ private:
 	;
 	NamedRecordId append_named_record(const NamedRecord& record)
 	;
+	const BitFieldFact* bit_field_fact(BindingId binding) const;
+	void set_bit_field_fact(BindingId binding, const BitFieldFact& fact);
+	void append_record_member(NamedRecordId record, BindingId binding);
+	void append_record_bit_field(NamedRecordId record, const BitFieldFact& fact);
 	TypeId make_cv(TypeId child, unsigned int qualifiers)
 	;
 	TypeId make_pointer(TypeId child, unsigned int qualifiers = 0)
@@ -1693,6 +1691,7 @@ private:
 	;
 	TypeLayout type_layout(TypeId type) const
 	;
+	void complete_record_members(NamedRecordId record, const Scope& scope, RecordLayout& layout, bool is_union, bool& zero_storage_eligible, std::size_t& offset, std::size_t& largest_member, std::size_t& record_alignment);
 	void complete_record_layout(NamedRecordId record)
 	;
 	std::size_t type_size(TypeId type) const
@@ -1833,6 +1832,7 @@ private:
 	;
 	void process_simple_declaration(const PA10AstNode& node, ScopeId scope)
 	;
+	void process_bit_field_declaration(const PA10AstNode& node, ScopeId scope);
 	void process_function_definition(const PA10AstNode& node, ScopeId scope)
 	;
 	ScopeId process_compound_statement(const PA10AstNode& node, ScopeId parent)

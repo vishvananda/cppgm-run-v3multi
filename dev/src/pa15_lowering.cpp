@@ -57,8 +57,8 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  continuation_indexes_(), continuation_arena_(),
 		  fact_recovery_exit_indexes_(),
 		  block_order_(), ordered_block_ids_(),
-		  reachability_base_(0), reachable_blocks_(),
-		  reachability_work_(), constant_truth_cache_(){}
+	  reachability_base_(0), reachable_blocks_(),
+	  reachability_work_(), constant_truth_cache_(){}
 
 void Pa15Lowerer::run(){
 		initialize_spelling_ids();
@@ -1835,47 +1835,6 @@ ValueId Pa15Lowerer::emit_load(const LoweredValue& storage, const LowType& type)
 	return id;
 }
 
-void Pa15Lowerer::materialize_lvalue_value(LoweredValue* result, const LowType& type){
-	if (result == NULL || !result->lvalue) return;
-	const ValueId value = emit_load(*result, type);
-	const Instruction& emitted = block().instructions.back();
-	result->value = temporary_operand(value, emitted.destination_name_id);
-	result->physical_type = type;
-	result->lvalue = false;
-}
-
-void Pa15Lowerer::emit_store(const LowType& type, const Operand& value, const Operand& storage){
-		Instruction instruction;
-		instruction.kind = Instruction::IK_STORE;
-		instruction.type = type;
-		instruction.first = value;
-		instruction.second = storage;
-		block().instructions.push_back(instruction);
-	}
-
-LoweredValue Pa15Lowerer::address_of_storage(const LoweredValue& storage){
-		if (storage.value.kind == Operand::OP_TEMP && storage.lvalue)
-		{
-			LowType pointer;
-			pointer.kind = LowType::TYPE_POINTER;
-			return LoweredValue(storage.value, pointer, false);
-		}
-		if (storage.value.kind == Operand::OP_TEMP && storage.type.is_pointer())
-			return LoweredValue(storage.value, storage.type, false);
-		if (storage.value.kind != Operand::OP_SLOT &&
-			storage.value.kind != Operand::OP_GLOBAL)
-			throw std::runtime_error("PA15 address requires addressable storage");
-		LowType pointer;
-		pointer.kind = LowType::TYPE_POINTER;
-		Instruction instruction;
-		instruction.kind = Instruction::IK_ADDR;
-		instruction.first = storage.value;
-		const ValueId value = destination(pointer, &instruction);
-		block().instructions.push_back(instruction);
-		return LoweredValue(temporary_operand(value, instruction.destination_name_id),
-			pointer, false);
-	}
-
 LoweredValue Pa15Lowerer::emit_index(const LoweredValue& base, const LoweredValue& offset,
 		const LowType& element, lowir_model::IndexProjectionKind projection){
 		if (!base.type.is_pointer() && !base.type.is_object())
@@ -1992,6 +1951,9 @@ LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 			fact.kind == SemanticFactKind::Variable)
 		{
 			const LoweredValue storage = storage_for(fact.binding);
+			if (model_.bit_field_fact(fact.binding) != NULL)
+				return mark_bit_field_address(address_of_storage(storage),
+					fact.binding);
 			if (!reference_binding(fact.binding)) return storage;
 			if (model_.callable_function_type(model_.binding(fact.binding).type).valid())
 			{
@@ -2007,6 +1969,10 @@ LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 			return LoweredValue(temporary_operand(value, emitted.destination_name_id),
 				object, true, storage.type);
 		}
+		if (fact.kind == SemanticFactKind::MemberExpression &&
+			model_.bit_field_fact(fact.selected_binding) != NULL)
+			return mark_bit_field_address(lower_member_address(id),
+				fact.selected_binding);
 		const LoweredValue address = lower_address(id);
 		return LoweredValue(address.value, lvalue_type(id), true);
 	}
@@ -2407,7 +2373,11 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 					instruction.destination_name_id), target, false);
 				continue;
 			}
-			materialize_lvalue_value(&result, source_type);
+			const LowType materialization_type = result.bit_field_lvalue &&
+				source_type.is_integer() && target.is_integer() &&
+				source_type.integer_width() == target.integer_width() ?
+				target : source_type;
+			materialize_lvalue_value(&result, materialization_type);
 			if (target_is_bool && result.value.kind != Operand::OP_INTEGER &&
 				result.physical_type.is_integer())
 			{
@@ -2653,11 +2623,17 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 		if (operands.size() != 1)
 			throw std::runtime_error("PA15 invalid increment fact");
 		const LoweredValue left = lower_lvalue(operands.front());
-		const LowType target_type = left.type;
-		const ValueId old_id = emit_load(left, target_type);
-		const Instruction& old_instruction = block().instructions.back();
-		LoweredValue old(temporary_operand(old_id, old_instruction.destination_name_id),
-			target_type, false);
+		LowType target_type = left.type;
+		LoweredValue old;
+		if (left.bit_field_lvalue)
+			old = emit_bit_field_load(left, left.bit_field_binding, target_type);
+		else
+		{
+			const ValueId old_id = emit_load(left, target_type);
+			const Instruction& old_instruction = block().instructions.back();
+			old = LoweredValue(temporary_operand(old_id,
+				old_instruction.destination_name_id), target_type, false);
+		}
 		LoweredValue amount(integer_operand(1, []() {
 			LowType result;
 			result.kind = LowType::TYPE_INTEGER;
@@ -2681,9 +2657,15 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 			updated = emit_binary_value(fact_token(id) == SimpleTokenType::OP_DEC ?
 				lowir_model::BOP_SUB : lowir_model::BOP_ADD, operation_type, old, one);
 		}
-		emit_store(target_type, updated.value, left.value);
+		if (left.bit_field_lvalue)
+			emit_bit_field_store(left, left.bit_field_binding, updated);
+		else
+			emit_store(target_type, updated.value, left.value);
 		if (postfix) return old;
-		LoweredValue result(left.value, target_type, true);
+		LoweredValue result = left;
+		result.type = target_type;
+		result.physical_type = target_type;
+		result.lvalue = true;
 		result.condition_value = updated.value;
 		result.has_condition_value = true;
 		return result;
@@ -2710,10 +2692,15 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 		else
 		{
 			left = lower_lvalue(operands[0]);
-			const ValueId old_id = emit_load(left, left.type);
-			const Instruction& old_instruction = block().instructions.back();
-			old = LoweredValue(temporary_operand(old_id,
-				old_instruction.destination_name_id), left.type, false);
+			if (left.bit_field_lvalue)
+				old = emit_bit_field_load(left, left.bit_field_binding, left.type);
+			else
+			{
+				const ValueId old_id = emit_load(left, left.type);
+				const Instruction& old_instruction = block().instructions.back();
+				old = LoweredValue(temporary_operand(old_id,
+					old_instruction.destination_name_id), left.type, false);
+			}
 			right = lower_expression(operands[1]);
 		}
 		const LowType target = left.type;
@@ -2721,8 +2708,19 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 			model_.semantic_facts_[operands[0].value].type);
 		if (fact.token == SimpleTokenType::OP_ASS)
 		{
-			emit_store(target, right.value, left.value);
-			return preserve_lvalue ? LoweredValue(left.value, target, true) :
+			if (left.bit_field_lvalue)
+				emit_bit_field_store(left, left.bit_field_binding, right);
+			else
+				emit_store(target, right.value, left.value);
+			if (preserve_lvalue)
+			{
+				LoweredValue result = left;
+				result.type = target;
+				result.physical_type = target;
+				result.lvalue = true;
+				return result;
+			}
+			return
 				LoweredValue(right.value, target, false, right.physical_type);
 		}
 		const bool pointer_compound = target.is_pointer() &&
@@ -2749,8 +2747,19 @@ LoweredValue Pa15Lowerer::lower_assignment(SemanticFactId id, bool preserve_lval
 			updated = emit_binary_value(operation, target, old,
 				LoweredValue(right.value, target, false));
 		}
-		emit_store(target, updated.value, left.value);
-		return preserve_lvalue ? LoweredValue(left.value, target, true) : updated;
+		if (left.bit_field_lvalue)
+			emit_bit_field_store(left, left.bit_field_binding, updated);
+		else
+			emit_store(target, updated.value, left.value);
+		if (preserve_lvalue)
+		{
+			LoweredValue result = left;
+			result.type = target;
+			result.physical_type = target;
+			result.lvalue = true;
+			return result;
+		}
+		return updated;
 	}
 
 bool Pa15Lowerer::conditional_address_result(SemanticFactId id) const{

@@ -41,7 +41,10 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 					function_name_ids_.find(fact.binding.value)->second), pointer, false));
 			}
 			return address_of_storage(lower_lvalue(id));
-		case SemanticFactKind::MemberExpression: return lower_member_address(id);
+		case SemanticFactKind::MemberExpression:
+			if (model_.bit_field_fact(fact.selected_binding) != NULL)
+				throw std::runtime_error("PA15 address-of bit-field is not allowed");
+			return lower_member_address(id);
 		case SemanticFactKind::UnaryExpression:
 			if (facts.size() != 1) throw std::runtime_error("PA15 invalid address unary fact");
 			if (fact.token == SimpleTokenType::OP_AMP)
@@ -280,9 +283,11 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 	if (offset == NULL || *offset > static_cast<std::size_t>(
 		std::numeric_limits<long long>::max()))
 		throw std::runtime_error("PA15 constructor member offset is invalid");
-	return emit_index(object, LoweredValue(integer_operand(
+	const LoweredValue address = emit_index(object, LoweredValue(integer_operand(
 		static_cast<long long>(*offset), offset_type), offset_type, false),
 		byte, lowir_model::IPK_FIELD);
+	return model_.bit_field_fact(action.member) != NULL ?
+		mark_bit_field_address(address, action.member) : address;
 }
 
 std::size_t Pa15Lowerer::checked_array_element_offset(TypeId array,
@@ -415,6 +420,8 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 		result = emit_index(result, LoweredValue(integer_operand(
 			static_cast<long long>(*offset), offset_type), offset_type, false),
 			byte, lowir_model::IPK_FIELD);
+		if (model_.bit_field_fact(path[i].member) != NULL)
+			result = mark_bit_field_address(result, path[i].member);
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
@@ -1165,8 +1172,12 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 	const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
-	const std::vector<ConstructorAddressStep>* path)
+	const std::vector<ConstructorAddressStep>* path,
+	BitFieldInitializationContext* context)
 {
+	BitFieldInitializationContext local_context;
+	if (context == NULL)
+		context = &local_context;
 	const TypeId object = model_.strip_cv_type(
 		model_.expression_object_type(target));
 	if (!object.valid() || object.value >= model_.types_.size())
@@ -1206,7 +1217,7 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 					lowir_model::IPK_ARRAY_ELEMENT);
 			zero_initialize_constructor_value(array.child, element,
 				root_action, root_action != NULL && path != NULL ?
-				&element_path : NULL);
+				&element_path : NULL, NULL);
 		}
 		return;
 	}
@@ -1250,11 +1261,15 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				member_path = *path;
 				member_path.push_back(ConstructorAddressStep(member));
 			}
-			const LoweredValue member_value = root_action != NULL && path != NULL &&
+			LoweredValue member_value = root_action != NULL && path != NULL &&
 				i != 0 ? constructor_path_address(*root_action, member_path) :
 				emit_index(destination_value, LoweredValue(integer_operand(
 					static_cast<long long>(*offset), size_low_type()), size_low_type(),
 					false), byte, lowir_model::IPK_FIELD);
+			if (model_.bit_field_fact(member) != NULL)
+				member_value = mark_bit_field_address(member_value, member);
+			BitFieldInitializationContext* member_context =
+				model_.bit_field_fact(member) != NULL ? context : NULL;
 			const BindingSidecar* sidecar = model_.binding_sidecar(member);
 			if (sidecar != NULL && sidecar->default_member_initializer.valid())
 			{
@@ -1265,16 +1280,24 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				initialize_constructor_value(model_.binding(member).type,
 					sidecar->default_member_initializer, member_value,
 					root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL);
+					&member_path : NULL, member_context);
 			}
 			else
 				zero_initialize_constructor_value(model_.binding(member).type,
 					member_value, root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL);
+					&member_path : NULL, member_context);
 		}
 		return;
 	}
 	const LowType value_type = low_type(target);
+	if (destination_value.bit_field_lvalue)
+	{
+		initialize_bit_field(destination_value,
+			destination_value.bit_field_binding,
+			LoweredValue(integer_operand(0, value_type), value_type, false),
+			*context);
+		return;
+	}
 	if (value_type.is_float())
 		emit_store(value_type, floating_operand(0.0L, value_type),
 			destination_value.value);
@@ -1288,8 +1311,12 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	SemanticFactId initializer, const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
-	const std::vector<ConstructorAddressStep>* path)
+	const std::vector<ConstructorAddressStep>* path,
+	BitFieldInitializationContext* context)
 {
+	BitFieldInitializationContext local_context;
+	if (context == NULL)
+		context = &local_context;
 	if (!initializer.valid() || initializer.value >= model_.semantic_facts_.size())
 		throw std::runtime_error("PA15 constructor initializer is invalid");
 	const SemanticFact& fact = model_.semantic_facts_[initializer.value];
@@ -1338,7 +1365,11 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 	if (fact.kind != SemanticFactKind::BracedInitList)
 	{
 		const LoweredValue value = lower_expression(initializer);
-		emit_store(low_type(target), value.value, destination_value.value);
+		if (destination_value.bit_field_lvalue)
+			initialize_bit_field(destination_value,
+				destination_value.bit_field_binding, value, *context);
+		else
+			emit_store(low_type(target), value.value, destination_value.value);
 		return;
 	}
 	const TypeId object = model_.strip_cv_type(
@@ -1385,7 +1416,7 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 				const SemanticFact& value = model_.semantic_facts_[values[i].value];
 				if (value.kind == SemanticFactKind::BracedInitList)
 					initialize_constructor_value(array.child, values[i], element,
-						root_action, recompute_path ? &element_path : NULL);
+						root_action, recompute_path ? &element_path : NULL, NULL);
 				else
 				{
 					const LoweredValue lowered = lower_expression(values[i]);
@@ -1394,7 +1425,7 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			}
 			else
 				zero_initialize_constructor_value(array.child, element, root_action,
-					recompute_path ? &element_path : NULL);
+					recompute_path ? &element_path : NULL, NULL);
 		}
 		return;
 	}
@@ -1446,17 +1477,38 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			member_path = *path;
 			member_path.push_back(ConstructorAddressStep(member));
 		}
-		const LoweredValue member_value = root_action != NULL && path != NULL &&
+		LoweredValue encoded;
+		const bool encoded_bit_field = i < values.size() &&
+			model_.bit_field_fact(member) != NULL;
+		const bool encode_before_address = encoded_bit_field &&
+			!bit_field_initialization_preserves_existing(member, *context);
+		if (encode_before_address)
+			encoded = encode_bit_field_value(member, lower_expression(values[i]),
+				true);
+		LoweredValue member_value = root_action != NULL && path != NULL &&
 			i != 0 ? constructor_path_address(*root_action, member_path) :
 			emit_index(destination_value, LoweredValue(integer_operand(
 				static_cast<long long>(*offset), size_low_type()), size_low_type(),
 				false), byte, lowir_model::IPK_FIELD);
-		if (i < values.size())
+		if (model_.bit_field_fact(member) != NULL)
+			member_value = mark_bit_field_address(member_value, member);
+		if (encoded_bit_field)
+		{
+			if (encode_before_address)
+				initialize_encoded_bit_field(member_value, member, encoded,
+					*context);
+			else
+				initialize_bit_field(member_value, member,
+					lower_expression(values[i]), *context);
+		}
+		else if (i < values.size())
 			initialize_constructor_value(model_.binding(member).type, values[i],
 				member_value, root_action, root_action != NULL && path != NULL ?
-				&member_path : NULL);
+				&member_path : NULL, NULL);
 		else
 		{
+			BitFieldInitializationContext* member_context =
+				model_.bit_field_fact(member) != NULL ? context : NULL;
 			const BindingSidecar* sidecar = model_.binding_sidecar(member);
 			if (sidecar != NULL && sidecar->default_member_initializer.valid())
 			{
@@ -1467,17 +1519,19 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 				initialize_constructor_value(model_.binding(member).type,
 					sidecar->default_member_initializer, member_value,
 					root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL);
+					&member_path : NULL, member_context);
 			}
 			else
 				zero_initialize_constructor_value(model_.binding(member).type,
 					member_value, root_action, root_action != NULL && path != NULL ?
-					&member_path : NULL);
+					&member_path : NULL, member_context);
 		}
 	}
 }
 
-void Pa15Lowerer::lower_constructor_action(const ConstructorActionFact& action)
+void Pa15Lowerer::lower_constructor_action(
+	const ConstructorActionFact& action,
+	BitFieldInitializationContext& context)
 {
 	if (action.target != ConstructorActionTarget::Base &&
 		action.target != ConstructorActionTarget::Member)
@@ -1555,15 +1609,35 @@ void Pa15Lowerer::lower_constructor_action(const ConstructorActionFact& action)
 			initializer.kind != SemanticFactKind::ConstructorAction)
 		{
 			const LoweredValue value = lower_expression(action.initializer);
+			const BitFieldFact* bit_field = model_.bit_field_fact(action.member);
+			const bool encode_before_address = bit_field != NULL &&
+				!bit_field_initialization_preserves_existing(action.member, context);
+			LoweredValue encoded;
+			if (encode_before_address)
+				encoded = encode_bit_field_value(action.member, value, true);
 			const LoweredValue destination_value =
 				constructor_subobject_address(action);
-			emit_store(low_type(target), value.value, destination_value.value);
+			if (destination_value.bit_field_lvalue)
+			{
+				if (bit_field == NULL)
+					throw std::runtime_error(
+						"PA15 constructor bit-field identity is inconsistent");
+				if (encode_before_address)
+					initialize_encoded_bit_field(destination_value,
+						destination_value.bit_field_binding, encoded, context);
+				else
+					initialize_bit_field(destination_value,
+						destination_value.bit_field_binding, value, context);
+			}
+			else
+				emit_store(low_type(target), value.value, destination_value.value);
 			return;
 		}
 		const LoweredValue destination_value = constructor_subobject_address(action);
 		const std::vector<ConstructorAddressStep> empty_path;
 		initialize_constructor_value(target, action.initializer,
-			destination_value, &action, &empty_path);
+			destination_value, &action, &empty_path,
+			model_.bit_field_fact(action.member) != NULL ? &context : NULL);
 		return;
 	}
 	throw std::runtime_error("PA15 constructor action has no operation");

@@ -28,6 +28,52 @@ bool align_up_checked(std::size_t value, std::size_t alignment,
 
 }
 
+const BitFieldFact* PA11SemanticModel::bit_field_fact(BindingId binding_id) const
+{
+	return binding_id.valid() ? bit_field_facts_.find(binding_id) : NULL;
+}
+
+void PA11SemanticModel::set_bit_field_fact(BindingId binding_id,
+	const BitFieldFact& fact)
+{
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		fact.binding != binding_id)
+		throw std::runtime_error("invalid PA11 bit-field identity");
+	bit_field_facts_.set(binding_id, fact);
+}
+
+void PA11SemanticModel::append_record_member(NamedRecordId record_id,
+	BindingId binding_id)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		record_id.value >= record_member_declarations_.size() ||
+		!binding_id.valid() || binding_id.value >= bindings_.size())
+		throw std::runtime_error("invalid PA11 record member identity");
+	if (record_member_event_owners_.find(binding_id) != NULL)
+		throw std::runtime_error("duplicate PA11 record member declaration");
+	record_member_event_owners_.set(binding_id, record_id);
+	record_member_declarations_[record_id.value].push_back(
+		RecordMemberDeclaration(record_id, binding_id));
+}
+
+void PA11SemanticModel::append_record_bit_field(NamedRecordId record_id,
+	const BitFieldFact& fact)
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		record_id.value >= record_member_declarations_.size() ||
+		fact.owner_record != record_id ||
+		(fact.named && !fact.binding.valid()))
+		throw std::runtime_error("invalid PA11 record bit-field identity");
+	if (fact.named)
+	{
+		if (record_member_event_owners_.find(fact.binding) != NULL)
+			throw std::runtime_error("duplicate PA11 record member declaration");
+		record_member_event_owners_.set(fact.binding, record_id);
+	}
+	record_member_declarations_[record_id.value].push_back(
+		RecordMemberDeclaration::make_bit_field(fact));
+}
+
 const RecordLayout& PA11SemanticModel::record_layout(
 	NamedRecordId record_id) const
 {
@@ -121,6 +167,198 @@ TypeLayout PA11SemanticModel::type_layout(TypeId type) const
 	throw std::runtime_error("unhandled PA11 record layout type");
 }
 
+void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
+	const Scope& scope, RecordLayout& layout, bool is_union,
+	bool& checkpoint_zero_storage_eligible, std::size_t& offset,
+	std::size_t& largest_member, std::size_t& record_alignment)
+{
+	bool bit_unit_active = false;
+	std::size_t bit_unit_offset = 0;
+	std::size_t bit_unit_size = 0;
+	std::size_t bit_unit_alignment = 0;
+	std::size_t bit_unit_width = 0;
+	std::size_t bit_cursor = 0;
+	const auto flush_bit_unit = [&]() {
+		if (!bit_unit_active)
+			return;
+		if (bit_unit_offset > std::numeric_limits<std::size_t>::max() -
+			bit_unit_size)
+			throw std::runtime_error("record layout size overflow");
+		offset = bit_unit_offset + bit_unit_size;
+		bit_unit_active = false;
+		bit_unit_offset = 0;
+		bit_unit_size = 0;
+		bit_unit_alignment = 0;
+		bit_unit_width = 0;
+		bit_cursor = 0;
+	};
+	if (record_id.value >= record_member_declarations_.size())
+		throw std::runtime_error("record member declaration index is invalid");
+	const std::vector<RecordMemberDeclaration>& declarations =
+		record_member_declarations_[record_id.value];
+	// Filtered scope order is checked against the owner-stable event stream so
+	// nested definitions and anonymous aggregate aliases cannot mix records.
+	std::size_t expected_event = 0;
+	for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+	{
+		const BindingId member_id = scope.bindings[i];
+		const Binding& member = binding(member_id);
+		if (member.kind != BindingKind::Variable ||
+			is_static_member(member_id))
+			continue;
+		const BindingSidecar* sidecar = binding_sidecar(member_id);
+		if (sidecar != NULL && (sidecar->backing_storage.valid() ||
+			sidecar->generated_name_record.valid()))
+			continue;
+		while (expected_event < declarations.size() &&
+			declarations[expected_event].bit_field &&
+			!declarations[expected_event].bit.named)
+			++expected_event;
+		if (expected_event == declarations.size() ||
+			declarations[expected_event].binding != member_id)
+			throw std::runtime_error("record member declaration order is invalid");
+		++expected_event;
+	}
+	while (expected_event < declarations.size() &&
+		declarations[expected_event].bit_field &&
+		!declarations[expected_event].bit.named)
+		++expected_event;
+	if (expected_event != declarations.size())
+		throw std::runtime_error("record member declaration is omitted");
+	for (std::size_t event = 0; event < declarations.size(); ++event)
+	{
+		const RecordMemberDeclaration& declaration = declarations[event];
+		if (declaration.owner_record != record_id)
+			throw std::runtime_error("record member declaration owner is invalid");
+		if (declaration.bit_field)
+		{
+			BitFieldFact fact = declaration.bit;
+			if (fact.owner_record != record_id || !fact.declared_type.valid() ||
+				!fact.storage_type.valid() || fact.storage_unit_size == 0 ||
+				fact.storage_width == 0 || fact.storage_width > 64)
+				throw std::runtime_error("record bit-field fact is invalid");
+			if (fact.named)
+			{
+				if (!fact.binding.valid())
+					throw std::runtime_error("named bit-field binding is missing");
+				const BitFieldFact* canonical = bit_field_fact(fact.binding);
+				if (canonical == NULL || canonical->owner_record != record_id ||
+					canonical->declared_type != fact.declared_type ||
+					canonical->width != fact.width)
+					throw std::runtime_error("record bit-field binding fact is invalid");
+				fact = *canonical;
+			}
+			if (!type_checkpoint_zero_storage_eligible(fact.declared_type))
+				checkpoint_zero_storage_eligible = false;
+			const TypeLayout field_layout = type_layout(fact.storage_type);
+			if (field_layout.size != fact.storage_unit_size ||
+				field_layout.alignment == 0)
+				throw std::runtime_error("bit-field storage layout is invalid");
+			if (field_layout.alignment > record_alignment)
+				record_alignment = field_layout.alignment;
+			if (is_union)
+			{
+				flush_bit_unit();
+				fact.storage_offset = 0;
+				fact.bit_offset = 0;
+				fact.storage_mask = fact.zero_width ? 0 : fact.value_mask;
+				if (!fact.zero_width && fact.storage_unit_size > largest_member)
+					largest_member = fact.storage_unit_size;
+			}
+			else if (fact.zero_width)
+			{
+				flush_bit_unit();
+				if (!align_up_checked(offset, field_layout.alignment,
+					&fact.storage_offset))
+					throw std::runtime_error("record layout size overflow");
+				fact.bit_offset = 0;
+				fact.storage_mask = 0;
+			}
+			else
+			{
+				if (!bit_unit_active || bit_unit_size != fact.storage_unit_size ||
+					bit_unit_alignment != field_layout.alignment ||
+					bit_cursor > bit_unit_width ||
+					fact.value_width > bit_unit_width - bit_cursor)
+				{
+					flush_bit_unit();
+					if (!align_up_checked(offset, field_layout.alignment,
+						&bit_unit_offset))
+						throw std::runtime_error("record layout size overflow");
+					bit_unit_active = true;
+					bit_unit_size = fact.storage_unit_size;
+					bit_unit_alignment = field_layout.alignment;
+					bit_unit_width = fact.storage_width;
+					bit_cursor = 0;
+				}
+				fact.storage_offset = bit_unit_offset;
+				fact.bit_offset = bit_cursor;
+				if (fact.bit_offset > 64 || fact.value_width >
+					64 - fact.bit_offset)
+					throw std::runtime_error("bit-field mask is too wide");
+				fact.storage_mask = fact.value_mask << fact.bit_offset;
+				const std::size_t consumed = fact.width < bit_unit_width ?
+					fact.width : bit_unit_width;
+				bit_cursor += consumed;
+			}
+			if (fact.named)
+			{
+				set_bit_field_fact(fact.binding, fact);
+				layout.members.push_back(RecordLayoutMember(fact.binding,
+					fact.storage_offset));
+				layout.member_offsets.set(fact.binding, fact.storage_offset);
+			}
+			continue;
+		}
+
+		flush_bit_unit();
+		const BindingId member_id = declaration.binding;
+		if (!member_id.valid() || member_id.value >= bindings_.size() ||
+			member_id.value >= binding_owners_.size() ||
+			binding_owners_[member_id.value] != named_[record_id.value].scope)
+			throw std::runtime_error("record member binding is invalid");
+		const Binding& member = binding(member_id);
+		if (member.kind != BindingKind::Variable ||
+			is_static_member(member_id))
+			throw std::runtime_error("record member declaration is not a field");
+		const BindingSidecar* sidecar = binding_sidecar(member_id);
+		if (sidecar != NULL && sidecar->has_default_member_initializer)
+			checkpoint_zero_storage_eligible = false;
+		if (!type_checkpoint_zero_storage_eligible(member.type))
+			checkpoint_zero_storage_eligible = false;
+		const TypeLayout member_layout = type_layout(member.type);
+		if (member_layout.size == 0 || member_layout.alignment == 0)
+			throw std::runtime_error("record member has invalid layout");
+		std::size_t member_alignment = member_layout.alignment;
+		if (sidecar != NULL && sidecar->has_requested_alignment)
+		{
+			if (sidecar->requested_alignment == 0 ||
+				sidecar->requested_alignment < member_alignment)
+				throw std::runtime_error("member alignment is weaker than natural alignment");
+			member_alignment = sidecar->requested_alignment;
+		}
+		if (member_alignment > record_alignment)
+			record_alignment = member_alignment;
+		std::size_t member_offset = 0;
+		if (is_union)
+		{
+			if (member_layout.size > largest_member)
+				largest_member = member_layout.size;
+		}
+		else
+		{
+			if (!align_up_checked(offset, member_alignment, &member_offset) ||
+				member_offset > std::numeric_limits<std::size_t>::max() -
+				member_layout.size)
+				throw std::runtime_error("record layout size overflow");
+			offset = member_offset + member_layout.size;
+		}
+		layout.members.push_back(RecordLayoutMember(member_id, member_offset));
+		layout.member_offsets.set(member_id, member_offset);
+	}
+	flush_bit_unit();
+}
+
 void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
@@ -202,51 +440,9 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			offset = base_layout.size;
 			record_alignment = base_layout.alignment;
 		}
-		for (std::size_t i = 0; i < scope.bindings.size(); ++i)
-		{
-			const BindingId member_id = scope.bindings[i];
-			const Binding& member = binding(member_id);
-			if (member.kind != BindingKind::Variable ||
-				is_static_member(member_id))
-				continue;
-			const BindingSidecar* sidecar = binding_sidecar(member_id);
-			if (sidecar != NULL && sidecar->has_default_member_initializer)
-				checkpoint_zero_storage_eligible = false;
-			if (!type_checkpoint_zero_storage_eligible(member.type))
-				checkpoint_zero_storage_eligible = false;
-			const TypeLayout member_layout = type_layout(member.type);
-			if (member_layout.size == 0 || member_layout.alignment == 0)
-				throw std::runtime_error("record member has invalid layout");
-			std::size_t member_alignment = member_layout.alignment;
-			if (sidecar != NULL && sidecar->has_requested_alignment)
-			{
-				if (sidecar->requested_alignment == 0 ||
-					sidecar->requested_alignment < member_alignment)
-					throw std::runtime_error("member alignment is weaker than natural alignment");
-				member_alignment = sidecar->requested_alignment;
-			}
-			if (member_alignment > record_alignment)
-				record_alignment = member_alignment;
-			std::size_t member_offset = 0;
-			if (is_union)
-			{
-				if (member_layout.size > largest_member)
-					largest_member = member_layout.size;
-			}
-			else
-			{
-				if (!align_up_checked(offset, member_alignment,
-					&member_offset) ||
-					member_offset > std::numeric_limits<std::size_t>::max() -
-					member_layout.size)
-					throw std::runtime_error("record layout size overflow");
-				offset = member_offset + member_layout.size;
-			}
-			layout.members.push_back(RecordLayoutMember(member_id,
-				member_offset));
-			layout.member_offsets.set(member_id, member_offset);
-		}
-
+		complete_record_members(record_id, scope, layout, is_union,
+			checkpoint_zero_storage_eligible, offset, largest_member,
+			record_alignment);
 		if (record.has_requested_alignment)
 		{
 			if (record.requested_alignment == 0 ||

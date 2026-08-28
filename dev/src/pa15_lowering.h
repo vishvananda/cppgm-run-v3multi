@@ -40,19 +40,27 @@ struct LoweredValue
 	LowType type;
 	LowType physical_type;
 	bool lvalue;
+	// A member lvalue carries its canonical PA11 bit-field binding through
+	// PA15.  The address is the storage-unit address; the metadata selects the
+	// masked read/write projection without consulting a rendered name.
+	bool bit_field_lvalue;
+	BindingId bit_field_binding;
 	bool canonical_truth;
 	Operand condition_value;
 	bool has_condition_value;
 
 	LoweredValue() : value(), type(), physical_type(), lvalue(false),
-		canonical_truth(false), condition_value(), has_condition_value(false) {}
+		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue)
 		: value(value), type(type), physical_type(type), lvalue(lvalue),
-		canonical_truth(false), condition_value(), has_condition_value(false) {}
+		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue,
 		const LowType& physical_type)
 		: value(value), type(type), physical_type(physical_type), lvalue(lvalue),
-		canonical_truth(false), condition_value(), has_condition_value(false) {}
+		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		condition_value(), has_condition_value(false) {}
 };
 
 struct FunctionPlan
@@ -125,6 +133,23 @@ struct FlowArenaIndex
 	bool valid() const{
 		return value != pa11_semantic_storage::InvalidIdentityValue;
 	}
+};
+
+// Bit-field initialization is scoped to one semantic destination root.  The
+// aggregate and constructor walks are declaration ordered, and record layout
+// never reuses an earlier storage unit after a later unit is reached.  Keeping
+// only the current typed unit is therefore enough to distinguish adjacent
+// fields that must merge while preventing another object of the same record
+// from inheriting initialization state.  A nested object or array element is
+// given a fresh context by the caller.
+struct BitFieldInitializationContext
+{
+	NamedRecordId owner_record;
+	std::size_t storage_offset;
+	bool has_initialized_unit;
+
+	BitFieldInitializationContext()
+		: owner_record(), storage_offset(0), has_initialized_unit(false) {}
 };
 
 struct ConstructorAddressStep
@@ -499,6 +524,24 @@ private:
 	ValueId emit_load(const LoweredValue& storage, const LowType& type);
 	void materialize_lvalue_value(LoweredValue* result, const LowType& type);
 	void emit_store(const LowType& type, const Operand& value, const Operand& storage);
+	LoweredValue mark_bit_field_address(const LoweredValue& address,
+		BindingId binding) const;
+	LoweredValue emit_bit_field_load(const LoweredValue& storage,
+		BindingId binding, const LowType& result_type);
+	LoweredValue encode_bit_field_value(BindingId binding,
+		const LoweredValue& value, bool force_storage_type = false);
+	void emit_encoded_bit_field_store(const LoweredValue& storage,
+		BindingId binding, const LoweredValue& encoded,
+		bool preserve_existing);
+	void emit_bit_field_store(const LoweredValue& storage, BindingId binding,
+		const LoweredValue& value, bool preserve_existing = true);
+	void initialize_encoded_bit_field(const LoweredValue& storage,
+		BindingId binding, const LoweredValue& encoded,
+		BitFieldInitializationContext& context);
+	bool bit_field_initialization_preserves_existing(BindingId binding,
+		const BitFieldInitializationContext& context) const;
+	void initialize_bit_field(const LoweredValue& storage, BindingId binding,
+		const LoweredValue& value, BitFieldInitializationContext& context);
 	LoweredValue address_of_storage(const LoweredValue& storage);
 	LoweredValue emit_index(const LoweredValue& base, const LoweredValue& offset,
 		const LowType& element, lowir_model::IndexProjectionKind projection);
@@ -587,16 +630,19 @@ private:
 	void initialize_constructor_value(TypeId target, SemanticFactId initializer,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
-		const std::vector<ConstructorAddressStep>* path = NULL);
+		const std::vector<ConstructorAddressStep>* path = NULL,
+		BitFieldInitializationContext* context = NULL);
 	void zero_initialize_value_initialized_object(TypeId target,
 		const LoweredValue& destination);
 	void zero_initialize_constructor_value(TypeId target,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
-		const std::vector<ConstructorAddressStep>* path = NULL);
+		const std::vector<ConstructorAddressStep>* path = NULL,
+		BitFieldInitializationContext* context = NULL);
 	bool constructor_action_is_noop(const SemanticFact& action) const;
 	LoweredValue lower_variable_expression(SemanticFactId id);
-	void lower_constructor_action(const ConstructorActionFact& action);
+	void lower_constructor_action(const ConstructorActionFact& action,
+		BitFieldInitializationContext& context);
 	void lower_destructor_action(const DestructorActionFact& action);
 	void emit_active_destructor_actions();
 	LoweredValue lower_constructor_expression(SemanticFactId id);

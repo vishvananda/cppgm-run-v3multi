@@ -2,6 +2,7 @@
 #include "pa11_semantic_model.h"
 
 #include <cstring>
+#include <limits>
 
 namespace pa11_semantic_internal
 {
@@ -89,6 +90,103 @@ void zero_floating_literal(LiteralData* literal)
 	std::memcpy(literal->bytes.data(), &value, sizeof(value));
 }
 
+}
+
+void PA11SemanticModel::process_bit_field_declaration(
+	const PA10AstNode& node, ScopeId scope)
+{
+	if (!scope.valid() || scope.value >= scopes_.size() ||
+		scopes_[scope.value].kind != ScopeKind::Class ||
+		scopes_[scope.value].record.value >= named_.size() ||
+		named_[scopes_[scope.value].record.value].kind != NamedKind::Class ||
+		node.children.size() < 2)
+		throw std::runtime_error("invalid PA16 bit-field owner");
+	const SpecFact spec = spec_fact(node.children.front(), scope);
+	if (!spec.has_base || spec.is_typedef || spec.is_constexpr ||
+		spec.is_static || spec.is_extern || spec.is_thread_local)
+		throw std::runtime_error("invalid PA16 bit-field specifiers");
+	const TypeId declared_type = spec.base;
+	const TypeId unqualified_type = strip_cv_type(
+		expression_object_type(declared_type));
+	const NamedRecordId declared_record = named_record_for_type(
+		unqualified_type);
+	const bool enum_type = declared_record.valid() &&
+		declared_record.value < named_.size() &&
+		named_[declared_record.value].kind == NamedKind::Enum;
+	if (!integral_id(unqualified_type) && !enum_type)
+		throw std::runtime_error("PA16 bit-field type is not integral or enum");
+	TypeId storage_type = unqualified_type;
+	if (enum_type)
+		storage_type = named_[declared_record.value].has_underlying ?
+			strip_cv_type(named_[declared_record.value].underlying) :
+			fundamental(FundamentalType::Int);
+	FundamentalType storage_fundamental;
+	if (!fundamental_of(storage_type, &storage_fundamental) ||
+		!integral_type(storage_fundamental))
+		throw std::runtime_error("PA16 bit-field storage is not integral");
+	const std::size_t storage_unit_size = type_size(storage_type);
+	if (storage_unit_size == 0 || storage_unit_size > 8)
+		throw std::runtime_error("PA16 bit-field storage is too wide");
+	const std::size_t storage_width = storage_unit_size * 8;
+	DeclarationFact declaration(&node, scope);
+	declaration.binding_begin = declaration_bindings_.size();
+	for (std::size_t i = 1; i < node.children.size(); ++i)
+	{
+		const PA10AstNode& field = node.children[i];
+		if (field.kind != PA10NodeKind::BitFieldDeclarator ||
+			field.children.empty() || field.children.size() > 2)
+			throw std::runtime_error("invalid PA16 bit-field declarator");
+		const PA10AstNode& width_node = field.children.back();
+		const ConstValue width_value = eval_constexpr(width_node, scope);
+		if (!width_value.valid || width_value.value < 0 ||
+			width_value.value > static_cast<__int128>(storage_width))
+			throw std::runtime_error("invalid PA16 bit-field width");
+		const std::size_t width = static_cast<std::size_t>(width_value.value);
+		const bool named = field.children.size() == 2;
+		DeclaratorName name;
+		if (named)
+		{
+			if (field.children.front().kind != PA10NodeKind::Declarator)
+				throw std::runtime_error("invalid PA16 named bit-field");
+			name = declarator_name(field.children.front());
+			if (!name.found || name.path.global ||
+				name.path.components.size() != 1 || width == 0)
+				throw std::runtime_error("invalid PA16 named bit-field name");
+		}
+		BitFieldFact fact;
+		fact.owner_scope = scope;
+		fact.owner_record = scopes_[scope.value].record;
+		fact.declared_type = declared_type;
+		fact.storage_type = storage_type;
+		fact.width = width;
+		fact.value_width = width;
+		fact.storage_unit_size = storage_unit_size;
+		fact.storage_width = storage_width;
+		fact.named = named;
+		fact.zero_width = width == 0;
+		fact.is_signed = !unsigned_integral_type(storage_type);
+		fact.value_mask = width == 0 ? 0 : width == 64 ?
+			std::numeric_limits<std::uint64_t>::max() :
+			((static_cast<std::uint64_t>(1) << width) - 1);
+		if (named)
+		{
+			const BindingId binding_id = add_value(scope, name.path.last(),
+				declared_type, false, true, true, BindingId(),
+				SourcePoint(node.source_begin), false,
+				current_language_linkage_, FunctionDeclarationKind::Normal,
+				false, PA10OperatorFunctionKind::None,
+				SimpleTokenType::OP_SEMICOLON);
+			fact.binding = binding_id;
+			set_bit_field_fact(binding_id, fact);
+			declaration_bindings_.push_back(binding_id);
+		}
+		append_record_bit_field(fact.owner_record, fact);
+	}
+	declaration.binding_count = declaration_bindings_.size() -
+		declaration.binding_begin;
+	const DeclarationFactId declaration_id(declaration_facts_.size());
+	declaration_facts_.push_back(declaration);
+	declaration_fact_index_.set(&node, declaration_id);
 }
 
 BindingId PA11SemanticModel::ensure_implicit_default_constructor(
@@ -1083,6 +1181,10 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	if (node.children.size() != 1 || !node.has_token)
 		throw std::runtime_error("PA12 invalid unary expression");
 	const ExprInfo operand = semantic_expression(node.children.front(), scope);
+	if (node.token == SimpleTokenType::OP_AMP && operand.fact.valid() &&
+		operand.fact.value < semantic_facts_.size() &&
+		bit_field_fact(semantic_facts_[operand.fact.value].binding) != NULL)
+		throw std::runtime_error("PA12 address-of bit-field is not allowed");
 	std::vector<TypeId> associated_objects;
 	associated_objects.push_back(operand.type);
 	std::vector<const PA10AstNode*> no_member_nodes;

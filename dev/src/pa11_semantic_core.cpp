@@ -194,7 +194,9 @@ bool append_lookup_candidate(std::vector<Identity>* candidates,
 }
 PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
-	  record_layouts_(), named_record_sidecars_(),
+	  record_layouts_(), record_member_declarations_(),
+	  record_member_event_owners_(),
+	  bit_field_facts_(), named_record_sidecars_(),
 	  named_record_alignment_facts_(), template_function_facts_(),
 	  template_function_index_(), template_specialization_facts_(),
 	  template_specialization_index_(), scopes_(),
@@ -312,6 +314,8 @@ NamedRecordId PA11SemanticModel::append_named_record(
 	const NamedRecordId result(named_.size());
 	named_.push_back(record);
 	record_layouts_.push_back(RecordLayout());
+	record_member_declarations_.push_back(
+		std::vector<RecordMemberDeclaration>());
 	return result;
 }
 ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId name,
@@ -2526,11 +2530,14 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (spec.is_static && target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class)
 			mark_static_member(binding_id);
-		if (binding(binding_id).kind == BindingKind::Variable &&
-			!is_static_member(binding_id) &&
+		const bool record_member = binding(binding_id).kind ==
+			BindingKind::Variable && !is_static_member(binding_id) &&
 			type_kind(type) != TypeKind::Function &&
 			target.value < scopes_.size() &&
-			scopes_[target.value].kind == ScopeKind::Class)
+			scopes_[target.value].kind == ScopeKind::Class;
+		if (record_member)
+			append_record_member(scopes_[target.value].record, binding_id);
+		if (record_member)
 			apply_member_alignment(node.children.front(), binding_id, target);
 		if (!spec.is_static && type_kind(type) != TypeKind::Function &&
 			target.value < scopes_.size() &&
@@ -2552,6 +2559,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	declaration_facts_.push_back(declaration);
 	declaration_fact_index_.set(&node, declaration_id);
 }
+
 NameId PA11SemanticModel::template_parameter_name(const PA10AstNode& node)
 {
 	for (std::size_t i = node.children.size(); i != 0; --i)
@@ -2741,6 +2749,9 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		return;
 	case PA10NodeKind::SimpleDeclaration:
 		process_simple_declaration(node, scope);
+		return;
+	case PA10NodeKind::BitFieldDeclaration:
+		process_bit_field_declaration(node, scope);
 		return;
 	case PA10NodeKind::FunctionDefinition:
 		process_function_definition(node, scope);

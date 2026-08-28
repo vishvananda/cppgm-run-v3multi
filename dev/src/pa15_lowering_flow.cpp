@@ -961,14 +961,7 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 		if (defer_conversions)
 		{
 			if (materialize_lvalue && result.lvalue && !result.type.is_object())
-			{
-				const ValueId value = emit_load(result, result.type);
-				const Instruction& emitted = block().instructions.back();
-				result.value = temporary_operand(value,
-					emitted.destination_name_id);
-				result.physical_type = result.type;
-				result.lvalue = false;
-			}
+				materialize_lvalue_value(&result, result.type);
 			return result;
 		}
 		return apply_conversions(id, result, omit_boolean_context,
@@ -2158,7 +2151,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		lifetime_scope_stack_.clear();
 		lifetime_scope_depths_.clear();
 		active_lifetimes_.clear();
-		recovery_control_head_ = RecoveryControlIndex();
+	recovery_control_head_ = RecoveryControlIndex();
 		recovery_control_base_depth_ = 0;
 		recovery_control_active_ = false;
 		block_order_.clear();
@@ -2229,10 +2222,11 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				fact.constructor_action_count > model_.constructor_actions_.size() -
 				fact.constructor_action_begin)
 				throw std::runtime_error("PA15 constructor action range is invalid");
+			BitFieldInitializationContext constructor_context;
 			for (std::size_t action = 0; action < fact.constructor_action_count;
 				++action)
 					lower_constructor_action(model_.constructor_actions_[
-						fact.constructor_action_begin + action]);
+						fact.constructor_action_begin + action], constructor_context);
 		}
 		else if (fact.is_destructor)
 		{
