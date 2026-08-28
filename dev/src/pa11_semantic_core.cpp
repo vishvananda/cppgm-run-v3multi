@@ -2221,6 +2221,7 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 		case SimpleTokenType::KW_THREAD_LOCAL:
 			result.is_thread_local = true;
 			break;
+		case SimpleTokenType::KW_AUTO: result.is_auto = true; break;
 		case SimpleTokenType::KW_CONST:
 		case SimpleTokenType::KW_VOLATILE:
 			result.cv |= cv_bit(child);
@@ -2268,8 +2269,8 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			break;
 		}
 	}
-	if (!result.has_base)
-	{
+	if (!result.has_base) {
+		if (result.is_auto) return result;
 		FundamentalType type = FundamentalType::Int;
 		if (has_void)
 			type = FundamentalType::Void;
@@ -2405,6 +2406,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		friend_record_for_scope(scope) : NamedRecordId();
 	if (node.children.size() == 1)
 	{
+		if (spec.is_auto) throw std::runtime_error("PA11 auto declaration has no declarator");
 		if (spec.anonymous_record.valid())
 		{
 			const TypeId type = named_type(spec.anonymous_record);
@@ -2461,6 +2463,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		const bool direct_initializer = direct_initializer_operand(init, target, NULL);
 		TypeId type = direct_initializer ? spec.base :
 			apply_declarator(declarator, spec.base, target);
+		if (!type.valid()) throw std::runtime_error("PA11 declaration has no typed type");
 		if (!direct_initializer && type_kind(type) == TypeKind::Array &&
 			types_[type.value].unknown_bound && init.children.size() > 1 &&
 			init.children[1].kind == PA10NodeKind::Initializer &&

@@ -86,6 +86,11 @@ TypeId PA11SemanticModel::make_array(TypeId child, bool unknown_bound,
 TypeId PA11SemanticModel::make_function(const std::vector<TypeId>& parameters,
 	bool variadic, TypeId result, unsigned int qualifiers)
 {
+	if (!result.valid())
+		throw std::runtime_error("PA11 function has no typed result");
+	for (std::size_t i = 0; i < parameters.size(); ++i)
+		if (!parameters[i].valid())
+			throw std::runtime_error("PA11 function has an untyped parameter");
 	TypeKey key;
 	key.kind = TypeKind::Function;
 	key.parameters = parameters;
@@ -237,6 +242,8 @@ TypeId PA11SemanticModel::type_from_type_id(const PA10AstNode& node,
 	TypeId result = spec.base;
 	if (node.children.size() > 1)
 		result = apply_declarator(node.children[1], result, scope);
+	if (!result.valid())
+		throw std::runtime_error("PA11 type-id has no typed result");
 	return result;
 }
 DeclaratorOp PA11SemanticModel::pointer_op(const PA10AstNode& node,
@@ -298,11 +305,15 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(
 			throw std::runtime_error("invalid PA11 parameter declaration");
 		SpecFact spec = spec_fact(child.children.front(), scope);
 		TypeId type = spec.base;
+		if (!type.valid())
+			throw std::runtime_error("PA11 parameter has no typed type");
 		DeclaratorName name;
 		if (child.children.size() > 1)
 		{
 			name = declarator_name(child.children[1]);
 			type = apply_declarator(child.children[1], type, scope);
+			if (!type.valid())
+				throw std::runtime_error("PA11 parameter has no typed type");
 			if (contains_parameter_pack(child.children[1]))
 				*variadic = true;
 		}
@@ -382,6 +393,7 @@ TypeId PA11SemanticModel::apply_prefix(const std::vector<DeclaratorOp>& ops,
 			break;
 		case DeclaratorOp::Array:
 		case DeclaratorOp::Function:
+		case DeclaratorOp::TrailingReturn:
 			throw std::runtime_error("invalid PA11 prefix declarator operation");
 		}
 	}
@@ -405,6 +417,13 @@ TypeId PA11SemanticModel::apply_suffix(const std::vector<DeclaratorOp>& ops,
 			const std::vector<TypeId> parameters = parameter_types(
 				*op.parameter_clause, scope, &variadic, NULL);
 			result = make_function(parameters, variadic, result, op.cv);
+			continue;
+		}
+		if (op.kind == DeclaratorOp::TrailingReturn)
+		{
+			if (op.trailing_type_id == NULL)
+				throw std::runtime_error("missing PA11 trailing return type");
+			result = type_from_type_id(*op.trailing_type_id, scope);
 			continue;
 		}
 		throw std::runtime_error("invalid PA11 suffix declarator operation");
@@ -490,6 +509,15 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			{
 				DeclaratorOp op(DeclaratorOp::Function);
 				op.parameter_clause = &child;
+				suffix.push_back(op);
+			}
+			else if (child.kind == PA10NodeKind::TrailingReturnType)
+			{
+				if (child.children.size() != 1 ||
+					child.children.front().kind != PA10NodeKind::TypeId)
+					throw std::runtime_error("invalid PA11 trailing return type");
+				DeclaratorOp op(DeclaratorOp::TrailingReturn);
+				op.trailing_type_id = &child.children.front();
 				suffix.push_back(op);
 			}
 			else if (child.kind == PA10NodeKind::FunctionQualifier ||

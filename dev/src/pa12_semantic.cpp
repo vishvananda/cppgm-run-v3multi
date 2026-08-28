@@ -69,6 +69,8 @@ void PA11SemanticModel::process_condition_declaration(
 	if (!target.valid())
 		throw std::runtime_error("unresolved PA12 condition scope");
 	const TypeId type = apply_declarator(node.children[1], spec.base, target);
+	if (!type.valid())
+		throw std::runtime_error("PA12 condition has no typed type");
 	const BindingId binding_id = add_value(target, name.path.last(), type, false,
 		false, true, BindingId(), SourcePoint(node.source_begin));
 	DeclarationFact declaration(&node, target);
@@ -2926,6 +2928,10 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		function_facts_[function_id.value].body_fact = body_fact;
 		break;
 	}
+	case PA10NodeKind::SpecialMemberDefinition:
+	case PA10NodeKind::SpecialMemberDeclaration:
+		analyze_special_member(node, scope);
+		break;
 	default:
 		break;
 	}

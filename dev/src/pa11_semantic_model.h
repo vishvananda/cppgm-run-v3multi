@@ -747,11 +747,11 @@ struct SpecFact
 	bool is_constexpr;
 	bool is_static;
 	bool is_extern;
-	bool is_thread_local;
+	bool is_thread_local; bool is_auto;
 	SpecFact()
 		: base(), has_base(false), anonymous_record(), cv(0),
 		  is_typedef(false), is_constexpr(false), is_static(false),
-		  is_extern(false), is_thread_local(false)
+		  is_extern(false), is_thread_local(false), is_auto(false)
 	{}
 };
 struct ConstValue
@@ -791,17 +791,17 @@ struct DeclaratorOp
 		LvalueReference,
 		RvalueReference,
 		Array,
-		Function
+		Function, TrailingReturn
 	};
 	Kind kind;
 	unsigned int cv;
 	bool unknown_bound;
 	ArrayBound bound;
-	const PA10AstNode* parameter_clause;
+	const PA10AstNode* parameter_clause; const PA10AstNode* trailing_type_id;
 	NamedRecordId member_owner;
 	DeclaratorOp(Kind kind = Pointer)
 		: kind(kind), cv(0), unknown_bound(false), bound(),
-		  parameter_clause(NULL), member_owner()
+		  parameter_clause(NULL), trailing_type_id(NULL), member_owner()
 	{}
 };
 // PA12 facts are owned by the PA11 model.  The hot representation contains

@@ -1551,6 +1551,8 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const SpecFact spec = spec_fact(node.children[0], friend_type_scope);
 	const TypeId type = apply_declarator(declarator, spec.base,
 		friend_type_scope);
+	if (!type.valid()) throw std::runtime_error(spec.is_auto ?
+		"PA11 auto definition has no typed result" : "PA11 definition has no typed type");
 	if (type_kind(type) != TypeKind::Function)
 		throw std::runtime_error("PA11 definition is not a function");
 	const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&
@@ -1620,13 +1622,6 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	if (node.kind != PA10NodeKind::SpecialMemberDeclaration &&
 		node.kind != PA10NodeKind::SpecialMemberDefinition)
 		throw std::runtime_error("invalid PA11 special member");
-	if (!scope.valid() || scope.value >= scopes_.size() ||
-		scopes_[scope.value].kind != ScopeKind::Class ||
-		!scopes_[scope.value].record.valid() ||
-		scopes_[scope.value].record.value >= named_.size())
-		throw std::runtime_error("PA11 special member has no class owner");
-	const NamedRecordId record_id = scopes_[scope.value].record;
-	const NamedRecord& record = named_[record_id.value];
 	const PA10AstNode* declarator = NULL;
 	const PA10AstNode* member_specifiers = NULL;
 	const PA10AstNode* body = NULL;
@@ -1639,21 +1634,32 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 		else if (node.children[i].kind == PA10NodeKind::CompoundStatement)
 			body = &node.children[i];
 	}
-	if (declarator == NULL || !record.name.valid())
+	if (declarator == NULL)
 		throw std::runtime_error("PA11 special member declarator is missing");
-	const bool destructor = special_member_is_destructor(*declarator);
-	DeclaratorName name;
-	if (destructor)
+	const bool destructor = special_member_is_destructor(*declarator); const DeclaratorName source_name = declarator_name(*declarator);
+	ScopeId owner = scope;
+	if (!destructor)
 	{
-		// A destructor unqualified-id has no ordinary source name path.  Its
-		// class owner is already the canonical typed name for this member.
-		name.found = true;
-		name.path.components.push_back(record.name);
+		if (!source_name.found)
+			throw std::runtime_error("PA11 special member declarator is missing");
+		owner = declaration_scope(source_name.path, scope);
 	}
-	else
-		name = declarator_name(*declarator);
-	if (!name.found || name.path.global || name.path.components.size() != 1 ||
-		name.path.last() != record.name)
+	else if (source_name.found)
+		owner = class_scope_for_type(lookup_type_path(source_name.path, scope));
+	if (!owner.valid() || owner.value >= scopes_.size() || scopes_[owner.value].kind != ScopeKind::Class ||
+		!scopes_[owner.value].record.valid() || scopes_[owner.value].record.value >= named_.size())
+		throw std::runtime_error("PA11 special member has no class owner");
+	const NamedRecordId record_id = scopes_[owner.value].record; const NamedRecord& record = named_[record_id.value];
+	if (!record.name.valid()) throw std::runtime_error("PA11 special member declarator is missing");
+	if ((!destructor && (!source_name.found || source_name.path.components.empty() ||
+		source_name.path.last() != record.name)) || (destructor && source_name.found &&
+		(source_name.path.components.empty() || source_name.path.last() != record.name)))
+		throw std::runtime_error("PA11 special member name does not match class");
+	// Special-member facts use the owning record's injected name.
+	DeclaratorName name;
+	name.found = true;
+	name.path.components.push_back(record.name);
+	if (!name.found || name.path.global || name.path.components.size() != 1 || name.path.last() != record.name)
 		throw std::runtime_error("PA11 special member name does not match class");
 	if (member_specifiers != NULL)
 		for (std::size_t i = 0; i < member_specifiers->children.size(); ++i)
@@ -1671,14 +1677,11 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 		throw std::runtime_error("PA11 special member parameter clause is missing");
 	bool variadic = false;
 	std::vector<ParamFact> parameters;
-	const std::vector<TypeId> parameter_types_value = parameter_types(*clause,
-		scope, &variadic, &parameters);
+	const std::vector<TypeId> parameter_types_value = parameter_types(*clause, owner, &variadic, &parameters);
 	const FunctionDeclarationKind declaration_kind =
 		special_member_initializer_kind_impl(node);
-	const bool definition = body != NULL || declaration_kind !=
-		FunctionDeclarationKind::Normal;
-	const TypeId type = make_function(parameter_types_value, variadic,
-		fundamental(FundamentalType::Void));
+	const bool definition = body != NULL || declaration_kind != FunctionDeclarationKind::Normal;
+	const TypeId type = make_function(parameter_types_value, variadic, fundamental(FundamentalType::Void));
 	BindingId function_binding;
 	if (destructor)
 	{
@@ -1688,10 +1691,10 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 		Binding value(BindingKind::Function, record.name, type);
 		value.has_definition = definition;
 		value.language_linkage = current_language_linkage_;
-		function_binding = store_binding(scope, value);
+		function_binding = store_binding(owner, value);
 	}
 	else
-		function_binding = add_value(scope, record.name, type, true,
+		function_binding = add_value(owner, record.name, type, true,
 			definition, true, BindingId(), SourcePoint(node.source_begin), false,
 			current_language_linkage_, declaration_kind);
 	record_function_declarator(function_binding, name, *declarator,
@@ -1725,8 +1728,7 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 			record_sidecar.default_constructor_binding = function_binding;
 	}
 	set_named_record_sidecar(record_id, record_sidecar);
-	const ScopeId function_scope = create_scope(ScopeKind::Function, scope,
-		record.name);
+	const ScopeId function_scope = create_scope(ScopeKind::Function, owner, record.name);
 	function_bindings_.set(function_scope, function_binding);
 	function_definition_points_.set(function_scope,
 		SourcePoint(node.source_begin));
@@ -1739,8 +1741,7 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 			append_value_index(function_scope, parameters[i].name, parameter,
 				ScopeId(), SourcePoint(node.source_begin));
 	}
-	FunctionFact function_fact(&node, scope, function_binding, function_scope,
-		ScopeId());
+	FunctionFact function_fact(&node, owner, function_binding, function_scope, ScopeId());
 	function_fact.is_constructor = !destructor;
 	function_fact.is_destructor = destructor;
 	if (destructor)
