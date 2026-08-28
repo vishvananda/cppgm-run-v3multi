@@ -94,27 +94,34 @@ fixture, reference, comparator, or coverage rule is changed.
 
 The implementation keeps event append constant time and performs one
 owner-stable event walk plus one filtered-order check per complete record.
-Representative immutable compiler copies and five interleaved O0 runs per
-case are recorded outside the repository:
+Representative bit-field sources, immutable compiler copies, and five
+interleaved O0 runs per case are recorded outside the repository:
 
 ```text
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/manifest.tsv
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/timing.tsv
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/medians.tsv
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/structure.tsv
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/determinism.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/inputs/small-bit-fields.cpp
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/inputs/large-bit-field-events.cpp
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/inputs/nested-oversized-bit-fields.cpp
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/manifest.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/timing.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/medians.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/structure.tsv
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/determinism.tsv
 ```
 
-Both compiler copies have SHA-256
-`c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02` and are
-mode `0555`. Small (268 lines, 2 target declarations, 128 target
-expressions) has 131 LowIR functions/256 calls, `0.01s` median wall time, and
-9,860 KiB median RSS. Large (1046 lines, 12 declarations, 512 expressions)
-has 525 functions/1024 calls, `0.07s`, and 22,200 KiB. Same-name-noise
-(1804 lines, 2 target declarations, 256 unrelated hidden friends, 128 target
-expressions) has 387 functions/256 calls, `0.05s`, and 17,960 KiB. Each
-variant/case has one output hash across all five runs and final/immutable
-hashes match. These are representative whole-compiler measurements, not an
+The source executable and both compiler copies have SHA-256
+`c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`.  The
+two immutable copies are mode `0555`; the working source is mode `0775`.
+The preserved inputs are small (32 lines, 1 owner, 7 declarations, 20 field
+uses, 181 LowIR instructions), large (1669 lines, 32 owners, 544 declarations,
+832 uses, 7756 LowIR instructions), and nested/oversized (82 lines, 5 owners,
+17 declarations, 47 uses, 385 LowIR instructions).  The large case has 416
+named/128 unnamed fields, 64 zero-width events, 64 ordinary members, and 608
+owner events; the nested case has five oversized-width events and two root
+objects with nested arrays.  Final/immutable wall medians are respectively
+`0.00/0.00s`, `0.07/0.07s`, and `0.00/0.00s` (small/large/nested); RSS medians
+are `6104/6096`, `30600/30640`, and `6620/6620` KiB.  All 30 runs exit zero,
+each variant/case has one output hash across five rounds, and final/immutable
+hashes match.  These are representative whole-compiler measurements, not an
 isolated phase or timeout claim.
 
 ## Next Checkpoint
@@ -137,4 +144,4 @@ remains preserved.
 | Follow-up bool/index audit | Expression-owned typed bool provenance, composite hidden-friend key, corrected same-name performance evidence; all 29 removed identities retained. |
 | File audit and diff check | File audit passed with 5 pre-existing warnings; log `pa16-operator-followup-file-audit.log`; final `git diff --check` is recorded in `pa16-operator-followup-diff-check.log`. |
 | `2d93a5e9` ordinary non-template overloaded-operator checkpoint audit | Completed bounded repair and audit of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the corrective follow-up separates exact friend-definition lexical ownership from access friendship and records typed public/private/protected base-reference accessibility, including a bounded further-derived protected proof. Enum identity/ranking, narrow constructor-backed reference binding, reference/address facts, and typed bool boundaries remain covered. Final PA16 is `127/243` with `116` failures and `243/243` coverage; comparison to the `122/243` audit baseline has five baseline-only repairs and zero final-only failures. Through-PA15 is `1167/1167`; focused status is `29/32` with three documented pre-existing holdouts; course 411 passes; final state-matched performance is `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. |
-| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Complete: PA10--PA15 typed operation/promotion facts, semantic-owner validity checks, const-reference temporaries, overload-before-address-of, owner-stable mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned projection, and isolated initialization roots. Final PA16 is `131/243` passed with `112` failures and `243/243` identities; exact comparison to the turn-start map is baseline-only `0` and final-only `0`. Course 412 and the direct alias control pass; focused matrix is `5/11` with six documented LowIR mismatches; through-PA15 is `1167/1167`; file audit and diff-check pass. State-matched performance uses final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`. |
+| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Complete: PA10--PA15 typed operation/promotion facts, semantic-owner validity checks, const-reference temporaries, overload-before-address-of, owner-stable mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned projection, and isolated initialization roots. Final PA16 is `131/243` passed with `112` failures and `243/243` identities; exact comparison to the turn-start map is baseline-only `0` and final-only `0`. Course 412 and the direct alias control pass; focused matrix is `5/11` with six documented LowIR mismatches; through-PA15 is `1167/1167`; file audit and diff-check pass. Corrected bit-field performance is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1` with 30/30 zero-exit runs, actual bit-field inputs/counters, and final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`; final wall medians small/large/nested are `0.00/0.07/0.00s` and RSS medians `6104/30600/6620` KiB. |

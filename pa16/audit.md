@@ -130,31 +130,41 @@ warnings (`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
 `pa11_semantic_model.h`, and `pa15_lowering.h`); its durable log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-file-audit.log`.
 The final `git diff --check` log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-diff-check.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/doc-followup-diff-check.log`.
 
 ### Performance and residual boundaries
 
 The state-matched immutable executable copies are mode `0555` at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-perf-final-source/cppgm++-final`
-and `cppgm++-immutable`.  They byte-match `dev/cppgm++`; all three SHA-256
-values are
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/cppgm++-final`
+and `cppgm++-immutable`.  They byte-match the unchanged `dev/cppgm++`; all
+three SHA-256 values are
 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`.
-Five interleaved final/immutable rounds for small, large, and same-name-noise
-inputs measured whole compiler invocations with `/usr/bin/time`, including
-parsing and LowIR output.  Raw rows are in `timing.tsv`, medians in
-`medians.tsv`, deterministic hash checks in `determinism.tsv`, and structural
-counts in `structure.tsv` under that directory.
+The preserved workload sources are `inputs/small-bit-fields.cpp`,
+`inputs/large-bit-field-events.cpp`, and
+`inputs/nested-oversized-bit-fields.cpp` under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1`.
+Five interleaved final/immutable rounds per case measured 30 whole compiler
+invocations with `/usr/bin/time`, including parsing, semantic processing,
+layout, lowering, and LowIR output.  All 30 exits were zero.  Raw rows are in
+`timing.tsv`, medians/ranges in `medians.tsv`, run statuses in
+`run-status.tsv`, deterministic hashes in `determinism.tsv`, and bit-field
+structural counters in `structure.tsv` under that directory.
 
-| input | lines | target decls | unrelated same-name hidden friends | target expressions | LowIR functions/calls | wall median (range) | RSS median (range) |
-| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.01s (0.01..0.01)` | `9860 (9680..9944) KiB` |
-| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.07s (0.06..0.07)` | `22200 (21824..22248) KiB` |
-| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.05s (0.05..0.05)` | `17960 (17892..17968) KiB` |
+| case | lines | owner records | bit-field declarations (named/unnamed) | zero/oversized | ordinary/events | field uses (read/write) | LowIR instructions/functions/projections | wall median (final / immutable) | RSS median (final / immutable) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| small-bit-fields | 32 | 1 | 7 (5/2) | 1/0 | 1/8 | 20 (10/10) | 181/1/24 | `0.00s (0.00..0.00) / 0.00s (0.00..0.00)` | `6104 (6064..6112) / 6096 (6072..6148) KiB` |
+| large-bit-field-events | 1669 | 32 | 544 (416/128) | 64/0 | 64/608 | 832 (416/416) | 7756/1/960 | `0.07s (0.07..0.07) / 0.07s (0.07..0.07)` | `30600 (30492..30648) / 30640 (30348..30644) KiB` |
+| nested-oversized-bit-fields | 82 | 5 | 17 (13/4) | 3/5 | 5/22 | 47 (21/26) | 385/1/83 | `0.00s (0.00..0.00) / 0.00s (0.00..0.00)` | `6620 (6548..6636) / 6620 (6596..6688) KiB` |
 
-The same-name-noise case preserves the target expression/call counts while
-adding 256 unrelated same-name hidden friends, which structurally corroborates
-exact-key bounded discovery.  These whole-compile timings are representative
-evidence, not an isolated phase or timeout proof.
+The final output hashes for those three cases are respectively
+`2ca315b9617b6827823735e20a843cc0335a1e3a6d04e69a2af389d90d79d720`,
+`9be4ac92b3c1be4e1bbb755061162ae17e5a110a7e231c230951a1e2a90839e3`, and
+`ea4fe15c038c73b71b3297cccafd2e5a5dfa55f36a2d9ac6b3135ed3998735fa`.
+Each variant/case has one unique hash across all five rounds, and the final
+and immutable hashes match.  These are representative whole-compiler
+measurements, not an isolated phase or timeout proof.  The earlier operator
+same-name workload is retained only with its historical operator checkpoint
+and is not used as bit-field evidence.
 
 The six focused LowIR mismatches are intentionally retained: constructor
 member-init, member access, prefix/postfix increment, aggregate init, signed
@@ -786,4 +796,4 @@ conversion slices.
 | `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed reachable member demand, dense PA15 reachability metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `0a6be82d` typed fixed-bound local/synthesized array lifetime checkpointAudit | Completed bounded audit/repair: typed lifetime ownership and destructor continuity are validated once, dense `ScopeId` flags replace the former per-function lifetime scan, checked array paths/actions and arena-safe recursive cleanup are retained, and lexical/control-exit/EH state is covered by course 410. Final PA16 is `93/243` with the exact turn-start `150` failure identities and `243/243` coverage; through-PA15 is `1167/1167`; the file audit passes with five existing warnings; diff-check passes; current structural and interleaved smoke/scale evidence is recorded above. |
 | `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the follow-up corrects exact friend-definition lexical ownership and typed private/protected/public base-reference accessibility while retaining enum identity/promotion ranking, narrow converting-constructor participation, reference/address facts, and typed bool boundaries through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused status is `29/32` with three documented pre-existing holdouts, course 411 passes, and state-matched performance is in `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. No handout, fixture, reference, comparator, or generated output changed. |
-| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Completed bounded PA10--PA15 audit and repair: canonical typed operation/promotion facts, const-reference temporary ownership, semantic-owner rejection of invalid bit-field references and bool decrement, overload-before-address-of ordering, mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned PA15 projection, and isolated initialization roots. Final PA16 is `131/243` with `112` failures and `243/243` identities; exact comparison to the turn-start `112`-failure map is baseline-only `0`, final-only `0`. Course 412, direct alias control, through-PA15 `1167/1167`, file audit, and diff-check pass; the focused bit-field matrix is `5/11` with six documented LowIR mismatches. State-matched five-round performance uses final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`. No handout, fixture, reference, comparator, or generated output changed. |
+| `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Completed bounded PA10--PA15 audit and repair: canonical typed operation/promotion facts, const-reference temporary ownership, semantic-owner rejection of invalid bit-field references and bool decrement, overload-before-address-of ordering, mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned PA15 projection, and isolated initialization roots. Final PA16 is `131/243` with `112` failures and `243/243` identities; exact comparison to the turn-start `112`-failure map is baseline-only `0`, final-only `0`. Course 412, direct alias control, through-PA15 `1167/1167`, file audit, and diff-check pass; the focused bit-field matrix is `5/11` with six documented LowIR mismatches. Corrected state-matched bit-field performance is in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1` with 30/30 zero-exit runs, 32-owner/544-declaration/832-use scaled counters, final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`, and final wall medians `0.00/0.07/0.00s` for small/large/nested cases. No handout, fixture, reference, comparator, or generated output changed. |
