@@ -387,19 +387,21 @@ BindingId PA11SemanticModel::ensure_aggregate_constructor(
 	// forwards exactly this typed sequence; it does not rediscover member
 	// appertainment while lowering an array element.
 	std::vector<BindingId> members;
-	const Scope& class_scope = scopes_[record.scope.value];
-	for (std::size_t i = 0; i < class_scope.bindings.size(); ++i)
+	const RecordLayout& layout = record_layout(record_id);
+	if (layout.state != RecordLayoutState::Complete)
+		throw std::runtime_error("PA12 aggregate constructor layout is incomplete");
+	members.reserve(layout.members.size());
+	for (std::size_t i = 0; i < layout.members.size(); ++i)
 	{
-		const BindingId member_id = class_scope.bindings[i];
+		const BindingId member_id = layout.members[i].binding;
 		if (!member_id.valid() || member_id.value >= bindings_.size() ||
 			member_id.value >= binding_owners_.size() ||
-			binding_owners_[member_id.value] != record.scope)
+			binding_owners_[member_id.value] != record.scope ||
+			binding(member_id).kind != BindingKind::Variable ||
+			is_static_member(member_id))
 			throw std::runtime_error(
 				"PA12 aggregate constructor member identity is invalid");
-		const Binding& member = binding(member_id);
-		if (member.kind == BindingKind::Variable &&
-			!is_static_member(member_id))
-			members.push_back(member_id);
+		members.push_back(member_id);
 	}
 	std::vector<TypeId> parameters;
 	parameters.reserve(members.size());
@@ -437,7 +439,9 @@ BindingId PA11SemanticModel::ensure_aggregate_constructor(
 	parameter_bindings.reserve(parameters.size());
 	for (std::size_t i = 0; i < members.size(); ++i)
 	{
-		const Binding& member = binding(members[i]);
+		// store_binding may reallocate bindings_; do not retain a reference to
+		// that arena across the publish.
+		const Binding member = binding(members[i]);
 		const BindingId parameter = store_binding(function_scope,
 			Binding(BindingKind::Parameter, member.name, parameters[i]));
 		if (member.name.valid())

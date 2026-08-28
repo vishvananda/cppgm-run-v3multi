@@ -54,10 +54,17 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			continue;
 		function_work.push_back(FunctionFactId(i));
 	}
-	std::vector<unsigned char> scanned_facts(
+	// A fact can be shared by a global initializer and an ordinary function.
+	// Global roots may inline a bounded subset of synthetic aggregate helpers,
+	// while function lowering must still demand that helper when its call is
+	// reachable.  Keep the two reachability domains independent; one visited
+	// bit must never turn a context-sensitive demand into a global shortcut.
+	std::vector<unsigned char> scanned_global_facts(
+		model_.semantic_facts_.size(), 0);
+	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
 	const auto demand_constructor_fact = [this, demanded, &function_work](
-		const SemanticFact& fact) {
+		const SemanticFact& fact, bool global_root) {
 		if (!fact.has_callee || !fact.selected_binding.valid() ||
 			fact.selected_binding.value >= model_.bindings_.size())
 			throw std::runtime_error("PA15 constructor demand fact is incomplete");
@@ -88,6 +95,9 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				fact.selected_binding, sidecar->constructor_record);
 			no_op = target.synthetic && target.constructor_action_count == 0;
 		}
+		if (global_root && !no_op &&
+			global_aggregate_constructor_inline_eligible(fact))
+			return;
 		if (!no_op && !(*demanded)[target_id->value])
 		{
 			(*demanded)[target_id->value] = 1;
@@ -98,7 +108,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 	// are not reachable from a namespace function body.  Walk their typed
 	// semantic roots once so a constructor selected by an aggregate edge is
 	// still emitted when constant-data lowering elides the runtime call.
-	std::vector<SemanticFactId> root_fact_work;
+	std::vector<std::pair<SemanticFactId, bool> > root_fact_work;
 	for (std::map<std::size_t, SemanticFactId>::const_iterator root =
 		variable_facts_.begin(); root != variable_facts_.end(); ++root)
 	{
@@ -119,17 +129,19 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		const bool static_member_definition = model_.is_static_member(
 			BindingId(root->first));
 		if (namespace_definition || static_member_definition)
-			root_fact_work.push_back(root->second);
+			root_fact_work.push_back(std::make_pair(root->second, true));
 	}
 	while (!root_fact_work.empty())
 	{
-		const SemanticFactId fact_id = root_fact_work.back();
+		const std::pair<SemanticFactId, bool> work = root_fact_work.back();
 		root_fact_work.pop_back();
+		const SemanticFactId fact_id = work.first;
+		const bool global_root = work.second;
 		if (!fact_id.valid() || fact_id.value >= model_.semantic_facts_.size())
 			throw std::runtime_error("PA15 root demand fact is invalid");
-		if (scanned_facts[fact_id.value] != 0)
+		if (scanned_global_facts[fact_id.value] != 0)
 			continue;
-		scanned_facts[fact_id.value] = 1;
+		scanned_global_facts[fact_id.value] = 1;
 		const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 		if (model_.aggregate_ranges_.find(fact_id) != NULL)
 		{
@@ -139,7 +151,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				&element_count, &total_count);
 			(void) total_count;
 			for (std::size_t i = 0; i < element_count; ++i)
-				root_fact_work.push_back(elements[i].initializer);
+				root_fact_work.push_back(std::make_pair(elements[i].initializer,
+					global_root));
 		}
 		if (fact.child_count != 0 &&
 			(fact.child_begin == InvalidIdentityValue ||
@@ -148,9 +161,10 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					fact.child_begin))
 			throw std::runtime_error("PA15 root demand child range is invalid");
 		if (fact.kind == SemanticFactKind::ConstructorAction && fact.has_callee)
-			demand_constructor_fact(fact);
+			demand_constructor_fact(fact, global_root);
 		for (std::size_t i = 0; i < fact.child_count; ++i)
-			root_fact_work.push_back(model_.semantic_children_[fact.child_begin + i]);
+			root_fact_work.push_back(std::make_pair(
+				model_.semantic_children_[fact.child_begin + i], global_root));
 	}
 	for (std::size_t i = 0; i < model_.lifetime_facts_.size(); ++i)
 	{
@@ -299,9 +313,9 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			fact_work.pop_back();
 			if (!fact_id.valid() || fact_id.value >= model_.semantic_facts_.size())
 				throw std::runtime_error("PA15 member demand fact is invalid");
-			if (scanned_facts[fact_id.value] != 0)
+			if (scanned_runtime_facts[fact_id.value] != 0)
 				continue;
-			scanned_facts[fact_id.value] = 1;
+			scanned_runtime_facts[fact_id.value] = 1;
 			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 			if (model_.aggregate_ranges_.find(fact_id) != NULL)
 			{
@@ -324,7 +338,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				throw std::runtime_error("PA15 member demand child range is invalid");
 			if (fact.kind == SemanticFactKind::ConstructorAction &&
 				fact.has_callee)
-				demand_constructor_fact(fact);
+				demand_constructor_fact(fact, false);
 			if (fact.kind == SemanticFactKind::CallExpression &&
 				fact.has_implicit_object)
 			{

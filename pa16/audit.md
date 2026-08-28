@@ -2,157 +2,163 @@
 
 ## Current Checkpoint Review
 
-This final review covers landed commit `4efddaaeac6f10d897b7893736c999dd6be06e96`
-(`PA16: add typed derived-to-base conversions`) relative to parent
-`052b47b99da3021b805ef6c1d2f8974dccd657e3`, plus four bounded repair groups
-and the reduced course regression made during this audit. The ownership
-boundary is the typed ordinary pointer/reference derived-to-base path for
-non-virtual single inheritance. No handout test, fixture, `.ref` file,
-test comparator, harness, generated output, or source-set list was changed.
+This review covers landed commit `dea01c52089fe78b8d23cce0b72ecbe8686ddb26`
+(`PA16: lower typed recursive aggregate initialization`) relative to parent
+`36b93869`, plus the bounded checkpoint-audit repairs and course control 415.
+The ownership boundary is C++11 aggregate initialization for the supported
+object subset: nested arrays and records, brace elision, omitted tails,
+default member initializers, scalar/class/reference members, bit-fields,
+string-literal pointer members, value initialization, and namespace/static
+aggregate storage. Unions, aggregate bases, copy/move or by-value transfer,
+templates, virtual/multiple inheritance, and unrelated residual stage surfaces
+remain outside this checkpoint. No handout test, fixture, `.ref` file,
+comparator, harness, or source-set list changed.
 
 ### Contract and ownership
 
-The PA16 boundary admits complete object pointers and references across a
-single non-virtual inheritance chain whose supported direct-base layout is at
-offset zero, with the existing public/protected/private access rules and
-constructor lexical scope. Virtual or multiple inheritance, class-by-value
-transfer, and conversion operators remain outside this checkpoint. The
-standard cross-check is N3485 [conv.ptr], [conv.qual], [dcl.init.ref], and
-[over.ics.rank] in [N3485](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3485.pdf).
+The implementation follows spec.md §§1, 2, 4, 5, and 7: one shared typed
+pipeline, one canonical owner for each fact, demand-driven bounded work, no
+source-text reconstruction, and deterministic structural evidence. The
+representative ownership trace is:
 
-The typed fact path is:
+`PA10 BracedInitList + typed destination`
+  -> `PA11/PA12 canonical TypeId, BindingId, SemanticFactId`
+  -> declaration-ordered `RecordLayout::members` and sparse
+     `AggregateElementFact` ranges
+  -> PA12 appertainment, brace elision, DMI/omitted-tail/reference decisions,
+     constructor actions, and typed parameter resolution
+  -> PA15 independent global-root/runtime demand visitation
+  -> one source/declaration-ordered `PendingGlobalAction` stream
+  -> typed constant data or `SR_INIT` lazy aggregate-root/path lowering
+  -> checked owner/type/range/layout offsets
+  -> direct scalar/reference/bit-field stores or a demanded constructor helper
+  -> LowIR and backend.
 
-PA10/PA11 canonical `TypeId` and `NamedRecordId`
-  -> validated class scope, direct-base/access metadata, and complete
-     zero-offset `RecordLayout`
-  -> PA12 transient `ConversionChoice` with typed endpoints, standard-rank
-     category, cv subset metadata, base distance, and access `ScopeId`
-  -> one final relation/access recheck and the owned `ConversionFact` plus
-     compact `conversion_base_paths_` slice
-  -> PA15 typed path/layout validation and `IPK_BASE_SUBOBJECT` projection
+`RecordLayout::members` is the sole declaration-order/index owner in the
+changed PA12 paths. It excludes static members and anonymous/zero-width
+bit-field layout events while retaining named bit-fields in declaration order.
+Sparse aggregate ranges carry only present elements; omitted scalar runs are
+zero-filled without a bound-sized semantic arena. PA12 copies arena values
+before initializer work that may append bindings or types.
 
-No rendered-name recovery or duplicate semantic type model appears in this
-path. The selected fact owns source/target, rank metadata, the access scope
-that proved the relation, and the complete typed path. PA15 does not
-rediscover this explicit conversion through lookup or text. A separate
-pre-existing implicit-object member-call lowering in
-`dev/src/pa15_lowering_calls.cpp` reconstructs a typed member-object path; it
-does not recover names, but is outside this checkpoint's changed-path
-ownership and remains a later member-call holdout.
-
-The scope-free pointer-common routine is only structural candidate discovery.
-Every selected branch is committed through the scoped `conversion_for` or
-`record_builtin_conversion` path, so common-type discovery cannot become
-semantic convertibility. Initialization, member-initializer, assignment,
-return, conditional, cast, ordinary call, member call, operator, function-id,
-template-candidate, pointer-common, and constructor-probe consumers were
-traced. Constructor member-initializers pass their constructor lexical scope;
-references use addressable storage, and pointer values—including null—remain
-values.
+For `Pair rows[2] = {{1, 2}, {3, 4}}` and the brace-elided equivalent, typed
+list facts retain nested destination types and PA15 recomputes checked paths
+from the canonical root. `RefWrap alias = {pair.first}` carries addressable
+storage and emits an alias pointer, not a copied value. Named bit-fields use
+the same ordered layout path and the bit-field initialization context. Typed
+literal payloads are interned from PA11-owned decoded bytes, so fixed and
+inferred-bound string-pointer records do not recover source spelling.
 
 ### Findings and bounded repairs
 
-- The landed choice scorer had two narrow ordering defects. An implicit
-  constructor probe carried `UserDefined` category but its first-standard
-  rank was still used as a global numeric tie-break. The typed comparator now
-  orders standard categories above `UserDefined`, `UserDefined` above
-  `Ellipsis`, and leaves two user-defined sequences indistinguishable by that
-  unrelated rank; standard-vs-standard legacy numeric ordering and derived
-  distance/cv ordering remain unchanged. Equal-rank member-object choices
-  now apply cv qualification as a subset relation rather than a bit-count
-  relation. The strengthened course-414 operator regression and course-402
-  member-cv control both pass.
+- `collect_demanded_member_functions` now has independent global-root and
+  ordinary-runtime visited state. A shared semantic fact can therefore be
+  considered once for global aggregate-helper inlining and again for runtime
+  helper demand; one context-specific visited bit cannot suppress the latter.
+  Both walks remain bounded by the semantic-fact arena and deterministic stack
+  order. Course 409 covers the related aggregate-helper/ordinary-default
+  constructor boundary; no distinct same-`SemanticFactId` course reproducer
+  was found.
 
-- The comparator declarations remain in `pa12_semantic_selection.h`, while
-  both comparison bodies are defined once in the already-linked
-  `pa12_semantic_calls.cpp`; this preserves the typed boundary without adding
-  implementation weight to the selection header.
+- Global address projections, scalar dynamic values, and aggregate actions
+  share one pending-action stream. Stable source declaration/declarator order
+  is retained through `__cppgm_init`, so implementation kind cannot regroup
+  ordered dynamic initialization within one translation unit. Course 415
+  observes the interleaved call/store order and executes the result.
 
-- Public, protected, private, and constructor-context base access remains a
-  typed scope proof. External private conversion and private conditional
-  pointer formation reject; the private-base member-initializer conversion
-  is accepted. Nearer-base overload selection chooses the nearer base.
+- The global aggregate inliner requires an exact synthetic aggregate
+  constructor, canonical record/type/owner identity, complete layout, fixed
+  arity, declaration-order action range, valid function-scope parameters,
+  scalar/pointer member types, checked offsets, and parameter-only initializer
+  facts with a bounded cast walk. Invalid, cyclic, reference-unsupported, or
+  otherwise non-inlineable facts fail closed to the ordinary demanded helper;
+  they are never silently suppressed. Root storage, path recomputation,
+  overflow/range checks, and bit-field context are validated before stores.
 
-- `validated_direct_base` and the relation/access walks reject malformed
-  record/scope IDs, invalid direct-base metadata, virtual inheritance, and
-  cycles with bounded arena-based work. Multiple inheritance, class-by-value
-  derived-to-base transfer, and incomplete/unsupported layout fail closed.
-  The class-to-void boundary needed by the landed member-initializer still
-  succeeds.
+- Global aggregate data lowering coalesces omitted zero runs while preserving
+  one typed scalar slot where needed. It supports fixed and inferred-bound
+  string-pointer records through typed literal-content interning. The exact
+  formerly residual unknown-bound namespace record handout now passes.
 
-- PA15 rejects missing fact scope/path ownership, including a scope whose
-  `ScopeId.value` is outside `model_.scopes_`, invalid path ranges, wrong
-  endpoint records, virtual edges, incomplete layouts, and non-zero direct
-  base offsets. A pointer null literal skips zero-offset projection and stays
-  null; a reference conversion projects addressable storage and preserves
-  alias identity.
+- The canonical-bool shortcut was not retained. The valid affected shape is
+  `trunc u8 i64` followed by `zext i32 u8`; the direct `zext i32 u8` from the
+  i64 comparison was rejected by `lowir2cy86` for operand/source-type
+  mismatch. The final focused output check and backend translation pass.
 
-- Scoring performs no candidate-path allocation. Publication performs one
-  bounded relation/access recheck and one path collection/copy into the
-  arena. The shared direct-base validation and cycle checks are bounded by
-  the named-record/scope arenas. No broad retry, unbounded scan, per-use
-  rendered name, or shortcut keyed to a test was introduced.
+- The file-audit size findings introduced by the increment were removed by
+  extracting global declaration-position validation and keeping declaration
+  semantic analysis within the project limit. The audit now reports only its
+  five pre-existing header-division warnings.
 
 ### Focused and broad evidence
 
-The turn-start authoritative record is
+The authoritative turn-start record is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`144/243` passed, `99` failed, and all `243/243` identities were covered at
-the start of this audit. The final `make test-pa16` also exits 2 with
-`144/243` passed, `99` failed, and all `243/243` identities covered. Exact
-normalized comparison against the turn-start map reports baseline-only `∅`
-and final-only `∅`; the coverage inventory is exactly 243. Stage progress is
-therefore preserved. The final focused conversion matrix is `8/10`; the two
-unchanged residuals are
-`general/200-pointer-subscript-class-reference-return.t` (scalar-index
-LowIR scaling) and
-`general/200-reference-indexed-pointer-member-access.t` (nested-array
-initializer boundary). The focused access/rank/parser controls are `7/9`;
-the two residuals are
-`general/300-using-base-static-same-signature-derived-preferred.t` and
-`general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`.
-The PA15 conditional controls are `2/2`.
+`159/243` passed, `84` failed, and `243/243` identities were covered. Final
+`make test-pa16` exits 2 with `164/243` passed, `79` failures, and
+`243/243` identities covered. Exact failure-set comparison has five
+baseline-only repairs and an empty final-only set:
 
-`make -C dev cppgm++` exits 0. The required course 402, 411, and strengthened
-414 checks pass after syntax checks; course 400 remains the pre-existing
-user-declared-destructor lifetime holdout and is outside this conversion
-slice. The final through-PA15 gate is `1167/1167`. The final file audit exits
-0 with five header-division warnings, and `git diff --check` exits 0. Exact
-logs are preserved under
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v3`.
+- baseline-only: `general/200-global-class-array-enum-trivial-dtor.t`,
+  `general/200-global-scalar-dynamic-init.t`,
+  `general/200-local-struct-array-init.t`,
+  `general/300-namespace-aggregate-array-string-members.t`, and
+  `general/300-static-member-aggregate-array-dynamic-init.t`;
+- final-only: `∅`.
+
+The complete exact baseline and final maps are preserved in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-aggregate-init-audit-final-v1/baseline-failures.txt`
+and `final-failures.txt`. The exact 17-test focus is `12/17`, with all
+`17/17` identities covered. Its five remaining failures are
+`general/100-global-aggregate-nested-array-initializer.t`,
+`general/200-defaulted-constructor-still-aggregate.t`,
+`general/200-deleted-constructor-still-aggregate.t`,
+`general/300-value-init-aggregate-with-nontrivial-member.t`, and
+`general/400-bitfield-aggregate-init.t`; the other 12 focus identities pass.
+
+`make -C dev cppgm++` exits 0. The required through-PA15 command exits 0 with
+`1167/1167` passing. The required file audit exits 0 with five pre-existing
+`bad-division` warnings in `abi_mangle.h`, `cpp_semantic_core.h`,
+`lowir_model.h`, `pa11_semantic_model.h`, and `pa15_lowering.h`.
+Controls 404, 409, 412, and 415 each exit 0; `git diff --check` exits 0.
+Exact outputs and statuses are preserved under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-aggregate-init-audit-final-v1`.
 
 ### Performance and structural evidence
 
-Durable evidence is at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-evidence-final-v1`.
-Its frozen compiler SHA-256 is
-`5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`.
-`results.tsv` contains nine immutable probes at depths `1/8/32` and
-candidate counts `2/16/64`, each run twice: all 18 exits are zero and all
-repeated hashes match. The current compiler independently reproduced all
-nine expected hashes on both runs after the audit repairs. The final replay
-is preserved at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-conversion-audit-final-v3/structural-replay-v3`:
-9 cases x 2 runs, 18 expected-hash matches, 18 zero exits, and zero
-run-pair mismatches. Its current rebuilt compiler SHA-256 is
-`d1352cd1c16bcd58587ee9ad201a56665819e671933db979c8df1aea6124c41b`, kept
-separate from the frozen compiler hash above. The recorded
-source range is 595--5215 bytes; LowIR is 83/2112 through 703/18222
-lines/bytes; observable base projections are 4, 18, and 66 for depths 1, 8,
-and 32. The probes cover direct/transitive pointer and reference conversion,
-nearer-base ranking, and pointer-to-const-void competition. This is
-determinism and structural bounded-work evidence only—not a timing, RSS,
-allocation, speedup, or asymptotic claim.
+The immutable historical evidence at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-aggregate-init-evidence`
+was preserved. The separate final replay is at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-aggregate-init-audit-final-v1`.
+The final compiler SHA-256 is
+`62f6feea601662cb601f12c3ad3b9083f4da85639c2e2b741cf24c7a31721d4b`.
+The replay has 30/30 zero-status runs, nine semantic pairs and six LowIR
+pairs, with zero repeated-hash mismatches. It records source/output sizes and
+semantic list/action/literal plus LowIR store/call/projection counts in
+`structural-counts.tsv`.
 
-### Next checkpoint
+The omitted-tail bounds 16, 1024, and 1000000 each produce 17 semantic lines,
+one aggregate list, and zero per-element aggregate descendants; their output
+sizes are 593, 601, and 612 bytes. Explicit nested, brace-elided,
+reference/class, fixed string-pointer, and exact unknown-bound handout probes
+all pass twice with matching hashes. The exact unknown-bound handout produces
+52 semantic lines/2616 bytes and 118 LowIR lines/2564 bytes. The bool and
+ordered-initialization replays are in `bool-shape-check.log` and
+`ordering-evidence.log`. These are structural/deterministic observations only;
+no timing, RSS, allocation, or speedup claim was measured.
 
-This checkpoint is complete: the broad PA16 and through-PA15 gates, file
-audit, diff-check, focused controls, and immutable structural replay all have
-the final results recorded above. The next substantive PA16 checkpoint
-remains the residual conversion/LowIR surface and other explicitly staged
-boundaries; unrelated lifetime, static, operator, access, and member
-residuals—including the pre-existing lowering path noted above—remain
-holdouts rather than scope expansion here.
+### Boundaries, residuals, and next checkpoint
+
+The five focused LowIR residuals listed above remain open; defaulted/deleted
+aggregate eligibility is not broadened beyond the typed C++11 decision, and
+the value-init/bit-field/global nested cases retain their valid typed lowering
+even where fixture LowIR shape still differs. The full stage remains at 79
+failures, so PA16 is not complete. No same-fact shared-demand course case was
+constructed, and no timing/RSS evidence exists. Unions, bases, transfer,
+templates, virtual/multiple inheritance, and unrelated PA16 surfaces remain
+out of scope. The next checkpoint should select the remaining aggregate
+LowIR/semantic identities or a separate staged surface; it must not treat this
+checkpoint as completion.
 
 ## Historical Member-Function-Definition Declarator Review
 
@@ -923,6 +929,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `dea01c52` aggregate-initialization checkpointAudit | Completed bounded PA10--PA15 aggregate audit and repair: RecordLayout now owns declaration order/indexes, PA12 arena values survive reallocating publication, aggregate facts remain sparse and typed, global/runtime demand visitation is independent, pending global actions preserve source order, and the global aggregate inliner is checked and falls back to demanded helpers when unsupported. Final PA16 is `164/243` with `79` failures and `243/243` identities covered versus the authoritative `159/243` and `84` failures at turn start; the exact delta is five baseline-only repairs and final-only `∅`. The exact focus is `12/17` with `17/17` covered; course 404/409/412/415, through-PA15 `1167/1167`, file audit, and diff-check pass. Final structural replay is preserved in `pa16-aggregate-init-audit-final-v1` with `30/30` zero-status runs, zero repeated-hash mismatches, and no timing/RSS claim. The unknown-bound namespace string-record handout now passes. No handout, fixture, reference, comparator, harness, or source-set list changed. |
 | `fb4348b6` typed parameterized class-constructor checkpointAudit | Complete: bounded PA10--PA15 constructor audit repaired canonical hidden-destination callable typing, protected-constructor access, shared candidate owner validation, and aggregate copy/direct-list dispatch for explicitly-defaulted/deleted constructors. The focused constructor matrix is `17/17`; course controls 400--409 pass with syntax checks, including new self-pointer/protected/private and aggregate field/helper coverage. The two aggregate handout controls retain the known LowIR address/bool shape comparison difference. Final PA16 is `91/243` with `152` failures and `243/243` coverage; failure and coverage identity additions/removals are both `∅`/`∅`. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing warnings; diff-check passes; representative scale smoke is recorded above. No handout, fixture, reference, or `.ref` changed. |
 | `32c45463` typed class-object construction checkpointAudit | Completed bounded audit of the landed typed construction increment relative to `a2ac5256`: repaired canonical empty named-class constructor identity, fail-closed FunctionFact ownership, value-initialization zeroing semantics, aggregate DMI fallback, typed range/owner/index validation, demand-driven empty-helper elision, and the course-404 ordering controls. Focused copied handout comparison is `10/11`; course controls 400--407 are green; final PA16 is `80/243` with `163` failures and `243/243` coverage, with exact failure and coverage additions/removals `∅`/`∅`; construction stress smoke is five successful `0.00s` runs with RSS `5824--6056KB` (timings in `/tmp/codex-pa16-stress-final.Tn9MSH/stress-1.time` through `stress-5.time`), 14 constructor helpers, 14 constructor calls, 13 base projections, 45 field projections, and 45 stores. Through-PA15 is `1167/1167`; the file audit passes with five pre-existing header-division warnings; no handout, fixture, reference, or `.ref` changed. |
 | `2f130396` typed static-data storage/access checkpointAudit | Completed bounded audit/repair: canonical direct class-owner merging, inherited/nested typed owner retention, initializer-fact preservation, demand-aware class-static/TLS emission, access checks, exactly-once static object evaluation, and PA12 fail-closed class claims are traced and repaired. `make -C dev cppgm++`, course controls 400--407, the focused probe, and exact through-PA15 gate pass their bounded criteria; full PA16 is `61/243` with `182` failures and `243/243` coverage, with failure-identity additions/removals `∅`/`∅`. The file audit exits `0` with five pre-existing warnings; no handout or reference changed. |

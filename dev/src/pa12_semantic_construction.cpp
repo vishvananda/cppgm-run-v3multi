@@ -553,16 +553,20 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			append_class(ConstructorActionTarget::Base, record.direct_base,
 				BindingId(), NULL);
 	}
-	// append_class may synthesize a constructor and append bindings/facts.
-	// Keep the declaration-order member IDs independent of those publishes.
-	const std::vector<BindingId> class_members =
-		scopes_[record.scope.value].bindings;
-	for (std::size_t i = 0; i < class_members.size(); ++i)
+	// RecordLayout is the sole declaration-order/index owner.  In particular,
+	// it excludes static members and unnamed/zero-width bit-field events while
+	// retaining named bit-fields in their declaration order.
+	const RecordLayout& layout = record_layout(function_record);
+	if (layout.state != RecordLayoutState::Complete)
+		throw std::runtime_error("PA12 constructor member layout is incomplete");
+	for (std::size_t i = 0; i < layout.members.size(); ++i)
 	{
-		const BindingId member_id = class_members[i];
+		const BindingId member_id = layout.members[i].binding;
 		if (!member_id.valid() || member_id.value >= bindings_.size() ||
 			member_id.value >= binding_owners_.size() ||
-			binding_owners_[member_id.value] != record.scope)
+			binding_owners_[member_id.value] != record.scope ||
+			binding(member_id).kind != BindingKind::Variable ||
+			is_static_member(member_id))
 			throw std::runtime_error("PA12 constructor member identity is invalid");
 		const Binding member = binding(member_id);
 		if (member.kind != BindingKind::Variable || is_static_member(member_id))

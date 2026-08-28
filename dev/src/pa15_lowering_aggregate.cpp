@@ -195,6 +195,20 @@ struct Pa15Lowerer::TypedGlobalDataAppender
 			append_zero(type.storage_size());
 	}
 
+	// Keep a single omitted scalar slot typed, while coalescing longer runs into
+	// one zero item.  This preserves the structural boundary without allocating
+	// one data item per bound-sized tail.
+	void append_zero_elements(TypeId value, std::size_t count,
+		std::size_t element_bytes)
+	{
+		if (count == 0)
+			return;
+		if (count == 1)
+			append_typed_zero(value);
+		else
+			append_zero(count * element_bytes);
+	}
+
 	std::size_t object_bytes(TypeId value) const
 	{
 		const LowType type = lowerer_.low_type(value);
@@ -228,41 +242,8 @@ struct Pa15Lowerer::TypedGlobalDataAppender
 	bool resolve_parameter(SemanticFactId id, const FunctionFact* function,
 		const std::vector<SemanticFactId>& arguments, SemanticFactId* result) const
 	{
-		if (result == NULL || function == NULL || !id.valid() ||
-			id.value >= lowerer_.model_.semantic_facts_.size())
-			return false;
-		const SemanticFact& fact = lowerer_.model_.semantic_facts_[id.value];
-		if (fact.kind == SemanticFactKind::IdExpression && fact.binding.valid() &&
-			function->function_scope.valid() && function->function_scope.value <
-			lowerer_.model_.scopes_.size())
-		{
-			const Scope& scope = lowerer_.model_.scopes_[function->function_scope.value];
-			std::size_t argument_index = 0;
-			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
-			{
-				const BindingId parameter = scope.bindings[i];
-				if (parameter.value >= lowerer_.model_.bindings_.size() ||
-					lowerer_.model_.binding(parameter).kind != BindingKind::Parameter)
-					continue;
-				if (parameter == scope.implicit_object_binding)
-					continue;
-				if (parameter == fact.binding)
-				{
-					if (argument_index >= arguments.size())
-						return false;
-					*result = arguments[argument_index];
-					return result->valid() && result->value <
-						lowerer_.model_.semantic_facts_.size();
-				}
-				++argument_index;
-			}
-		}
-		if (fact.kind == SemanticFactKind::CastExpression &&
-			fact.child_count == 1 && fact.child_begin != InvalidIdentityValue &&
-			fact.child_begin < lowerer_.model_.semantic_children_.size())
-			return resolve_parameter(lowerer_.model_.semantic_children_[fact.child_begin],
-				function, arguments, result);
-		return false;
+		return lowerer_.resolve_constructor_parameter(id, function, arguments,
+			result);
 	}
 
 	bool append_string_literal(TypeId destination, const SemanticFact& fact)
@@ -388,7 +369,7 @@ struct Pa15Lowerer::TypedGlobalDataAppender
 				{
 					if (!can_zero(array.child) || gap > max_size / element_bytes)
 						return false;
-					append_zero(gap * element_bytes);
+					append_zero_elements(array.child, gap, element_bytes);
 				}
 				if (!append(array.child, elements[i].initializer))
 					return false;
@@ -399,7 +380,7 @@ struct Pa15Lowerer::TypedGlobalDataAppender
 			{
 				if (!can_zero(array.child) || tail > max_size / element_bytes)
 					return false;
-				append_zero(tail * element_bytes);
+				append_zero_elements(array.child, tail, element_bytes);
 			}
 			return true;
 		}
@@ -514,6 +495,226 @@ bool Pa15Lowerer::append_typed_global_data(GlobalDefinition* global, TypeId type
 	SemanticFactId initializer)
 {
 	return TypedGlobalDataAppender(*this, global).run(type, initializer);
+}
+
+bool Pa15Lowerer::resolve_constructor_parameter(SemanticFactId id,
+	const FunctionFact* function, const std::vector<SemanticFactId>& arguments,
+	SemanticFactId* result) const
+{
+	if (result == NULL || function == NULL || !id.valid() ||
+		id.value >= model_.semantic_facts_.size() ||
+		!function->function_scope.valid() ||
+		function->function_scope.value >= model_.scopes_.size())
+		return false;
+	const Scope& scope = model_.scopes_[function->function_scope.value];
+	if (scope.kind != ScopeKind::Function || scope.parent != function->owner)
+		return false;
+	std::set<std::size_t> visited;
+	SemanticFactId current = id;
+	while (current.valid() && current.value < model_.semantic_facts_.size() &&
+		visited.insert(current.value).second)
+	{
+		const SemanticFact& fact = model_.semantic_facts_[current.value];
+		if (fact.kind == SemanticFactKind::IdExpression)
+		{
+			if (!fact.binding.valid() || fact.binding.value >=
+				model_.bindings_.size() || fact.binding.value >=
+				model_.binding_owners_.size() ||
+				model_.binding_owners_[fact.binding.value] !=
+				function->function_scope || model_.binding(fact.binding).kind !=
+				BindingKind::Parameter)
+				return false;
+			std::size_t argument_index = 0;
+			for (std::size_t i = 0; i < scope.bindings.size(); ++i)
+			{
+				const BindingId parameter = scope.bindings[i];
+				if (!parameter.valid() || parameter.value >= model_.bindings_.size() ||
+					parameter.value >= model_.binding_owners_.size() ||
+					model_.binding_owners_[parameter.value] !=
+					function->function_scope)
+					return false;
+				if (model_.binding(parameter).kind != BindingKind::Parameter)
+					continue;
+				if (parameter == scope.implicit_object_binding)
+					continue;
+				if (parameter == fact.binding)
+				{
+					if (argument_index >= arguments.size() ||
+						!arguments[argument_index].valid() ||
+						arguments[argument_index].value >=
+						model_.semantic_facts_.size())
+						return false;
+					*result = arguments[argument_index];
+					return true;
+				}
+				++argument_index;
+			}
+			return false;
+		}
+		if (fact.kind != SemanticFactKind::CastExpression ||
+			fact.child_count != 1 || fact.child_begin == InvalidIdentityValue ||
+			fact.child_begin >= model_.semantic_children_.size())
+			return false;
+		current = model_.semantic_children_[fact.child_begin];
+	}
+	return false;
+}
+
+bool Pa15Lowerer::global_aggregate_constructor_inline_eligible(
+	const SemanticFact& fact) const
+{
+	if (fact.kind != SemanticFactKind::ConstructorAction || !fact.has_callee ||
+		!fact.selected_binding.valid() || fact.selected_binding.value >=
+		model_.bindings_.size())
+		return false;
+	const BindingSidecar* binding_sidecar =
+		model_.binding_sidecar(fact.selected_binding);
+	if (binding_sidecar == NULL || !binding_sidecar->constructor_record.valid() ||
+		binding_sidecar->constructor_record.value >= model_.named_.size())
+		return false;
+	const NamedRecordId record_id = binding_sidecar->constructor_record;
+	const NamedRecord& record = model_.named_[record_id.value];
+	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+		!record.name.valid() || record.has_base ||
+		!record.scope.valid() || record.scope.value >= model_.scopes_.size() ||
+		model_.scopes_[record.scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[record.scope.value].record != record_id)
+		return false;
+	const NamedRecordSidecar* record_sidecar =
+		model_.named_record_sidecar(record_id);
+	if (record_sidecar == NULL ||
+		record_sidecar->aggregate_constructor_binding != fact.selected_binding)
+		return false;
+	const Binding& selected = model_.binding(fact.selected_binding);
+	if (selected.kind != BindingKind::Function || !selected.type.valid() ||
+		selected.type.value >= model_.types_.size() ||
+		model_.type_kind(selected.type) != TypeKind::Function)
+		return false;
+	const FunctionFact* function = model_.function_fact_for_binding(
+		fact.selected_binding);
+	if (function == NULL || function->binding != fact.selected_binding ||
+		function->owner != record.scope || !function->is_constructor ||
+		!function->synthetic ||
+		function->constructor_action_begin == InvalidIdentityValue ||
+		function->constructor_action_begin > model_.constructor_actions_.size() ||
+		function->constructor_action_count > model_.constructor_actions_.size() -
+		function->constructor_action_begin)
+		return false;
+	const RecordLayout& layout = model_.record_layout(record_id);
+	if (layout.state != RecordLayoutState::Complete ||
+		function->constructor_action_count != layout.members.size())
+		return false;
+	if (!function->function_scope.valid() || function->function_scope.value >=
+		model_.scopes_.size() || model_.scopes_[function->function_scope.value].kind !=
+		ScopeKind::Function || model_.scopes_[function->function_scope.value].parent !=
+		record.scope)
+		return false;
+	const Scope& function_scope = model_.scopes_[function->function_scope.value];
+	if (!function_scope.implicit_object_binding.valid() ||
+		function_scope.implicit_object_binding.value >= model_.bindings_.size() ||
+		function_scope.implicit_object_binding.value >= model_.binding_owners_.size() ||
+		model_.binding_owners_[function_scope.implicit_object_binding.value] !=
+			function->function_scope ||
+		model_.binding(function_scope.implicit_object_binding).kind !=
+			BindingKind::Parameter)
+		return false;
+	const TypeKey& signature = model_.types_[
+		model_.binding(fact.selected_binding).type.value];
+	if (signature.variadic || signature.parameters.size() != layout.members.size() ||
+		fact.child_count != signature.parameters.size() ||
+		(fact.child_count != 0 &&
+			(fact.child_begin == InvalidIdentityValue ||
+				fact.child_begin > model_.semantic_children_.size() ||
+				fact.child_count > model_.semantic_children_.size() -
+					fact.child_begin)) ||
+		(fact.child_count == 0 && fact.child_begin != InvalidIdentityValue &&
+			fact.child_begin > model_.semantic_children_.size()))
+		return false;
+	std::size_t non_object_parameters = 0;
+	for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+	{
+		const BindingId parameter = function_scope.bindings[i];
+		if (!parameter.valid() || parameter.value >= model_.bindings_.size() ||
+			parameter.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[parameter.value] != function->function_scope)
+			return false;
+		if (model_.binding(parameter).kind != BindingKind::Parameter)
+			continue;
+		if (parameter != function_scope.implicit_object_binding)
+			++non_object_parameters;
+	}
+	if (non_object_parameters != signature.parameters.size())
+		return false;
+	for (std::size_t i = 0; i < function->constructor_action_count; ++i)
+	{
+		const ConstructorActionFact& action = model_.constructor_actions_[
+			function->constructor_action_begin + i];
+		if (action.target != ConstructorActionTarget::Member ||
+			action.member != layout.members[i].binding || action.constructor.valid() ||
+			!action.initializer.valid() || action.argument_count != 0 ||
+			(action.argument_begin != InvalidIdentityValue &&
+				action.argument_begin > model_.constructor_arguments_.size()) ||
+			action.initializer.value >= model_.semantic_facts_.size())
+			return false;
+		const BindingId member = action.member;
+		if (!member.valid() || member.value >= model_.bindings_.size() ||
+			member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[member.value] != record.scope ||
+			model_.binding(member).kind != BindingKind::Variable ||
+			model_.is_static_member(member) ||
+			action.object_type != model_.binding(member).type ||
+			signature.parameters[i] != model_.binding(member).type)
+			return false;
+		const LowType member_type = low_type(model_.binding(action.member).type);
+		if (!member_type.is_integer() && !member_type.is_float() &&
+			!member_type.is_pointer())
+			return false;
+		const std::size_t* member_offset = layout.member_offsets.find(member);
+		if (member_offset == NULL || *member_offset > layout.size ||
+			member_type.storage_size() == 0 || *member_offset > layout.size -
+				member_type.storage_size())
+			return false;
+		SemanticFactId current = action.initializer;
+		std::set<std::size_t> visited;
+		bool parameter = false;
+		while (current.valid() && current.value < model_.semantic_facts_.size() &&
+			visited.insert(current.value).second)
+		{
+			const SemanticFact& initializer = model_.semantic_facts_[current.value];
+			if (initializer.kind == SemanticFactKind::IdExpression)
+			{
+				if (!initializer.binding.valid() || initializer.binding.value >=
+					model_.bindings_.size() || initializer.binding.value >=
+					model_.binding_owners_.size() ||
+					model_.binding_owners_[initializer.binding.value] !=
+					function->function_scope || model_.binding(initializer.binding).kind !=
+					BindingKind::Parameter || initializer.binding ==
+					function_scope.implicit_object_binding)
+					return false;
+				bool listed = false;
+				for (std::size_t parameter_index = 0;
+					parameter_index < function_scope.bindings.size(); ++parameter_index)
+					if (function_scope.bindings[parameter_index] == initializer.binding)
+					{
+						listed = true;
+						break;
+					}
+				if (!listed)
+					return false;
+				parameter = true;
+				break;
+			}
+			if (initializer.kind != SemanticFactKind::CastExpression ||
+				initializer.child_count != 1 || initializer.child_begin ==
+				InvalidIdentityValue || initializer.child_begin >=
+				model_.semantic_children_.size())
+				return false;
+			current = model_.semantic_children_[initializer.child_begin];
+		}
+		if (!parameter)
+			return false;
+	}
+	return true;
 }
 
 const AggregateElementFact* Pa15Lowerer::aggregate_elements(
@@ -649,7 +850,13 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 		const bool recompute_path = root_action != NULL && path != NULL;
 		const bool recompute_aggregate_path = aggregate_root_storage != NULL &&
 			path != NULL;
-		const LoweredValue sequence = emit_decay(destination_value);
+		const bool lazy_storage_context = aggregate_root_storage != NULL &&
+			destination_value.lvalue && destination_value.type.is_object();
+		const bool direct_root_address = recompute_aggregate_path &&
+			path->empty() && !lazy_storage_context && !recompute_path;
+		LoweredValue sequence;
+		if (!lazy_storage_context && !direct_root_address)
+			sequence = emit_decay(destination_value);
 		const TypeId child_object = model_.strip_cv_type(
 			model_.expression_object_type(array.child));
 		const bool byte_projection = (child_object.valid() &&
@@ -660,28 +867,73 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 		{
 			const LowType element_type = array_element_instruction_type(array.child);
 			std::vector<ConstructorAddressStep> element_path;
-			LoweredValue element;
 			if (path != NULL)
 			{
 				element_path = *path;
 				element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
 			}
+			const AggregateElementFact* element_fact = next_element < element_count &&
+				elements[next_element].index == i ? &elements[next_element++] : NULL;
+			const SemanticFact* initializer_fact = element_fact != NULL ?
+				&model_.semantic_facts_[element_fact->initializer.value] : NULL;
+			const bool direct_scalar = initializer_fact != NULL &&
+				initializer_fact->kind != SemanticFactKind::BracedInitList &&
+				initializer_fact->kind != SemanticFactKind::ConstructorAction &&
+				!(initializer_fact->kind == SemanticFactKind::Literal &&
+					initializer_fact->literal_element_count != 0);
+			if (lazy_storage_context && element_fact != NULL && direct_scalar)
+			{
+				const LoweredValue value = lower_expression(
+					element_fact->initializer);
+				const LoweredValue element = aggregate_path_address(
+					*aggregate_root_storage, aggregate_root_type, element_path);
+				emit_store(low_type(array.child), value.value, element.value);
+				continue;
+			}
+			if (lazy_storage_context && element_fact != NULL &&
+				(initializer_fact->kind == SemanticFactKind::BracedInitList ||
+					(initializer_fact->kind == SemanticFactKind::ConstructorAction &&
+						global_aggregate_constructor_inline_eligible(*initializer_fact))))
+			{
+				initialize_constructor_value(array.child,
+					element_fact->initializer, destination_value, root_action,
+					&element_path, NULL, aggregate_root_storage,
+					aggregate_root_type);
+				continue;
+			}
+			LoweredValue element;
 			if (recompute_path && i != 0)
 			{
 				element = constructor_path_address(*root_action, element_path);
 			}
-			else if (recompute_aggregate_path &&
-				(path->empty() || i != 0))
+			else if (direct_root_address && i == 0)
+			{
+				element = destination_value;
+			}
+			else if (direct_root_address)
+			{
+				const std::size_t offset = checked_array_element_offset(object, i);
+				if (offset > static_cast<std::size_t>(
+					std::numeric_limits<long long>::max()))
+					throw std::runtime_error(
+						"PA15 direct aggregate array offset is invalid");
+				element = emit_index(destination_value,
+					LoweredValue(integer_operand(static_cast<long long>(offset),
+						size_low_type()), size_low_type(), false), element_type,
+					lowir_model::IPK_NONE);
+			}
+			else if (lazy_storage_context || (recompute_aggregate_path &&
+				(path->empty() || i != 0)))
+			{
 				element = aggregate_path_address(*aggregate_root_storage,
 					aggregate_root_type, element_path);
+			}
 			else
 				element = emit_index(sequence,
 					byte_projection ? emit_array_element_offset(object, i) :
 					LoweredValue(integer_operand(static_cast<long long>(i),
 						size_low_type()), size_low_type(), false), element_type,
 					lowir_model::IPK_ARRAY_ELEMENT);
-			const AggregateElementFact* element_fact = next_element < element_count &&
-				elements[next_element].index == i ? &elements[next_element++] : NULL;
 			if (element_fact != NULL)
 				initialize_constructor_value(array.child,
 					element_fact->initializer, element, root_action,
@@ -800,8 +1052,9 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			BitFieldInitializationContext* member_context =
 				model_.bit_field_fact(member) != NULL ? context : NULL;
 			zero_initialize_constructor_value(model_.binding(member).type,
-				member_value, root_action, root_action != NULL && path != NULL ?
-				&member_path : NULL, member_context);
+				member_value, root_action, path != NULL ? &member_path : NULL,
+				member_context,
+				aggregate_root_storage, aggregate_root_type);
 		}
 	}
 	if (next_element != element_count)

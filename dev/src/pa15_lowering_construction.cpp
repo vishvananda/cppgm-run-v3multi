@@ -526,11 +526,12 @@ LoweredValue Pa15Lowerer::aggregate_path_address(const LoweredValue& storage,
 			const bool byte_projection = (child_object.valid() &&
 				model_.type_kind(child_object) == TypeKind::Array) ||
 				class_object_type(child);
+			const LoweredValue sequence = emit_decay(result);
 			const LoweredValue array_offset = byte_projection ?
 				emit_array_element_offset(object, path[i].index) :
 				LoweredValue(integer_operand(static_cast<long long>(path[i].index),
 					size_low_type()), size_low_type(), false);
-			result = emit_index(emit_decay(result), array_offset,
+			result = emit_index(sequence, array_offset,
 				array_element_instruction_type(child),
 				lowir_model::IPK_ARRAY_ELEMENT);
 			current_type = child;
@@ -562,6 +563,92 @@ LoweredValue Pa15Lowerer::aggregate_path_address(const LoweredValue& storage,
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
+}
+
+void Pa15Lowerer::initialize_global_aggregate_constructor(TypeId target,
+	SemanticFactId initializer, const std::vector<ConstructorAddressStep>& path,
+	BitFieldInitializationContext& context,
+	const LoweredValue& aggregate_root_storage, TypeId aggregate_root_type)
+{
+	if (!aggregate_root_storage.lvalue ||
+		!aggregate_root_storage.type.is_object())
+		throw std::runtime_error("PA15 global aggregate root is not storage");
+	if (!initializer.valid() || initializer.value >= model_.semantic_facts_.size())
+		throw std::runtime_error("PA15 global aggregate constructor fact is invalid");
+	const SemanticFact& fact = model_.semantic_facts_[initializer.value];
+	if (!global_aggregate_constructor_inline_eligible(fact))
+		throw std::runtime_error("PA15 global aggregate constructor is not inlineable");
+	if (!aggregate_root_type.valid() || aggregate_root_type.value >=
+		model_.types_.size() || low_type(aggregate_root_type) !=
+		aggregate_root_storage.type)
+		throw std::runtime_error("PA15 global aggregate root type is invalid");
+	const BindingSidecar* binding_sidecar =
+		model_.binding_sidecar(fact.selected_binding);
+	if (binding_sidecar == NULL || !binding_sidecar->constructor_record.valid())
+		throw std::runtime_error("PA15 global aggregate constructor owner is invalid");
+	const NamedRecordId record_id = binding_sidecar->constructor_record;
+	const TypeId target_object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!target_object.valid() || target_object.value >= model_.types_.size() ||
+		model_.type_kind(target_object) != TypeKind::Named ||
+		model_.named_record_for_type(target_object) != record_id)
+		throw std::runtime_error("PA15 global aggregate constructor target is invalid");
+	const FunctionFact& constructor = checked_constructor_function(
+		fact.selected_binding, record_id);
+	const RecordLayout& layout = model_.record_layout(record_id);
+	const std::vector<SemanticFactId> arguments = children(initializer);
+	const TypeKey& signature = model_.types_[
+		model_.binding(fact.selected_binding).type.value];
+	if (signature.variadic || arguments.size() != signature.parameters.size())
+		throw std::runtime_error("PA15 global aggregate constructor arity is invalid");
+	if (constructor.constructor_action_begin == InvalidIdentityValue ||
+		constructor.constructor_action_begin > model_.constructor_actions_.size() ||
+		constructor.constructor_action_count != layout.members.size() ||
+		constructor.constructor_action_count > model_.constructor_actions_.size() -
+		constructor.constructor_action_begin)
+		throw std::runtime_error("PA15 global aggregate constructor range is invalid");
+	for (std::size_t i = 0; i < constructor.constructor_action_count; ++i)
+	{
+		const ConstructorActionFact& action = model_.constructor_actions_[
+			constructor.constructor_action_begin + i];
+		if (action.target != ConstructorActionTarget::Member ||
+			action.member != layout.members[i].binding || action.constructor.valid() ||
+			!action.initializer.valid() || action.argument_count != 0)
+			throw std::runtime_error("PA15 global aggregate constructor action is invalid");
+		const BindingId member = action.member;
+		const ScopeId owner = model_.named_[record_id.value].scope;
+		if (!member.valid() || member.value >= model_.bindings_.size() ||
+			member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[member.value] != owner ||
+			model_.binding(member).kind != BindingKind::Variable ||
+			model_.is_static_member(member) ||
+			action.object_type != model_.binding(member).type ||
+			signature.parameters[i] != model_.binding(member).type)
+			throw std::runtime_error("PA15 global aggregate constructor member is invalid");
+		SemanticFactId resolved;
+		if (!resolve_constructor_parameter(action.initializer, &constructor,
+			arguments, &resolved) || !resolved.valid() || resolved.value >=
+			model_.semantic_facts_.size())
+			throw std::runtime_error("PA15 global aggregate constructor argument is invalid");
+		const TypeId member_type = model_.binding(action.member).type;
+		const SemanticFact& resolved_fact = model_.semantic_facts_[resolved.value];
+		const bool direct_scalar = resolved_fact.kind !=
+			SemanticFactKind::BracedInitList && resolved_fact.kind !=
+			SemanticFactKind::ConstructorAction;
+		if (!direct_scalar)
+			throw std::runtime_error("PA15 global aggregate constructor child is unsupported");
+		const LoweredValue value = lower_expression(resolved);
+		std::vector<ConstructorAddressStep> member_path = path;
+		member_path.push_back(ConstructorAddressStep(action.member));
+		LoweredValue destination = aggregate_path_address(aggregate_root_storage,
+			aggregate_root_type, member_path);
+		if (model_.bit_field_fact(action.member) != NULL)
+			destination = mark_bit_field_address(destination, action.member);
+		if (destination.bit_field_lvalue)
+			initialize_bit_field(destination, action.member, value, context);
+		else
+			emit_store(low_type(member_type), value.value, destination.value);
+	}
 }
 
 void Pa15Lowerer::zero_initialize_value_initialized_object(TypeId target,
@@ -1500,11 +1587,30 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 				"PA15 constructor initializer owner or type is invalid");
 		const FunctionFact& constructor = checked_constructor_function(
 			fact.selected_binding, record);
+		const bool global_initializer = current_function_ != InvalidIdentityValue &&
+			current_function_ < program_.functions.size() &&
+			program_.functions[current_function_].metadata.role == lowir_model::SR_INIT;
+		const NamedRecordSidecar* record_sidecar =
+			model_.named_record_sidecar(record);
+		if (global_initializer && aggregate_root_storage != NULL && path != NULL &&
+			record_sidecar != NULL &&
+			record_sidecar->aggregate_constructor_binding ==
+			fact.selected_binding &&
+			global_aggregate_constructor_inline_eligible(fact))
+		{
+			initialize_global_aggregate_constructor(target, initializer, *path,
+				*context, *aggregate_root_storage, aggregate_root_type);
+			return;
+		}
+		LoweredValue constructor_destination = destination_value;
+		if (constructor_destination.lvalue &&
+			constructor_destination.type.is_object())
+			constructor_destination = address_of_storage(constructor_destination);
 		if (fact.value_initialize && constructor.synthetic)
-			zero_initialize_value_initialized_object(target, destination_value);
+			zero_initialize_value_initialized_object(target, constructor_destination);
 		if (constructor.synthetic && constructor.constructor_action_count == 0)
 			return;
-		emit_constructor_call(fact.selected_binding, destination_value,
+		emit_constructor_call(fact.selected_binding, constructor_destination,
 			children(initializer));
 		return;
 	}

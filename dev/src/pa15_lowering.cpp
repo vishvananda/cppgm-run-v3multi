@@ -34,8 +34,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  recovery_control_base_depth_(0), recovery_control_active_(false),
 		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
-		  function_plans_(), pending_global_initializers_(),
-		  pending_global_aggregate_initializers_(),
+		  function_plans_(), pending_global_actions_(),
 		  needs_trivial_namespace_object_init_(false),
 		  function_scope_variables_(), next_symbol_(0),
 		  literal_backing_ordinal_(0), next_value_(program.values.size()),
@@ -769,6 +768,37 @@ SpellingId Pa15Lowerer::symbol_name_for(SymbolId target) const{
 		return SpellingId();
 	}
 
+void Pa15Lowerer::global_declaration_position(BindingId binding_id,
+	const DeclarationFact* declaration, std::size_t* source_declaration,
+	std::size_t* source_declarator) const
+{
+	if (source_declaration == NULL || source_declarator == NULL ||
+		declaration == NULL || model_.declaration_facts_.empty())
+		throw std::runtime_error("PA15 global declaration order is missing");
+	const DeclarationFact* declaration_begin =
+		&model_.declaration_facts_.front();
+	const DeclarationFact* declaration_end = declaration_begin +
+		model_.declaration_facts_.size();
+	if (declaration < declaration_begin || declaration >= declaration_end ||
+		declaration->binding_begin == InvalidIdentityValue ||
+		declaration->binding_begin > model_.declaration_bindings_.size() ||
+		declaration->binding_count > model_.declaration_bindings_.size() -
+		declaration->binding_begin)
+		throw std::runtime_error("PA15 global declaration order is invalid");
+	*source_declaration = static_cast<std::size_t>(declaration - declaration_begin);
+	*source_declarator = InvalidIdentityValue;
+	for (std::size_t declarator = 0; declarator < declaration->binding_count;
+		++declarator)
+		if (model_.declaration_bindings_[declaration->binding_begin + declarator] ==
+			binding_id)
+		{
+			*source_declarator = declarator;
+			break;
+		}
+	if (*source_declarator == InvalidIdentityValue)
+		throw std::runtime_error("PA15 global declaration position is missing");
+}
+
 void Pa15Lowerer::collect_globals(){
 		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
 		{
@@ -795,7 +825,6 @@ void Pa15Lowerer::collect_globals(){
 					global_name_ids_[binding_id.value];
 			}
 		}
-
 		for (std::size_t scope_index = 0; scope_index < model_.scopes_.size(); ++scope_index)
 		{
 			const Scope& scope = model_.scopes_[scope_index];
@@ -820,6 +849,9 @@ void Pa15Lowerer::collect_globals(){
 				if (declaration_it != declaration_by_binding_.end()) declaration = declaration_it->second;
 				if (class_static && declaration == NULL)
 					throw std::runtime_error("PA15 static member declaration is missing");
+				std::size_t source_declaration, source_declarator;
+				global_declaration_position(binding_id, declaration, &source_declaration,
+					&source_declarator);
 				const SymbolId symbol = global_symbols_.find(binding_id.value)->second;
 				const SpellingId name_id = global_name_ids_.find(binding_id.value)->second;
 				const SpellingId object_name = intern_spelling(abi_variable_symbol(
@@ -840,10 +872,7 @@ void Pa15Lowerer::collect_globals(){
 					GlobalDeclaration entry;
 					entry.symbol_id = symbol;
 					entry.name_id = name_id;
-					// A class-static declaration is an ABI declaration boundary,
-					// not a storage definition.  Keep its type opaque in LowIR so
-					// the declaration cannot be mistaken for an allocated object;
-					// namespace externs retain their established typed boundary.
+					// Class-static declarations are ABI boundaries, not storage.
 					entry.has_type = !class_static && !unknown_array;
 					if (entry.has_type) entry.type = low_type(binding.type);
 					if (is_thread_local)
@@ -894,9 +923,10 @@ void Pa15Lowerer::collect_globals(){
 							zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
 							zero.zero_bytes = entry_type.storage_size();
 							entry.data_items.push_back(zero);
-							pending_global_aggregate_initializers_.push_back(
-								PendingGlobalAggregateInitializer(symbol, binding.type,
-									initializers.front()));
+							pending_global_actions_.push_back(PendingGlobalAction(
+								PendingGlobalAction::AGGREGATE_VALUE, symbol, SymbolId(),
+								Operand(), LowType(), binding.type, initializers.front(),
+								source_declaration, source_declarator));
 						}
 					}
 				}
@@ -934,9 +964,10 @@ void Pa15Lowerer::collect_globals(){
 								zero.kind = GlobalDefinition::DataItem::ITEM_ZERO;
 								zero.zero_bytes = entry.type.object_bytes;
 								entry.data_items.push_back(zero);
-								pending_global_aggregate_initializers_.push_back(
-									PendingGlobalAggregateInitializer(symbol, binding.type,
-									initializers.front()));
+								pending_global_actions_.push_back(PendingGlobalAction(
+									PendingGlobalAction::AGGREGATE_VALUE, symbol, SymbolId(),
+									Operand(), LowType(), binding.type, initializers.front(),
+									source_declaration, source_declarator));
 							}
 						}
 					}
@@ -968,10 +999,12 @@ void Pa15Lowerer::collect_globals(){
 								const Operand index = integer_operand(
 									static_cast<long long>(relocation->index_value),
 									index_type);
-								pending_global_initializers_.push_back(
-									PendingGlobalInitializer(symbol,
-										entry.init_operand.symbol_id, index,
-										low_type(relocation->element_type)));
+								pending_global_actions_.push_back(PendingGlobalAction(
+									PendingGlobalAction::ADDRESS_PROJECTION, symbol,
+									entry.init_operand.symbol_id, index,
+									low_type(relocation->element_type), TypeId(),
+									SemanticFactId(), source_declaration,
+									source_declarator));
 								entry.init_kind = GlobalDefinition::INIT_ZERO;
 							}
 							else
@@ -990,8 +1023,13 @@ void Pa15Lowerer::collect_globals(){
 						}
 						else if (!constant_integer(initializers.front(), entry.type,
 							&entry.init_operand))
-							throw std::runtime_error(
-								"PA15 nonconstant global initializer");
+						{
+							entry.init_kind = GlobalDefinition::INIT_ZERO;
+							pending_global_actions_.push_back(PendingGlobalAction(
+								PendingGlobalAction::SCALAR_VALUE, symbol, SymbolId(),
+								Operand(), LowType(), binding.type, initializers.front(),
+								source_declaration, source_declarator));
+						}
 						else
 							entry.init_kind = GlobalDefinition::INIT_INTEGER;
 					}
@@ -1003,8 +1041,7 @@ void Pa15Lowerer::collect_globals(){
 	}
 
 void Pa15Lowerer::materialize_pending_global_initializers(){
-		if (pending_global_initializers_.empty() &&
-			pending_global_aggregate_initializers_.empty() &&
+		if (pending_global_actions_.empty() &&
 			!needs_trivial_namespace_object_init_)
 			return;
 		Function init;
@@ -1029,41 +1066,61 @@ void Pa15Lowerer::materialize_pending_global_initializers(){
 		program_.functions[function_index].blocks.push_back(entry);
 		block_indexes_[entry.block_id.index] = 0;
 		current_block_ = 0;
-		for (std::size_t i = 0; i < pending_global_initializers_.size(); ++i)
+		std::stable_sort(pending_global_actions_.begin(),
+			pending_global_actions_.end(),
+			[](const PendingGlobalAction& left, const PendingGlobalAction& right) {
+				if (left.source_declaration != right.source_declaration)
+					return left.source_declaration < right.source_declaration;
+				return left.source_declarator < right.source_declarator;
+			});
+		for (std::size_t i = 0; i < pending_global_actions_.size(); ++i)
 		{
-			const PendingGlobalInitializer& pending = pending_global_initializers_[i];
-			const SpellingId target_name = symbol_name_for(pending.target);
+			const PendingGlobalAction& pending = pending_global_actions_[i];
 			const SpellingId global_name = symbol_name_for(pending.global);
-			if (!target_name.valid() || !global_name.valid())
-				throw std::runtime_error("PA15 init target has no symbol name");
-			LowType object_type = pending.element_type;
-			LoweredValue storage(global_operand(pending.target, target_name),
-				object_type, true);
-			const LoweredValue address = address_of_storage(storage);
-			const LoweredValue sequence = emit_decay(address);
-			const LoweredValue index(pending.index, pending.index.literal_type, false);
-			const LoweredValue element = emit_index(sequence, index,
-				pending.element_type, lowir_model::IPK_ARRAY_ELEMENT);
-			LowType pointer;
-			pointer.kind = LowType::TYPE_POINTER;
-			emit_store(pointer, element.value,
-				global_operand(pending.global, global_name));
-		}
-		for (std::size_t i = 0; i < pending_global_aggregate_initializers_.size(); ++i)
-		{
-			const PendingGlobalAggregateInitializer& pending =
-				pending_global_aggregate_initializers_[i];
-			const SpellingId global_name = symbol_name_for(pending.global);
-			if (!global_name.valid() || !pending.type.valid() ||
-				!pending.initializer.valid())
-				throw std::runtime_error("PA15 aggregate init target is incomplete");
-			const LowType object_type = low_type(pending.type);
-			LoweredValue storage(global_operand(pending.global, global_name),
-				object_type, true);
-			const LoweredValue address = address_of_storage(storage);
-			const std::vector<ConstructorAddressStep> empty_path;
-			initialize_constructor_value(pending.type, pending.initializer,
-				address, NULL, &empty_path, NULL, &storage, pending.type);
+			if (!global_name.valid())
+				throw std::runtime_error("PA15 init global has no symbol name");
+			if (pending.kind == PendingGlobalAction::ADDRESS_PROJECTION)
+			{
+				const SpellingId target_name = symbol_name_for(pending.target);
+				if (!target_name.valid() || !pending.element_type.valid())
+					throw std::runtime_error("PA15 init target has no symbol name");
+				LoweredValue storage(global_operand(pending.target, target_name),
+					pending.element_type, true);
+				const LoweredValue address = address_of_storage(storage);
+				const LoweredValue sequence = emit_decay(address);
+				const LoweredValue index(pending.index, pending.index.literal_type, false);
+				const LoweredValue element = emit_index(sequence, index,
+					pending.element_type, lowir_model::IPK_ARRAY_ELEMENT);
+				LowType pointer;
+				pointer.kind = LowType::TYPE_POINTER;
+				const Operand destination = global_operand(pending.global, global_name);
+				emit_store(pointer, element.value, destination);
+			}
+			else if (pending.kind == PendingGlobalAction::SCALAR_VALUE)
+			{
+				if (!pending.type.valid() || !pending.initializer.valid())
+					throw std::runtime_error("PA15 scalar init target is incomplete");
+				const LowType type = low_type(pending.type);
+				const LoweredValue destination(global_operand(pending.global,
+					global_name), type, true);
+				const LoweredValue value = lower_expression(pending.initializer);
+				if (destination.type.is_object() || destination.type.is_void())
+					throw std::runtime_error("PA15 scalar init target is not scalar");
+				emit_store(destination.type, value.value, destination.value);
+			}
+			else if (pending.kind == PendingGlobalAction::AGGREGATE_VALUE)
+			{
+				if (!pending.type.valid() || !pending.initializer.valid())
+					throw std::runtime_error("PA15 aggregate init target is incomplete");
+				const LowType object_type = low_type(pending.type);
+				LoweredValue storage(global_operand(pending.global, global_name),
+					object_type, true);
+				const std::vector<ConstructorAddressStep> empty_path;
+				initialize_constructor_value(pending.type, pending.initializer,
+					storage, NULL, &empty_path, NULL, &storage, pending.type);
+			}
+			else
+				throw std::runtime_error("PA15 unknown pending global action");
 		}
 		Instruction ret;
 		ret.kind = Instruction::IK_RETURN;

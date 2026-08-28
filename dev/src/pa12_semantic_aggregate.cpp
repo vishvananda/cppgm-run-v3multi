@@ -175,7 +175,9 @@ struct PA11SemanticModel::AggregateAppertainer
 		std::size_t total_count = 0;
 		if (model_.type_kind(object) == TypeKind::Array)
 		{
-			const TypeKey& array = model_.types_[object.value];
+			// Semanticizing a child can intern new types, so do not retain a
+			// reference into the reallocated type arena across consume_slot.
+			const TypeKey array = model_.types_[object.value];
 			if (array.unknown_bound)
 				throw std::runtime_error("PA12 aggregate array bound is incomplete");
 			total_count = array.bound.value;
@@ -218,25 +220,25 @@ struct PA11SemanticModel::AggregateAppertainer
 				model_.named_[record.value].has_base)
 				throw std::runtime_error("PA12 aggregate class target is unsupported");
 			const ScopeId class_scope = model_.named_[record.value].scope;
+			const RecordLayout& layout = model_.record_layout(record);
 			if (!class_scope.valid() || class_scope.value >= model_.scopes_.size() ||
 				model_.scopes_[class_scope.value].kind != ScopeKind::Class ||
-				model_.scopes_[class_scope.value].record != record)
+				model_.scopes_[class_scope.value].record != record ||
+				layout.state != RecordLayoutState::Complete)
 				throw std::runtime_error("PA12 aggregate class scope is missing");
-			const Scope& owner = model_.scopes_[class_scope.value];
 			std::vector<BindingId> members;
-			members.reserve(owner.bindings.size());
-			for (std::size_t i = 0; i < owner.bindings.size(); ++i)
+			members.reserve(layout.members.size());
+			for (std::size_t i = 0; i < layout.members.size(); ++i)
 			{
-				const BindingId member_id = owner.bindings[i];
+				const BindingId member_id = layout.members[i].binding;
 				if (!member_id.valid() || member_id.value >= model_.bindings_.size() ||
 					member_id.value >= model_.binding_owners_.size() ||
-					model_.binding_owners_[member_id.value] != class_scope)
+					model_.binding_owners_[member_id.value] != class_scope ||
+					model_.binding(member_id).kind != BindingKind::Variable ||
+					model_.is_static_member(member_id))
 					throw std::runtime_error(
 						"PA12 aggregate class member identity is invalid");
-				const Binding& member = model_.binding(member_id);
-				if (member.kind == BindingKind::Variable &&
-					!model_.is_static_member(member_id))
-					members.push_back(member_id);
+				members.push_back(member_id);
 			}
 			total_count = members.size();
 			elements.reserve(std::min(members.size(), clauses.size()));

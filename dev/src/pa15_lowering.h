@@ -72,32 +72,33 @@ struct FunctionPlan
 		: fact_index(fact_index), program_index(program_index) {}
 };
 
-struct PendingGlobalInitializer
+// One source-ordered queue owns every deferred namespace/static initializer.
+// The payload remains a typed semantic root; the kind only selects the PA15
+// materializer and never causes source reconstruction or aggregate rediscovery.
+struct PendingGlobalAction
 {
+	enum Kind { ADDRESS_PROJECTION, SCALAR_VALUE, AGGREGATE_VALUE };
+	Kind kind;
 	SymbolId global;
 	SymbolId target;
 	Operand index;
 	LowType element_type;
-
-	PendingGlobalInitializer(SymbolId global = SymbolId(),
-		SymbolId target = SymbolId(), const Operand& index = Operand(),
-		const LowType& element_type = LowType())
-		: global(global), target(target), index(index), element_type(element_type) {}
-};
-
-// A namespace/static aggregate whose typed initializer cannot be represented
-// by constant data is lowered once from its PA12 root.  The root fact remains
-// canonical; this queue only records the destination storage and never copies
-// aggregate edges or reconstructs source appertainment.
-struct PendingGlobalAggregateInitializer
-{
-	SymbolId global;
 	TypeId type;
 	SemanticFactId initializer;
+	std::size_t source_declaration;
+	std::size_t source_declarator;
 
-	PendingGlobalAggregateInitializer(SymbolId global = SymbolId(),
-		TypeId type = TypeId(), SemanticFactId initializer = SemanticFactId())
-		: global(global), type(type), initializer(initializer) {}
+	PendingGlobalAction(Kind kind = SCALAR_VALUE,
+		SymbolId global = SymbolId(), SymbolId target = SymbolId(),
+		const Operand& index = Operand(),
+		const LowType& element_type = LowType(), TypeId type = TypeId(),
+		SemanticFactId initializer = SemanticFactId(),
+		std::size_t source_declaration = InvalidIdentityValue,
+		std::size_t source_declarator = 0)
+		: kind(kind), global(global), target(target), index(index),
+		  element_type(element_type), type(type), initializer(initializer),
+		  source_declaration(source_declaration),
+		  source_declarator(source_declarator) {}
 };
 
 // Literal backing storage is interned by typed payload identity.  The bytes
@@ -416,9 +417,7 @@ private:
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
-	std::vector<PendingGlobalInitializer> pending_global_initializers_;
-	std::vector<PendingGlobalAggregateInitializer>
-		pending_global_aggregate_initializers_;
+	std::vector<PendingGlobalAction> pending_global_actions_;
 	bool needs_trivial_namespace_object_init_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
@@ -513,6 +512,9 @@ private:
 	bool append_typed_global_data(GlobalDefinition* global, TypeId type,
 		SemanticFactId initializer);
 	void collect_globals();
+	void global_declaration_position(BindingId binding_id,
+		const DeclarationFact* declaration, std::size_t* source_declaration,
+		std::size_t* source_declarator) const;
 	void materialize_pending_global_initializers();
 	void index_function_scope_variables();
 	void collect_demanded_member_functions(
@@ -662,6 +664,16 @@ private:
 		const std::vector<ConstructorAddressStep>& path);
 	LoweredValue aggregate_path_address(const LoweredValue& storage,
 		TypeId root_type, const std::vector<ConstructorAddressStep>& path);
+	bool resolve_constructor_parameter(SemanticFactId id,
+		const FunctionFact* function, const std::vector<SemanticFactId>& arguments,
+		SemanticFactId* result) const;
+	bool global_aggregate_constructor_inline_eligible(
+		const SemanticFact& fact) const;
+	void initialize_global_aggregate_constructor(TypeId target,
+		SemanticFactId initializer,
+		const std::vector<ConstructorAddressStep>& path,
+		BitFieldInitializationContext& context,
+		const LoweredValue& aggregate_root_storage, TypeId aggregate_root_type);
 	std::size_t checked_array_element_offset(TypeId array, std::size_t index) const;
 	LowType array_element_instruction_type(TypeId element) const;
 	LoweredValue emit_array_element_offset(TypeId array, std::size_t index);

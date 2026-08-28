@@ -1979,7 +1979,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			throw std::runtime_error("PA12 alias declaration binding mismatch");
 		const BindingId binding_id = declaration_bindings_[
 			declaration->binding_begin];
-		const Binding& value = binding(binding_id);
+		// Copy before initializer analysis can grow the binding arena.
+		const Binding value = binding(binding_id);
 		SemanticFact fact(SemanticFactKind::TypeAlias, value.type,
 			SemanticValueCategory::Prvalue, &node);
 		fact.binding = binding_id;
@@ -2037,7 +2038,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const PA10AstNode& init = list.children[i];
 		const BindingId binding_id = declaration_bindings_[
 			declaration->binding_begin + i];
-		const Binding& value = binding(binding_id);
+		// Copy before initializer analysis can grow the binding arena.
+		const Binding value = binding(binding_id);
 		if (value.kind == BindingKind::Function && has_function_default_argument(node, i))
 		{
 			FunctionFactId function_id;
@@ -2129,10 +2131,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				direct_operand, clause, record, declaration->scope,
 				initialization_context);
 		SemanticFactId initializer_fact;
-		if (special_function_initializer)
-		{
-		}
-		else if (!constructor_initializer && direct_operand_initializer)
+		if (!special_function_initializer && !constructor_initializer && direct_operand_initializer)
 		{
 			const ExprInfo expression = semantic_expression_for_target(
 				*direct_operand, declaration->scope, value.type);
@@ -2145,7 +2144,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				std::vector<SemanticFactId>(1, converted.fact));
 			initializer_fact = converted.fact;
 		}
-		else if (!constructor_initializer && init.children.size() > 1)
+		else if (!special_function_initializer && !constructor_initializer &&
+			init.children.size() > 1)
 		{
 			const PA10AstNode* expression_clause = clause;
 			if (expression_clause->kind == PA10NodeKind::ParenInitializer)
