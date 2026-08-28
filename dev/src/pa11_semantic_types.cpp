@@ -239,9 +239,14 @@ TypeId PA11SemanticModel::type_from_type_id(const PA10AstNode& node,
 	if (node.kind != PA10NodeKind::TypeId || node.children.empty())
 		throw std::runtime_error("invalid PA11 type-id");
 	SpecFact spec = spec_fact(node.children.front(), scope);
+	if (spec.is_auto)
+		throw std::runtime_error("PA11 auto is not a type-id");
 	TypeId result = spec.base;
 	if (node.children.size() > 1)
-		result = apply_declarator(node.children[1], result, scope);
+	{
+		DeclaratorBaseKind base_kind = DeclaratorBaseKind::Typed;
+		result = apply_declarator(node.children[1], result, scope, base_kind);
+	}
 	if (!result.valid())
 		throw std::runtime_error("PA11 type-id has no typed result");
 	return result;
@@ -304,6 +309,8 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(
 			child.children.empty())
 			throw std::runtime_error("invalid PA11 parameter declaration");
 		SpecFact spec = spec_fact(child.children.front(), scope);
+		if (spec.is_auto)
+			throw std::runtime_error("PA11 auto is not a parameter type");
 		TypeId type = spec.base;
 		if (!type.valid())
 			throw std::runtime_error("PA11 parameter has no typed type");
@@ -311,7 +318,8 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(
 		if (child.children.size() > 1)
 		{
 			name = declarator_name(child.children[1]);
-			type = apply_declarator(child.children[1], type, scope);
+			DeclaratorBaseKind base_kind = DeclaratorBaseKind::Typed;
+			type = apply_declarator(child.children[1], type, scope, base_kind);
 			if (!type.valid())
 				throw std::runtime_error("PA11 parameter has no typed type");
 			if (contains_parameter_pack(child.children[1]))
@@ -431,7 +439,7 @@ TypeId PA11SemanticModel::apply_suffix(const std::vector<DeclaratorOp>& ops,
 	return result;
 }
 TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
-	TypeId base, ScopeId scope)
+	TypeId base, ScopeId scope, DeclaratorBaseKind& base_kind)
 {
 	if (node.kind != PA10NodeKind::Declarator &&
 		node.kind != PA10NodeKind::AbstractDeclarator)
@@ -482,6 +490,11 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			throw std::runtime_error("invalid PA11 declarator prefix");
 	}
 	std::vector<DeclaratorOp> suffix;
+	bool saw_parameter_clause = false;
+	bool saw_array_suffix = false;
+	bool saw_function_qualifier = false;
+	bool saw_virt_specifier = false;
+	bool saw_trailing_return = false;
 	if (suffix_begin < node.children.size())
 	{
 		for (std::size_t i = suffix_begin; i < node.children.size(); ++i)
@@ -489,6 +502,10 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			const PA10AstNode& child = node.children[i];
 			if (child.kind == PA10NodeKind::ArraySuffix)
 			{
+				if (saw_trailing_return)
+					throw std::runtime_error(
+						"PA11 array suffix follows trailing return type");
+				saw_array_suffix = true;
 				DeclaratorOp op(DeclaratorOp::Array);
 				if (child.children.empty())
 					op.unknown_bound = true;
@@ -507,12 +524,25 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 			}
 			else if (child.kind == PA10NodeKind::ParameterClause)
 			{
+				if (saw_trailing_return)
+					throw std::runtime_error(
+						"PA11 parameter clause follows trailing return type");
+				saw_parameter_clause = true;
 				DeclaratorOp op(DeclaratorOp::Function);
 				op.parameter_clause = &child;
 				suffix.push_back(op);
 			}
 			else if (child.kind == PA10NodeKind::TrailingReturnType)
 			{
+				if (!saw_parameter_clause || saw_trailing_return ||
+					saw_array_suffix || saw_virt_specifier)
+					throw std::runtime_error(
+						"invalid PA11 trailing return declarator order");
+				if (base_kind != DeclaratorBaseKind::AutoPlaceholder)
+					throw std::runtime_error(
+						"PA11 trailing return requires auto placeholder");
+				saw_trailing_return = true;
+				base_kind = DeclaratorBaseKind::Typed;
 				if (child.children.size() != 1 ||
 					child.children.front().kind != PA10NodeKind::TypeId)
 					throw std::runtime_error("invalid PA11 trailing return type");
@@ -520,26 +550,48 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 				op.trailing_type_id = &child.children.front();
 				suffix.push_back(op);
 			}
-			else if (child.kind == PA10NodeKind::FunctionQualifier ||
-				child.kind == PA10NodeKind::RefQualifier ||
-				child.kind == PA10NodeKind::VirtSpecifier)
+			else if (child.kind == PA10NodeKind::FunctionQualifier)
 			{
+				if (saw_trailing_return || saw_virt_specifier ||
+					saw_function_qualifier)
+					throw std::runtime_error(
+						"invalid PA11 function qualifier order");
+				saw_function_qualifier = true;
 			}
-			else if (is_cv_node(child) && !suffix.empty() &&
-				suffix.back().kind == DeclaratorOp::Function)
+			else if (child.kind == PA10NodeKind::RefQualifier)
+			{
+				throw std::runtime_error(
+					"PA11 ref-qualified functions are not represented");
+			}
+			else if (child.kind == PA10NodeKind::VirtSpecifier)
+			{
+				saw_virt_specifier = true;
+			}
+			else if (is_cv_node(child))
+			{
+				if (saw_trailing_return || saw_function_qualifier ||
+					saw_virt_specifier ||
+					!saw_parameter_clause || suffix.empty() ||
+					suffix.back().kind != DeclaratorOp::Function)
+					throw std::runtime_error("invalid PA11 cv qualifier order");
 				suffix.back().cv |= cv_bit(child);
+			}
 			else
 				throw std::runtime_error("invalid PA11 declarator suffix");
 		}
 	}
+	const bool nested = direct < node.children.size() &&
+		node.children[direct].kind == PA10NodeKind::NestedDeclarator;
+	if (base_kind == DeclaratorBaseKind::AutoPlaceholder && !saw_trailing_return &&
+		!nested)
+		throw std::runtime_error("PA11 auto placeholder requires trailing return");
 	TypeId result = base;
-	if (direct < node.children.size() &&
-		node.children[direct].kind == PA10NodeKind::NestedDeclarator)
+	if (nested)
 	{
 		const TypeId with_prefix = apply_prefix(prefix, base);
 		const TypeId with_suffix = apply_suffix(suffix, with_prefix, scope);
 		result = apply_declarator(node.children[direct].children.front(),
-			with_suffix, scope);
+			with_suffix, scope, base_kind);
 	}
 	else
 	{

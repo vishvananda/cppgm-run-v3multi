@@ -783,6 +783,7 @@ struct DeclaratorName
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON) {}
 };
+enum class DeclaratorBaseKind { Typed, AutoPlaceholder };
 struct DeclaratorOp
 {
 	enum Kind
@@ -1818,8 +1819,7 @@ private:
 	TypeId apply_suffix(const std::vector<DeclaratorOp>& ops, TypeId base,
 	ScopeId scope)
 	;
-	TypeId apply_declarator(const PA10AstNode& node, TypeId base, ScopeId scope)
-	;
+	TypeId apply_declarator(const PA10AstNode& node, TypeId base, ScopeId scope, DeclaratorBaseKind& base_kind);
 	TypeId member_function_expression_type(TypeId type, ScopeId scope,
 		BindingId binding)
 	;

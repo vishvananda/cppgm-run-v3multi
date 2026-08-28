@@ -68,15 +68,6 @@ void PA11SemanticModel::prepare_pa12_node(const PA10AstNode& node,
 		return;
 	}
 	case PA10NodeKind::SpecialMemberDefinition:
-	{
-		const FunctionFact* function = function_fact(node);
-		if (function == NULL || !function->function_scope.valid())
-			throw std::runtime_error("PA12 special member fact is missing");
-		for (std::size_t i = 0; i < node.children.size(); ++i)
-			if (node.children[i].kind == PA10NodeKind::CompoundStatement)
-				prepare_pa12_compound(node.children[i], function->function_scope);
-		return;
-	}
 	case PA10NodeKind::SpecialMemberDeclaration:
 		return;
 	default:

@@ -2092,19 +2092,11 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 		node.kind != PA10NodeKind::TypeSpecifierSeq)
 		throw std::runtime_error("PA11 expected declaration specifier sequence");
 	SpecFact result;
-	bool has_signed = false;
-	bool has_unsigned = false;
-	bool has_short = false;
+	bool has_signed = false, has_unsigned = false, has_short = false;
 	unsigned int long_count = 0;
-	bool has_int = false;
-	bool has_char = false;
-	bool has_char16 = false;
-	bool has_char32 = false;
-	bool has_wchar = false;
-	bool has_bool = false;
-	bool has_float = false;
-	bool has_double = false;
-	bool has_void = false;
+	bool has_int = false, has_char = false, has_char16 = false, has_char32 = false;
+	bool has_wchar = false, has_bool = false, has_float = false,
+		has_double = false, has_void = false;
 	for (std::size_t i = 0; i < node.children.size(); ++i)
 	{
 		const PA10AstNode& child = node.children[i];
@@ -2221,7 +2213,10 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 		case SimpleTokenType::KW_THREAD_LOCAL:
 			result.is_thread_local = true;
 			break;
-		case SimpleTokenType::KW_AUTO: result.is_auto = true; break;
+		case SimpleTokenType::KW_AUTO:
+			if (result.is_auto) throw std::runtime_error(
+				"duplicate PA11 auto type specifier");
+			result.is_auto = true; break;
 		case SimpleTokenType::KW_CONST:
 		case SimpleTokenType::KW_VOLATILE:
 			result.cv |= cv_bit(child);
@@ -2269,8 +2264,11 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			break;
 		}
 	}
+	const bool explicit_type = result.has_base || has_signed || has_unsigned || has_short || long_count != 0 || has_int || has_char || has_char16 || has_char32 || has_wchar || has_bool || has_float || has_double || has_void;
+	if (result.is_auto && (explicit_type || result.cv != 0 || result.is_typedef))
+		throw std::runtime_error("PA11 auto requires a single type-specifier and no cv qualifier");
+	if (result.is_auto) return result;
 	if (!result.has_base) {
-		if (result.is_auto) return result;
 		FundamentalType type = FundamentalType::Int;
 		if (has_void)
 			type = FundamentalType::Void;
@@ -2461,8 +2459,9 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			}
 		}
 		const bool direct_initializer = direct_initializer_operand(init, target, NULL);
+		DeclaratorBaseKind base_kind = spec.is_auto ? DeclaratorBaseKind::AutoPlaceholder : DeclaratorBaseKind::Typed;
 		TypeId type = direct_initializer ? spec.base :
-			apply_declarator(declarator, spec.base, target);
+			apply_declarator(declarator, spec.base, target, base_kind);
 		if (!type.valid()) throw std::runtime_error("PA11 declaration has no typed type");
 		if (!direct_initializer && type_kind(type) == TypeKind::Array &&
 			types_[type.value].unknown_bound && init.children.size() > 1 &&

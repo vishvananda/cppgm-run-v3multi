@@ -2,184 +2,167 @@
 
 ## Current Checkpoint Review
 
-This review covers landed commit `da4252b669cbb14cf083b768619e13a2354d8505`
-(`PA16: implement typed bit-field boundary`) relative to
-`ad0f44f7fb84ba85030e20b7d87f836be736f5ca`, plus bounded follow-up repairs in
-the PA11--PA15 ownership path.  The implementation and audit span is limited
-to `pa11_semantic_model.h`, `pa11_semantic_core.cpp`,
-`pa11_record_layout.cpp`, the PA12 semantic fact/conversion/member/call/
-construction/resolution modules, the PA15 bit-field flow/member path, and
-`cppgm.tests/course/pa16/412-typed-bit-field-initialization-root-regression.sh`.
-No handout test, fixture, `.ref`, comparator, or generated repository output
-was changed.
+This final review covers landed commit 9718b98797312753e33023fe97d36d74afd0a84a
+(PA16: type member-function definition declarators) relative to parent
+97d1e7a5, plus the bounded follow-up corrections in the PA11 typed
+declarator path. The source audit is limited to pa11_semantic.cpp,
+pa11_semantic_core.cpp, pa11_semantic_model.h, pa11_semantic_types.cpp,
+pa12_semantic.cpp, and pa12_semantic_construction.cpp. The only added test
+artifact is cppgm.tests/course/pa16/413-typed-member-definition-declarator-validation-regression.sh.
+No handout test, fixture, .ref file, comparator, harness, generated output,
+or source-set list was changed.
 
-The bounded contract is typed integral and enumeration bit-fields: declaration
-and declarator validation, owner-stable layout, member glvalue/provenance,
-address-of and reference validity, built-in assignment/inc/dec, aggregate and
-constructor initialization, and packed PA15 load/store projection.  General
-class value transfer/copy/move, virtual or multiple inheritance, templates,
-general conversions, and unrelated PA16 residuals remain excluded.
+The PA16 contract here is in-class member definitions and qualified
+out-of-class ordinary non-static member definitions, including typed trailing
+returns and private nested leading return types. The README explicitly
+excludes out-of-class constructor and destructor definitions. The out-of-
+contract special-member widening from 9718b987 is removed: process_special_member
+again requires a class-scope owner, and the namespace/root PA12 special-member
+analysis and preparation additions are gone. Only the pre-existing in-class
+special-member path remains in this scope. The excluded nested out-of-class
+constructor remains a failing identity and is not claimed as PA16 coverage.
 
-The ownership trace is:
+### Contract and ownership
 
-```text
-PA10 BitFieldDeclaration/BitFieldDeclarator
-  -> PA11 declaration validation, canonical BindingId/owner NamedRecordId,
-     declared/storage/operation types, effective signedness, value width,
-     allocation span, and one owner-stable per-record event stream
-  -> PA11 layout packing with ordinary members, unnamed/zero-width boundaries,
-     nested/anonymous ownership, unions, alignment, and checked overflow
-  -> PA12 typed member glvalues and conversion/operator formation, built-in
-     address-of ordering, const-reference temporaries, assignment/inc/dec,
-     aggregate/constructor facts, and isolated initialization roots
-  -> PA15 physical-unit projection, masks, sign/zero extension, read-modify-
-     write stores, and aggregate/constructor/root-scoped materialization
-```
+N3485 [dcl.fct], [dcl.fct.def], and [class.mfct] define the function
+parameter-and-qualifier sequence, trailing-return-type, and member-definition
+context relevant here. The implementation is checked against that standard
+text in [N3485](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2012/n3485.pdf).
+
+The root architecture alignment is:
+
+- spec.md §2 keeps classified declaration, type, scope, binding, parameter,
+  and body facts typed; presentation is not used to recover identity.
+- spec.md §4 keeps this validation as local, deduplicated work over the
+  declarator and its typed operation list.
+- spec.md §5 keeps PA12 preparation/analysis and PA15 lowering on the existing
+  typed FunctionFact, TypeId, and downstream facts.
+- spec.md §7 records executable conformance and structural determinism
+  evidence without inventing a timing claim.
+
+The affected fact path is:
+
+PA10 declarator shape (qualified name, parameter clause, cv/noexcept/ref/
+trailing-return nodes)
+  -> PA11 SpecFact::is_auto, explicit DeclaratorBaseKind state, and
+     DeclaratorOp carrying the trailing TypeId
+  -> canonical class ScopeId, NamedRecordId, BindingId, FunctionFact,
+     function scope, parameter facts, and body scope
+  -> PA12 preparation/analysis and existing typed conversion/call consumers
+  -> PA15 typed function reachability, ABI facts, and LowIR emission
+
+For an ordinary member definition, process_function_definition resolves one
+qualified owner. That owner is reused for trailing-return lookup, parameter
+lookup, binding ownership, FunctionFact.owner, function-scope parentage, and
+body lookup. The focused owner path emits the declared const member parameter,
+the declared parameter, and the body member access without reconstructing an
+owner from rendered text.
 
 ### Findings and bounded repairs
 
-- `BitFieldFact` is the single PA11 owner record for a named field.  It retains
-  declared type, physical storage type, canonical operation type, declared and
-  value widths, allocation span, unit/bit offsets, masks, owner/binding
-  identity, and storage signedness.  Unscoped enums use their typed underlying
-  representation for operations while exact enum targets retain enum identity;
-  signedness comes from the effective underlying storage, including signed
-  enums and bool.
-- The PA12 operation type implements the C++11 converted-bit-field promotion
-  boundary from typed facts: bool, int/signed int/unsigned int, and lower-rank
-  fields select int or unsigned int according to representability, while narrow
-  long and long long retain their declared rank/type.  PA15 consumes this fact
-  and does not infer promotion from field width.  This follows C++11
-  [conv.prom](https://timsong-cpp.github.io/cppwp/n3337/conv.prom) and keeps
-  enum-underlying identity typed.
-- Non-const lvalue-reference binding to a bit-field is rejected by PA12
-  conversion selection and explicit-cast formation, for both direct-member and
-  implicit-this/id expressions.  A viable const-reference binding creates a
-  typed temporary with value and reference conversions; PA15 materializes the
-  scalar into a generated reference slot and never exposes the packed unit.
-  The bool-bit-field decrement rule is likewise checked after overload
-  resolution at the PA12 operator owner, with PA15 retaining a consistency
-  guard.
-- Built-in address-of rejection is ordered after `semantic_operator_call`.
-  Therefore a viable overloaded unary `operator&` for an enum bit-field is
-  selected and lowered as a call; only the built-in packed-field projection is
-  rejected.  The public course control covers the supported ordinary-operator
-  boundary.
-- Width validation no longer treats 64 as a language ceiling.  A physical
-  scalar unit remains at most 8 bytes because PA15's checked load/store
-  projection is at most 64 bits; a wider declaration gets a checked multiple-
-  unit allocation span, with only the low physical value representation
-  projected and extra bits treated as padding.  Allocation, alignment, unit
-  count, offsets, union largest-member size, and overflow are checked before
-  layout publishes the fact.  Mixed ordinary members, following fields,
-  unnamed oversized fields, zero-width separators, and unions were exercised
-  by bounded controls.
-- The exact-reference fast path is restricted to expression-owned conversion
-  facts.  Ordinary exact reference roots still publish the established
-  `ReferenceBinding`, preserving pre-checkpoint pointer/reference alias
-  LowIR; typed bit-field temporary facts avoid duplicate deferred
-  materialization.  Return and initializer roots remain expression-owned, so
-  unrelated initializer aliases are not globally retargeted.
-- Per-record layout consumes one validated declaration event stream.  Adjacent
-  compatible fields pack; ordinary members flush the unit; unnamed and
-  zero-width fields create typed boundaries; nested records and anonymous
-  ownership stay attached to their own `NamedRecordId`; unions use the checked
-  allocation span.  PA15 carries a fresh initialization context for each
-  destination/root sequence, reuses it only for the same packed unit, and
-  recomputes nested/array paths, preventing state leakage or duplicate deferred
-  materialization across locals, subobjects, arrays, globals, and repeated
-  sites.
-- The path is C++11/fail-closed: every identity, owner, type, width, mask,
-  conversion range, and address path is bounds-checked; candidate/event
-  ordering is deterministic.  The audit found no textual downgrade,
-  test-name/fixture branch, reference or host-compiler shell-out, duplicate
-  production owner/model, incomplete cache key, retry loop, whole-scope
-  rescan, or unbounded state.  Event append and the normal layout walk remain
-  linear in the owning record's declarations.
+- The trailing return remains a typed PA10 TypeId inside a DeclaratorOp.
+  SpecFact::is_auto is the canonical classification. Each application entry
+  creates an explicit DeclaratorBaseKind; nested declarators share that state.
+  The trailing-return operation requires AutoPlaceholder and consumes it by
+  changing the state to Typed. No invalid TypeId is used as an auto marker.
+  An unrelated invalid TypeId remains invalid and is rejected by the existing
+  typed-result checks. auto (*callback)() -> int remains valid.
 
-### Focused and full evidence
+- spec_fact rejects a duplicate auto, auto combined with another base
+  type, leading cv-qualified auto, and typedef auto. Storage qualifiers do
+  not broaden the type rule: the valid static auto trailing-return control in
+  course 413 passes.
 
-The focused source build `make -B -C dev cppgm++` exits `0`; the durable log
-is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-build.log`.
-The required shell syntax check, direct const-cast pointer/reference alias
-control, course 412, and the exact 11-test bit-field matrix were rerun after
-that build.  Their logs are `pa16-bitfield-audit-final-source-syntax.log`,
-`pa16-bitfield-audit-final-source-direct.log`,
-`pa16-bitfield-audit-final-source-course412.log`, and
-`pa16-bitfield-audit-final-source-focused-11.log` in the same external
-directory.  The direct control and course 412 pass; the matrix is `5/11`.
-Its six known misses are LowIR presentation mismatches in constructor/member
-access/increment/aggregate and signed-read fixtures; no fixture was changed.
+- A trailing return requires a parameter clause and the auto placeholder.
+  Object arrows, missing auto, suffixes after the arrow, invalid cv/noexcept
+  ordering, and unsupported ref-qualified forms fail closed. Ref qualifiers
+  are rejected because the existing TypeKey and binding identity do not
+  represent them; silently ignoring them would merge distinct declarations.
+  Auto in parameter types and auto in type-ids is rejected. The public course
+  control's auto f() -> auto case is parser-accepted as a TypeId and reaches
+  typed rejection; the other public malformed forms are asserted as
+  rejections without claiming more parser reachability than observed.
 
-The final `make test-pa16` exits `2` with `131/243` passed and `112`
-failures.  The durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-test-pa16.log`.
-The exact normalized failure comparison against the authoritative turn-start
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-identity-comparison.log`:
-baseline `112`, final `112`, baseline-only `0`, final-only `0`, and the
-unchanged `243`-test inventory.  All original identities remain covered;
-there is no final-only regression and no coverage reduction.
+- The special-member owner change was narrowed back to the parent behavior.
+  process_special_member is class-scope-only; root SpecialMemberDefinition and
+  SpecialMemberDeclaration handling in PA12 is absent, and the root
+  special-member preparation body is absent. The in-class constructor-member-
+  init control still passes. The excluded nested out-of-class constructor
+  now fails at PA11 special-member owner validation, as required by the
+  contract boundary.
 
-The required command
-`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
-exited `0` at `1167/1167`; its log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-through.log`.
-The final file audit exits `0` with only the five existing header-division
-warnings (`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
-`pa11_semantic_model.h`, and `pa15_lowering.h`); its durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-audit-final-source-file-audit.log`.
-The final `git diff --check` log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/doc-followup-diff-check.log`.
+- The implementation uses one bounded child walk and one typed operation
+  application per declarator, with no textual semantic key, test-name
+  shortcut, reference/host-compiler shell-out, whole-program retry, or
+  unbounded scope scan. Invalid IDs are rejected before binding or
+  FunctionFact publication.
 
-### Performance and residual boundaries
+### Focused and broad evidence
 
-The state-matched immutable executable copies are mode `0555` at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1/cppgm++-final`
-and `cppgm++-immutable`.  They byte-match the unchanged `dev/cppgm++`; all
-three SHA-256 values are
-`c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`.
-The preserved workload sources are `inputs/small-bit-fields.cpp`,
-`inputs/large-bit-field-events.cpp`, and
-`inputs/nested-oversized-bit-fields.cpp` under
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1`.
-Five interleaved final/immutable rounds per case measured 30 whole compiler
-invocations with `/usr/bin/time`, including parsing, semantic processing,
-layout, lowering, and LowIR output.  All 30 exits were zero.  Raw rows are in
-`timing.tsv`, medians/ranges in `medians.tsv`, run statuses in
-`run-status.tsv`, deterministic hashes in `determinism.tsv`, and bit-field
-structural counters in `structure.tsv` under that directory.
+The audit-turn start was exactly 132/243 passed, 111 failed, and 243/243
+identities covered. The authoritative baseline is
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log. Its
+diagnostic totals are 61 expected-success exit mismatches, 2 expected-failure
+exit mismatches, and 48 LowIR comparison mismatches.
 
-| case | lines | owner records | bit-field declarations (named/unnamed) | zero/oversized | ordinary/events | field uses (read/write) | LowIR instructions/functions/projections | wall median (final / immutable) | RSS median (final / immutable) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| small-bit-fields | 32 | 1 | 7 (5/2) | 1/0 | 1/8 | 20 (10/10) | 181/1/24 | `0.00s (0.00..0.00) / 0.00s (0.00..0.00)` | `6104 (6064..6112) / 6096 (6072..6148) KiB` |
-| large-bit-field-events | 1669 | 32 | 544 (416/128) | 64/0 | 64/608 | 832 (416/416) | 7756/1/960 | `0.07s (0.07..0.07) / 0.07s (0.07..0.07)` | `30600 (30492..30648) / 30640 (30348..30644) KiB` |
-| nested-oversized-bit-fields | 82 | 5 | 17 (13/4) | 3/5 | 5/22 | 47 (21/26) | 385/1/83 | `0.00s (0.00..0.00) / 0.00s (0.00..0.00)` | `6620 (6548..6636) / 6620 (6596..6688) KiB` |
+The final focused build exits 0; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/build.log
+The public course 413 regression exits 0 and covers mixed/duplicate/cv/
+typedef auto, auto in a type-id, missing auto, non-function arrows, suffix
+ordering, ref qualifiers, auto parameters, auto without a trailing return,
+auto simple declarations, a valid static auto return, and the valid nested
+function pointer; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/course-413.log
 
-The final output hashes for those three cases are respectively
-`2ca315b9617b6827823735e20a843cc0335a1e3a6d04e69a2af389d90d79d720`,
-`9be4ac92b3c1be4e1bbb755061162ae17e5a110a7e231c230951a1e2a90839e3`, and
-`ea4fe15c038c73b71b3297cccafd2e5a5dfa55f36a2d9ac6b3135ed3998735fa`.
-Each variant/case has one unique hash across all five rounds, and the final
-and immutable hashes match.  These are representative whole-compiler
-measurements, not an isolated phase or timeout proof.  The earlier operator
-same-name workload is retained only with its historical operator checkpoint
-and is not used as bit-field evidence.
+The exact seven-test focus exits 2 with 5/7 passing; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/focused-matrix-7.log
+Passing identities are
+300-member-function-trailing-return.t,
+100-out-of-class-methods.t,
+300-out-of-class-private-nested-return-type.t,
+200-constructor-overload-default-arg-nonfirst-argument.t, and
+200-return-preserves-value.t. The residual
+300-out-of-class-member-trailing-return.t fails with PA12 invalid conversion
+in its existing member-typedef pointer-return path. The explicitly excluded
+200-nested-out-of-class-constructor-enclosing-type.t fails with
+PA11 special member has no class owner. The separate
+200-constructor-member-init.t control is 1/1; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/focused-constructor-control.log
 
-The six focused LowIR mismatches are intentionally retained: constructor
-member-init, member access, prefix/postfix increment, aggregate init, signed
-integral read, and signed-underlying-enum read.  The signed cases retain the
-required sign extension in the typed implementation; their checked-in
-presentation fixtures were not edited.  These are not converted into claims
-of broader PA16 completion.  The remaining full-stage failures likewise stay
-outside this bounded checkpoint, including general class value transfer,
-copy/move, templates, virtual/multiple inheritance, general conversions, and
-unrelated PA16 ownership surfaces.
+The required prior-through command exits 0 with 1167/1167; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/through-pa15.log
+The exact required file audit exits 0 with five pre-existing header-division
+warnings; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/file-audit.log
+The final make test-pa16 exits 2 because PA16 remains incomplete, with
+132/243 passed, 111 failures, and all 243 identities covered; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/pa16-test.log
+The exact failure-set comparison is preserved at:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/identity-compare.log
+It reports baseline 111, final 111, inventory 243, baseline-only empty,
+and final-only empty. Thus no pass identity regressed, and no added pass was
+used to offset a new failure. git diff --check exits 0; log:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/diff-check.log
 
-The next checkpoint is a separately authorized PA16 residual audit: classify
-the unchanged 112 identities by ownership while keeping this typed bit-field
-path and its exclusions frozen.  Do not advance to PA17 until the through-
-PA16 gate is clean.
+### Performance evidence
+
+The current executable structural run is:
+ /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-member-definition-audit-final-v2/structure.log
+Its log SHA-256 is bcb4f7ac160a94f1cbb499ca5a823c657d8487659d58d0b55664b1b9f4a4d1a1
+and the executable SHA-256 is 375482e808d7c1c1251e9c9ebf186eee8b4ff6014f6e4410c5d2ca5a18d12379.
+Using the existing N=1,4,16,64 member-definition inputs, each run has N
+declarations and N definitions. Two semantic runs per size exit 0 with
+identical hashes. Output lines/bytes are 14/468, 32/1227, 104/4269, and
+392/16461; function-record counts are 2, 5, 17, and 65. This is structural
+boundedness and determinism evidence only; it is not a timing, RSS,
+allocation, or speedup claim.
+
+### Next checkpoint
+
+The next checkpoint is a later PA16 residual audit focused on the existing
+member-typedef pointer-return residual and the remaining explicitly staged
+PA16 boundaries. It is not broad validation. PA16 remains incomplete until
+those residuals are separately resolved or contractually closed.
 
 ## Historical Fixed-Bound Array-Lifetime Checkpoint Review
 
@@ -797,3 +780,4 @@ conversion slices.
 | `0a6be82d` typed fixed-bound local/synthesized array lifetime checkpointAudit | Completed bounded audit/repair: typed lifetime ownership and destructor continuity are validated once, dense `ScopeId` flags replace the former per-function lifetime scan, checked array paths/actions and arena-safe recursive cleanup are retained, and lexical/control-exit/EH state is covered by course 410. Final PA16 is `93/243` with the exact turn-start `150` failure identities and `243/243` coverage; through-PA15 is `1167/1167`; the file audit passes with five existing warnings; diff-check passes; current structural and interleaved smoke/scale evidence is recorded above. |
 | `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the follow-up corrects exact friend-definition lexical ownership and typed private/protected/public base-reference accessibility while retaining enum identity/promotion ranking, narrow converting-constructor participation, reference/address facts, and typed bool boundaries through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused status is `29/32` with three documented pre-existing holdouts, course 411 passes, and state-matched performance is in `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. No handout, fixture, reference, comparator, or generated output changed. |
 | `da4252b6` typed bit-field boundary checkpointAudit/follow-up | Completed bounded PA10--PA15 audit and repair: canonical typed operation/promotion facts, const-reference temporary ownership, semantic-owner rejection of invalid bit-field references and bool decrement, overload-before-address-of ordering, mixed/zero-width/unnamed/union layout, checked oversized allocation spans, masked signed/unsigned PA15 projection, and isolated initialization roots. Final PA16 is `131/243` with `112` failures and `243/243` identities; exact comparison to the turn-start `112`-failure map is baseline-only `0`, final-only `0`. Course 412, direct alias control, through-PA15 `1167/1167`, file audit, and diff-check pass; the focused bit-field matrix is `5/11` with six documented LowIR mismatches. Corrected state-matched bit-field performance is in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-bitfield-perf-final-v1` with 30/30 zero-exit runs, 32-owner/544-declaration/832-use scaled counters, final/immutable SHA-256 `c98edbf143904e0b09b451310de38e7966149b4374ad912b55a1b9f8c96aaf02`, and final wall medians `0.00/0.07/0.00s` for small/large/nested cases. No handout, fixture, reference, comparator, or generated output changed. |
+| `9718b987` member-function-definition declarator audit/follow-up | Final audit/follow-up: the out-of-contract special-member widening is reverted to the parent class-scope-only behavior, while explicit auto-placeholder state and typed/fail-closed ordinary declarator validation are complete. Final `make test-pa16` is `132/243` with `111` failures and `243/243` identities; the exact baseline/final failure sets are identical with baseline-only `∅` and final-only `∅`. Through-PA15 is `1167/1167`; course 413 passes, the focused matrix is `5/7`, the constructor-member-init control is `1/1`, file audit passes with five pre-existing warnings, and diff-check passes. The excluded nested out-of-class constructor fails closed and is not PA16 coverage; next is a later residual audit, not completion. |
