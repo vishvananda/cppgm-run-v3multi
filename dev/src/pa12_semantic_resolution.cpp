@@ -231,7 +231,7 @@ FunctionIdResolution PA11SemanticModel::resolve_template_function_id_target(
 		if (!specialized_type.valid())
 			continue;
 		const ConversionChoice conversion = conversion_for(specialized_type,
-			SemanticValueCategory::Lvalue, target, &node);
+			SemanticValueCategory::Lvalue, target, &node, false, scope);
 		if (!conversion.valid)
 			continue;
 		if (!have_selected || conversion.rank < selected_conversion.rank)
@@ -340,7 +340,7 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 			const ConversionChoice conversion = conversion_for(arguments[arg].type,
 				arguments[arg].category, specialized_function.parameters[arg],
 				semantic_facts_[arguments[arg].fact.value].source,
-				arguments[arg].integer_zero);
+				arguments[arg].integer_zero, scope);
 			if (!conversion.valid)
 			{
 				candidate.ranks.clear();
@@ -386,7 +386,7 @@ ExprInfo PA11SemanticModel::semantic_template_call(
 	for (std::size_t i = 0; i < selected_function.parameters.size(); ++i)
 		arguments[i] = apply_context_conversion(arguments[i],
 			selected_function.parameters[i],
-			semantic_facts_[arguments[i].fact.value].source);
+			semantic_facts_[arguments[i].fact.value].source, scope);
 	std::vector<SemanticFactId> children;
 	for (std::size_t i = 0; i < arguments.size(); ++i)
 		children.push_back(arguments[i].fact);
@@ -485,7 +485,7 @@ FunctionIdResolution PA11SemanticModel::resolve_function_id_target(
 		}
 		else
 			conversion = conversion_for(value.type,
-				SemanticValueCategory::Lvalue, target, &node);
+				SemanticValueCategory::Lvalue, target, &node, false, scope);
 		if (!conversion.valid)
 			continue;
 		if (!have_selected || conversion.rank < selected_conversion.rank)
@@ -671,7 +671,7 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 				const ConversionChoice direct = conversion_for(expression.type,
 					expression.category, target,
 					semantic_facts_[expression.fact.value].source,
-					expression.integer_zero);
+					expression.integer_zero, scope);
 				if (record.valid() && record.value < named_.size() &&
 					named_[record.value].kind == NamedKind::Class && !direct.valid)
 				{
@@ -817,7 +817,7 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 					expression.type, result_type, ConversionKind::Identity, 0));
 			else if (!exact_prvalue_bool)
 				apply_context_conversion(expression, result_type,
-					semantic_facts_[expression.fact.value].source);
+					semantic_facts_[expression.fact.value].source, scope);
 			children.push_back(expression.fact);
 		}
 	}

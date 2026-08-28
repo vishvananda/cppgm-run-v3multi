@@ -8,12 +8,13 @@ checkpoint.  The implementation span began at landed commit
 `20f14d30c8aa3ee71a2ebdb11a36d1f785d85adc`, and was tightened at the latest
 landed commit `2d93a5e90f383652ffd22469620476248d639e8d`, relative to
 `23a26df5299ef51ed5ff1b419ca7e05888e46e9e`.  The bounded audit repairs in
-this checkpoint are limited to
-the ordinary operator ownership path in `pa11_semantic.cpp`,
-`pa11_semantic_core.cpp`, `pa12_semantic.cpp`, `pa12_semantic_calls.cpp`,
-`pa12_semantic_facts.cpp`, and `pa12_semantic_resolution.cpp`; no handout,
-fixture, reference, comparator, generated output, or course regression was
-changed.
+this checkpoint are limited to the ordinary operator ownership path in
+`pa11_semantic.cpp`, `pa11_semantic_core.cpp`, `pa12_semantic.cpp`,
+`pa12_semantic_calls.cpp`, `pa12_semantic_facts.cpp`,
+`pa12_semantic_member.cpp`, `pa12_semantic_resolution.cpp`, and the focused
+course regression
+`cppgm.tests/course/pa16/411-typed-operator-lexical-base-access-regression.sh`;
+no handout, fixture, reference, comparator, or generated output was changed.
 
 The contract and exclusions are the PA16 ordinary operator boundary: templates,
 class by-value/copy/move/assignment semantics, conversion operators, member
@@ -40,14 +41,19 @@ PA10 operator token/name metadata
 ### Findings and bounded repairs
 
 - Friend definitions retain their namespace-owned canonical binding and scope,
-  while parameter types and the body retain the introducing class as their
-  lexical type scope.  PA11 follows only the function binding's sparse friend
-  relation into the class type/value lookup graph.  Direct declarations,
-  inherited type lookup, declaration-point filtering, hidden-only visibility,
-  visible redeclaration identity, and malformed relation identity all remain
-  typed and fail closed; no parent-scope rewrite or whole-scope rescan was
-  added.  This covers the nested hidden-friend body case through the existing
-  nested-enum friend boundary.
+	while parameter types and the body retain the introducing class as their
+	lexical type scope.  PA11 records one typed
+	`Function ScopeId -> (class ScopeId, NamedRecordId)` relation only when
+	`process_function_definition` sees the in-class friend definition.  The
+	ordinary type/value lookup path consumes that exact relation; it never scans
+	`BindingSidecar::friend_records`, which remains the access-friend set merged
+	across redeclarations.  Direct declarations, inherited type lookup,
+	declaration-point filtering, hidden-only visibility, visible redeclaration
+	identity, and malformed relation identity all remain typed and fail closed;
+	no parent-scope rewrite or whole-scope rescan was added.  Course 411 proves
+	that two access friends do not broaden the defining class's nested type/value
+	lookup, while the defining friend still accesses the other class's private
+	member.
 - `conversion_for` now preserves canonical named-enum identity before applying
   integral promotion: an exact enum target wins its matching overload, while a
   different enum or integer-to-enum conversion is nonviable.  Unscoped enum
@@ -57,13 +63,16 @@ PA10 operator token/name metadata
   the final formulation restores both unscoped-enum promotion cases and the
   earlier scalar overload behavior.
 - Reference binding uses the existing typed qualification and
-  `member_object_convertible` access/base machinery.  An accessible public
-  derived-to-base reference is viable with a worse object rank; inaccessible,
-  ambiguous, or invalid base paths are not.  Member candidates receive the
-  same final access proof as nonmember candidates, so a private operator/base
-  cannot enter the viable set.  Same-class cv is exact while a base path is
-  ranked after it; member/nonmember selection therefore uses one typed
-  implicit-object comparison.
+	`member_object_convertible` access/base machinery.  PA11 retains each
+	direct base's parsed `MemberAccess` on the canonical `NamedRecord`; PA12
+	checks that fact on the bounded base path with the actual access scope.
+	Public edges are always viable, private edges require the edge-owning class
+	or its access friend, and protected edges additionally require an enclosing
+	or friend class proven by typed single-inheritance ancestry to derive from
+	the edge owner.  Unrelated namespace code and malformed, ambiguous, or
+	invalid paths fail closed.  Same-class cv is exact while a base path is
+	ranked after it; member/nonmember selection therefore uses one typed
+	implicit-object comparison.
 - Operator candidate discovery unions the relevant member, ordinary-lookup,
   ADL, and hidden-friend candidates without a category shortcut.  Unary,
   postfix, binary, subscript, call, and shift forms retain their operator-kind
@@ -84,45 +93,39 @@ PA10 operator token/name metadata
   return chaining and address-of fallback use object types, not references;
   literal constant addresses are recorded at the owning declaration boundary.
 - The complete path was checked for deterministic bounded behavior.  The
-  hidden-friend lookup is keyed by exact namespace scope/name identity, the
-  lexical relation is sparse, candidate vectors are bounded by language-
-  relevant declarations, and lookup state is guarded by existing bounded
-  traversal.  There is no rendered-name or function-category branching,
-  fixture-specific branch, whole-scope scan, retry lowering, incomplete key,
-  unbounded cache, or shortcut in this ownership path.
+	hidden-friend lookup is keyed by exact namespace scope/name identity, the
+	lexical relation is sparse, candidate vectors are bounded by language-
+	relevant declarations, and lookup state is guarded by existing bounded
+	traversal.  Base-access ancestry is likewise bounded by the typed scope and
+	named-record counts.  There is no rendered-name or function-category
+	branching, fixture-specific branch, whole-scope scan, retry lowering,
+	incomplete key, unbounded cache, or shortcut in this ownership path.
 
 ### Focused and full evidence
 
 The final source build is `make -B -C dev cppgm++`, exit `0`, recorded in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-build.log`.
-The final focused command is:
-
-```text
-make -C pa16 check TEST='tests/general/300-basic-operator-overloads.t tests/general/300-member-binary-operator-eq.t tests/general/300-member-operator-bang-out-of-class.t tests/general/300-member-subscript-operator-call.t tests/general/300-overloaded-arrow-star-operator.t tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t tests/general/300-enum-operator-adl-selects-matching-overload.t tests/general/300-enum-class-nonmember-operator-bitand.t tests/general/300-nested-enum-hidden-friend-bitmask-adl.t tests/general/300-hidden-friend-definition-adl-call.t tests/general/300-hidden-friend-operator-nullptr-compare.t tests/spec/300-hidden-friend-not-visible-to-qualified-lookup.t tests/spec/300-hidden-friend-not-visible-to-unrelated-adl.t tests/general/200-friend-noexcept-redeclaration.t tests/general/300-prvalue-derived-base-friend-operator.t tests/general/300-overloaded-unary-deref-base-ref-return.t tests/general/300-postfix-ref-return-deref-member-call.t tests/general/300-unary-address-of-builtin-fallback.t tests/spec/300-operator-lookup-ordinary-adl-union.t tests/general/300-derived-shift-prefers-free-char-pointer.t tests/general/300-mixed-member-free-shift-stress-chain.t tests/general/300-operator-shift-stress-chain.t tests/general/300-stream-shift-selection-chain.t tests/spec/300-logical-operator-overload.t tests/spec/300-overloaded-comma-nonviable-falls-back-builtin.t tests/general/300-nonmember-operator-requires-class-or-enum-bad.t tests/general/300-operator-token-result-typing.t tests/general/300-operator-nullptr-t-from-zero.t tests/general/200-private-base-static-cast-bad.t' CPPGM_TEST_JOBS=1
-```
-
-It exits `2` at `19/29`: nine rows have only relaxed LowIR presentation
-differences (`300-member-vs-nonmember-operator-implicit-object-cv-rank`,
-`300-enum-class-nonmember-operator-bitand`,
-`300-nested-enum-hidden-friend-bitmask-adl`,
-`300-prvalue-derived-base-friend-operator`,
-`300-overloaded-unary-deref-base-ref-return`,
-`300-unary-address-of-builtin-fallback`,
-`300-derived-shift-prefers-free-char-pointer`,
-`300-mixed-member-free-shift-stress-chain`, and
-`300-operator-shift-stress-chain`), and one row is the documented parser
-holdout below.  The exact final direct status matrix in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-focused-final-direct.log`
-matches `28/29`; every semantic operator row in that matrix matches its
-checked-in status.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-final-build.log`.
+`sh -n cppgm.tests/course/pa16/411-typed-operator-lexical-base-access-regression.sh`
+and the course script both exit `0`; the durable course log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-course411.log`.
+The final direct focused matrix and its command description are in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-focused-final.log`.
+It covers 32 status rows: the original 29-row operator matrix matches `28/29`
+(the sole mismatch is the documented `nullptr_t` parser holdout), while the
+added public/private/protected and inherited-access controls preserve their
+expected statuses.  The complete focused status count is `29/32`, with all
+three mismatches being pre-existing documented holdouts.  The semantic rows
+also cover member/nonmember cv/base ranking, enum identity and ADL, nested
+friend lookup, friend visibility/redeclaration, reference-result chaining,
+fallback, logical operators, and shift/string chains.
 
 The full final command `make test-pa16` exited `2`, with
 `127/243` passed, `116` failed, and all `243/243` identities covered.  Its
 durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-test.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-test-pa16.log`.
 The exact identity comparison against the authoritative turn-start
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-identity-compare.log`:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-identity-compare.log`:
 the baseline was `122/243` with `121` failures, baseline-only is exactly
 these five repaired identities,
 
@@ -140,20 +143,20 @@ and final-only is `0`.  Thus the final failure count is no greater than the
 The required command
 `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
 exited `0` at `1167/1167`; its log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-through-pa15.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-through-pa15.log`.
 The final file audit exits `0` with only the five known header-division
 warnings (`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
 `pa11_semantic_model.h`, and `pa15_lowering.h`); its durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-file-audit.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-file-audit.log`.
 The final `git diff --check` log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-diff-check.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-diff-check.log`.
 
 ### Performance and residual boundaries
 
 The state-matched immutable executable is mode `0555` at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf-final-v2/cppgm++-immutable`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf-followup-v5/cppgm++-immutable`.
 It byte-matches the final `dev/cppgm++`; both SHA-256 values are
-`eb5365ac9251363502dd4f191f9f492ee0fcab52345511634750384d4f6ca604`.
+`e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`.
 Five interleaved final/immutable rounds for small, large, and same-name-noise
 inputs measured whole compiler invocations with `/usr/bin/time`, including
 parsing and LowIR output.  Raw inputs and rows are preserved in the `input/`
@@ -162,25 +165,33 @@ are in `structure.tsv` under that directory.
 
 | input | lines | target decls | unrelated same-name hidden friends | target expressions | LowIR functions/calls | wall median (range) | RSS median (range) |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.01s (0.01..0.01)` | `9504 (9356..9568) KiB` |
-| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.07s (0.06..0.07)` | `21896 (21828..22000) KiB` |
-| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.05s (0.05..0.05)` | `17760 (17544..17808) KiB` |
+| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.02s (0.02..0.02)` | `9352 (9336..9544) KiB` |
+| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.11s (0.11..0.11)` | `21932 (21892..22076) KiB` |
+| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.08s (0.08..0.08)` | `17668 (17560..17832) KiB` |
 
 The same-name-noise case preserves the target expression/call counts while
 adding 256 unrelated same-name hidden friends, which structurally corroborates
 exact-key bounded discovery.  These whole-compile timings are representative
 evidence, not an isolated phase or timeout proof.
 
-The remaining `pa16/tests/general/300-operator-nullptr-t-from-zero.t` failure
-is not an operator-resolution failure.  Its reference expects success, but
-`dev/posttoken` emits `nullptr_t` as an identifier and the final compiler
-reports `ERROR: unexpected fixed token at token 13` before PA11/PA12 semantic
+The three direct focused status mismatches are honest pre-existing holdouts:
+`pa16/tests/general/300-operator-nullptr-t-from-zero.t`,
+`pa16/tests/general/200-private-base-static-cast-member.t`, and
+`pa16/tests/general/200-friend-derived-access-inherited-protected-field.t`.
+The first is not an operator-resolution failure.  Its reference expects
+success, but the final compiler reports `ERROR: unexpected fixed token at
+token 13` while parsing the `nullptr_t` declaration, before PA11/PA12
 operator lookup.  PA12 already has the typed `nullptr_t` fallback and
 integer-zero-to-nullptr conversion; making this declaration parse requires a
 PA10 grammar/token repair outside this checkpoint's authorized ownership and
-would widen conversion/value semantics.  It remains an honest baseline
-holdout.  The focused relaxed LowIR presentation differences likewise are not
-converted into unsupported standard-coverage claims.
+would widen conversion/value semantics.  The other two are unchanged legacy
+parser/access controls also present in the turn-start failure map; course 411
+separately proves the public/private/protected operator-reference boundary,
+including further-derived protected access and external rejection.  The
+nullptr classification command, source text, and parser result are preserved
+in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-followup-nullptr-classification.log`.
+The focused relaxed LowIR presentation differences likewise are not converted
+into unsupported standard-coverage claims.
 
 The next checkpoint is a separately authorized PA16 residual audit: first
 classify the remaining full-stage identities by ownership, keeping this
@@ -802,4 +813,4 @@ conversion slices.
 | `37265733` typed member projection audit/repair | Direct/nested dot and arrow ownership is traced through PA12, PA11 `RecordLayout::member_offsets` keyed by the object's canonical `NamedRecordId`, and PA15 LowIR; the reference-cv and class anonymous-injection defects are repaired. Broad validation and exact identity/coverage checks pass their bounded invariants; PA16 remains incomplete with the existing 205 failures. |
 | `0b534f2f` typed direct member-call checkpointAudit | Completed bounded audit/repair: implicit-object cv subset ranking, N3485 variadic comparison, single-owner typed reachable member demand, dense PA15 reachability metadata, declaration-only member declarations with hidden-object/cv ABI boundaries, hidden-object call formation, and source-file sizing are repaired. Focused PA16/PA15 controls and all relevant course regressions pass; through-PA15 is `1167/1167`, the file audit passes with five pre-existing warnings, and full PA16 remains `47/243` with `196` failures and `243/243` coverage, with zero failure-identity additions or removals. |
 | `0a6be82d` typed fixed-bound local/synthesized array lifetime checkpointAudit | Completed bounded audit/repair: typed lifetime ownership and destructor continuity are validated once, dense `ScopeId` flags replace the former per-function lifetime scan, checked array paths/actions and arena-safe recursive cleanup are retained, and lexical/control-exit/EH state is covered by course 410. Final PA16 is `93/243` with the exact turn-start `150` failure identities and `243/243` coverage; through-PA15 is `1167/1167`; the file audit passes with five existing warnings; diff-check passes; current structural and interleaved smoke/scale evidence is recorded above. |
-| `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: nested friend lexical lookup, enum identity/promotion ranking, derived/base reference binding and access, narrow converting-constructor participation, reference/address facts, and typed bool boundaries are traced through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused semantic status is `28/29` with the PA10 `nullptr_t` parser holdout, and state-matched performance is in `pa16-operator-perf-final-v2`. No handout, fixture, reference, comparator, generated output, or course test changed. |
+| `2d93a5e9` ordinary non-template overloaded-operator checkpointAudit | Completed bounded audit/repair of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: the follow-up corrects exact friend-definition lexical ownership and typed private/protected/public base-reference accessibility while retaining enum identity/promotion ranking, narrow converting-constructor participation, reference/address facts, and typed bool boundaries through PA10--PA15. Final PA16 is `127/243` with `116` failures and `243/243` coverage; exact comparison to the `122/243` turn-start map has five baseline-only repaired identities and zero final-only identities. Through-PA15 is `1167/1167`, final file audit has five known warnings, focused status is `29/32` with three documented pre-existing holdouts, course 411 passes, and state-matched performance is in `pa16-operator-perf-followup-v5` with final/immutable SHA-256 `e5ffb4e9869c619552f193e16ef063ab2feba7c27f809887ebdd187960196580`. No handout, fixture, reference, comparator, or generated output changed. |

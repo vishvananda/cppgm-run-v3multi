@@ -98,7 +98,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 					semantic_facts_[arguments[argument].fact.value];
 				choice = conversion_for(arguments[argument].type,
 					arguments[argument].category, function.parameters[argument],
-					fact.source, arguments[argument].integer_zero);
+					fact.source, arguments[argument].integer_zero, scope);
 			}
 			else
 			{
@@ -177,7 +177,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		const PA10AstNode* source = semantic_facts_[
 			arguments[argument].fact.value].source;
 		arguments[argument] = apply_context_conversion(arguments[argument],
-			selected_function.parameters[argument], source);
+			selected_function.parameters[argument], source, scope);
 	}
 	apply_call_argument_conversions(arguments, selected_type, scope);
 	TypedFunctionSelection result(selected, selected_type);
@@ -476,7 +476,8 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			if (!member_accessible(candidate_id, record.scope, scope, object))
 				continue;
 			const ConversionChoice conversion = conversion_for(argument.type,
-				argument.category, parameter, source_fact.source, argument.integer_zero);
+				argument.category, parameter, source_fact.source,
+				argument.integer_zero, scope);
 			if (!conversion.valid)
 				continue;
 			const unsigned int rank = conversion.rank <
@@ -524,7 +525,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				if (!required_object.valid() ||
 					!member_object_convertible(expression_object_type(object.type),
 						required_object,
-						candidate_ref.scope, NULL))
+						candidate_ref.scope, NULL, scope))
 					continue;
 				if (!member_accessible(candidate_ref.binding, candidate_ref.scope,
 					scope, expression_object_type(object.type)))
@@ -578,7 +579,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 					candidate_ref.scope);
 				std::vector<NamedRecordId> object_path;
 				if (!member_object_convertible(expression_object_type(object.type),
-					required_object, candidate_ref.scope, &object_path))
+					required_object, candidate_ref.scope, &object_path, scope))
 					throw std::runtime_error(
 						"PA12 operator object conversion changed during scoring");
 				score.object_base_distance = object_path.size();
@@ -609,7 +610,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						initial_arguments[argument].category,
 						function.parameters[argument],
 						semantic_facts_[initial_arguments[argument].fact.value].source,
-						initial_arguments[argument].integer_zero);
+						initial_arguments[argument].integer_zero, scope);
 				else
 				{
 					const PA10AstNode* function_id = target_function_id(
@@ -723,7 +724,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			!conversion_for(arguments[argument].type, arguments[argument].category,
 				parameter,
 				semantic_facts_[arguments[argument].fact.value].source,
-				arguments[argument].integer_zero).valid)
+				arguments[argument].integer_zero, scope).valid)
 			arguments[argument] = semantic_expression_for_target(
 				*argument_nodes[argument], scope, parameter);
 		if (!arguments[argument].fact.valid())
@@ -735,7 +736,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			throw std::runtime_error("PA12 selected operator argument is invalid");
 		arguments[argument] = apply_context_conversion(arguments[argument],
 			parameter,
-			semantic_facts_[arguments[argument].fact.value].source);
+			semantic_facts_[arguments[argument].fact.value].source, scope);
 	}
 	apply_call_argument_conversions(arguments, best.type, scope);
 	TypedOperatorSelection result(best.value, best.type, best.member);
@@ -826,7 +827,7 @@ void PA11SemanticModel::apply_call_argument_conversions(
 			{
 				const TypeId pointer = make_pointer(types_[source.value].child);
 				arguments[arg] = apply_context_conversion(arguments[arg], pointer,
-					fact.source);
+					fact.source, scope);
 			}
 			record_constant_address(fact_id, scope);
 			continue;
@@ -836,13 +837,13 @@ void PA11SemanticModel::apply_call_argument_conversions(
 		{
 			const TypeId pointer = make_pointer(types_[source.value].child);
 			arguments[arg] = apply_context_conversion(arguments[arg], pointer,
-				fact.source);
+				fact.source, scope);
 		}
 		else if (source.valid() && type_kind(source) == TypeKind::Function)
 		{
 			const TypeId pointer = make_pointer(source);
 			arguments[arg] = apply_context_conversion(arguments[arg], pointer,
-				fact.source);
+				fact.source, scope);
 		}
 		else if (floating_id(source))
 		{
@@ -852,20 +853,20 @@ void PA11SemanticModel::apply_call_argument_conversions(
 				fundamental_type == FundamentalType::Float)
 				target = fundamental(FundamentalType::Double);
 			arguments[arg] = apply_context_conversion(arguments[arg], target,
-				fact.source);
+				fact.source, scope);
 		}
 		else if (integral_id(source))
 		{
 			const TypeId promoted = promote_integral_type(source);
 			arguments[arg] = apply_context_conversion(arguments[arg], promoted,
-				fact.source);
+				fact.source, scope);
 		}
 		else if (pointer_id(source))
 		{
 			// The default argument conversion of a pointer lvalue is still
 			// lvalue-to-rvalue even when its pointer type is unchanged.
 			arguments[arg] = apply_context_conversion(arguments[arg], source,
-				fact.source);
+				fact.source, scope);
 		}
 	}
 }
@@ -1011,9 +1012,9 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 		selected_type = indirect_type;
 		const TypeKey function = types_[selected_type.value];
 		for (std::size_t arg = 0; arg < function.parameters.size(); ++arg)
-			arguments[arg] = apply_context_conversion(arguments[arg],
-				function.parameters[arg],
-				semantic_facts_[arguments[arg].fact.value].source);
+				arguments[arg] = apply_context_conversion(arguments[arg],
+					function.parameters[arg],
+					semantic_facts_[arguments[arg].fact.value].source, scope);
 	}
 	if (!direct)
 		apply_call_argument_conversions(arguments, selected_type, scope);

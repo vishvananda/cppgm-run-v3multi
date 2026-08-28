@@ -305,6 +305,11 @@ struct BindingSidecar
 	{}
 };
 
+struct FriendLexicalScopeRelation
+{
+	ScopeId class_scope; NamedRecordId class_record;
+	FriendLexicalScopeRelation(ScopeId s = ScopeId(), NamedRecordId r = NamedRecordId()) : class_scope(s), class_record(r) {}
+};
 struct ValueEntry
 {
 	BindingId binding;
@@ -516,7 +521,7 @@ struct NamedRecord
 	// These typed boundary facts keep the natural-layout checkpoint from
 	// silently presenting an inheritance or polymorphic record as flat.
 	bool has_base;
-	NamedRecordId direct_base;
+	NamedRecordId direct_base; MemberAccess direct_base_access;
 	bool direct_base_virtual;
 	bool has_virtual_member;
 	// The effective non-zero alignment for the canonical record.  This is the
@@ -537,7 +542,7 @@ struct NamedRecord
 		ScopeId owner = ScopeId())
 		: kind(kind), name(name), owner(owner), defined(false),
 		  class_tag(ClassTag::Struct), has_base(false),
-		  direct_base(), direct_base_virtual(false), has_virtual_member(false),
+		  direct_base(), direct_base_access(MemberAccess::Public), direct_base_virtual(false), has_virtual_member(false),
 		  has_requested_alignment(false), requested_alignment(0),
 		  scoped_enum(false),
 		  has_underlying(false), underlying(), template_template(false), scope(),
@@ -1292,6 +1297,7 @@ private:
 	FlatIndex<ScopeId, SourcePoint, IdentityHash<ScopeId> >
 		function_definition_points_;
 	FlatIndex<ScopeId, BindingId, IdentityHash<ScopeId> > function_bindings_;
+	FlatIndex<ScopeId, FriendLexicalScopeRelation, IdentityHash<ScopeId> > friend_lexical_scopes_;
 	std::vector<Binding> bindings_;
 	// BindingId is the canonical identity; retain its typed owning scope so
 	// ValueEntry ownership checks do not rescan a whole scope on redeclaration.
@@ -1441,12 +1447,11 @@ private:
 	bool member_base_path(TypeId object, ScopeId target,
 		std::vector<NamedRecordId>* path) const
 	;
+	bool base_path_accessible(TypeId object, ScopeId target, ScopeId access_scope) const;
 	bool member_object_qualification_convertible(TypeId object,
 		TypeId required) const
 	;
-	bool member_object_convertible(TypeId object, TypeId required,
-		ScopeId member_scope, std::vector<NamedRecordId>* path = NULL) const
-	;
+	bool member_object_convertible(TypeId object, TypeId required, ScopeId member_scope, std::vector<NamedRecordId>* path = NULL, ScopeId access_scope = ScopeId()) const;
 	ScopeId scope_for_type(TypeId type) const
 	;
 	bool direct_value_exists(ScopeId scope, NameId name) const
@@ -2184,10 +2189,7 @@ private:
 	;
 	TypeId callable_function_type(TypeId type) const
 	;
-	ConversionChoice conversion_for(TypeId source,
-	SemanticValueCategory category, TypeId target,
-	const PA10AstNode* source_node, bool source_integer_zero = false) const
-	;
+	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId()) const;
 	const PA10AstNode* target_function_id(const PA10AstNode& node,
 	ScopeId scope)
 	;
@@ -2211,9 +2213,7 @@ private:
 	;
 	void retarget_constexpr_literal(SemanticFactId fact, TypeId target)
 	;
-	ExprInfo apply_context_conversion(const ExprInfo& expression,
-	TypeId target, const PA10AstNode* source_node)
-	;
+	ExprInfo apply_context_conversion(const ExprInfo& expression, TypeId target, const PA10AstNode* source_node, ScopeId access_scope = ScopeId());
 	TypeId common_integral_type(TypeId left, TypeId right) const
 	;
 	TypeId common_arithmetic_type(TypeId left, TypeId right) const

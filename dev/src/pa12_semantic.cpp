@@ -843,7 +843,7 @@ TypeId PA11SemanticModel::callable_function_type(TypeId type) const
 }
 ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 	SemanticValueCategory category, TypeId target,
-	const PA10AstNode* source_node, bool source_integer_zero) const
+	const PA10AstNode* source_node, bool source_integer_zero, ScopeId access_scope) const
 {
 	if (!source.valid() || !target.valid())
 		return ConversionChoice();
@@ -855,13 +855,12 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		const TypeId source_value = expression_object_type(source);
 		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
 		const auto reference_object_convertible =
-			[this](TypeId actual, TypeId required) -> bool
+			[this, access_scope](TypeId actual, TypeId required) -> bool
 		{
 			if (qualification_convertible(actual, required))
 				return true;
 			const ScopeId required_scope = class_scope_for_type(required);
-			return required_scope.valid() && member_object_convertible(actual,
-				required, required_scope, NULL);
+			return required_scope.valid() && access_scope.valid() && member_object_convertible(actual, required, required_scope, NULL, access_scope);
 		};
 		if (target_kind == TypeKind::LvalueReference && source_lvalue)
 		{
@@ -885,7 +884,7 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
 		if (type_kind(target_referred) == TypeKind::Cv)
 		{
-			const ConversionChoice temporary = conversion_for(source, category, target_referred, source_node, source_integer_zero);
+			const ConversionChoice temporary = conversion_for(source, category, target_referred, source_node, source_integer_zero, access_scope);
 			const bool same_lvalue_value = source_lvalue &&
 				temporary.kind == ConversionKind::LvalueToRvalue &&
 				temporary.rank == 0;
@@ -1012,9 +1011,9 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 	return ConversionChoice();
 }
 ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
-	TypeId target, const PA10AstNode* source_node)
+	TypeId target, const PA10AstNode* source_node, ScopeId access_scope)
 {
-	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source_node, expression.integer_zero);
+	const ConversionChoice choice = conversion_for(expression.type, expression.category, target, source_node, expression.integer_zero, access_scope);
 	if (!choice.valid)
 		throw std::runtime_error("PA12 invalid conversion");
 	bool logical_value = false;
@@ -1040,7 +1039,7 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 		if (type_kind(referred) == TypeKind::Cv &&
 			!qualification_convertible(source_value, referred))
 		{
-				const ConversionChoice temporary = conversion_for(expression.type, expression.category, referred, source_node, expression.integer_zero);
+				const ConversionChoice temporary = conversion_for(expression.type, expression.category, referred, source_node, expression.integer_zero, access_scope);
 			const PA10AstNode* cast_source = source_node != NULL ? source_node :
 				semantic_facts_[expression.fact.value].source;
 			if (temporary.valid && cast_source != NULL)
@@ -2134,8 +2133,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const BindingId binding_id = declaration_bindings_[
 			declaration->binding_begin + i];
 		const Binding& value = binding(binding_id);
-		if (value.kind == BindingKind::Function &&
-			has_function_default_argument(node, i))
+		if (value.kind == BindingKind::Function && has_function_default_argument(node, i))
 		{
 			FunctionFactId function_id;
 			const FunctionFactId* found = function_binding_fact_index_.find(
@@ -2178,15 +2176,14 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const bool local_object_scope = declaration->scope.valid() &&
 			declaration->scope.value < scopes_.size() &&
 			scopes_[declaration->scope.value].kind == ScopeKind::Block;
-		const bool default_object = init.children.size() == 1 &&
-			local_object_scope && record.valid() && record.value < named_.size() &&
+		const bool default_object = init.children.size() == 1 && local_object_scope &&
+			record.valid() && record.value < named_.size() &&
 			named_[record.value].kind == NamedKind::Class;
 		const bool legacy_empty_default_object = default_object &&
 			!named_[record.value].has_base && named_[record.value].scope.valid() &&
 			named_[record.value].scope.value < scopes_.size() &&
 			scopes_[named_[record.value].scope.value].bindings.empty();
-		const bool special_function_initializer =
-			value.kind == BindingKind::Function &&
+		const bool special_function_initializer = value.kind == BindingKind::Function &&
 			function_declaration_kind(binding_id) !=
 				FunctionDeclarationKind::Normal;
 		const PA10AstNode* direct_operand = NULL;
@@ -2237,7 +2234,9 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				*direct_operand, declaration->scope, value.type);
 			apply_context_conversion(expression, value.type,
 				semantic_facts_[expression.fact.value].source);
-			if (expression.fact.valid() && semantic_facts_[expression.fact.value].literal_element_count != 0) record_constant_address(expression.fact, declaration->scope);
+			if (expression.fact.valid() &&
+				semantic_facts_[expression.fact.value].literal_element_count != 0)
+				record_constant_address(expression.fact, declaration->scope);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
 			initializer_fact = expression.fact;
@@ -2263,7 +2262,9 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			if (expression_clause->kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
-			if (expression.fact.valid() && semantic_facts_[expression.fact.value].literal_element_count != 0) record_constant_address(expression.fact, declaration->scope);
+			if (expression.fact.valid() &&
+				semantic_facts_[expression.fact.value].literal_element_count != 0)
+				record_constant_address(expression.fact, declaration->scope);
 			if (declaration->is_constexpr)
 				retarget_constexpr_literal(expression.fact, value.type);
 			set_semantic_children(variable,
@@ -2297,8 +2298,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		record_constant_initializer(variable, declaration->scope);
 		declaration_semantic_ids_.push_back(variable);
 	}
-	declaration->semantic_count = list.children.size();
-	declaration->lifetime_count = lifetime_facts_.size() - declaration->lifetime_begin;
+	declaration->semantic_count = list.children.size(); declaration->lifetime_count = lifetime_facts_.size() - declaration->lifetime_begin;
 	return declaration_semantic_ids_[declaration->semantic_begin];
 }
 FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(

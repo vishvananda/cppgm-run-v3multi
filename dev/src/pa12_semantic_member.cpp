@@ -671,6 +671,116 @@ bool PA11SemanticModel::member_base_path(TypeId object, ScopeId target,
 	return false;
 }
 
+bool PA11SemanticModel::base_path_accessible(TypeId object, ScopeId target,
+	ScopeId access_scope) const
+{
+	if (!access_scope.valid() || !target.valid() ||
+		target.value >= scopes_.size() ||
+		scopes_[target.value].kind != ScopeKind::Class)
+		return false;
+	const ScopeId actual = class_scope_for_type(object);
+	if (!actual.valid() || actual.value >= scopes_.size() ||
+		scopes_[actual.value].kind != ScopeKind::Class)
+		return false;
+	if (actual == target)
+		return true;
+	const auto class_is_derived_from = [this](ScopeId derived,
+		ScopeId owner) -> bool
+	{
+		if (!derived.valid() || derived.value >= scopes_.size() ||
+			scopes_[derived.value].kind != ScopeKind::Class || !owner.valid())
+			return false;
+		NamedRecordId current = scopes_[derived.value].record;
+		for (std::size_t steps = 0; current.valid() &&
+			steps < named_.size(); ++steps)
+		{
+			if (current.value >= named_.size() ||
+				named_[current.value].kind != NamedKind::Class)
+				return false;
+			const NamedRecord& record = named_[current.value];
+			if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+				scopes_[record.scope.value].kind != ScopeKind::Class ||
+				scopes_[record.scope.value].record != current)
+				return false;
+			if (record.scope == owner)
+				return true;
+			if (!record.has_base || !record.direct_base.valid() ||
+				record.direct_base.value >= named_.size())
+				return false;
+			current = record.direct_base;
+		}
+		return false;
+	};
+	const auto scope_can_access = [this, &class_is_derived_from](
+		ScopeId owner, ScopeId access, MemberAccess edge_access) -> bool
+	{
+		ScopeId cursor = access;
+		for (std::size_t steps = 0; cursor.valid() &&
+			steps < scopes_.size(); ++steps)
+		{
+			if (cursor.value >= scopes_.size())
+				return false;
+			if (cursor == owner)
+				return true;
+			if (edge_access == MemberAccess::Protected &&
+				scopes_[cursor.value].kind == ScopeKind::Class &&
+				class_is_derived_from(cursor, owner))
+				return true;
+			if (scopes_[cursor.value].kind == ScopeKind::Function)
+			{
+				const BindingId* function_binding =
+					function_bindings_.find(cursor);
+				if (function_binding != NULL)
+				{
+					const BindingSidecar* sidecar =
+						binding_sidecar(*function_binding);
+					if (sidecar != NULL)
+						for (std::size_t i = 0;
+							i < sidecar->friend_records.size(); ++i)
+						{
+							const NamedRecordId friend_record =
+								sidecar->friend_records[i];
+							if (friend_record.valid() &&
+								friend_record.value < named_.size() &&
+								named_[friend_record.value].kind == NamedKind::Class &&
+								(named_[friend_record.value].scope == owner ||
+									(edge_access == MemberAccess::Protected &&
+									class_is_derived_from(
+										named_[friend_record.value].scope, owner))))
+								return true;
+						}
+				}
+			}
+			cursor = scopes_[cursor.value].parent;
+		}
+		return false;
+	};
+	NamedRecordId current = named_record_for_type(
+		strip_cv_type(expression_object_type(object)));
+	for (std::size_t steps = 0; current.valid() &&
+		steps < named_.size(); ++steps)
+	{
+		if (current.value >= named_.size() ||
+			named_[current.value].kind != NamedKind::Class)
+			return false;
+		const NamedRecord& record = named_[current.value];
+		if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+			scopes_[record.scope.value].kind != ScopeKind::Class ||
+			scopes_[record.scope.value].record != current || !record.has_base ||
+			!record.direct_base.valid() ||
+			record.direct_base.value >= named_.size())
+			return false;
+		if (record.direct_base_access != MemberAccess::Public &&
+			!scope_can_access(record.scope, access_scope,
+				record.direct_base_access))
+			return false;
+		current = record.direct_base;
+		if (named_[current.value].scope == target)
+			return true;
+	}
+	return false;
+}
+
 bool PA11SemanticModel::member_object_qualification_convertible(TypeId object,
 	TypeId required) const
 {
@@ -686,7 +796,7 @@ bool PA11SemanticModel::member_object_qualification_convertible(TypeId object,
 }
 bool PA11SemanticModel::member_object_convertible(TypeId object,
 	TypeId required, ScopeId member_scope,
-	std::vector<NamedRecordId>* path) const
+	std::vector<NamedRecordId>* path, ScopeId access_scope) const
 {
 	if (path != NULL)
 		path->clear();
@@ -699,6 +809,9 @@ bool PA11SemanticModel::member_object_convertible(TypeId object,
 	if (type_kind(required_record) != TypeKind::Named ||
 		class_scope_for_type(required_record) != member_scope ||
 		!member_base_path(object, member_scope, path))
+		return false;
+	if (class_scope_for_type(object) != member_scope && access_scope.valid() &&
+		!base_path_accessible(object, member_scope, access_scope))
 		return false;
 	return member_object_qualification_convertible(object, required);
 }
@@ -1573,7 +1686,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 				choice = conversion_for(arguments[arg].type,
 					arguments[arg].category, function.parameters[arg],
 					semantic_facts_[arguments[arg].fact.value].source,
-					arguments[arg].integer_zero);
+					arguments[arg].integer_zero, scope);
 			else
 			{
 				const PA10AstNode* function_id = target_function_id(
@@ -1671,7 +1784,7 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 				argument_node.children[arg], scope, function.parameters[arg]);
 		arguments[arg] = apply_context_conversion(arguments[arg],
 			function.parameters[arg],
-			semantic_facts_[arguments[arg].fact.value].source);
+			semantic_facts_[arguments[arg].fact.value].source, scope);
 	}
 	apply_call_argument_conversions(arguments, selected_type, scope);
 	const TypeId result_type = function_result_type(selected_type);

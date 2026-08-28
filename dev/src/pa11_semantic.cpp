@@ -284,11 +284,27 @@ void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 		throw std::runtime_error("invalid PA11 base specifier");
 	const PA10AstNode* base_name = NULL;
 	bool virtual_base = false;
+	MemberAccess base_access = named_[record_id.value].class_tag ==
+		ClassTag::Class ? MemberAccess::Private : MemberAccess::Public;
+	bool access_seen = false;
 	for (std::size_t i = 0; i < base_specifier.children.size(); ++i)
 	{
 		const PA10AstNode& child = base_specifier.children[i];
 		if (child.kind == PA10NodeKind::VirtualSpecifier)
 			virtual_base = true;
+		else if (child.kind == PA10NodeKind::AccessSpecifier)
+		{
+			if (access_seen)
+				throw std::runtime_error("base specifier has multiple access modes");
+			access_seen = true;
+			switch (child.token)
+			{
+			case SimpleTokenType::KW_PUBLIC: base_access = MemberAccess::Public; break;
+			case SimpleTokenType::KW_PROTECTED: base_access = MemberAccess::Protected; break;
+			case SimpleTokenType::KW_PRIVATE: base_access = MemberAccess::Private; break;
+			default: throw std::runtime_error("invalid base access specifier");
+			}
+		}
 		else if (child.kind == PA10NodeKind::BaseName)
 		{
 			if (base_name != NULL)
@@ -321,6 +337,7 @@ void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 		throw std::runtime_error("multiple inheritance is outside PA16");
 	record.has_base = true;
 	record.direct_base = base_record;
+	record.direct_base_access = base_access;
 	record.direct_base_virtual = false;
 }
 
@@ -1555,6 +1572,18 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
 		name.path.last());
 	function_bindings_.set(function_scope, function_binding);
+	if (friend_record.valid())
+	{
+		if (!friend_type_scope.valid() || friend_type_scope.value >= scopes_.size() ||
+			scopes_[friend_type_scope.value].kind != ScopeKind::Class ||
+			scopes_[friend_type_scope.value].record != friend_record ||
+			friend_record.value >= named_.size() ||
+			named_[friend_record.value].kind != NamedKind::Class ||
+			named_[friend_record.value].scope != friend_type_scope)
+			throw std::runtime_error("PA11 friend lexical owner identity is invalid");
+		friend_lexical_scopes_.set(function_scope,
+			FriendLexicalScopeRelation(friend_type_scope, friend_record));
+	}
 	FunctionFact function_fact(&node, target, function_binding,
 		function_scope, ScopeId());
 	function_definition_points_.set(function_scope,

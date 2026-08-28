@@ -550,7 +550,7 @@ void PA11SemanticModel::record_function_default_arguments(
 				*expression, function.owner, signature.parameters[parameter_index]);
 			const ExprInfo converted = apply_context_conversion(value,
 				signature.parameters[parameter_index],
-				semantic_facts_[value.fact.value].source);
+				semantic_facts_[value.fact.value].source, function.owner);
 			function_default_arguments_[range_index] = converted.fact;
 		}
 		++parameter_index;
