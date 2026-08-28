@@ -1123,7 +1123,7 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 				break;
 			}
 		}
-		type = make_pointer(operand.type);
+		type = make_pointer(expression_object_type(operand.type));
 		break;
 	case SimpleTokenType::OP_STAR:
 	{

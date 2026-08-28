@@ -1526,8 +1526,14 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 		declaration_scope(name.path, scope);
 	if (!target.valid())
 		throw std::runtime_error("unresolved PA11 function scope");
-	const SpecFact spec = spec_fact(node.children[0], target);
-	const TypeId type = apply_declarator(declarator, spec.base, target);
+	// A friend definition is a namespace member, but its parameter types and
+	// body are still lexically formed in the class that introduced the friend.
+	// Preserve the namespace owner for the canonical binding while retaining
+	// the class scope as the typed lexical parent for lookup.
+	const ScopeId friend_type_scope = friend_record.valid() ? scope : target;
+	const SpecFact spec = spec_fact(node.children[0], friend_type_scope);
+	const TypeId type = apply_declarator(declarator, spec.base,
+		friend_type_scope);
 	if (type_kind(type) != TypeKind::Function)
 		throw std::runtime_error("PA11 definition is not a function");
 	const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&
@@ -1558,7 +1564,7 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	{
 		bool variadic = false;
 		std::vector<ParamFact> facts;
-		parameter_types(*clause, target, &variadic, &facts);
+		parameter_types(*clause, friend_type_scope, &variadic, &facts);
 		(void)variadic;
 		for (std::size_t i = 0; i < facts.size(); ++i)
 		{

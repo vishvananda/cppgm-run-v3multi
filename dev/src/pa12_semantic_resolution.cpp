@@ -655,7 +655,59 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 		if (node.kind == PA10NodeKind::DeclSpecifier &&
 			node.identifier_declspecifier)
 			return semantic_id_expression(node, scope);
-		return semantic_expression(node, scope);
+		const ExprInfo expression = semantic_expression(node, scope);
+		const TypeKind target_kind = type_kind(target);
+		if ((target_kind == TypeKind::LvalueReference ||
+			target_kind == TypeKind::RvalueReference) && expression.fact.valid() &&
+			target.value < types_.size())
+		{
+			const TypeId referred = types_[target.value].child;
+			if (target_kind == TypeKind::RvalueReference ||
+				type_kind(referred) == TypeKind::Cv)
+			{
+				const TypeId object = strip_cv_type(
+					expression_object_type(referred));
+				const NamedRecordId record = named_record_for_type(object);
+				const ConversionChoice direct = conversion_for(expression.type,
+					expression.category, target,
+					semantic_facts_[expression.fact.value].source,
+					expression.integer_zero);
+				if (record.valid() && record.value < named_.size() &&
+					named_[record.value].kind == NamedKind::Class && !direct.valid)
+				{
+					std::vector<const PA10AstNode*> arguments(1, &node);
+					const ConstructorSelection selection = select_constructor(record,
+						scope, arguments, false,
+						ConstructorInitializationContext::Copy);
+					if (!selection.valid())
+						throw std::runtime_error(
+							"PA12 implicit constructor selection is incomplete");
+					SemanticFact call(SemanticFactKind::CallExpression,
+						fundamental(FundamentalType::Void),
+						SemanticValueCategory::Prvalue, &node);
+					call.has_callee = true;
+					call.temporary_object = true;
+					call.selected_binding = selection.binding;
+					call.selected_scope = selection.scope;
+					call.callable_type = selection.callable_type;
+					const SemanticFactId call_id = make_semantic_fact(call);
+					set_semantic_children(call_id, selection.arguments);
+					SemanticFact temporary(SemanticFactKind::ConstructorAction,
+						object, SemanticValueCategory::Prvalue, &node);
+					temporary.has_callee = true;
+					temporary.temporary_object = true;
+					temporary.selected_binding = selection.binding;
+					temporary.selected_scope = selection.scope;
+					temporary.callable_type = selection.callable_type;
+					const SemanticFactId result = make_semantic_fact(temporary);
+					set_semantic_children(result,
+						std::vector<SemanticFactId>(1, call_id));
+					return ExprInfo(result, object,
+						SemanticValueCategory::Prvalue, false);
+				}
+			}
+		}
+		return expression;
 	}
 	const FunctionIdResolution resolution = resolve_function_id_target(
 		*function_id, scope, target);

@@ -23,6 +23,14 @@ class or enum operand. Candidate discovery is deterministic and bounded to
 relevant same-name/member/associated candidates; it does not rescan whole
 namespaces, parse rendered names, retry lowering, or use an unbounded cache.
 
+Friend-definition bodies preserve the introducing class's lexical type/value
+scope while their canonical function binding remains namespace-owned.  Enum
+identity is checked before integral promotion; derived-to-public-base
+reference binding reuses typed access/path conversion; and one narrow
+non-explicit converting constructor may produce a selected class-reference
+argument through the existing constructor path.  These repairs do not add
+general conversion, copy/move, or by-value semantics.
+
 PA12 facts carry typed bool provenance. Canonical comparison/logical truth is
 materialized to the established bool representation only when the expression
 does not already own a direct bool boundary; the decision does not inspect
@@ -39,126 +47,94 @@ operator call boundary.
 
 ## Failure Map
 
-The turn-start baseline was `93/243` passing and `150` failing, with all 243
-identities covered; the source log is
+The original implementation baseline, before the `23a26df5` operator landing,
+was `93/243` passed and `150` failed.  The audit turn-start baseline after the
+landed implementation and `2d93a5e9` tightening was `122/243` passed and
+`121` failed, with all `243/243` identities covered; its authoritative log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
-The prior final and follow-up PA16 runs each cover all 243 identities and
-report `122/243` passing and `121` failing.  The follow-up log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-followup-test.log`;
-the prior final log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-test.log`.
-The exact comparison is recorded in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-followup-identity-compare.log`.
-Against the turn-start baseline, the new-failure set is empty and the exact
-29 removed baseline identities are:
+The final audit run is `127/243` passed, `116` failed, and `243/243` covered;
+it exits `2` because PA16 still has failures.  The durable final log and exact
+identity comparison are:
 
 ```text
-general/200-friend-function-member-access.t
-general/200-inherited-base-typedefs-in-derived-members.t
-general/200-out-of-line-member-inherited-typedef-body.t
-general/300-chained-member-subscript-operator-call.t
-general/300-discarded-comma-reference-result-no-copy.t
-general/300-hidden-friend-definition-adl-call.t
-general/300-late-member-subscript-shadows-type.t
-general/300-member-binary-operator-eq.t
-general/300-member-binary-operator-ne-wrapper.t
-general/300-member-callable-field-call.t
-general/300-member-deref-after-prefix-decrement.t
-general/300-member-operator-bang-out-of-class.t
-general/300-member-postfix-increment-operator.t
-general/300-member-prefix-decrement.t
-general/300-member-subscript-operator-call.t
-general/300-nonmember-operator-requires-class-or-enum-bad.t
-general/300-operator-token-result-typing.t
-general/300-out-of-class-private-nested-return-type.t
-general/300-overloaded-arrow-star-operator.t
-general/300-postfix-ref-return-deref-member-call.t
-general/300-private-base-using-method-call.t
-general/300-qualified-friend-function-access.t
-general/300-subobject-member-deref-after-prefix-decrement.t
-general/300-temporary-functor-call.t
-general/300-using-base-same-signature-derived-preferred.t
-general/300-using-declaration-public-private-base-member.t
-spec/300-logical-operator-overload.t
-spec/300-operator-lookup-ordinary-adl-union.t
-spec/300-overloaded-comma-nonviable-falls-back-builtin.t
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-test.log
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-final-v2-identity-compare.log
 ```
 
-The old-final-only and follow-up-only identity sets are also empty.  The
-focused results are recorded in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/followup-focused-required.log`
-and the bool-specific checks in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/followup-bool-fact-focused.log`.
+The comparison has five baseline-only repaired identities:
 
-The original seven focused identities all pass their final semantic/exit
-checks (the nonmember bad-declaration case retains its expected
-`EXIT_FAILURE`).  The expanded focused set is `15/17` under normalized LowIR
-comparison.  The exact two baseline holdouts are
-`general/300-unnamed-namespace-hidden-friend-single-definition.t` and
-`general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t`; both
-have successful compiler exits and are presentation-only LowIR differences.
-Member equality, overloaded logical, hidden-friend ADL, operator-token result
-typing, fallback, visibility, redeclaration, and semantic ranking checks pass.
-No full-stage passing identity is described as a mismatch.
+```text
+pa16/tests/general/200-inherited-member-overload-set.t
+pa16/tests/general/300-basic-operator-overloads.t
+pa16/tests/general/300-enum-operator-adl-selects-matching-overload.t
+pa16/tests/general/300-hidden-friend-operator-nullptr-compare.t
+pa16/tests/general/300-stream-shift-selection-chain.t
+```
+
+Final-only is `0`; the failure count is therefore no greater than the audit
+turn-start `121`, and coverage remains exactly `243`.  The focused final
+status matrix is `28/29` in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-focused-final-direct.log`.
+Its one mismatch is the PA10 parser-owned `nullptr_t` declaration described
+in the audit; the other semantic rows cover member/nonmember ranking, enum
+identity/ADL and nested friend lookup, friend visibility/redeclaration,
+derived/base references, reference-result chaining, fallback, logical
+operators, and shift/string chains.
 
 ## Active Checkpoint
 
-The implementation changes are limited to:
+The current audit changes are limited to these six authorized source files:
 
 - `dev/src/pa11_semantic.cpp`
 - `dev/src/pa11_semantic_core.cpp`
-- `dev/src/pa11_semantic_model.h`
 - `dev/src/pa12_semantic.cpp`
 - `dev/src/pa12_semantic_calls.cpp`
 - `dev/src/pa12_semantic_facts.cpp`
-- `dev/src/pa12_semantic_member.cpp`
 - `dev/src/pa12_semantic_resolution.cpp`
-- `dev/src/pa12_semantic_selection.h`
-- `dev/src/pa15_lowering_calls.cpp`
-- `dev/src/pa15_lowering_construction.cpp`
-- `dev/src/pa15_lowering_flow.cpp`
 
-The data flow is PA11 typed identity and the `(namespace ScopeId, NameId)`
-sparse hidden-friend index -> PA12 candidate selection and one canonical typed
-call -> PA15 call lowering and ABI identity.  Bool returns and bool-context
-operands use expression-owned typed provenance at the canonical boundary,
-preserving the established i64 logical physical path without function-kind,
-rendered-name, or fixture-specific branching.  No test, fixture, reference,
-comparator, or generated output is changed.
+The full trace is PA10 operator token/name metadata -> PA11 typed operator
+kind/token, canonical `BindingId`/`ScopeId`, friend relation and sparse
+`(namespace ScopeId, NameId)` key -> PA12 member/ordinary/ADL candidate union,
+typed implicit-object and argument conversion, one `CallExpression`, and
+expression-owned bool provenance -> PA15 typed call demand/ABI lowering and
+LowIR call/result.  Hidden-only visibility, visible redeclarations,
+declaration points, class/enum nonmember rules, built-in fallback, reference
+return chaining, constructor-backed reference binding, and overloaded versus
+built-in logical behavior stay on that path.  No test, fixture, reference,
+comparator, generated output, or course test is changed.
 
 ## Performance Evidence
 
-The immutable compiler copy is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf.UDjY8t/cppgm++-followup-immutable`.
-Its SHA-256 equals the final `dev/cppgm++` hash
-`c5722af6b0fd3d27943485cc4360cac3a7f63f594415136a436dc856d9248850`.
-Five interleaved small/large/same-name-noise runs used generated inputs
-outside the repository.  The noise input contains 256 unrelated namespaces
-with same-name hidden `operator+` friends, while the target namespace retains
-two relevant candidates and the same 128 target expressions as small.  Median
-wall/user/system times and maximum RSS are:
+The final immutable compiler copy is mode `0555` at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf-final-v2/cppgm++-immutable`.
+It byte-matches the final `dev/cppgm++`; the SHA-256 for both is
+`eb5365ac9251363502dd4f191f9f492ee0fcab52345511634750384d4f6ca604`.
+Five interleaved final/immutable rounds used preserved small, large, and
+same-name-noise inputs.  `/usr/bin/time` measured whole compiler invocations,
+including parsing and LowIR output, rather than an isolated lookup phase.
+Raw inputs and all timing rows are in the artifact's `input/` and `timing.tsv`;
+medians are in `medians.tsv`, and structural LowIR counts are in
+`structure.tsv`.
 
-| input | relevant candidates | unrelated same-name hidden friends | expressions | lines | LowIR functions/calls | wall/user/sys | max RSS |
-| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| small | 2 | 0 | 128 | 268 | 131 / 256 | 0.01 / 0.01 / 0.00 | 9608 KB |
-| large | 12 | 0 | 512 | 1046 | 525 / 1024 | 0.06 / 0.04 / 0.02 | 21944 KB |
-| same-name-noise | 2 | 256 | 128 | 1804 | 387 / 256 | 0.05 / 0.03 / 0.01 | 17652 KB |
+| input | lines | target decls | unrelated same-name hidden friends | target expressions | LowIR functions/calls | wall median (range) | RSS median (range) |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| small | 268 | 2 | 0 | 128 | 131 / 256 | `0.01s (0.01..0.01)` | `9504 (9356..9568) KiB` |
+| large | 1046 | 12 | 0 | 512 | 525 / 1024 | `0.07s (0.06..0.07)` | `21896 (21828..22000) KiB` |
+| same-name-noise | 1804 | 2 | 256 | 128 | 387 / 256 | `0.05s (0.05..0.05)` | `17760 (17544..17808) KiB` |
 
-The same-name-noise and small cases have identical target expression/call
-counts despite the 256 unrelated same-name hidden friends; this is structural
-evidence that the hidden-friend merge lookup is bounded by the exact
-namespace/name key rather than a whole-namespace scan.  The large case scales
-with relevant candidate and expression counts; its wall time also includes
-larger parsing and output work, so these measurements demonstrate bounded
-candidate discovery rather than proving an isolated compiler phase cost.  Raw
-inputs, timing rows, medians, and structural counts are in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf.UDjY8t/expanded-input/`,
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-operator-perf.UDjY8t/timing-followup.tsv`,
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-followup-performance-medians.log`,
-and
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-followup-performance-structure.log`.
-The final hash comparison is in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/followup-immutable-hash-final.log`.
+The noise case keeps the target expression/call counts equal to small while
+adding 256 unrelated same-name hidden friends, structurally corroborating the
+exact-key bounded lookup.  The measurements are representative evidence and
+do not overclaim an isolated phase or timeout bound.
+
+## Next Checkpoint
+
+Keep the `127/243` PA16 map frozen while separately classifying the remaining
+full-stage identities.  A future checkpoint may address the `nullptr_t`
+declaration only if PA10 parser ownership is explicitly opened; this ordinary
+operator audit does not widen into that path or into general conversion/value
+semantics.  Any next PA16 repair must preserve `243/243` coverage, zero
+final-only identities, and the `1167/1167` through-PA15 gate before PA17.
 
 ## Checkpoint ledger
 
@@ -169,3 +145,4 @@ The final hash comparison is in
 | PA16 coverage and regression gate | Follow-up `122/243` passed, `121` failed, `243/243` covered; zero new identities versus baseline, with the exact same failure set as the prior final. |
 | Follow-up bool/index audit | Expression-owned typed bool provenance, composite hidden-friend key, corrected same-name performance evidence; all 29 removed identities retained. |
 | File audit and diff check | File audit passed with 5 pre-existing warnings; log `pa16-followup-file-audit-final.log`; final `git diff --check` passed with log `pa16-followup-diff-check-final.log`. |
+| `2d93a5e9` ordinary non-template overloaded-operator checkpoint audit | Completed bounded repair and audit of the `20f14d30` -> `23a26df5` implementation span as tightened at `2d93a5e9`: friend lexical lookup, enum identity/ranking, reference/base/access selection, narrow constructor-backed reference binding, reference/address facts, and typed bool boundaries. Final PA16 is `127/243` with `116` failures and `243/243` coverage; comparison to the `122/243` audit baseline has five baseline-only repairs and zero final-only failures. Through-PA15 is `1167/1167`; focused semantic status is `28/29` with the PA10 `nullptr_t` parser holdout; final state-matched performance is `pa16-operator-perf-final-v2`. |

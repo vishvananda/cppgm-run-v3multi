@@ -400,6 +400,101 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 	};
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
+	// An implicit conversion to a class reference may use one non-explicit
+	// converting constructor.  Keep this probe at the typed operator boundary:
+	// it checks the canonical constructor index, access, and the constructor's
+	// single parameter conversion without publishing speculative semantic facts.
+	const auto implicit_constructor_conversion = [this, scope] (
+		const ExprInfo& argument, const PA10AstNode* argument_node,
+		TypeId target) -> ConversionChoice
+	{
+		const TypeKind target_kind = type_kind(target);
+		if ((target_kind != TypeKind::LvalueReference &&
+			target_kind != TypeKind::RvalueReference) ||
+			!argument.fact.valid() || argument.fact.value >= semantic_facts_.size())
+			return ConversionChoice();
+		const TypeId referred = types_[target.value].child;
+		if (target_kind == TypeKind::LvalueReference &&
+			type_kind(referred) != TypeKind::Cv)
+			return ConversionChoice();
+		const TypeId object = strip_cv_type(expression_object_type(referred));
+		const NamedRecordId record_id = named_record_for_type(object);
+		if (!record_id.valid() || record_id.value >= named_.size() ||
+			named_[record_id.value].kind != NamedKind::Class ||
+			named_[record_id.value].class_tag == ClassTag::Union)
+			return ConversionChoice();
+		const NamedRecord& record = named_[record_id.value];
+		if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+			scopes_[record.scope.value].kind != ScopeKind::Class ||
+			!record.name.valid())
+			throw std::runtime_error("PA12 implicit constructor owner is invalid");
+		const ValueList* values = scopes_[record.scope.value].values.find(record.name);
+		if (values == NULL)
+			return ConversionChoice();
+		const SemanticFact& source_fact = semantic_facts_[argument.fact.value];
+		bool found = false;
+		bool ambiguous = false;
+		unsigned int best_rank = std::numeric_limits<unsigned int>::max();
+		std::vector<BindingId> seen;
+		for (std::size_t i = 0; i < values->entries.size(); ++i)
+		{
+			const ValueEntry& entry = values->entries[i];
+			const BindingId candidate_id = entry.binding;
+			if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+				candidate_id.value >= binding_owners_.size() ||
+				binding_owners_[candidate_id.value] != record.scope ||
+				entry.origin != record.scope)
+				throw std::runtime_error(
+					"PA12 implicit constructor index identity is invalid");
+			for (std::size_t prior = 0; prior < seen.size(); ++prior)
+				if (seen[prior] == candidate_id)
+					throw std::runtime_error(
+						"PA12 duplicate implicit constructor index entry");
+			seen.push_back(candidate_id);
+			const Binding& candidate = binding(candidate_id);
+			if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
+				candidate.type.value >= types_.size() ||
+				type_kind(candidate.type) != TypeKind::Function)
+				continue;
+			const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+			if (sidecar == NULL || sidecar->constructor_record != record_id ||
+				sidecar->explicit_constructor ||
+				function_declaration_kind(candidate_id) ==
+					FunctionDeclarationKind::Deleted)
+				continue;
+			const TypeKey function = types_[candidate.type.value];
+			if (function.variadic || function.parameters.size() != 1)
+				continue;
+			const TypeId parameter = function.parameters.front();
+			const NamedRecordId parameter_record = named_record_for_type(
+				strip_cv_type(expression_object_type(parameter)));
+			if (parameter_record.valid() && parameter_record.value < named_.size() &&
+				named_[parameter_record.value].kind == NamedKind::Class &&
+				type_kind(parameter) != TypeKind::LvalueReference &&
+				type_kind(parameter) != TypeKind::RvalueReference)
+				continue;
+			if (!member_accessible(candidate_id, record.scope, scope, object))
+				continue;
+			const ConversionChoice conversion = conversion_for(argument.type,
+				argument.category, parameter, source_fact.source, argument.integer_zero);
+			if (!conversion.valid)
+				continue;
+			const unsigned int rank = conversion.rank <
+				std::numeric_limits<unsigned int>::max() - 3 ?
+				3 + conversion.rank : std::numeric_limits<unsigned int>::max();
+			if (!found || rank < best_rank)
+			{
+				found = true;
+				ambiguous = false;
+				best_rank = rank;
+			}
+			else if (rank == best_rank)
+				ambiguous = true;
+		}
+		(void)argument_node;
+		return found && !ambiguous ? ConversionChoice(true, best_rank,
+			ConversionKind::ReferenceBinding) : ConversionChoice();
+	};
 	const auto append_scores = [&](const std::vector<ValueRef>& candidates,
 		bool member, const ExprInfo& object,
 		const std::vector<const PA10AstNode*>& argument_nodes,
@@ -430,6 +525,9 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 					!member_object_convertible(expression_object_type(object.type),
 						required_object,
 						candidate_ref.scope, NULL))
+					continue;
+				if (!member_accessible(candidate_ref.binding, candidate_ref.scope,
+					scope, expression_object_type(object.type)))
 					continue;
 			}
 			else if (scopes_[candidate_ref.scope.value].kind != ScopeKind::Namespace)
@@ -487,7 +585,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				score.object_cv = cv_qualifiers(required_object) &
 					~cv_qualifiers(expression_object_type(object.type));
 				const unsigned int object_rank = object_path.empty() ?
-					(score.object_cv == 0 ? 0 : 1) :
+					0 :
 					1 + (score.object_cv == 0 ? 0 : 1);
 				score.ranks.push_back(object_rank);
 			}
@@ -523,6 +621,9 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						choice = resolution.conversion;
 					}
 				}
+				if (!choice.valid)
+					choice = implicit_constructor_conversion(initial_arguments[argument],
+						argument_nodes[argument], function.parameters[argument]);
 				if (!choice.valid)
 				{
 					arguments_viable = false;
@@ -614,15 +715,26 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 		selected_function.parameters.size();
 	for (std::size_t argument = 0; argument < fixed_explicit; ++argument)
 	{
+		const TypeId parameter = selected_function.parameters[argument];
+		if (arguments[argument].fact.valid() &&
+			(type_kind(parameter) == TypeKind::LvalueReference ||
+				type_kind(parameter) == TypeKind::RvalueReference) &&
+			class_scope_for_type(types_[parameter.value].child).valid() &&
+			!conversion_for(arguments[argument].type, arguments[argument].category,
+				parameter,
+				semantic_facts_[arguments[argument].fact.value].source,
+				arguments[argument].integer_zero).valid)
+			arguments[argument] = semantic_expression_for_target(
+				*argument_nodes[argument], scope, parameter);
 		if (!arguments[argument].fact.valid())
 			arguments[argument] = semantic_expression_for_target(
 				*argument_nodes[argument], scope,
-				selected_function.parameters[argument]);
+				parameter);
 		if (!arguments[argument].fact.valid() || arguments[argument].fact.value >=
 			semantic_facts_.size())
 			throw std::runtime_error("PA12 selected operator argument is invalid");
 		arguments[argument] = apply_context_conversion(arguments[argument],
-			selected_function.parameters[argument],
+			parameter,
 			semantic_facts_[arguments[argument].fact.value].source);
 	}
 	apply_call_argument_conversions(arguments, best.type, scope);

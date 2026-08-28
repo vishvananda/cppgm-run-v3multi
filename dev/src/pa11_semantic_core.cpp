@@ -976,6 +976,51 @@ TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name,
 				return inherited;
 			}
 		}
+		// Namespace-owned friend bodies retain their class lexical type scope;
+		// follow only the sparse friend relation, never an unrelated scope scan.
+		if (scopes_[scope.value].kind == ScopeKind::Function)
+		{
+			const BindingId* function_binding = function_bindings_.find(scope);
+			if (function_binding != NULL)
+			{
+				const BindingSidecar* function_sidecar =
+					binding_sidecar(*function_binding);
+				if (function_sidecar != NULL)
+				{
+					std::vector<TypeLookupCandidate> friend_types;
+					for (std::size_t i = 0;
+						i < function_sidecar->friend_records.size(); ++i)
+					{
+						const NamedRecordId record_id =
+							function_sidecar->friend_records[i];
+						if (!record_id.valid() || record_id.value >= named_.size() ||
+							named_[record_id.value].kind != NamedKind::Class ||
+							!named_[record_id.value].scope.valid() ||
+							named_[record_id.value].scope.value >= scopes_.size() ||
+							scopes_[named_[record_id.value].scope.value].kind !=
+								ScopeKind::Class)
+							throw std::runtime_error(
+								"PA11 friend lexical type relation is invalid");
+						BindingId friend_declaration;
+						begin_lookup();
+						const TypeId friend_type = lookup_type_graph(
+							named_[record_id.value].scope, name, true, point,
+							&friend_declaration);
+						if (friend_type.valid())
+							append_lookup_candidate(&friend_types,
+								TypeLookupCandidate(friend_type, friend_declaration));
+					}
+					if (friend_types.size() > 1)
+						throw std::runtime_error("ambiguous type lookup");
+					if (!friend_types.empty())
+					{
+						if (declaration != NULL)
+							*declaration = friend_types.front().declaration;
+						return friend_types.front().type;
+					}
+				}
+			}
+		}
 		std::vector<ScopeId> targets;
 		append_effective_using_targets(scope, &targets, point);
 		std::vector<TypeLookupCandidate> found;
@@ -1088,6 +1133,44 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
 			point);
 		if (have_direct)
 			return found;
+		// Namespace-owned friend bodies retain class lexical values; consult only
+		// the sparse relation so lookup stays bounded and point-filtered.
+		if (scopes_[scope.value].kind == ScopeKind::Function)
+		{
+			const BindingId* function_binding = function_bindings_.find(scope);
+			if (function_binding != NULL)
+			{
+				const BindingSidecar* function_sidecar =
+					binding_sidecar(*function_binding);
+				if (function_sidecar != NULL)
+				{
+					for (std::size_t i = 0;
+						i < function_sidecar->friend_records.size(); ++i)
+					{
+						const NamedRecordId record_id =
+							function_sidecar->friend_records[i];
+						if (!record_id.valid() || record_id.value >= named_.size() ||
+							named_[record_id.value].kind != NamedKind::Class ||
+							!named_[record_id.value].scope.valid() ||
+							named_[record_id.value].scope.value >= scopes_.size() ||
+							scopes_[named_[record_id.value].scope.value].kind !=
+								ScopeKind::Class)
+							throw std::runtime_error(
+								"PA11 friend lexical value relation is invalid");
+						begin_lookup();
+						std::vector<ValueRef> friend_values;
+						if (lookup_value_graph(named_[record_id.value].scope, name,
+							&friend_values, true, point))
+						{
+							found.insert(found.end(), friend_values.begin(),
+								friend_values.end());
+						}
+					}
+					if (!found.empty())
+						return found;
+				}
+			}
+		}
 		std::vector<ScopeId> targets;
 		append_effective_using_targets(scope, &targets, point);
 		for (std::size_t i = 0; i < targets.size(); ++i)

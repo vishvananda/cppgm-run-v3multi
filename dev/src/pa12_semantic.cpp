@@ -689,7 +689,7 @@ bool PA11SemanticModel::scalar_id(TypeId type) const
 		type_kind(strip_cv_type(expression_object_type(type))) ==
 			TypeKind::MemberPointer ||
 		bool_id(type) || floating_id(type) ||
-		nullptr_id(type);
+		nullptr_id(type) || enumeration_id(type);
 }
 bool PA11SemanticModel::nullptr_id(TypeId type) const
 {
@@ -854,25 +854,34 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		const TypeId target_referred = types_[target.value].child;
 		const TypeId source_value = expression_object_type(source);
 		const bool source_lvalue = category == SemanticValueCategory::Lvalue;
+		const auto reference_object_convertible =
+			[this](TypeId actual, TypeId required) -> bool
+		{
+			if (qualification_convertible(actual, required))
+				return true;
+			const ScopeId required_scope = class_scope_for_type(required);
+			return required_scope.valid() && member_object_convertible(actual,
+				required, required_scope, NULL);
+		};
 		if (target_kind == TypeKind::LvalueReference && source_lvalue)
 		{
-			if (qualification_convertible(source_value, target_referred))
+			if (reference_object_convertible(source_value, target_referred))
 				return ConversionChoice(true,
-					source_value == target_referred ? 0 : 1,
+					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
+						0 : 1,
 					ConversionKind::ReferenceBinding);
 		}
 		if (target_kind == TypeKind::RvalueReference && !source_lvalue)
 		{
-			if (qualification_convertible(source_value, target_referred))
+			if (reference_object_convertible(source_value, target_referred))
 				return ConversionChoice(true,
-					source_value == target_referred ? 0 : 1,
+					strip_cv_type(source_value) == strip_cv_type(target_referred) ?
+						0 : 1,
 					ConversionKind::ReferenceBinding);
 		}
-		// A prvalue can bind to a const lvalue reference.  This is the
-		// only temporary-binding case in the PA12 foundation.
 		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
 			type_kind(target_referred) == TypeKind::Cv &&
-			qualification_convertible(source_value, target_referred))
+			reference_object_convertible(source_value, target_referred))
 			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
 		if (type_kind(target_referred) == TypeKind::Cv)
 		{
@@ -888,7 +897,6 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		}
 		return ConversionChoice();
 	}
-
 	const TypeId by_value_source = strip_cv_type(expression_object_type(source));
 	const TypeId by_value_target = strip_cv_type(expression_object_type(target));
 	const bool null_integer = source_integer_zero || (source_node != NULL && integer_zero(*source_node));
@@ -898,9 +906,17 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			category == SemanticValueCategory::Lvalue ?
 			ConversionKind::LvalueToRvalue : ConversionKind::Identity);
 	}
-	// An unscoped enum promotes through the representation selected by PA11.
-	// Keep that promotion as a typed fact so overload ranking does not treat
-	// every integral destination as equally good.
+	// A target enum accepts only its own named enum identity.
+	const NamedRecordId target_record = named_record_for_type(by_value_target);
+	if (target_record.valid() && target_record.value < named_.size() &&
+		named_[target_record.value].kind == NamedKind::Enum)
+	{
+		const NamedRecordId source_record =
+			named_record_for_type(by_value_source);
+		if (source_record != target_record)
+			return ConversionChoice();
+	}
+	// Rank unscoped-enum promotion from its typed PA11 representation.
 	if (integral_id(by_value_source) && enumeration_id(by_value_source))
 	{
 		const TypeId promoted = promote_integral_type(by_value_source);
@@ -911,12 +927,11 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 			const unsigned int source_rank = integral_rank(promoted);
 			const unsigned int target_rank = integral_rank(by_value_target);
 			return ConversionChoice(true,
-				by_value_target == promoted ? 0 :
-				1 + (target_rank > source_rank ? target_rank - source_rank : 0),
+				by_value_target == promoted ? 1 :
+				2 + (target_rank > source_rank ? target_rank - source_rank : 0),
 				ConversionKind::Integral);
 		}
 	}
-
 	if (type_kind(by_value_source) == TypeKind::Array &&
 		type_kind(by_value_target) == TypeKind::Pointer)
 	{
@@ -935,7 +950,6 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		fundamental_of(by_value_target, &target_fundamental) &&
 		target_fundamental == FundamentalType::NullptrT)
 		return ConversionChoice(true, 2, ConversionKind::NullIntegerToNullptr);
-
 	FundamentalType source_fundamental;
 	if (fundamental_of(by_value_source, &source_fundamental) &&
 		fundamental_of(by_value_target, &target_fundamental) &&
@@ -1011,12 +1025,11 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 			(fact.token == SimpleTokenType::OP_LAND ||
 				fact.token == SimpleTokenType::OP_LOR);
 	}
-	// A typed scalar call/comparison already owns its exact bool boundary.  A
-	// built-in logical expression is different: PA15 deliberately materializes
-	// its canonical i64 truth when it is stored in a bool object.
+	// Preserve typed scalar bool boundaries; PA15 materializes built-in logical
+	// truth when it is stored in a bool object.
 	if (choice.kind == ConversionKind::Identity &&
 		expression.category == SemanticValueCategory::Prvalue &&
-		expression.type == target && bool_id(target) && !logical_value)
+		expression.type == target && (!bool_id(target) || !logical_value))
 		return expression;
 	if (choice.kind == ConversionKind::ReferenceBinding &&
 		(type_kind(target) == TypeKind::LvalueReference ||
@@ -1410,10 +1423,9 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	const TypeId left_object = strip_cv_type(expression_object_type(left.type));
 	const TypeId right_object = strip_cv_type(expression_object_type(right.type));
 	const NamedRecordId left_record = named_record_for_type(left_object);
-	const bool same_scoped_enum = left_object == right_object &&
+	const bool same_enum = left_object == right_object &&
 		left_record.valid() && left_record.value < named_.size() &&
-		named_[left_record.value].kind == NamedKind::Enum &&
-		named_[left_record.value].scoped_enum;
+		named_[left_record.value].kind == NamedKind::Enum;
 	const bool left_array = type_kind(left_object) == TypeKind::Array;
 	const bool right_array = type_kind(right_object) == TypeKind::Array;
 	const bool left_pointer = pointer_id(left.type) || left_array;
@@ -1580,7 +1592,7 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 				node.token != SimpleTokenType::OP_NE)
 				throw std::runtime_error("PA12 invalid nullptr comparison");
 		}
-		else if (same_scoped_enum)
+		else if (same_enum)
 		{
 			operation_type = left_object;
 			record_builtin_conversion(left, left_object);
@@ -1660,7 +1672,6 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 			nonmember_nodes, nonmember_arguments, true);
 		if (overloaded.fact.valid())
 			return overloaded;
-
 		const bool pointer_plus = pointer_id(target) &&
 			(node.token == SimpleTokenType::OP_PLUSASS || node.token == SimpleTokenType::OP_MINUSASS);
 		if (pointer_plus)
@@ -2218,9 +2229,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		SemanticFactId initializer_fact;
 		if (special_function_initializer)
 		{
-			// PA11 has already retained `= default`/`= delete` as a typed
-			// binding fact.  They are declaration properties, not expressions
-			// to feed through PA12's target-conversion machinery.
+			// Default/delete are typed PA11 properties, not PA12 expressions.
 		}
 		else if (!constructor_initializer && direct_operand_initializer)
 		{
@@ -2228,6 +2237,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 				*direct_operand, declaration->scope, value.type);
 			apply_context_conversion(expression, value.type,
 				semantic_facts_[expression.fact.value].source);
+			if (expression.fact.valid() && semantic_facts_[expression.fact.value].literal_element_count != 0) record_constant_address(expression.fact, declaration->scope);
 			set_semantic_children(variable,
 				std::vector<SemanticFactId>(1, expression.fact));
 			initializer_fact = expression.fact;
@@ -2253,6 +2263,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			if (expression_clause->kind != PA10NodeKind::BracedInitList)
 				apply_context_conversion(expression, value.type,
 					semantic_facts_[expression.fact.value].source);
+			if (expression.fact.valid() && semantic_facts_[expression.fact.value].literal_element_count != 0) record_constant_address(expression.fact, declaration->scope);
 			if (declaration->is_constexpr)
 				retarget_constexpr_literal(expression.fact, value.type);
 			set_semantic_children(variable,
