@@ -67,9 +67,10 @@ struct FunctionPlan
 {
 	std::size_t fact_index;
 	std::size_t program_index;
+	std::map<std::size_t, lowir_model::SlotId> slot_bindings;
 
 	FunctionPlan(std::size_t fact_index = 0, std::size_t program_index = 0)
-		: fact_index(fact_index), program_index(program_index) {}
+		: fact_index(fact_index), program_index(program_index), slot_bindings() {}
 };
 
 // One source-ordered queue owns every deferred namespace/static initializer.

@@ -2259,6 +2259,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		reachable_blocks_.clear();
 		reachability_work_.clear();
 		Function& target = function();
+		slot_by_binding_ = plan.slot_bindings;
 		used_slot_names_.clear();
 		slot_collision_counters_.clear();
 		for (std::size_t slot = 0; slot < target.slots.size(); ++slot)
@@ -2324,8 +2325,11 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			BitFieldInitializationContext constructor_context;
 			for (std::size_t action = 0; action < fact.constructor_action_count;
 				++action)
-					lower_constructor_action(model_.constructor_actions_[
-						fact.constructor_action_begin + action], constructor_context);
+			{
+				const ConstructorActionFact& action_fact = model_.constructor_actions_[
+					fact.constructor_action_begin + action];
+				lower_constructor_action(action_fact, constructor_context);
+			}
 		}
 		else if (fact.is_destructor)
 		{

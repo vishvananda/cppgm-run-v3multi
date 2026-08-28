@@ -479,6 +479,280 @@ BindingId PA11SemanticModel::ensure_aggregate_constructor(
 	return binding_id;
 }
 
+BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor)
+{
+	if (!constructor.valid() || constructor.value >= bindings_.size() ||
+		constructor.value >= binding_owners_.size())
+		throw std::runtime_error("PA12 base constructor entry binding is invalid");
+	const BindingId* existing = constructor_base_entry_bindings_.find(constructor);
+	if (existing != NULL)
+		return *existing;
+	const FunctionFactId* source_id =
+		function_binding_fact_index_.find(constructor);
+	if (source_id == NULL || !source_id->valid() ||
+		source_id->value >= function_facts_.size())
+		throw std::runtime_error("PA12 base constructor entry fact is missing");
+	FunctionFact source = function_facts_[source_id->value];
+	if (!source.is_constructor || source.binding != constructor ||
+		!source.constructor_record.valid() ||
+		source.constructor_record.value >= named_.size() ||
+		!source.owner.valid() || source.owner.value >= scopes_.size() ||
+		scopes_[source.owner.value].kind != ScopeKind::Class ||
+		source.owner != named_[source.constructor_record.value].scope ||
+		binding_owners_[constructor.value] != source.owner ||
+		!source.function_scope.valid() ||
+		source.function_scope.value >= scopes_.size() ||
+		scopes_[source.function_scope.value].kind != ScopeKind::Function ||
+		scopes_[source.function_scope.value].parent != source.owner)
+		throw std::runtime_error("PA12 base constructor entry owner is invalid");
+	if (source.constructor_base_entry)
+	{
+		constructor_base_entry_bindings_.set(constructor, constructor);
+		return constructor;
+	}
+	if (source.constructor_action_begin == InvalidIdentityValue &&
+		(source.body_fact.valid() || source.synthetic))
+	{
+		build_constructor_actions(*source_id);
+		source = function_facts_[source_id->value];
+	}
+	if (source.constructor_action_begin != InvalidIdentityValue &&
+		(source.constructor_action_begin > constructor_actions_.size() ||
+			source.constructor_action_count > constructor_actions_.size() -
+				source.constructor_action_begin))
+		throw std::runtime_error("PA12 base constructor entry actions are invalid");
+
+	const Binding source_binding = binding(constructor);
+	Binding entry_binding = source_binding;
+	const BindingId entry_id = store_binding(source.owner, entry_binding);
+	const BindingSidecar* source_sidecar = binding_sidecar(constructor);
+	if (source_sidecar == NULL ||
+		source_sidecar->constructor_record != source.constructor_record)
+		throw std::runtime_error("PA12 base constructor entry sidecar is invalid");
+	BindingSidecar entry_sidecar = *source_sidecar;
+	set_binding_sidecar(entry_id, entry_sidecar);
+
+	FunctionFact entry = source;
+	entry.node = NULL;
+	entry.binding = entry_id;
+	entry.constructor_base_entry = true;
+	entry.constructor_entry_source = constructor;
+	// Preserve the source fact's synthetic bit.  A generated entry for a
+	// user-defined empty constructor still has a real body and must not be
+	// folded as an unused synthetic no-op by PA15's demand walk.
+	entry.synthetic = source.synthetic;
+	entry.constructor_action_begin = InvalidIdentityValue;
+	entry.constructor_action_count = 0;
+	const FunctionFactId entry_id_fact(function_facts_.size());
+	function_facts_.push_back(entry);
+	function_binding_fact_index_.set(entry_id, entry_id_fact);
+
+	if (source.constructor_action_begin != InvalidIdentityValue)
+	{
+		const std::size_t action_begin = constructor_actions_.size();
+		for (std::size_t i = 0; i < source.constructor_action_count; ++i)
+		{
+			ConstructorActionFact action = constructor_actions_[
+				source.constructor_action_begin + i];
+			if (action.constructor.valid() &&
+				action.target == ConstructorActionTarget::Base)
+			{
+				action.constructor = ensure_constructor_base_entry(
+					action.constructor);
+				if (!action.callable_type.valid())
+					action.callable_type = constructor_callable_type(
+					action.constructor);
+			}
+			constructor_actions_.push_back(action);
+		}
+		function_facts_[entry_id_fact.value].constructor_action_begin = action_begin;
+		function_facts_[entry_id_fact.value].constructor_action_count =
+			source.constructor_action_count;
+	}
+	constructor_base_entry_bindings_.set(constructor, entry_id);
+	return entry_id;
+}
+
+BindingId PA11SemanticModel::ensure_inheriting_constructor(
+	NamedRecordId derived_id, NamedRecordId base_id, BindingId base_constructor)
+{
+	if (!derived_id.valid() || derived_id.value >= named_.size() ||
+		!base_id.valid() || base_id.value >= named_.size() ||
+		named_[derived_id.value].kind != NamedKind::Class ||
+		named_[base_id.value].kind != NamedKind::Class)
+		throw std::runtime_error("PA12 inheriting constructor record is invalid");
+	const NamedRecord& derived = named_[derived_id.value];
+	const NamedRecord& base = named_[base_id.value];
+	if (!derived.name.valid() || !derived.scope.valid() ||
+		derived.scope.value >= scopes_.size() ||
+		scopes_[derived.scope.value].kind != ScopeKind::Class ||
+		scopes_[derived.scope.value].record != derived_id ||
+		!derived.has_base || derived.direct_base != base_id ||
+		!base.name.valid() || !base.scope.valid() ||
+		base.scope.value >= scopes_.size() ||
+		scopes_[base.scope.value].kind != ScopeKind::Class ||
+		scopes_[base.scope.value].record != base_id)
+		throw std::runtime_error("PA12 inheriting constructor owner is invalid");
+	if (!base_constructor.valid() || base_constructor.value >= bindings_.size() ||
+		base_constructor.value >= binding_owners_.size() ||
+		binding_owners_[base_constructor.value] != base.scope)
+		throw std::runtime_error("PA12 inherited constructor binding owner is invalid");
+	const Binding base_binding = binding(base_constructor);
+	const BindingSidecar* base_sidecar = binding_sidecar(base_constructor);
+	if (base_binding.kind != BindingKind::Function ||
+		type_kind(base_binding.type) != TypeKind::Function ||
+		base_sidecar == NULL || base_sidecar->constructor_record != base_id)
+		throw std::runtime_error("PA12 inherited constructor binding is invalid");
+	FunctionFact* base_function = function_fact_for_binding(base_constructor);
+	if (base_function == NULL || !base_function->is_constructor ||
+		base_function->binding != base_constructor ||
+		base_function->owner != base.scope ||
+		!base_function->function_scope.valid() ||
+		base_function->function_scope.value >= scopes_.size() ||
+		scopes_[base_function->function_scope.value].kind != ScopeKind::Function ||
+		scopes_[base_function->function_scope.value].parent != base.scope)
+		throw std::runtime_error("PA12 inherited constructor fact is missing");
+	prepare_pa12_member_parameter(*base_function);
+	const FunctionFact base_function_copy = *base_function;
+	const TypeKey base_signature = types_[base_binding.type.value];
+	if (base_signature.variadic)
+		throw std::runtime_error(
+			"PA16 variadic inheriting constructors are outside checkpoint");
+	const Scope& base_function_scope =
+		scopes_[base_function_copy.function_scope.value];
+	const BindingId base_this = base_function_scope.implicit_object_binding;
+	if (!base_this.valid() || base_this.value >= bindings_.size() ||
+		binding(base_this).kind != BindingKind::Parameter)
+		throw std::runtime_error("PA12 inherited constructor object is missing");
+	std::vector<Binding> base_parameters;
+	for (std::size_t i = 0; i < base_function_scope.bindings.size(); ++i)
+	{
+		const BindingId parameter_id = base_function_scope.bindings[i];
+		if (!parameter_id.valid() || parameter_id.value >= bindings_.size())
+			throw std::runtime_error(
+				"PA12 inherited constructor parameter identity is invalid");
+		const Binding& parameter = binding(parameter_id);
+		if (parameter.kind == BindingKind::Parameter && parameter_id != base_this)
+			base_parameters.push_back(parameter);
+	}
+	if (base_parameters.size() != base_signature.parameters.size())
+		throw std::runtime_error("PA12 inherited constructor parameter count mismatch");
+
+	SourcePoint declaration_point;
+	const NamedRecordSidecar* derived_sidecar =
+		named_record_sidecar(derived_id);
+	if (derived_sidecar == NULL)
+		throw std::runtime_error("PA12 inheriting constructor relation is missing");
+	for (std::size_t i = 0; i < derived_sidecar->inheriting_constructors.size(); ++i)
+		if (derived_sidecar->inheriting_constructors[i].base_record == base_id)
+		{
+			declaration_point =
+				derived_sidecar->inheriting_constructors[i].declaration_point;
+			break;
+		}
+	if (!declaration_point.valid())
+		throw std::runtime_error("PA12 inheriting constructor relation is invalid");
+
+	// The relation key is (derived record, base constructor binding).  Reuse an
+	// already published wrapper instead of appending a second value entry when
+	// overload probing reaches the same constructor again.
+	const ValueList* existing = scopes_[derived.scope.value].values.find(
+		derived.name);
+	if (existing != NULL)
+		for (std::size_t i = 0; i < existing->entries.size(); ++i)
+		{
+			const ValueEntry& entry = existing->entries[i];
+			if (entry.origin != derived.scope || !entry.binding.valid() ||
+				entry.binding.value >= bindings_.size())
+				continue;
+			const FunctionFact* candidate = function_fact_for_binding(
+				entry.binding);
+			if (candidate == NULL || !candidate->inheriting_constructor ||
+				candidate->inherited_base_record != base_id ||
+				candidate->inherited_base_constructor != base_constructor)
+				continue;
+			if (binding(entry.binding).type != base_binding.type)
+				throw std::runtime_error(
+					"PA12 inherited constructor signature changed");
+			return entry.binding;
+		}
+
+	Binding wrapper(BindingKind::Function, derived.name, base_binding.type);
+	wrapper.has_definition = true;
+	wrapper.language_linkage = base_binding.language_linkage;
+	const BindingId wrapper_id = store_binding(derived.scope, wrapper);
+	BindingSidecar wrapper_sidecar;
+	wrapper_sidecar.constructor_record = derived_id;
+	// Explicitness, declaration kind, and exception behavior belong to the
+	// selected base constructor.  The wrapper access remains the default public
+	// value; select_constructor checks the inherited chain separately.
+	wrapper_sidecar.explicit_constructor = base_sidecar->explicit_constructor;
+	wrapper_sidecar.declaration_kind = base_sidecar->declaration_kind;
+	wrapper_sidecar.nonthrowing = base_sidecar->nonthrowing;
+	set_binding_sidecar(wrapper_id, wrapper_sidecar);
+	append_value_index(derived.scope, derived.name, wrapper_id, derived.scope,
+		declaration_point);
+
+	const ScopeId wrapper_scope = create_scope(ScopeKind::Function,
+		derived.scope, derived.name);
+	function_bindings_.set(wrapper_scope, wrapper_id);
+	FunctionFact wrapper_function(NULL, derived.scope, wrapper_id,
+		wrapper_scope, ScopeId());
+	wrapper_function.is_constructor = true;
+	wrapper_function.synthetic = true;
+	wrapper_function.constructor_record = derived_id;
+	wrapper_function.inheriting_constructor = true;
+	wrapper_function.inherited_base_record = base_id;
+	wrapper_function.inherited_base_constructor = base_constructor;
+	prepare_pa12_member_parameter(wrapper_function);
+	std::vector<BindingId> wrapper_parameters;
+	for (std::size_t i = 0; i < base_parameters.size(); ++i)
+	{
+		const BindingId parameter = store_binding(wrapper_scope,
+			Binding(BindingKind::Parameter, base_parameters[i].name,
+				base_parameters[i].type));
+		if (base_parameters[i].name.valid())
+			append_value_index(wrapper_scope, base_parameters[i].name, parameter,
+				ScopeId(), declaration_point);
+		wrapper_parameters.push_back(parameter);
+	}
+	const FunctionFactId wrapper_function_id(function_facts_.size());
+	function_facts_.push_back(wrapper_function);
+	function_binding_fact_index_.set(wrapper_id, wrapper_function_id);
+
+	const std::size_t argument_begin = constructor_arguments_.size();
+	for (std::size_t i = 0; i < wrapper_parameters.size(); ++i)
+	{
+		TypeId expression_type = base_parameters[i].type;
+		const TypeKind parameter_kind = type_kind(expression_type);
+		if (parameter_kind == TypeKind::LvalueReference ||
+			parameter_kind == TypeKind::RvalueReference)
+			expression_type = types_[expression_type.value].child;
+		SemanticFact parameter_fact(SemanticFactKind::IdExpression,
+			expression_type, SemanticValueCategory::Lvalue, NULL);
+		parameter_fact.binding = wrapper_parameters[i];
+		constructor_arguments_.push_back(make_semantic_fact(parameter_fact));
+	}
+	const BindingId base_entry = ensure_constructor_base_entry(base_constructor);
+	const std::size_t action_begin = constructor_actions_.size();
+	ConstructorActionFact action(ConstructorActionTarget::Base, base_id,
+		BindingId(), base_entry);
+	action.object_type = named_type(base_id);
+	action.callable_type = constructor_callable_type(base_entry);
+	if (!wrapper_parameters.empty())
+	{
+		action.argument_begin = argument_begin;
+		action.argument_count = wrapper_parameters.size();
+	}
+	constructor_actions_.push_back(action);
+	function_facts_[wrapper_function_id.value].constructor_action_begin =
+		action_begin;
+	function_facts_[wrapper_function_id.value].constructor_action_count = 1;
+	synthetic_function_facts_.push_back(
+		SyntheticFunctionFact(derived_id, wrapper_id));
+	return wrapper_id;
+}
+
 BindingId PA11SemanticModel::ensure_implicit_destructor(NamedRecordId record_id)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||

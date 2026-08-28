@@ -212,6 +212,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	lookup_frames_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
 	function_fact_index_(), function_binding_fact_index_(),
+	constructor_base_entry_bindings_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
 	class_function_facts_(), constructor_actions_(), constructor_arguments_(),
 	destructor_actions_(), lifetime_facts_(),
@@ -2011,6 +2012,7 @@ void PA11SemanticModel::add_type_binding(ScopeId scope, NameId name,
 	const BindingId declaration = store_binding(scope, binding);
 	record_type_declaration(scope, name, declaration_point, declaration);
 }
+
 BindingId PA11SemanticModel::add_type_alias(ScopeId scope, NameId name,
 	TypeId type, SourcePoint declaration_point)
 {

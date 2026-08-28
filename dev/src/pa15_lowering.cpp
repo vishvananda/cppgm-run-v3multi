@@ -226,6 +226,8 @@ std::vector<std::string> Pa15Lowerer::function_components(const FunctionFact& fa
 	else
 		reversed.push_back(model_.name_text(
 			model_.binding(fact.binding).name));
+	if (fact.constructor_base_entry)
+		reversed.push_back("base_entry");
 	return reversed;
 }
 
@@ -1215,6 +1217,7 @@ void Pa15Lowerer::collect_functions(){
 			if (binding.kind != BindingKind::Function ||
 				model_.type_kind(binding.type) != TypeKind::Function)
 				throw std::runtime_error("PA15 invalid procedural function fact");
+			slot_by_binding_.clear();
 
 			const std::vector<std::string> components = function_components(fact);
 			std::string internal_name;
@@ -1254,7 +1257,10 @@ void Pa15Lowerer::collect_functions(){
 				function.metadata.keep_internal_alias = true;
 			}
 			else
-				function.metadata.object_symbol_id = intern_spelling(abi_symbol(fact));
+				function.metadata.object_symbol_id = intern_spelling(abi_symbol(fact,
+					fact.constructor_base_entry ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE :
+					abi_mangle::ABI_SPECIAL_TERMINAL_NONE));
 
 			const std::size_t function_index = program_.functions.size();
 			program_.functions.push_back(function);
@@ -1262,7 +1268,7 @@ void Pa15Lowerer::collect_functions(){
 			function_symbols_[fact.binding.value] = function.symbol_id;
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
-			if (is_special_member)
+			if (is_special_member && !fact.constructor_base_entry)
 			{
 				lowir_model::ObjectAlias alias;
 				alias.object_name_id = intern_spelling(abi_symbol(fact,
@@ -1324,6 +1330,7 @@ void Pa15Lowerer::collect_functions(){
 			stored.slot_count = next_slot_ - stored.slot_begin.index;
 			stored.value_begin = ValueId();
 			stored.value_count = 0;
+			function_plans_.back().slot_bindings = slot_by_binding_;
 		}
 	}
 

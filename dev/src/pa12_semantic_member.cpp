@@ -295,6 +295,8 @@ bool PA11SemanticModel::aggregate_class_initialization_supported(
 	const NamedRecordSidecar* record_sidecar = named_record_sidecar(record_id);
 	if (record_sidecar != NULL && record_sidecar->has_default_member_initializer)
 		return false;
+	if (record_sidecar != NULL && !record_sidecar->inheriting_constructors.empty())
+		return false;
 	// An implicitly generated constructor is not a user-declared constructor
 	// and must not change aggregate eligibility after it is materialized.
 	const bool declared = has_constructor_declaration(record_id);

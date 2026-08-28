@@ -256,6 +256,11 @@ ConstructorSelection PA11SemanticModel::select_constructor(
 						"PA12 duplicate constructor value index entry");
 				seen.set(candidate_id, true);
 				const Binding& candidate = binding(candidate_id);
+				const FunctionFact* candidate_function =
+					function_fact_for_binding(candidate_id);
+				if (candidate_function != NULL &&
+					candidate_function->inheriting_constructor)
+					continue;
 				if (candidate.kind != BindingKind::Function ||
 					!candidate.type.valid() || candidate.type.value >= types_.size() ||
 					type_kind(candidate.type) != TypeKind::Function)
@@ -268,6 +273,79 @@ ConstructorSelection PA11SemanticModel::select_constructor(
 				candidates.push_back(ValueRef(class_scope, candidate_id));
 			}
 		}
+	}
+	if (!forced_binding.valid())
+	{
+		const NamedRecordSidecar* record_sidecar =
+			named_record_sidecar(record_id);
+		if (record_sidecar != NULL)
+			for (std::size_t relation_index = 0;
+				relation_index < record_sidecar->inheriting_constructors.size();
+				++relation_index)
+			{
+				const NamedRecordId base_record =
+					record_sidecar->inheriting_constructors[relation_index].base_record;
+				if (!base_record.valid() || base_record.value >= named_.size() ||
+					base_record != record.direct_base ||
+					named_[base_record.value].kind != NamedKind::Class)
+					throw std::runtime_error(
+						"PA12 inheriting constructor relation is invalid");
+				const NamedRecord& base = named_[base_record.value];
+				if (!base.scope.valid() || base.scope.value >= scopes_.size() ||
+					scopes_[base.scope.value].kind != ScopeKind::Class ||
+					scopes_[base.scope.value].record != base_record ||
+					!base.name.valid())
+					throw std::runtime_error(
+						"PA12 inheriting constructor base owner is invalid");
+				const ValueList* base_values =
+					scopes_[base.scope.value].values.find(base.name);
+				if (base_values == NULL)
+					continue;
+				for (std::size_t base_index = 0;
+					base_index < base_values->entries.size(); ++base_index)
+				{
+					const ValueEntry& entry = base_values->entries[base_index];
+					if (!entry.binding.valid() || entry.binding.value >= bindings_.size() ||
+						entry.binding.value >= binding_owners_.size() ||
+						binding_owners_[entry.binding.value] != base.scope ||
+						entry.origin != base.scope)
+						throw std::runtime_error(
+							"PA12 inherited constructor value index is invalid");
+					const Binding& base_candidate = binding(entry.binding);
+					const BindingSidecar* base_sidecar =
+						binding_sidecar(entry.binding);
+					if (base_candidate.kind != BindingKind::Function ||
+						!base_candidate.type.valid() ||
+						base_candidate.type.value >= types_.size() ||
+						type_kind(base_candidate.type) != TypeKind::Function ||
+						base_sidecar == NULL ||
+						base_sidecar->constructor_record != base_record)
+						continue;
+					bool hidden_by_direct = false;
+					for (std::size_t direct = 0; direct < candidates.size(); ++direct)
+					{
+						const BindingId direct_id = candidates[direct].binding;
+						const FunctionFact* direct_function =
+							function_fact_for_binding(direct_id);
+						if (direct_function != NULL &&
+							direct_function->inheriting_constructor)
+							continue;
+						if (binding(direct_id).type == base_candidate.type)
+						{
+							hidden_by_direct = true;
+							break;
+						}
+					}
+					if (hidden_by_direct)
+						continue;
+					const BindingId wrapper = ensure_inheriting_constructor(record_id,
+						base_record, entry.binding);
+					if (seen.find(wrapper) != NULL)
+						continue;
+					seen.set(wrapper, true);
+					candidates.push_back(ValueRef(class_scope, wrapper));
+				}
+			}
 	}
 	if (candidates.empty() && argument_nodes.empty() &&
 		allow_implicit_default && !has_constructor_declaration(record_id))
@@ -304,7 +382,51 @@ ConstructorSelection PA11SemanticModel::select_constructor(
 	if (!function_selection.valid())
 		throw std::runtime_error("PA12 constructor selection is incomplete");
 	const ValueRef selected = function_selection.selected;
-	if (!member_accessible(selected.binding, selected.scope, access_scope,
+	const FunctionFact* selected_function =
+		function_fact_for_binding(selected.binding);
+	if (selected_function != NULL && selected_function->inheriting_constructor)
+	{
+		// The using-declaration publishes a derived wrapper, but accessibility is
+		// checked against the original selected base constructor.  Following the
+		// typed wrapper chain also preserves that rule for transitive inheritance.
+		NamedRecordId access_record = record_id;
+		BindingId access_binding = selected.binding;
+		bool accessible = false;
+		for (std::size_t depth = 0; depth <= named_.size(); ++depth)
+		{
+			const FunctionFact* inherited = function_fact_for_binding(access_binding);
+			if (inherited == NULL || !inherited->is_constructor ||
+				inherited->constructor_record != access_record)
+				throw std::runtime_error(
+					"PA12 inherited constructor chain is invalid");
+			if (!inherited->inheriting_constructor)
+			{
+				const BindingSidecar* base_sidecar =
+					binding_sidecar(access_binding);
+				if (base_sidecar == NULL ||
+					base_sidecar->constructor_record != access_record ||
+					!named_[access_record.value].scope.valid())
+					throw std::runtime_error(
+						"PA12 inherited constructor access owner is invalid");
+				accessible = member_accessible(access_binding,
+					named_[access_record.value].scope, access_scope,
+					named_type(record_id));
+				break;
+			}
+			const NamedRecord& current_record = named_[access_record.value];
+			if (!current_record.has_base ||
+				!inherited->inherited_base_record.valid() ||
+				inherited->inherited_base_record != current_record.direct_base ||
+				!inherited->inherited_base_constructor.valid())
+				throw std::runtime_error(
+					"PA12 inherited constructor relation chain is invalid");
+			access_record = inherited->inherited_base_record;
+			access_binding = inherited->inherited_base_constructor;
+		}
+		if (!accessible)
+			throw std::runtime_error("PA12 constructor is inaccessible");
+	}
+	else if (!member_accessible(selected.binding, selected.scope, access_scope,
 		named_type(record_id)))
 		throw std::runtime_error("PA12 constructor is inaccessible");
 	const BindingSidecar* selected_sidecar = binding_sidecar(selected.binding);
@@ -494,7 +616,9 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 		const ConstructorSelection selection = select_constructor(target_record,
 			function_scope, argument_nodes, true,
 			ConstructorInitializationContext::Direct);
-		action.constructor = selection.binding;
+		action.constructor = target_kind == ConstructorActionTarget::Base ?
+			ensure_constructor_base_entry(selection.binding) : selection.binding;
+		action.callable_type = selection.callable_type;
 		append_action(action, selection.arguments);
 	};
 	const auto append_scalar = [this, function_scope, &append_action](
@@ -604,6 +728,7 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 				ConstructorActionFact action(ConstructorActionTarget::Member,
 					NamedRecordId(), member_id, initializer.selected_binding);
 				action.object_type = member.type;
+				action.callable_type = initializer.callable_type;
 				action.value_initialize = initializer.value_initialize;
 				std::vector<SemanticFactId> initializer_arguments;
 				if (initializer.child_count != 0)

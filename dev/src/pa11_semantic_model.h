@@ -340,6 +340,9 @@ struct UsingDirectiveRelation
 	{}
 };
 
+struct InheritingConstructorRelation {
+	NamedRecordId base_record; SourcePoint declaration_point;
+};
 struct EffectiveUsingDirective
 {
 	ScopeId target;
@@ -689,7 +692,7 @@ struct NamedRecordSidecar
 	bool has_constructor_declaration; bool has_destructor_declaration; bool has_default_member_initializer;
 	bool has_display_path;
 	NamePath display_path;
-	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions;
+	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions; std::vector<InheritingConstructorRelation> inheriting_constructors;
 
 	NamedRecordSidecar(bool local_object_name = false,
 		BindingId backing_storage = BindingId(),
@@ -702,7 +705,7 @@ struct NamedRecordSidecar
 		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
 		  has_destructor_declaration(false), has_default_member_initializer(false),
 		  has_display_path(false),
-		  display_path(), hidden_friend_functions()
+		  display_path(), hidden_friend_functions(), inheriting_constructors()
 	{}
 };
 struct AnonymousUnionFact
@@ -1022,14 +1025,14 @@ struct ConstructorActionFact
 	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
 	BindingId constructor; SemanticFactId initializer;
 	std::size_t argument_begin; std::size_t argument_count; bool value_initialize;
-	TypeId object_type;
+	TypeId object_type; TypeId callable_type;
 	ConstructorActionFact(ConstructorActionTarget target = ConstructorActionTarget::Member,
 		NamedRecordId base_record = NamedRecordId(), BindingId member = BindingId(),
 		BindingId constructor = BindingId(), SemanticFactId initializer = SemanticFactId())
 		: target(target), base_record(base_record), member(member),
 		  constructor(constructor), initializer(initializer),
 		  argument_begin(InvalidIdentityValue), argument_count(0),
-		  value_initialize(false), object_type()
+		  value_initialize(false), object_type(), callable_type()
 	{}
 };
 struct DestructorActionFact
@@ -1064,15 +1067,12 @@ struct FunctionFact
 	ScopeId body_scope;
 	SemanticFactId body_fact;
 	LabelTableId label_table;
-	std::size_t default_argument_begin;
-	std::size_t default_argument_count;
-	bool is_constructor;
-	bool is_destructor;
-	bool synthetic;
-	NamedRecordId constructor_record;
-	NamedRecordId destructor_record;
-	std::size_t constructor_action_begin, constructor_action_count;
-	std::size_t destructor_action_begin, destructor_action_count;
+	std::size_t default_argument_begin; std::size_t default_argument_count;
+	bool is_constructor; bool is_destructor; bool synthetic;
+	NamedRecordId constructor_record; NamedRecordId destructor_record;
+	bool inheriting_constructor; NamedRecordId inherited_base_record;
+	BindingId inherited_base_constructor; bool constructor_base_entry; BindingId constructor_entry_source;
+	std::size_t constructor_action_begin, constructor_action_count; std::size_t destructor_action_begin, destructor_action_count;
 
 	FunctionFact(const PA10AstNode* node = NULL, ScopeId owner = ScopeId(),
 		BindingId binding = BindingId(), ScopeId function_scope = ScopeId(),
@@ -1082,13 +1082,12 @@ struct FunctionFact
 		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
 		  default_argument_count(0), is_constructor(false), is_destructor(false),
-		  synthetic(false), constructor_record(), destructor_record(),
+		  synthetic(false), constructor_record(), destructor_record(), inheriting_constructor(false), inherited_base_record(), inherited_base_constructor(), constructor_base_entry(false), constructor_entry_source(),
 		  constructor_action_begin(InvalidIdentityValue), constructor_action_count(0),
 		  destructor_action_begin(InvalidIdentityValue),
 		  destructor_action_count(0)
 	{}
-};
-
+	};
 struct LabelFact
 {
 	NameId name;
@@ -1304,8 +1303,8 @@ private:
 	std::vector<FunctionFact> function_facts_;
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
-	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> >
-		function_binding_fact_index_;
+	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> > function_binding_fact_index_;
+	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> > constructor_base_entry_bindings_;
 	std::vector<SemanticFactId> function_default_arguments_;
 	std::vector<LabelFact> label_facts_;
 	std::vector<FunctionLabelTable> label_tables_;
@@ -1831,8 +1830,8 @@ private:
 	;
 	void process_using_directive(const PA10AstNode& node, ScopeId scope)
 	;
-	void process_using_declaration(const PA10AstNode& node, ScopeId scope)
-	;
+	void process_using_declaration(const PA10AstNode& node, ScopeId scope);
+	bool record_inheriting_constructor_using(const PA10AstNode& node, ScopeId scope, const NamePath& target_name, TypeId type);
 	NameId template_parameter_name(const PA10AstNode& node)
 	;
 	void process_template_parameter(const PA10AstNode& node, ScopeId scope)
@@ -1887,6 +1886,7 @@ private:
 	void build_constructor_actions(FunctionFactId function)
 	;
 	BindingId ensure_aggregate_constructor(NamedRecordId record);
+	BindingId ensure_inheriting_constructor(NamedRecordId derived, NamedRecordId base, BindingId base_constructor); BindingId ensure_constructor_base_entry(BindingId constructor);
 	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent)
 	;
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope)

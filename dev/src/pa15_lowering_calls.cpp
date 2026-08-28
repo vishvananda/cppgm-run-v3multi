@@ -157,7 +157,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		model_.semantic_facts_.size(), 0);
 	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
-	const auto demand_constructor_fact = [this, demanded, &function_work](
+	const auto demand_constructor_fact = [this, demanded, declarations,
+		declaration_types, &function_work](
 		const SemanticFact& fact, bool global_root) {
 		if (!fact.has_callee || !fact.selected_binding.valid() ||
 			fact.selected_binding.value >= model_.bindings_.size())
@@ -176,6 +177,13 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			throw std::runtime_error("PA15 constructor demand owner is invalid");
 		const NamedRecord& record =
 			model_.named_[sidecar->constructor_record.value];
+		const FunctionFact& target = model_.function_facts_[target_id->value];
+		const Binding& target_binding = model_.binding(fact.selected_binding);
+		const bool external_declaration =
+			record.kind == NamedKind::Class &&
+			record.class_tag != ClassTag::Union && record.name.valid() &&
+			!target.body_fact.valid() && !target.synthetic &&
+			!target_binding.has_definition;
 		bool no_op = false;
 		if (record.kind == NamedKind::Class && record.class_tag != ClassTag::Union &&
 			record.name.valid())
@@ -185,13 +193,33 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				!fact.callable_type.valid() || model_.type_kind(fact.callable_type) !=
 				TypeKind::Function)
 				throw std::runtime_error("PA15 constructor demand type is invalid");
-			const FunctionFact& target = checked_constructor_function(
-				fact.selected_binding, sidecar->constructor_record);
-			no_op = target.synthetic && target.constructor_action_count == 0;
+			if (!external_declaration)
+			{
+				const FunctionFact& checked = checked_constructor_function(
+					fact.selected_binding, sidecar->constructor_record);
+				no_op = checked.synthetic && checked.constructor_action_count == 0;
+			}
 		}
 		if (global_root && !no_op &&
 			global_aggregate_constructor_inline_eligible(fact))
 			return;
+		if (external_declaration)
+		{
+			if (fact.selected_binding.value >= declarations->size() ||
+				!fact.callable_type.valid() ||
+				model_.type_kind(fact.callable_type) != TypeKind::Function)
+				throw std::runtime_error(
+					"PA15 constructor declaration signature is missing");
+			if ((*declaration_types)[fact.selected_binding.value].valid() &&
+				(*declaration_types)[fact.selected_binding.value] !=
+				fact.callable_type)
+				throw std::runtime_error(
+					"PA15 constructor declaration signature changed");
+			(*declarations)[fact.selected_binding.value] = 1;
+			(*declaration_types)[fact.selected_binding.value] =
+				fact.callable_type;
+			return;
+		}
 		if (!no_op && !(*demanded)[target_id->value])
 		{
 			(*demanded)[target_id->value] = 1;
@@ -362,17 +390,6 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					else
 						throw std::runtime_error(
 							"PA15 constructor action target is invalid");
-					bool no_op = false;
-					if (target_record.valid() && target_record.value <
-						model_.named_.size() && model_.named_[target_record.value].kind ==
-						NamedKind::Class && model_.named_[target_record.value].class_tag !=
-						ClassTag::Union && model_.named_[target_record.value].name.valid())
-					{
-						const FunctionFact& target_function =
-							checked_constructor_function(action.constructor, target_record);
-						no_op = target_function.synthetic &&
-							target_function.constructor_action_count == 0;
-					}
 					const FunctionFactId* target_id =
 						model_.function_binding_fact_index_.find(action.constructor);
 					if (target_id == NULL || !target_id->valid() ||
@@ -382,7 +399,46 @@ void Pa15Lowerer::collect_demanded_member_functions(
 							action.constructor)
 						throw std::runtime_error(
 							"PA15 constructor action target is missing");
-					if (!no_op && !(*demanded)[target_id->value])
+					const FunctionFact& target_function =
+						model_.function_facts_[target_id->value];
+					const Binding& target_binding = model_.binding(action.constructor);
+					const bool external_declaration =
+						target_record.valid() && target_record.value < model_.named_.size() &&
+						model_.named_[target_record.value].kind == NamedKind::Class &&
+						model_.named_[target_record.value].class_tag != ClassTag::Union &&
+						model_.named_[target_record.value].name.valid() &&
+						!target_function.body_fact.valid() &&
+						!target_function.synthetic && !target_binding.has_definition;
+					bool no_op = false;
+					if (target_record.valid() && target_record.value <
+						model_.named_.size() && model_.named_[target_record.value].kind ==
+						NamedKind::Class && model_.named_[target_record.value].class_tag !=
+						ClassTag::Union && model_.named_[target_record.value].name.valid())
+					{
+						if (!external_declaration)
+						{
+							const FunctionFact& checked =
+								checked_constructor_function(action.constructor, target_record);
+							no_op = checked.synthetic &&
+								checked.constructor_action_count == 0;
+						}
+					}
+					if (external_declaration)
+					{
+						if (!action.callable_type.valid() ||
+							model_.type_kind(action.callable_type) != TypeKind::Function)
+							throw std::runtime_error(
+								"PA15 constructor action declaration signature is missing");
+						if ((*declaration_types)[action.constructor.value].valid() &&
+							(*declaration_types)[action.constructor.value] !=
+							action.callable_type)
+							throw std::runtime_error(
+								"PA15 constructor action declaration signature changed");
+						(*declarations)[action.constructor.value] = 1;
+						(*declaration_types)[action.constructor.value] =
+							action.callable_type;
+					}
+					else if (!no_op && !(*demanded)[target_id->value])
 					{
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
@@ -523,6 +579,15 @@ void Pa15Lowerer::collect_demanded_member_functions(
 						model_.type_kind(fact.callable_type) != TypeKind::Function)
 						throw std::runtime_error(
 							"PA15 constructor demand is not typed");
+					const FunctionFact& target_function =
+						model_.function_facts_[target_id->value];
+					const bool external_declaration =
+						model_.named_[sidecar->constructor_record.value].kind ==
+							NamedKind::Class &&
+						model_.named_[sidecar->constructor_record.value].class_tag !=
+							ClassTag::Union &&
+						!target_function.body_fact.valid() &&
+						!target_function.synthetic && !target.has_definition;
 					bool no_op = false;
 					const BindingSidecar* constructor_sidecar =
 						model_.binding_sidecar(fact.selected_binding);
@@ -537,20 +602,34 @@ void Pa15Lowerer::collect_demanded_member_functions(
 							constructor_record.class_tag != ClassTag::Union &&
 							constructor_record.name.valid())
 						{
-							const FunctionFact& target_function =
-								checked_constructor_function(fact.selected_binding,
+							if (!external_declaration)
+							{
+								const FunctionFact& checked =
+									checked_constructor_function(fact.selected_binding,
+										constructor_sidecar->constructor_record);
+								const RecordLayout& target_layout = model_.record_layout(
 									constructor_sidecar->constructor_record);
-							const RecordLayout& target_layout = model_.record_layout(
-								constructor_sidecar->constructor_record);
-							const bool value_initialized_aggregate = fact.value_initialize &&
-								target_layout.state == RecordLayoutState::Complete &&
-								!target_layout.members.empty();
-							no_op = target_function.synthetic &&
-								target_function.constructor_action_count == 0 &&
-									(!fact.temporary_object || value_initialized_aggregate);
+								const bool value_initialized_aggregate = fact.value_initialize &&
+									target_layout.state == RecordLayoutState::Complete &&
+									!target_layout.members.empty();
+								no_op = checked.synthetic &&
+									checked.constructor_action_count == 0 &&
+										(!fact.temporary_object || value_initialized_aggregate);
+							}
 						}
 					}
-					if (!no_op && !(*demanded)[target_id->value])
+					if (external_declaration)
+					{
+						if ((*declaration_types)[fact.selected_binding.value].valid() &&
+							(*declaration_types)[fact.selected_binding.value] !=
+							fact.callable_type)
+							throw std::runtime_error(
+								"PA15 constructor declaration signature changed");
+						(*declarations)[fact.selected_binding.value] = 1;
+						(*declaration_types)[fact.selected_binding.value] =
+							fact.callable_type;
+					}
+					else if (!no_op && !(*demanded)[target_id->value])
 					{
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
@@ -700,6 +779,8 @@ void Pa15Lowerer::collect_function_declarations(){
 		{
 			const BindingId binding_id = scope.bindings[i];
 			const Binding& binding = model_.binding(binding_id);
+			const FunctionFact* function_fact =
+				model_.function_fact_for_binding(binding_id);
 			if (binding.kind != BindingKind::Function ||
 				model_.type_kind(binding.type) != TypeKind::Function ||
 				function_symbols_.find(binding_id.value) != function_symbols_.end())
@@ -750,8 +831,10 @@ void Pa15Lowerer::collect_function_declarations(){
 			}
 			FunctionDeclaration declaration;
 			declaration.symbol_id = SymbolId(next_symbol_++);
-			declaration.name_id = symbol_spelling(internal_value_name(
-				owner, binding.name));
+			std::string declaration_name = internal_value_name(owner, binding.name);
+			if (function_fact != NULL && function_fact->constructor_base_entry)
+				declaration_name += "__base_entry";
+			declaration.name_id = symbol_spelling(declaration_name);
 			declaration.return_type = function_result_low_type(type.result);
 			const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
 			if (sidecar != NULL && sidecar->nonthrowing)
@@ -760,8 +843,13 @@ void Pa15Lowerer::collect_function_declarations(){
 				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG;
 			if (binding.language_linkage != LanguageLinkage::C ||
 				binding.internal_linkage)
-				declaration.metadata.object_symbol_id = intern_spelling(
-					abi_function_symbol(binding_id, owner));
+			{
+				const std::string object_symbol = function_fact != NULL &&
+					function_fact->constructor_base_entry ? abi_symbol(*function_fact,
+						abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE) :
+					abi_function_symbol(binding_id, owner);
+				declaration.metadata.object_symbol_id = intern_spelling(object_symbol);
+			}
 			if (binding.language_linkage == LanguageLinkage::C)
 				declaration.metadata.linkage = lowir_model::LLM_C;
 			declaration.boundary.arity = type.variadic ?
@@ -769,7 +857,8 @@ void Pa15Lowerer::collect_function_declarations(){
 			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				Parameter parameter_record;
-				parameter_record.name_id = intern_spelling("%this");
+				parameter_record.name_id = intern_spelling(function_fact != NULL &&
+					function_fact->constructor_base_entry ? "%arg0" : "%this");
 				parameter_record.type = low_type(model_.types_[
 					member_callable_type.value].parameters.front());
 				declaration.params.push_back(parameter_record);
@@ -779,7 +868,8 @@ void Pa15Lowerer::collect_function_declarations(){
 			{
 				Parameter parameter_record;
 				std::ostringstream parameter_name;
-				parameter_name << "%arg" << parameter;
+				parameter_name << "%arg" << parameter + (function_fact != NULL &&
+					function_fact->constructor_base_entry ? 1 : 0);
 				parameter_record.name_id = intern_spelling(parameter_name.str());
 				parameter_record.type = low_type(type.parameters[parameter]);
 				const TypeKind parameter_kind = model_.type_kind(
@@ -790,6 +880,11 @@ void Pa15Lowerer::collect_function_declarations(){
 				declaration.params.push_back(parameter_record);
 			}
 			function_declaration_plans_[binding_id.value] = declaration;
+			// Member declaration demand is established before this pass creates
+			// the plan.  Carry that typed demand into the common materializer so
+			// declarations reached through constructor actions are emitted too.
+			if (member_scope)
+				demanded_function_declarations_.insert(binding_id.value);
 			function_symbols_[binding_id.value] = declaration.symbol_id;
 			function_name_ids_[binding_id.value] = declaration.name_id;
 			symbol_name_ids_[declaration.symbol_id.index] = declaration.name_id;

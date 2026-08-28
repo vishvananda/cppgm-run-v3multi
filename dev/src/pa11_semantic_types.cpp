@@ -731,4 +731,37 @@ TypeId PA11SemanticModel::apply_declarator(const PA10AstNode& node,
 	}
 	return result;
 }
+
+bool PA11SemanticModel::record_inheriting_constructor_using(
+	const PA10AstNode& node, ScopeId scope, const NamePath& target_name,
+	TypeId type)
+{
+	const Scope& current = scopes_[scope.value];
+	const NamedRecordId current_record = current.kind == ScopeKind::Class ?
+		current.record : NamedRecordId();
+	const NamedRecordId direct_base = current_record.valid() &&
+		current_record.value < named_.size() &&
+		named_[current_record.value].kind == NamedKind::Class &&
+		named_[current_record.value].has_base ?
+		named_[current_record.value].direct_base : NamedRecordId();
+	const NamedRecordId nominated_record = type.valid() ?
+		named_record_for_type(strip_cv_type(type)) : NamedRecordId();
+	const NameId introduced = target_name.last();
+	if (!current_record.valid() || !direct_base.valid() ||
+		direct_base.value >= named_.size() || nominated_record != direct_base ||
+		target_name.components.size() < 2 ||
+		introduced != named_[direct_base.value].name)
+		return false;
+	NamedRecordSidecar sidecar;
+	const NamedRecordSidecar* existing = named_record_sidecar(current_record);
+	if (existing != NULL)
+		sidecar = *existing;
+	for (std::size_t i = 0; i < sidecar.inheriting_constructors.size(); ++i)
+		if (sidecar.inheriting_constructors[i].base_record == direct_base)
+			return true;
+	sidecar.inheriting_constructors.push_back(
+		InheritingConstructorRelation{direct_base, SourcePoint(node.source_begin)});
+	set_named_record_sidecar(current_record, sidecar);
+	return true;
+}
 } // namespace pa11_semantic_internal

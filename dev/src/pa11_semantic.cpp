@@ -2071,6 +2071,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		&origin);
 	const NameId introduced = target_name.last();
 	Scope& current = scopes_[scope.value];
+	if (record_inheriting_constructor_using(node, scope, target_name, type)) return;
 	if (current.types.find(introduced) != NULL ||
 		direct_namespace_exists(scope, introduced))
 		throw std::runtime_error("using declaration conflicts with binding");
@@ -2483,7 +2484,6 @@ void PA11SemanticModel::validate_nonmember_operator(BindingId binding_id) const
 	throw std::runtime_error("PA11 nonmember operator requires class or enum operand");
 }
 } // namespace pa11_semantic_internal
-
 void emit_pa11_types(const PA10Ast& ast, std::ostream& output)
 {
 	pa11_semantic_internal::PA11SemanticModel model(ast);
