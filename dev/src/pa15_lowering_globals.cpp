@@ -18,7 +18,7 @@ void Pa15Lowerer::index_global_symbols(){
 					model_.is_static_member(binding_id);
 				if (binding.kind != BindingKind::Variable ||
 					(class_scope && !class_static) ||
-					(class_static && !binding.has_definition &&
+					(!binding.has_definition &&
 						(binding_id.value >= required_global_bindings_.size() ||
 						 required_global_bindings_[binding_id.value] == 0)))
 					continue;
@@ -47,7 +47,7 @@ void Pa15Lowerer::collect_globals(){
 					model_.is_static_member(binding_id);
 				if (binding.kind != BindingKind::Variable ||
 					(class_scope && !class_static) ||
-					(class_static && !binding.has_definition &&
+					(!binding.has_definition &&
 						(binding_id.value >= required_global_bindings_.size() ||
 						 required_global_bindings_[binding_id.value] == 0)))
 					continue;

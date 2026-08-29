@@ -89,7 +89,24 @@ void Pa15Lowerer::index_global_storage_demands(){
 				}
 			}
 		}
-		auto static_variable = [this](const SemanticFact& fact) -> BindingId {
+		auto global_storage_binding = [this](BindingId binding_id) -> BindingId {
+			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
+				throw std::runtime_error("PA15 global demand binding is invalid");
+			const Binding& binding = model_.binding(binding_id);
+			if (binding.kind != BindingKind::Variable)
+				return BindingId();
+			if (model_.is_static_member(binding_id))
+				return binding_id;
+			if (binding_id.value >= model_.binding_owners_.size())
+				throw std::runtime_error("PA15 global demand owner is invalid");
+			const ScopeId owner = model_.binding_owners_[binding_id.value];
+			if (owner.valid() && owner.value < model_.scopes_.size() &&
+				model_.scopes_[owner.value].kind == ScopeKind::Namespace)
+				return binding_id;
+			return BindingId();
+		};
+		auto global_variable = [this, &global_storage_binding](
+			const SemanticFact& fact) -> BindingId {
 			BindingId binding_id;
 			if (fact.kind == SemanticFactKind::IdExpression)
 				binding_id = fact.binding;
@@ -97,17 +114,11 @@ void Pa15Lowerer::index_global_storage_demands(){
 				binding_id = fact.selected_binding;
 			else
 				return BindingId();
-			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
-				throw std::runtime_error("PA15 global demand binding is invalid");
-			const Binding& binding = model_.binding(binding_id);
-			if (binding.kind != BindingKind::Variable ||
-				!model_.is_static_member(binding_id))
-				return BindingId();
-			return binding_id;
+			return global_storage_binding(binding_id);
 		};
-		auto mark_static_demand = [this, &static_variable](
+		auto mark_global_demand = [this, &global_variable](
 			const SemanticFact& fact) {
-			const BindingId binding_id = static_variable(fact);
+			const BindingId binding_id = global_variable(fact);
 			if (binding_id.valid())
 				required_global_bindings_[binding_id.value] = 1;
 		};
@@ -127,7 +138,7 @@ void Pa15Lowerer::index_global_storage_demands(){
 		for (std::size_t i = 0; i < fact_count; ++i)
 		{
 			const SemanticFact& fact = model_.semantic_facts_[i];
-			const BindingId binding_id = static_variable(fact);
+			const BindingId binding_id = global_variable(fact);
 			if (fact.constant_address.valid())
 			{
 				if (fact.constant_address.value >=
@@ -144,10 +155,10 @@ void Pa15Lowerer::index_global_storage_demands(){
 				if (address.valid && address.target.valid() &&
 					address.target.value < model_.bindings_.size())
 				{
-					const Binding& target = model_.binding(address.target);
-					if (target.kind == BindingKind::Variable &&
-						model_.is_static_member(address.target))
-						required_global_bindings_[address.target.value] = 1;
+					const BindingId global_target =
+						global_storage_binding(address.target);
+					if (global_target.valid())
+						required_global_bindings_[global_target.value] = 1;
 				}
 			}
 			if (binding_id.valid())
@@ -190,7 +201,7 @@ void Pa15Lowerer::index_global_storage_demands(){
 					SemanticFactKind::CastExpression)
 					queue_transparent_cast(operand);
 				else
-					mark_static_demand(model_.semantic_facts_[operand.value]);
+					mark_global_demand(model_.semantic_facts_[operand.value]);
 			}
 		}
 		while (!transparent_cast_work.empty())
@@ -207,7 +218,7 @@ void Pa15Lowerer::index_global_storage_demands(){
 				SemanticFactKind::CastExpression)
 				queue_transparent_cast(operand);
 			else
-				mark_static_demand(model_.semantic_facts_[operand.value]);
+				mark_global_demand(model_.semantic_facts_[operand.value]);
 		}
 	}
 
@@ -619,6 +630,21 @@ LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
 		LowType pointer;
 		pointer.kind = LowType::TYPE_POINTER;
 		return pointer;
+	}
+	const TypeId unqualified = model_.strip_cv_type(object);
+	if (unqualified.valid() && model_.type_kind(unqualified) == TypeKind::Named)
+	{
+		const NamedRecordId record = model_.types_[unqualified.value].named;
+		if (record.valid() && record.value < model_.named_.size() &&
+			model_.named_[record.value].kind == NamedKind::Class &&
+			!model_.complete_object_type(object))
+		{
+			// A reference or incomplete-class glvalue has address representation
+			// only at this boundary.  Do not lower its referent as owned storage.
+			LowType pointer;
+			pointer.kind = LowType::TYPE_POINTER;
+			return pointer;
+		}
 	}
 	return low_type(object);
 }
