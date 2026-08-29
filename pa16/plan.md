@@ -52,9 +52,25 @@ The implementation has one typed production pipeline. It uses dense indexed
 arenas and reachable worklists, with no spelling downgrade, parallel
 resolver/model, broad retry, or test-specific hardcoding.
 
+For the canonical-truth boundary, PA12 owns a typed
+`CanonicalTruthPolicy` on each recorded conversion whose source is the
+semantic bool produced by a comparison or logical expression. `Preserve` is
+assigned only when that conversion's owning `SemanticFact` has the existing
+typed direct-boundary provenance: a member-derived value, including a value
+returned through a selected function's typed return-result summary and carried
+through a variable binding, or an implicit `this` operand. The function
+summary is OR-ed only from returned expression/`ReturnStatement` facts, never
+from the enclosing body. Plain procedural facts retain the default
+`Materialize` policy. PA15 carries that policy in `LoweredValue` and consumes
+it once while emitting the recorded conversion. The comparison destination
+remains the PA13 canonical physical `i64` truth; this policy only chooses the
+semantic-bool bridge for the checked PA16 value shape. N3485 4.5 and 4.7 still
+govern the semantic `bool` and its integral promotion; no source spelling,
+translation-unit flag, or block scan participates.
+
 ## Failure map
 
-Turn-start authority is clean HEAD e9d928125399aaad099b48d59e977e80771007af:
+Turn-start authority is clean HEAD e92b1e184a585eedb0190de527b512d0b9df9f3e:
 194/243 identities passed, 49 failed, and 243/243 identities were covered.
 The exact sorted turn-start failure map is:
 
@@ -118,11 +134,30 @@ c507120c..e9d92812 span removed these five identities from that map:
 e9d92812 map exactly: final-only and baseline-only identity sets are empty,
 and coverage remains 243/243.
 
+The selected residual cluster is the five exact LowIR-shape failures for the
+global aggregate initializer, defaulted/deleted aggregate constructors,
+qualified friend member access, and the member unary-address fallback. The
+same extra truth bridge appears in the pragma-pack, value-initialization, and
+bit-field neighbors, but each retains an independent mismatch.
+
 ## Active checkpoint
 
 The bounded source audit covers the complete typed path in the allowed PA11,
 PA12, and PA15 files. The repair is:
 
+- PA12 records `CanonicalTruthPolicy::Preserve` at the conversion owner when
+  its `SemanticFact` is a direct typed boundary for member/object-derived
+  truth. Child facts propagate `contains_member_value`; each
+  `ReturnStatement` updates the selected `FunctionFact`'s typed
+  `return_result_contains_member_value` summary, and a call consumes that
+  summary. An initialized variable binding preserves the resulting provenance
+  for later ID expressions, while an implicit-`this` `BindingId` marks the
+  member-function comparison. Definitions are still analyzed in deterministic
+  source order; the focused global case deliberately defines `read()` before
+  its call. PA15 propagates the policy through `LoweredValue`, so the
+  canonical truth bridge is selected from typed conversion data, not from
+  rendered spelling, a test identity, a translation-unit proxy, or a block
+  rescan. The PA13 comparison destination remains physical `i64`.
 - PA12 now stores the selected member/destructor derived-to-base
   NamedRecordId path in a semantic arena. The path is recomputed, if needed,
   only while semantic selection chooses the binding; the final selected
@@ -148,13 +183,16 @@ PA12, and PA15 files. The repair is:
   DestructorCall child for both class and scalar forms; PA15 preserves
   exactly-once operand evaluation.
 
-Focused protected identities are:
+The current focused protected identities are:
 
-- pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t
-- pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t
-- pa16/tests/general/300-const-pointer-explicit-destructor-call.t
-- pa16/tests/general/300-scalar-pseudo-destructor-call.t
-- pa16/tests/general/200-pointer-subscript-class-reference-return.t
+- pa16/tests/general/100-global-aggregate-nested-array-initializer.t
+- pa16/tests/general/200-defaulted-constructor-still-aggregate.t
+- pa16/tests/general/200-deleted-constructor-still-aggregate.t
+- pa16/tests/general/200-qualified-friend-function-member-access.t
+- pa16/tests/general/300-unary-address-of-builtin-fallback.t
+
+The earlier special-member five-test focus remains part of the preceding
+checkpoint record below.
 
 ## Focused evidence
 
@@ -164,7 +202,22 @@ The bounded build and focused controls pass:
 - The PA12 class-result regression
   `tests/general/300-elaborated-local-struct-copy-init.t` passes 1/1, as does
   the most-vexing-function negative control.
-- The five protected handout identities pass individually, 5/5.
+- The exact focused `pa16 check` invocation selected and ran the five protected
+  identities (the runner printed all five `Running ...` lines), rewrote their
+  `.check` artifacts at 16:21:22 UTC, and passed 5/5. These are `.check`
+  outputs; the `.my` files are not the local `check` target's artifacts.
+- A temporary member-side-effect/plain-return probe compiled with status 0;
+  its caller's procedural comparison retained `convert trunc u8 i64`, proving
+  an unrelated member access in a function body does not taint the returned
+  value. A second temporary pair, one with an unused `struct Unrelated` and
+  one without it, compiled with status 0 and compared byte-identically with
+  `cmp` status 0; both retained the ordinary `trunc u8 i64` bridge.
+- A temporary diagnostic pass recorded `Preserve` for the global aggregate's
+  `read() -> value.signature -> observed` return conversion, the two aggregate
+  member comparisons, the qualified friend member comparison, and the
+  implicit-`this` bool return; the latter remained `return u8` without an
+  identity conversion. The diagnostic source instrumentation was removed
+  before the final build.
 - Course controls 401, 402, 403, 405, 408, 409, and 418 pass.
 - Temporary negative boundary probes reject at status 1 for wrong lexical
   destructor type, inaccessible destructor, scalar mismatch, nonempty class
@@ -194,25 +247,48 @@ lookups. A selected base path is bounded by the direct single-inheritance
 depth and is published once per selected fact; the type-only probe exercises
 SemanticTailGuard rollback from one saved path tail. PA15 demand visits each
 semantic fact once per reachability mode, and lowering walks only the
-published path. The whole-signature class-value guard is indexed
-record/layout/sidecar work plus one parameter-list pass. No timing, RSS,
-allocation, or speedup claim is made.
+published path. The truth disposition is one enum write/read per existing
+conversion, child provenance uses already-published semantic edges, each
+return contributes one boolean OR to its owning `FunctionFact`, and a call
+uses one indexed function-fact lookup. Binding provenance is an O(1) indexed
+sidecar lookup. No block rescan or second conversion model is introduced. No
+timing, RSS, allocation, or speedup claim is made.
 
 ## Validation and next checkpoint
 
-The authorized broad gate log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-c507120c-e9d92812-checkpoint-final-authorized-20260829.log`.
-The gate remains incomplete at exactly the e9d92812 result:
-`make test-pa16` exits 2 with 194/243 passed and 49 failures. Exact sorted
-failure comparison against `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
-and the 49-entry map above has empty final-only and baseline-only sets; all
-243/243 identities remain covered. The exact n=16 through-PA15 command exits
-0 with `1167 / 1167`. The required file audit exits 0 with five known
-`bad-division` warnings. `git diff --check` and the post-commit diff check
-are clean, and the checkpoint is committed in one coherent audit commit with
-an empty worktree. PA16 is still incomplete; the next checkpoint owns the
-unchanged 49-identity residual without widening this typed boundary.
+The final `make -C dev -j2 cppgm++` exits 0; its complete log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-build-20260829.log`.
+The final broad `make test-pa16` exits 2 with 199/243 passed and 44 failed;
+its complete external log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-20260829.log`.
+All 243 checked-in identities are covered: 199 passed plus 44 current
+failures. The exact sorted current failure set is the complete 49-entry
+turn-start map above minus these five removed identities:
+
+- pa16/tests/general/100-global-aggregate-nested-array-initializer.t
+- pa16/tests/general/200-defaulted-constructor-still-aggregate.t
+- pa16/tests/general/200-deleted-constructor-still-aggregate.t
+- pa16/tests/general/200-qualified-friend-function-member-access.t
+- pa16/tests/general/300-unary-address-of-builtin-fallback.t
+
+Set comparison against both `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+and this preserved map found no new current failure and no baseline-passing
+regression; the current set is a strict subset. The exact prior gate
+`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
+exits 0 with 1167/1167; its complete log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/through-pa15-final-rerun-20260829.log`.
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits 0
+with five pre-existing warnings; its log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-file-audit-final-rerun-20260829.log`.
+The focused five-test and PA15 course-404 controls remain passing, and the
+temporary member-side-effect/plain-return and unused-class probes retain
+procedural materialization. Structural evidence remains one typed enum
+read/write per existing conversion, one boolean OR per returned expression,
+and one indexed function-fact lookup per call; no timing claim is made.
+Remaining uncertainty is the conservative OR-summary for functions with
+multiple returns and the unrelated residual 44-test failure set.
 
 | checkpoint | status |
 | --- | --- |
 | c507120c..e9d92812 plus bounded typed-path audit | final audit preserves 194/243, the exact 49-failure map, and 243/243 coverage; through-PA15 is 1167/1167, file audit passes with five warnings, and the single coherent checkpoint commit leaves a clean tree |
+| PA16 typed canonical-truth conversion boundary (return-summary revision, validated) | Per-expression `contains_member_value`/implicit-`this` provenance plus the precise `FunctionFact` return-result summary assigns PA12 `CanonicalTruthPolicy` and carries it through PA15 `LoweredValue`; final PA16 is 199/243 with the exact baseline 49-failure set reduced by the five listed identities, 243/243 covered, no baseline-passing regression, prior-through is 1167/1167, and file audit passes with five warnings; focused controls and negative probes retain procedural materialization |

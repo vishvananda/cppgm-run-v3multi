@@ -1110,8 +1110,20 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 	}
 	else if (!void_id(result_type))
 		throw std::runtime_error("PA12 missing return value");
-	return make_expression_fact(SemanticFactKind::ReturnStatement,
+	const SemanticFactId result = make_expression_fact(
+		SemanticFactKind::ReturnStatement,
 		TypeId(), SemanticValueCategory::Prvalue, node, children);
+	// Publish only the value provenance rooted at this ReturnStatement.  The
+	// enclosing compound may contain arbitrary accesses and side effects that
+	// are not part of the function result.
+	if (function.binding.valid() &&
+		semantic_facts_[result.value].contains_member_value)
+	{
+		FunctionFact* owner = function_fact_for_binding(function.binding);
+		if (owner != NULL)
+			owner->return_result_contains_member_value = true;
+	}
+	return result;
 }
 ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	const PA10AstNode& node, ScopeId scope, TypeId target,

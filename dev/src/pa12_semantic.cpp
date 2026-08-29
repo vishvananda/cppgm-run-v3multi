@@ -751,6 +751,36 @@ void PA11SemanticModel::set_semantic_children(SemanticFactId fact,
 	owner.child_count = children.size();
 	semantic_children_.insert(semantic_children_.end(), children.begin(),
 		children.end());
+	// Value provenance is a property of the semantic edge, not of the
+	// translation unit.  Publish it while the owner already has its child
+	// range, so later consumers need no block walk.
+	for (std::size_t i = 0; i < children.size(); ++i)
+		if (children[i].valid() && children[i].value < semantic_facts_.size() &&
+			semantic_facts_[children[i].value].contains_member_value)
+			owner.contains_member_value = true;
+	if (owner.kind == SemanticFactKind::CallExpression && owner.has_callee &&
+		owner.selected_binding.valid())
+	{
+		// A direct call can return a member-derived value even when the call has
+		// no member expression of its own.  Only the selected function's typed
+		// return-result summary contributes here; unrelated body statements do
+		// not describe the value produced by the call.
+		const FunctionFact* function = function_fact_for_binding(
+			owner.selected_binding);
+		if (function != NULL && function->return_result_contains_member_value)
+			owner.contains_member_value = true;
+	}
+	if (owner.kind == SemanticFactKind::Variable && owner.binding.valid() &&
+		owner.contains_member_value &&
+		binding(owner.binding).kind == BindingKind::Variable)
+	{
+		BindingSidecar sidecar;
+		const BindingSidecar* existing = binding_sidecar(owner.binding);
+		if (existing != NULL)
+			sidecar = *existing;
+		sidecar.has_member_value_provenance = true;
+		set_binding_sidecar(owner.binding, sidecar);
+	}
 }
 void PA11SemanticModel::set_semantic_base_path(SemanticFactId fact,
 	const std::vector<NamedRecordId>& path)
@@ -1179,10 +1209,6 @@ SemanticFactId PA11SemanticModel::make_expression_fact(SemanticFactKind kind, Ty
 {
 	SemanticFact fact(kind, type, category, &node);
 	fact.token = node.token;
-	for (std::size_t i = 0; i < children.size(); ++i)
-		if (children[i].valid() && children[i].value < semantic_facts_.size() &&
-			semantic_facts_[children[i].value].contains_member_value)
-			fact.contains_member_value = true;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result, children);
 	return result;
@@ -1349,6 +1375,8 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 		type = types_[type.value].child;
 	SemanticFact fact(SemanticFactKind::IdExpression, type, category, &node);
 	fact.binding = values.front().binding;
+	fact.contains_member_value = sidecar != NULL &&
+		sidecar->has_member_value_provenance;
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_name(result, path);
 	return ExprInfo(result, type, category, false);
@@ -1654,6 +1682,11 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	result_fact.canonical_truth = bool_id(type) &&
 		(comparison || node.token == SimpleTokenType::OP_LAND ||
 			node.token == SimpleTokenType::OP_LOR);
+	const BindingId this_id = implicit_this_binding(scope);
+	if (this_id.valid())
+		for (std::size_t i = 0; i < children.size(); ++i)
+			if (semantic_facts_[children[i].value].binding == this_id)
+				result_fact.contains_member_value = true;
 	result_fact.direct_bool_boundary = result_fact.canonical_truth &&
 		result_fact.contains_member_value;
 	return ExprInfo(result, type, category, false);

@@ -129,6 +129,15 @@ enum class ConversionKind
 	ToVoid
 };
 
+// PA12 records whether a canonical truth value must first cross the semantic
+// bool representation.  The disposition is typed conversion data so PA15
+// does not infer it from a block producer or rendered source.
+enum class CanonicalTruthPolicy
+{
+	Materialize,
+	Preserve
+};
+
 // Keep the standard-conversion rank category separate from the typed
 // derived-to-base secondary ordering.  In particular, a base-path length is
 // not a rank band: it is only meaningful after the standard category has
@@ -256,13 +265,15 @@ struct ConversionFact
 	ScopeId base_access_scope;
 	std::size_t base_path_begin;
 	std::size_t base_path_count;
+	CanonicalTruthPolicy canonical_truth_policy;
 	ConversionFact(TypeId source = TypeId(), TypeId target = TypeId(),
 		ConversionKind kind = ConversionKind::Identity, unsigned int rank = 0)
 		: source(source), target(target), kind(kind), rank(rank),
 		  rank_category(conversion_rank_category(kind, rank)),
 		  base_distance(0), added_cv(0), base_access_checked(false),
 		  base_access_scope(),
-		  base_path_begin(InvalidIdentityValue), base_path_count(0)
+		  base_path_begin(InvalidIdentityValue), base_path_count(0),
+		  canonical_truth_policy(CanonicalTruthPolicy::Materialize)
 	{}
 };
 

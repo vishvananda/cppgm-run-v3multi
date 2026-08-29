@@ -2139,28 +2139,27 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 		if (model_.fundamental_of(conversion.target, &target_fundamental) &&
 			target_fundamental == FundamentalType::Bool)
 		{
-			if (result->canonical_truth)
+			if (result->canonical_truth &&
+				result->canonical_truth_policy == CanonicalTruthPolicy::Materialize &&
+				!omit_boolean_context && result->physical_type != target)
 			{
-				if (!omit_boolean_context && result->physical_type != target)
-				{
-					if (!result->physical_type.is_integer() ||
-						!target.is_integer() ||
-						result->physical_type.integer_width() <= target.integer_width())
-						throw std::runtime_error(
-							"PA15 canonical truth cannot materialize as bool");
-					Instruction instruction;
-					instruction.kind = Instruction::IK_CONVERT;
-					instruction.source_type = result->physical_type;
-					instruction.first = result->value;
-					instruction.conversion_operator = lowir_model::COP_TRUNC;
-					const ValueId value = destination(target, &instruction);
-					block().instructions.push_back(instruction);
-					*result = LoweredValue(temporary_operand(value,
-						instruction.destination_name_id), target, false);
-				}
-				else
-					result->type = target;
+				if (!result->physical_type.is_integer() ||
+					!target.is_integer() ||
+					result->physical_type.integer_width() <= target.integer_width())
+					throw std::runtime_error(
+						"PA15 canonical truth cannot materialize as bool");
+				Instruction instruction;
+				instruction.kind = Instruction::IK_CONVERT;
+				instruction.source_type = result->physical_type;
+				instruction.first = result->value;
+				instruction.conversion_operator = lowir_model::COP_TRUNC;
+				const ValueId value = destination(target, &instruction);
+				block().instructions.push_back(instruction);
+				*result = LoweredValue(temporary_operand(value,
+					instruction.destination_name_id), target, false);
 			}
+			else if (result->canonical_truth)
+				result->type = target;
 			else if (result->physical_type.is_integer() &&
 				result->physical_type != target)
 			{
@@ -2312,13 +2311,14 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 				continue;
 			}
 			// Comparisons and short-circuit expressions carry canonical truth as
-			// physical i64 until a value context asks for the semantic bool.  A
-			// following recorded bool conversion must consume that semantic u8;
-			// otherwise conversion_operator() would describe a u8 source while
-			// the emitted operand still has physical i64 type.  Keep this
-			// materialization separate from the recorded conversion so the latter
-			// remains visible and typed in LowIR.
+			// physical i64.  PA12 owns whether this conversion crosses the
+			// semantic bool representation; preserve that disposition through
+			// LoweredValue instead of inferring it from the current block.
 			if (result.canonical_truth && source_is_bool &&
+				conversion.canonical_truth_policy == CanonicalTruthPolicy::Preserve)
+				result.canonical_truth_policy = CanonicalTruthPolicy::Preserve;
+			if (result.canonical_truth && source_is_bool &&
+				result.canonical_truth_policy == CanonicalTruthPolicy::Materialize &&
 				conversion.kind != ConversionKind::Identity)
 			{
 				if (!result.physical_type.is_integer() ||

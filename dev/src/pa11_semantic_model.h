@@ -266,14 +266,17 @@ enum class FunctionDeclarationKind
 struct BindingSidecar
 {
 	BindingId backing_storage;
-	NamedRecordId constructor_record; NamedRecordId destructor_record;
+	NamedRecordId constructor_record;
+	NamedRecordId destructor_record;
 	NamedRecordId generated_name_record;
-	bool hidden_friend; std::vector<NamedRecordId> friend_records;
+	bool hidden_friend;
+	std::vector<NamedRecordId> friend_records;
 	MemberAccess member_access;
 	bool static_member;
 	bool inline_member;
 	bool has_default_member_initializer;
 	SemanticFactId default_member_initializer;
+	bool has_member_value_provenance;
 	// Non-static member alignment is retained on the canonical binding until
 	// RecordLayout consumes it; static members never participate in layout.
 	bool has_requested_alignment;
@@ -291,13 +294,15 @@ struct BindingSidecar
 	BindingSidecar(BindingId backing_storage = BindingId(),
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
-		: backing_storage(backing_storage), constructor_record(constructor_record), destructor_record(),
+		: backing_storage(backing_storage),
+		  constructor_record(constructor_record), destructor_record(),
 		  generated_name_record(generated_name_record),
 			hidden_friend(false), friend_records(),
 			member_access(MemberAccess::Public), static_member(false),
 			inline_member(false),
 		  has_default_member_initializer(false),
 		  default_member_initializer(),
+		  has_member_value_provenance(false),
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
@@ -1036,20 +1041,17 @@ struct DestructorActionFact
 		BindingId destructor = BindingId(), TypeId object_type = TypeId())
 		: target(target), base_record(base_record), member(member), destructor(destructor),
 		  object_type(object_type)
-	{}
-};
-
+		{}
+	};
 enum class LifetimeStorageKind { Automatic, Namespace };
 struct LifetimeFact
 {
 	BindingId object; TypeId object_type; BindingId destructor; ScopeId scope; LifetimeStorageKind storage;
 	LifetimeFact(BindingId object = BindingId(), TypeId object_type = TypeId(),
 		BindingId destructor = BindingId(), ScopeId scope = ScopeId(), LifetimeStorageKind storage = LifetimeStorageKind::Automatic)
-		: object(object), object_type(object_type), destructor(destructor), scope(scope), storage(storage) {}
-};
-
+			: object(object), object_type(object_type), destructor(destructor), scope(scope), storage(storage) {}
+	};
 enum class ConstructorRuntimeCacheState : std::uint8_t { Unseen, InProgress, Complete };
-
 struct FunctionFact
 {
 	const PA10AstNode* node;
@@ -1058,6 +1060,7 @@ struct FunctionFact
 	ScopeId function_scope;
 	ScopeId body_scope;
 	SemanticFactId body_fact;
+	bool return_result_contains_member_value;
 	LabelTableId label_table;
 	std::size_t default_argument_begin; std::size_t default_argument_count;
 	bool is_constructor; bool is_destructor; bool synthetic;
@@ -1072,6 +1075,7 @@ struct FunctionFact
 		ScopeId body_scope = ScopeId())
 		: node(node), owner(owner), binding(binding),
 		  function_scope(function_scope), body_scope(body_scope), body_fact(),
+		  return_result_contains_member_value(false),
 		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
 		  default_argument_count(0), is_constructor(false), is_destructor(false),
@@ -1079,8 +1083,8 @@ struct FunctionFact
 		  constructor_action_begin(InvalidIdentityValue), constructor_action_count(0),
 		  destructor_action_begin(InvalidIdentityValue),
 		  destructor_action_count(0)
-	{}
-	};
+		{}
+		};
 struct LabelFact
 {
 	NameId name;
@@ -1088,16 +1092,14 @@ struct LabelFact
 
 	LabelFact(NameId name = NameId(), const PA10AstNode* node = NULL)
 		: name(name), node(node)
-	{}
-};
-
+		{}
+	};
 struct FunctionLabelTable
 {
 	FlatIndex<NameId, LabelId, IdentityHash<NameId> > by_name;
 
-	FunctionLabelTable() : by_name() {}
-};
-
+		FunctionLabelTable() : by_name() {}
+	};
 struct SyntheticFunctionFact
 {
 	NamedRecordId record;
@@ -1106,9 +1108,8 @@ struct SyntheticFunctionFact
 	SyntheticFunctionFact(NamedRecordId record = NamedRecordId(),
 		BindingId binding = BindingId())
 		: record(record), binding(binding)
-	{}
-};
-
+		{}
+	};
 struct NamespaceFact
 {
 	const PA10AstNode* node;
@@ -1116,9 +1117,8 @@ struct NamespaceFact
 
 	NamespaceFact(const PA10AstNode* node = NULL, ScopeId scope = ScopeId())
 		: node(node), scope(scope)
-	{}
+		{}
 };
-
 struct CompoundFact
 {
 	const PA10AstNode* node;

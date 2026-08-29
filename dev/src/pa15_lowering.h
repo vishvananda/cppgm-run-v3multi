@@ -46,20 +46,24 @@ struct LoweredValue
 	bool bit_field_lvalue;
 	BindingId bit_field_binding;
 	bool canonical_truth;
+	CanonicalTruthPolicy canonical_truth_policy;
 	Operand condition_value;
 	bool has_condition_value;
 
 	LoweredValue() : value(), type(), physical_type(), lvalue(false),
 		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue)
 		: value(value), type(type), physical_type(type), lvalue(lvalue),
 		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue,
 		const LowType& physical_type)
 		: value(value), type(type), physical_type(physical_type), lvalue(lvalue),
 		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 };
 
