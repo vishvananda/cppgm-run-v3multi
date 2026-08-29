@@ -1066,8 +1066,8 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 					if (!relation_visible_at(frame.scope, entry.declaration_point,
 						point))
 						continue;
-					if (entry.has_access_override && (!entry.access_view_owner.valid() || entry.access_view_owner != frame.scope || frame.scope.value >= scopes_.size() || scopes_[frame.scope.value].kind != ScopeKind::Class)) throw std::runtime_error("PA11 access view owner identity is invalid");
-					else if (!entry.has_access_override && entry.access_view_owner.valid()) throw std::runtime_error("PA11 unowned access view identity is invalid");
+					if (!entry.binding.valid() || entry.binding.value >= bindings_.size() || entry.binding.value >= binding_owners_.size() || !entry.origin.valid() || entry.origin.value >= scopes_.size() || binding_owners_[entry.binding.value] != entry.origin) throw std::runtime_error("PA11 value entry identity is invalid");
+					if ((entry.has_access_override && (!entry.access_view_owner.valid() || entry.access_view_owner != frame.scope || frame.scope.value >= scopes_.size() || scopes_[frame.scope.value].kind != ScopeKind::Class)) || (!entry.has_access_override && (entry.access_view_owner.valid() || entry.access_override != MemberAccess::Public))) throw std::runtime_error("PA11 access view identity is invalid");
 					result->push_back(ValueRef(entry.origin, entry.binding, entry.has_access_override, entry.access_override, entry.access_view_owner));
 					have_visible = true;
 				}
@@ -1183,9 +1183,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
 		return result;
 	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
-	const ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix,
-		point) :
-		resolve_qualifier_scope(prefix, start, point);
+	const ScopeId scope = path.global ? resolve_global_qualifier_scope(prefix, point, start) : resolve_qualifier_scope(prefix, start, point, start);
 	if (!scope.valid())
 		return std::vector<ValueRef>();
 	begin_lookup();
@@ -1194,7 +1192,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
 	return result;
 }
 ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& components,
-	ScopeId start, SourcePoint point) const
+	ScopeId start, SourcePoint point, ScopeId access_scope) const
 {
 	if (components.empty())
 		return ScopeId();
@@ -1204,7 +1202,8 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 	std::size_t at = 1;
 	if (!scope.valid())
 	{
-		const TypeId type = lookup_type_unqualified(start, components[0], point);
+		BindingId declaration; const TypeId type = lookup_type_unqualified(start, components[0], point, &declaration);
+		if (!type_path_component_accessible(type, declaration, start, access_scope)) return ScopeId();
 		scope = scope_for_type(type);
 		if (!scope.valid())
 			return ScopeId();
@@ -1219,7 +1218,8 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 			scope = next_namespace;
 			continue;
 		}
-		const TypeId type = lookup_type_qualified(scope, components[at], point);
+		BindingId declaration; const TypeId type = lookup_type_qualified(scope, components[at], point, &declaration);
+		if (!type_path_component_accessible(type, declaration, scope, access_scope)) return ScopeId();
 		scope = scope_for_type(type);
 		if (!scope.valid())
 			return ScopeId();
@@ -1227,8 +1227,7 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 	return scope;
 }
 
-ScopeId PA11SemanticModel::resolve_global_qualifier_scope(
-	const std::vector<NameId>& components, SourcePoint point) const
+ScopeId PA11SemanticModel::resolve_global_qualifier_scope(const std::vector<NameId>& components, SourcePoint point, ScopeId access_scope) const
 {
 	if (components.empty())
 		return global_;
@@ -1236,7 +1235,8 @@ ScopeId PA11SemanticModel::resolve_global_qualifier_scope(
 	ScopeId scope = lookup_namespace_graph(global_, components[0], true, point);
 	if (!scope.valid())
 	{
-		const TypeId type = lookup_type_qualified(global_, components[0], point);
+		BindingId declaration; const TypeId type = lookup_type_qualified(global_, components[0], point, &declaration);
+		if (!type_path_component_accessible(type, declaration, global_, access_scope)) return ScopeId();
 		scope = scope_for_type(type);
 	}
 	for (std::size_t i = 1; i < components.size() && scope.valid(); ++i)
@@ -1246,9 +1246,7 @@ ScopeId PA11SemanticModel::resolve_global_qualifier_scope(
 			components[i], true, point);
 		if (next_namespace.valid())
 			scope = next_namespace;
-		else
-			scope = scope_for_type(lookup_type_qualified(scope,
-				components[i], point));
+		else { BindingId declaration; const TypeId type = lookup_type_qualified(scope, components[i], point, &declaration); if (!type_path_component_accessible(type, declaration, scope, access_scope)) return ScopeId(); scope = scope_for_type(type); }
 	}
 	return scope;
 }
@@ -1474,8 +1472,10 @@ Binding& PA11SemanticModel::binding(BindingId id)
 void PA11SemanticModel::append_value_index(ScopeId scope, NameId name, BindingId id, ScopeId origin, SourcePoint declaration_point,
 	bool has_access_override, MemberAccess access_override, ScopeId access_view_owner)
 {
-	if (has_access_override && (!scope.valid() || scope.value >= scopes_.size() || scopes_[scope.value].kind != ScopeKind::Class || access_view_owner != scope)) throw std::runtime_error("PA11 access view publication owner is invalid");
-	if (!has_access_override && access_view_owner.valid()) throw std::runtime_error("PA11 unowned access view publication is invalid");
+	if (!scope.valid() || scope.value >= scopes_.size() || !name.valid() || !id.valid() || id.value >= bindings_.size() || id.value >= binding_owners_.size()) throw std::runtime_error("PA11 value index publication identity is invalid");
+	const ScopeId actual_origin = origin.valid() ? origin : scope;
+	if (!actual_origin.valid() || actual_origin.value >= scopes_.size() || binding_owners_[id.value] != actual_origin) throw std::runtime_error("PA11 value index publication owner is invalid");
+	if ((has_access_override && (scopes_[scope.value].kind != ScopeKind::Class || access_view_owner != scope)) || (!has_access_override && (access_view_owner.valid() || access_override != MemberAccess::Public))) throw std::runtime_error("PA11 access view publication identity is invalid");
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> >& index =
 		scopes_[scope.value].values;
 	ValueList* list = index.find(name);
@@ -1484,7 +1484,7 @@ void PA11SemanticModel::append_value_index(ScopeId scope, NameId name, BindingId
 		index.set(name, ValueList());
 		list = index.find(name);
 	}
-	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope, declaration_point, has_access_override, access_override, access_view_owner));
+	list->entries.push_back(ValueEntry(id, actual_origin, declaration_point, has_access_override, access_override, access_view_owner));
 }
 TypeId PA11SemanticModel::ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)

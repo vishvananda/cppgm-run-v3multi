@@ -1476,6 +1476,7 @@ private:
 	;
 	BindingId type_declaration_identity(ScopeId scope, NameId name) const
 	;
+	bool type_path_component_accessible(TypeId type, BindingId declaration, ScopeId naming_scope, ScopeId access_scope) const;
 	bool inline_namespace_visible_at(ScopeId scope,
 		SourcePoint point) const
 	;
@@ -1528,14 +1529,14 @@ private:
 		SourcePoint point = SourcePoint()) const
 	;
 	ScopeId resolve_qualifier_scope(const std::vector<NameId>& components,
-		ScopeId start, SourcePoint point = SourcePoint()) const
+		ScopeId start, SourcePoint point = SourcePoint(), ScopeId access_scope = ScopeId()) const
 	;
 	TypeId lookup_type_path(const NamePath& path, ScopeId start, SourcePoint point = SourcePoint(),
 		BindingId* declaration = NULL, ScopeId access_scope = ScopeId()) const
 	;
 	ScopeId resolve_global_qualifier_scope(
 		const std::vector<NameId>& components,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), ScopeId access_scope = ScopeId()) const
 	;
 	ScopeId resolve_namespace_path(const NamePath& path, ScopeId start,
 		SourcePoint point = SourcePoint()) const
@@ -1782,7 +1783,7 @@ private:
 		BindingId binding, ScopeId scope)
 	;
 	void process_base_clause(const PA10AstNode& node,
-		NamedRecordId record, ScopeId scope)
+		NamedRecordId record, ScopeId scope, ScopeId access_scope)
 	;
 	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner,
 		bool alignment_applied)
@@ -2396,5 +2397,4 @@ private:
 	void dump_scope(std::ostream& output, ScopeId scope, std::size_t depth) const
 	;
 };
-
 }

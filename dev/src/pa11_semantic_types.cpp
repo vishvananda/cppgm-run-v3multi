@@ -83,6 +83,49 @@ TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name,
 	return TypeId();
 }
 
+bool PA11SemanticModel::type_path_component_accessible(TypeId type,
+	BindingId declaration, ScopeId naming_scope, ScopeId access_scope) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	if (!access_scope.valid())
+		return true;
+	if (declaration.valid())
+	{
+		if (declaration.value >= bindings_.size() ||
+			declaration.value >= binding_owners_.size())
+			throw std::runtime_error("PA11 type declaration identity is invalid");
+		const ScopeId owner = binding_owners_[declaration.value];
+		if (!owner.valid() || owner.value >= scopes_.size())
+			throw std::runtime_error("PA11 type declaration owner is invalid");
+		if (scopes_[owner.value].kind != ScopeKind::Class)
+			return true;
+		return member_accessible(declaration, owner, access_scope, TypeId());
+	}
+
+	// A missing declaration identity is only expected for an injected class
+	// name or the base-class fallback in qualified lookup.  Keep those cases
+	// typed: the injected name is the current scope, while a base fallback is
+	// subject to the complete direct-base access path.
+	const ScopeId type_scope = class_scope_for_type(type);
+	if (!type_scope.valid())
+		return true;
+	if (!naming_scope.valid() || naming_scope.value >= scopes_.size())
+		return false;
+	if (type_scope == naming_scope)
+		return true;
+	if (scopes_[naming_scope.value].kind != ScopeKind::Class ||
+		!scopes_[naming_scope.value].record.valid() ||
+		scopes_[naming_scope.value].record.value >= named_.size() ||
+		named_[scopes_[naming_scope.value].record.value].kind != NamedKind::Class ||
+		named_[scopes_[naming_scope.value].record.value].scope != naming_scope)
+		return false;
+	const TypeId naming_type = named_type(
+		scopes_[naming_scope.value].record);
+	return member_base_path(naming_type, type_scope, NULL) &&
+		base_path_accessible(naming_type, type_scope, access_scope);
+}
+
 TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 	SourcePoint point, BindingId* declaration, ScopeId access_scope) const
 {
@@ -92,20 +135,6 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 	*resolved_declaration = BindingId();
 	const ScopeId effective_access_scope = access_scope.valid() ? access_scope :
 		start;
-	const auto type_accessible = [this, effective_access_scope](
-		BindingId candidate) -> bool {
-		if (!candidate.valid())
-			return true;
-		if (candidate.value >= bindings_.size() ||
-			candidate.value >= binding_owners_.size())
-			throw std::runtime_error("PA11 type declaration identity is invalid");
-		const ScopeId owner = binding_owners_[candidate.value];
-		if (!owner.valid() || owner.value >= scopes_.size() ||
-			scopes_[owner.value].kind != ScopeKind::Class)
-			return true;
-		return member_accessible(candidate, owner, effective_access_scope,
-			TypeId());
-	};
 	if (path.components.empty())
 		return TypeId();
 	if (!point.valid())
@@ -118,7 +147,9 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 			lookup_type_unqualified(start, path.last(), point,
 				resolved_declaration);
 		if (found.valid())
-			return type_accessible(*resolved_declaration) ? found : TypeId();
+			return type_path_component_accessible(found, *resolved_declaration,
+				path.global ? global_ : start, effective_access_scope) ? found :
+				TypeId();
 		if (name_text(path.last()) == "nullptr_t")
 			return fundamental(FundamentalType::NullptrT);
 		return found;
@@ -137,8 +168,15 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 			if (next_namespace.valid())
 				scope = next_namespace;
 			else
-				scope = scope_for_type(lookup_type_qualified(scope,
-					path.components[i], point));
+			{
+				BindingId component_declaration;
+				const TypeId component = lookup_type_qualified(scope,
+					path.components[i], point, &component_declaration);
+				if (!type_path_component_accessible(component,
+					component_declaration, scope, effective_access_scope))
+					return TypeId();
+				scope = scope_for_type(component);
+			}
 			if (!scope.valid())
 				return TypeId();
 		}
@@ -148,15 +186,15 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 		std::vector<NameId> prefix(path.components.begin(),
 			path.components.end() - 1);
 		scope = path.global ?
-			resolve_global_qualifier_scope(prefix, point) :
-			resolve_qualifier_scope(prefix, start, point);
+			resolve_global_qualifier_scope(prefix, point, effective_access_scope) :
+			resolve_qualifier_scope(prefix, start, point, effective_access_scope);
 	}
 	if (!scope.valid())
 		return TypeId();
 	const TypeId found = lookup_type_qualified(scope, path.last(), point,
 		resolved_declaration);
-	return found.valid() && type_accessible(*resolved_declaration) ? found :
-		TypeId();
+	return found.valid() && type_path_component_accessible(found,
+		*resolved_declaration, scope, effective_access_scope) ? found : TypeId();
 }
 
 TypeId PA11SemanticModel::make_cv(TypeId child, unsigned int qualifiers)

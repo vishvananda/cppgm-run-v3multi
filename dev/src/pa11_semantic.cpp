@@ -266,7 +266,7 @@ void PA11SemanticModel::apply_member_alignment(const PA10AstNode& node,
 }
 
 void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
-	NamedRecordId record_id, ScopeId scope)
+	NamedRecordId record_id, ScopeId scope, ScopeId access_scope)
 {
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class)
@@ -315,7 +315,7 @@ void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 	if (base_name == NULL)
 		throw std::runtime_error("base specifier has no name");
 	const TypeId base_type = lookup_type_path(name_path(*base_name, scope), scope,
-		SourcePoint(node.source_begin));
+		SourcePoint(node.source_begin), NULL, access_scope);
 	if (!base_type.valid())
 		throw std::runtime_error("unknown PA11 direct base type");
 	const TypeId unqualified = strip_cv_type(base_type);
@@ -359,7 +359,7 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 		if (kind == PA10NodeKind::ClassKey || kind == PA10NodeKind::BaseClause)
 		{
 			if (kind == PA10NodeKind::BaseClause)
-				process_base_clause(child, record_id, owner);
+				process_base_clause(child, record_id, owner, class_scope);
 			continue;
 		}
 		if (kind == PA10NodeKind::AccessSpecifier)
@@ -2063,16 +2063,10 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	{
 		if (direct_value_exists(scope, introduced))
 			throw std::runtime_error("using declaration conflicts with binding");
-		current.types.set(introduced, type);
-		current.using_types.set(introduced, type);
-		BindingKind kind = BindingKind::TypeAlias;
-		if (origin.valid() && binding(origin).kind == BindingKind::Type)
-			kind = BindingKind::Type;
-		const BindingId introduced_binding = store_binding(scope,
-			Binding(kind, introduced, type));
-		record_type_declaration(scope, introduced,
-			SourcePoint(node.source_begin), origin.valid() ? origin :
-			introduced_binding);
+		current.types.set(introduced, type); current.using_types.set(introduced, type);
+		BindingKind kind = BindingKind::TypeAlias; if (origin.valid() && binding(origin).kind == BindingKind::Type) kind = BindingKind::Type;
+		const BindingId introduced_binding = store_binding(scope, Binding(kind, introduced, type)); set_member_access(introduced_binding, class_access_view ? member_access : MemberAccess::Public);
+		record_type_declaration(scope, introduced, SourcePoint(node.source_begin), introduced_binding);
 		return;
 	}
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
@@ -2083,9 +2077,9 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		if (!imported_binding.valid() || imported_binding.value >= bindings_.size() || imported_binding.value >= binding_owners_.size()) throw std::runtime_error("PA11 using declaration binding identity is invalid");
 		const ScopeId declared_scope = binding_owners_[imported_binding.value];
 		if (!declared_scope.valid() || declared_scope.value >= scopes_.size()) throw std::runtime_error("PA11 using declaration owner is invalid");
-		const bool class_member = class_access_view && scopes_[declared_scope.value].kind == ScopeKind::Class;
+		const bool class_member = class_access_view && scopes_[declared_scope.value].kind == ScopeKind::Class; const bool source_member = scopes_[declared_scope.value].kind == ScopeKind::Class;
+		if (source_member && !member_accessible(imported_binding, declared_scope, scope, TypeId())) throw std::runtime_error("PA11 using declaration member is inaccessible");
 		if (class_member && (!current.record.valid() || current.record.value >= named_.size() || named_[current.record.value].kind != NamedKind::Class || !member_base_path(named_type(current.record), declared_scope, NULL) || !base_path_accessible(named_type(current.record), declared_scope, scope))) throw std::runtime_error("PA11 using declaration member is not a base member");
-		if (class_member && !member_accessible(imported_binding, declared_scope, scope, TypeId())) throw std::runtime_error("PA11 using declaration member is inaccessible");
 	}
 	const ValueList* existing = current.values.find(introduced);
 	bool existing_functions = existing != NULL && !existing->entries.empty();
@@ -2446,7 +2440,7 @@ void PA11SemanticModel::record_friend_function(BindingId binding_id,
 	set_named_record_sidecar(record, record_sidecar);
 }
 void PA11SemanticModel::record_friend_class(NamedRecordId owner, NamedRecordId friend_record) {
-	if (!owner.valid() || owner.value >= named_.size() || named_[owner.value].kind != NamedKind::Class || !named_[owner.value].scope.valid() || !friend_record.valid() || friend_record.value >= named_.size() || named_[friend_record.value].kind != NamedKind::Class) throw std::runtime_error("invalid PA11 friend class relation");
+	if (!owner.valid() || owner.value >= named_.size() || named_[owner.value].kind != NamedKind::Class || !named_[owner.value].scope.valid() || named_[owner.value].scope.value >= scopes_.size() || scopes_[named_[owner.value].scope.value].kind != ScopeKind::Class || scopes_[named_[owner.value].scope.value].record != owner || !friend_record.valid() || friend_record.value >= named_.size() || named_[friend_record.value].kind != NamedKind::Class || (named_[friend_record.value].scope.valid() && (named_[friend_record.value].scope.value >= scopes_.size() || scopes_[named_[friend_record.value].scope.value].kind != ScopeKind::Class || scopes_[named_[friend_record.value].scope.value].record != friend_record))) throw std::runtime_error("invalid PA11 friend class relation");
 	NamedRecordSidecar owner_sidecar; const NamedRecordSidecar* existing_owner = named_record_sidecar(owner); if (existing_owner != NULL) owner_sidecar = *existing_owner;
 	bool owner_relation_present = false; for (std::size_t i = 0; i < owner_sidecar.friend_class_records.size(); ++i) if (owner_sidecar.friend_class_records[i] == friend_record) { owner_relation_present = true; break; }
 	if (!owner_relation_present) { owner_sidecar.friend_class_records.push_back(friend_record); set_named_record_sidecar(owner, owner_sidecar); }

@@ -260,4 +260,77 @@ printf '%s\n' \
   >"$friend_base_object_source"
 expect_failure friend-protected-base-object "$friend_base_object_source"
 
+public_protected_type_source=$build_dir/public-protected-type.cpp
+printf '%s\n' \
+  'class Base { protected: typedef int Type; };' \
+  'class Derived : public Base {' \
+  'public:' \
+  '  using Base::Type;' \
+  '};' \
+  'int main() { Derived::Type value = 0; return value; }' \
+  >"$public_protected_type_source"
+expect_success public-protected-type "$public_protected_type_source"
+
+private_type_view_source=$build_dir/private-type-view.cpp
+printf '%s\n' \
+  'class Base { public: typedef int Type; };' \
+  'class Derived : public Base {' \
+  'private:' \
+  '  using Base::Type;' \
+  '};' \
+  'int main() { Derived::Type value = 0; return value; }' \
+  >"$private_type_view_source"
+expect_failure private-type-view "$private_type_view_source"
+
+protected_type_view_source=$build_dir/protected-type-view.cpp
+printf '%s\n' \
+  'class Base { public: typedef int Type; };' \
+  'class Derived : public Base {' \
+  'protected:' \
+  '  using Base::Type;' \
+  '};' \
+  'int main() { Derived::Type value = 0; return value; }' \
+  >"$protected_type_view_source"
+expect_failure protected-type-view "$protected_type_view_source"
+
+private_source_type=$build_dir/private-source-type.cpp
+printf '%s\n' \
+  'class Base { private: typedef int Type; };' \
+  'class Derived : public Base {' \
+  'public:' \
+  '  using Base::Type;' \
+  '};' \
+  'int main() { return 0; }' >"$private_source_type"
+expect_failure private-source-type "$private_source_type"
+
+friend_private_type_source=$build_dir/friend-private-type.cpp
+printf '%s\n' \
+  'class Derived;' \
+  'class Base { private: typedef int Type; friend class Derived; };' \
+  'class Derived : public Base {' \
+  'public:' \
+  '  using Base::Type;' \
+  '};' \
+  'int main() { Derived::Type value = 0; return value; }' \
+  >"$friend_private_type_source"
+expect_success friend-private-type "$friend_private_type_source"
+
+namespace_class_using_source=$build_dir/namespace-class-using.cpp
+printf '%s\n' \
+  'class Base { public: typedef int Type; static int value; };' \
+  'int Base::value = 0;' \
+  'using Base::Type;' \
+  'using Base::value;' \
+  'int main() { Type result = value; return result; }' >"$namespace_class_using_source"
+expect_success namespace-class-using "$namespace_class_using_source"
+
+namespace_using_source=$build_dir/namespace-using.cpp
+printf '%s\n' \
+  'namespace Source { typedef int Type; int value = 1; }' \
+  'using Source::Type;' \
+  'using Source::value;' \
+  'int main() { Type result = value; return result == 1 ? 0 : 1; }' \
+  >"$namespace_using_source"
+expect_success namespace-using "$namespace_using_source"
+
 echo "419 typed using/friend access regression: PASS"
