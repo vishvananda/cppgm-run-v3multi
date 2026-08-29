@@ -92,7 +92,6 @@ const char* operator_name_key(PA10OperatorFunctionKind kind,
 	}
 	return NULL;
 }
-
 FunctionDeclarationKind special_initializer_kind(const PA10AstNode& init)
 {
 	if (init.children.size() != 2 ||
@@ -110,7 +109,6 @@ FunctionDeclarationKind special_initializer_kind(const PA10AstNode& init)
 		return FunctionDeclarationKind::Defaulted;
 	return FunctionDeclarationKind::Normal;
 }
-
 bool has_bare_noexcept(const PA10AstNode& declarator)
 {
 	for (std::size_t i = 0; i < declarator.children.size(); ++i)
@@ -123,9 +121,7 @@ bool has_bare_noexcept(const PA10AstNode& declarator)
 	}
 	return false;
 }
-
 }
-
 bool PA11SemanticModel::layout_depends_on_template_parameter(TypeId type) const
 {
 	if (!type.valid() || type.value >= types_.size())
@@ -2189,6 +2185,9 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope, Sc
 		case SimpleTokenType::KW_STATIC:
 			result.is_static = true;
 			break;
+		case SimpleTokenType::KW_MUTABLE:
+			result.is_mutable = true;
+			break;
 		case SimpleTokenType::KW_EXTERN:
 			result.is_extern = true;
 			break;
@@ -2402,6 +2401,8 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	if (node.children.size() == 1)
 	{
 		if (spec.is_auto) throw std::runtime_error("PA11 auto declaration has no declarator");
+		if (spec.is_mutable)
+			throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
 		if (spec.anonymous_record.valid())
 		{
 			const TypeId type = named_type(spec.anonymous_record);
@@ -2546,6 +2547,8 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			type_kind(type) != TypeKind::Function &&
 			target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class;
+		if (spec.is_mutable)
+			record_mutable_member(binding_id, type, record_member);
 		if (record_member)
 			append_record_member(scopes_[target.value].record, binding_id);
 		if (record_member)
@@ -2571,7 +2574,6 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	declaration_facts_.push_back(declaration);
 	declaration_fact_index_.set(&node, declaration_id);
 }
-
 NameId PA11SemanticModel::template_parameter_name(const PA10AstNode& node)
 {
 	for (std::size_t i = node.children.size(); i != 0; --i)
@@ -2894,7 +2896,6 @@ void PA11SemanticModel::collect_switch_transfer_points(
 		state->lexical_frames.back().scope != effective;
 	if (entered)
 		state->lexical_frames.push_back(SwitchInitializationFrame(effective));
-
 	if (node.kind == PA10NodeKind::SimpleDeclaration)
 	{
 		const DeclarationFact* declaration = declaration_fact(node);
@@ -2990,7 +2991,6 @@ void PA11SemanticModel::collect_switch_transfer_points(
 		for (std::size_t i = 0; i < node.children.size(); ++i)
 			collect_switch_transfer_points(node.children[i], effective, state);
 	}
-
 	if (entered)
 	{
 		state->active -= state->lexical_frames.back().initialized;

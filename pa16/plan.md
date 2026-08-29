@@ -2,22 +2,25 @@
 
 ## Current authority
 
-Clean starting authority for this checkpoint is c39d45634bb029a02c938c190f8ac703bd275050,
-PA16: preserve typed canonical truth boundaries. Its turn-start result is
-199/243 identities passed, exactly 44 failed, and 243/243 identities were
-covered. The final gate must remain at least 199/243 with no final-only
-identity and no coverage loss. The older e92 194/243, 49-failure result is
-retained only as historical context and is not current authority.
+Current committed authority is HEAD, `PA16: fix cv-qualified member object
+semantics`. This checkpoint started at 88d15835 (`PA16 checkpointAudit:
+finalize typed canonical truth`) with 199/243 identities passed, exactly 44
+failed, and 243/243 identities covered. Its final result is 200/243 with 43
+failures, no final-only identity, and 243/243 coverage. The older e92
+194/243, 49-failure result is retained only as historical context.
 
 ## Spec alignment and stage design
 
 PA11 owns canonical typed identities: SemanticFactId, BindingId,
-FunctionFactId, typed expression ownership, and recorded ConversionFact
-ranges. PA12 builds all retained facts and function bodies in deterministic
-source order. PA12 then runs one finalize_canonical_truth pass after
-construction; set_semantic_children and calls do not demand bodies or publish
-provenance. PA15 consumes the published fact/conversion owners and emits
-typed LowIR.
+FunctionFactId, typed expression ownership, declaration cv/mutable metadata,
+and recorded ConversionFact ranges. PA12 builds all retained facts and
+function bodies in deterministic source order. Member access consumes the
+typed owning BindingId to qualify a member subobject; member selection and
+operator ranking consume the typed implicit-object cv. Selected member calls
+then cross the existing explicit hidden-this function boundary. PA12 then
+runs one finalize_canonical_truth pass after construction; set_semantic_children
+and calls do not demand bodies or publish provenance. PA15 consumes the
+published fact/conversion owners and emits typed LowIR.
 
 The finalizer is one ephemeral local graph. A local ResultNodeId wraps its
 dense ordinal ranges for retained semantic facts, BindingId conservative
@@ -55,10 +58,10 @@ otherwise the existing Materialize disposition remains. PA15 resets
 LoweredValue from the current ConversionFact before each conversion, so a
 Preserve conversion cannot become sticky across a later Materialize record.
 
-## Exact final failure map
+## Turn-start failure map
 
-The final `make test-pa16` result is 199/243 passed, 44 failed, with all
-243 identities covered. The exact sorted residual identities are:
+The exact turn-start `make test-pa16` result is 199/243 passed, 44 failed,
+with all 243 identities covered. The exact sorted residual identities are:
 
 - pa16/tests/general/100-function-pointer-nested-param-name-shadow.t
 - pa16/tests/general/200-aliased-base-mem-initializer-match.t
@@ -105,13 +108,24 @@ The final `make test-pa16` result is 199/243 passed, 44 failed, with all
 - pa16/tests/general/400-signed-bit-field-read.t
 - pa16/tests/general/400-signed-enum-bit-field-read.t
 
-Compared with the turn-start
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`,
-baseline-only is 0, final-only is 0, missing coverage is 0, and unexpected
-coverage is 0. The final residual is therefore unchanged, not offset by
-extra passes.
+Focused identities and ownership outcomes:
 
-## Focused evidence
+- `200-const-subobject-member-call.t`: PA12 already selects
+  `Table::f() const` through the const `Map` subobject and exits successfully;
+  the residual is a PA15 empty-aggregate no-op projection in LowIR, excluded
+  from this cv/member-call checkpoint.
+- `200-mutable-member-const-method.t`: PA11 drops `mutable` and has no typed
+  member fact, so PA12 treats `&x` as const; owned by this checkpoint.
+- `300-member-vs-nonmember-operator-implicit-object-cv-rank.t`: PA12 records
+  the nonmember object's cv delta but omits it from its typed conversion score,
+  making the mixed candidate set ambiguous; owned by this checkpoint.
+
+The preceding identity comparison is the inherited checkpoint evidence. The
+final comparison against the turn-start
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
+recorded below.
+
+## Inherited focused evidence
 
 - `make clean` followed by `make -j2` exits 0 after the structural extraction.
 - The protected five command exits 0 with `pa16 check: PASS (5/5)`.
@@ -135,6 +149,25 @@ extra passes.
 - The fresh twelve-probe LowIR outputs are byte-identical to the
   pre-extraction outputs; the focused log is
   `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-focused-20260829.log`.
+
+## Focused evidence
+
+Command:
+`make -C pa16 check TEST='tests/general/200-const-subobject-member-call.t tests/general/200-mutable-member-const-method.t tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t tests/general/200-const-member-call-prefers-const-object-overload.t tests/general/200-const-object-nonconst-member-call-bad.t tests/general/200-member-call-implicit-object-cv-overload.t tests/general/200-member-call-implicit-this-cv-overload.t tests/general/200-method-cv-overload-preference.t tests/general/300-mutable-anonymous-member.t'`
+
+The corrected build succeeds and the focused matrix is `FAIL (7/9)`: all five
+member/cv controls and `200-mutable-member-const-method.t` pass. The operator
+test now has successful PA12 selection and exit status but still has a
+fixture-only LowIR difference: the checked-in reference contains an extra
+unused `addr $period`; emitting that would be an output-shape workaround.
+The const-subobject test still has the known extra empty-aggregate field
+projection. Broad validation below confirms that these are the only two
+focused presentation residuals.
+
+Temporary `--emit-semantics` probes reject namespace mutable, static mutable,
+top-level-const mutable, and reference mutable with the typed PA11 checks;
+pointer-to-const mutable and volatile mutable accept. The volatile probe
+reports `volatile int` for the const-volatile object's member access.
 
 ## Structural/performance evidence
 
@@ -160,7 +193,29 @@ source audit also confirms the existing 2400-line header and 3000-line source
 limits remain satisfied, with no newly introduced source line packing multiple
 statements.
 
-## Validation and next checkpoint
+## Final checkpoint
+
+Scope is the PA11-to-PA12 typed cv flow for non-static member subobjects,
+including the mutable exception, and the PA12 implicit-object conversion score
+used by mixed member/nonmember operators. Invariants are BindingId ownership,
+cv qualification only at the member-object type boundary, typed candidate
+viability/ranking, the existing explicit hidden-this call type, and the single
+typed canonical-truth finalizer. The empty aggregate's zero-work field
+projection is excluded because its semantic call selection is already correct
+and it is not caused by cv propagation. This checkpoint is complete and
+committed; the validation evidence is recorded below.
+
+The operator candidate work remains bounded by the relevant member and
+nonmember candidate lists and their argument lists; no global retry or
+whole-program scan is introduced. The mutable bit is stored once on the
+canonical member BindingId sidecar and read only for that member access.
+
+The mutable sidecar lookup and cv mask are constant-time per member access.
+Existing operator selection remains an O(candidates * arguments) traversal;
+the focused mixed operator has two candidates and two explicit arguments as a
+representative bound. No timing or allocation claim is made.
+
+## Inherited validation evidence
 
 Full PA16 log:
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-test-pa16-20260829.log`.
@@ -174,13 +229,24 @@ The exact identity comparison is preserved at
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-identity-compare-20260829.log`.
 `git diff --check` exits 0 after the document update.
 
-PA16 remains incomplete by the unchanged 44-identity residual. The next
-checkpoint should select one residual while preserving this single typed
-finalizer, explicit result-edge ownership, conservative may-provenance,
-canonical function mapping, and per-conversion PA15 reset.
+The inherited full evidence above belongs to the predecessor checkpoint. Final
+evidence for this committed cv checkpoint is recorded below.
+
+## Final validation evidence
+
+`make test-pa16` exits nonzero at `200 / 243` passed and `43` failures.
+Compared with the turn-start failure identities, baseline-only is exactly
+`pa16/tests/general/200-mutable-member-const-method.t`, final-only is empty,
+and the final residual set is exactly the turn-start list above minus that
+identity. The full identity universe remains `243/243` covered.
+
+The required through command (`n=16; ... make test-report-through-pa15`)
+passes at `1167 / 1167`. The required file audit passes with the five known
+bad-division warnings, and `git diff --check` passes.
 
 ## Checkpoint ledger
 
 | checkpoint | status |
 | --- | --- |
-| c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed/current: bounded finalizer and hardening are in the six authorized source owners; clean build and protected five pass, focused probes pass, final PA16 is 199/243 with the exact unchanged 44-failure map and 243/243 coverage, through-PA15 is 1167/1167, and file audit passes with five known warnings. |
+| c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed predecessor: bounded finalizer and hardening are in the six authorized source owners; clean build and protected five pass, focused probes pass, final PA16 is 199/243 with the exact unchanged 44-failure map and 243/243 coverage, through-PA15 is 1167/1167, and file audit passes with five known warnings. |
+| HEAD `PA16: fix cv-qualified member object semantics` | Completed/committed: typed PA11 mutable constraints, PA12 member-subobject cv exception, and mixed operator implicit-object cv scoring pass focused semantics/probes; focused matrix is 7/9 with the two approved fixture-shape residuals, PA16 is 200/243 with exactly one baseline failure eliminated, no new failures, and 243/243 coverage, through-PA15 is 1167/1167, audit and diff-check pass. |

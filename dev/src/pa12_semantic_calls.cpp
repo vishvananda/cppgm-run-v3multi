@@ -756,12 +756,18 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				}
 				if (!member && argument == 0)
 				{
+					// Parameter zero is the explicit nonmember operand being
+					// compared with a member operator's implicit object.
 					const TypeId required_object = expression_object_type(
 						function.parameters.front());
 					const TypeId actual_object = expression_object_type(object.type);
 					if (required_object.valid() && actual_object.valid())
 						score.object_cv = cv_qualifiers(required_object) &
 							~cv_qualifiers(actual_object);
+					if (score.object_cv != 0 &&
+						strip_cv_type(required_object) == strip_cv_type(actual_object) &&
+						choice.kind == ConversionKind::ReferenceBinding)
+						choice.added_cv = score.object_cv;
 				}
 				score.ranks.push_back(ConversionScore(choice));
 			}

@@ -995,9 +995,18 @@ bool PA11SemanticModel::member_object_convertible(TypeId object,
 	return member_object_qualification_convertible(object, required);
 }
 
-TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member)
+TypeId PA11SemanticModel::member_access_type(TypeId object, TypeId member,
+	BindingId member_id)
 {
-	const unsigned int qualifiers = cv_qualifiers(expression_object_type(object));
+	unsigned int qualifiers = cv_qualifiers(expression_object_type(object));
+	if (member_id.valid() && member_id.value < bindings_.size() &&
+		binding(member_id).kind == BindingKind::Variable &&
+		!is_static_member(member_id))
+	{
+		const BindingSidecar* sidecar = binding_sidecar(member_id);
+		if (sidecar != NULL && sidecar->mutable_member)
+			qualifiers &= ~1u;
+	}
 	return qualifiers == 0 ? member : make_cv(member, qualifiers);
 }
 PA11SemanticModel::MemberLookup PA11SemanticModel::member_lookup(
@@ -2266,7 +2275,7 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 	}
 	if (member.kind != BindingKind::Variable)
 		throw std::runtime_error("PA12 member function access is unsupported");
-	const TypeId type = member_access_type(record_object, member.type);
+	const TypeId type = member_access_type(record_object, member.type, member_id);
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = node.token;

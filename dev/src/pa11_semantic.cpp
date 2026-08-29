@@ -233,6 +233,24 @@ void PA11SemanticModel::apply_member_alignment(const PA10AstNode& node,
 	}
 }
 
+void PA11SemanticModel::record_mutable_member(BindingId id, TypeId type,
+	bool record_member)
+{
+	if (!record_member)
+		throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
+	if ((cv_qualifiers(type) & 1u) != 0)
+		throw std::runtime_error("PA11 mutable member has const-qualified type");
+	const TypeKind kind = type_kind(type);
+	if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
+		throw std::runtime_error("PA11 mutable member cannot be a reference");
+	BindingSidecar sidecar;
+	const BindingSidecar* existing = binding_sidecar(id);
+	if (existing != NULL)
+		sidecar = *existing;
+	sidecar.mutable_member = true;
+	set_binding_sidecar(id, sidecar);
+}
+
 void PA11SemanticModel::process_base_clause(const PA10AstNode& node,
 	NamedRecordId record_id, ScopeId scope, ScopeId access_scope)
 {

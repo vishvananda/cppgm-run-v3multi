@@ -272,9 +272,8 @@ struct BindingSidecar
 	bool hidden_friend;
 	std::vector<NamedRecordId> friend_records;
 	MemberAccess member_access;
-	bool static_member;
-	bool inline_member;
-	bool has_default_member_initializer;
+	bool static_member, mutable_member;
+	bool inline_member, has_default_member_initializer;
 	SemanticFactId default_member_initializer;
 	// Non-static member alignment is retained on the canonical binding until
 	// RecordLayout consumes it; static members never participate in layout.
@@ -296,9 +295,9 @@ struct BindingSidecar
 		: backing_storage(backing_storage),
 		  constructor_record(constructor_record), destructor_record(),
 		  generated_name_record(generated_name_record),
-			hidden_friend(false), friend_records(),
-			member_access(MemberAccess::Public), static_member(false),
-			inline_member(false),
+		  hidden_friend(false), friend_records(),
+		  member_access(MemberAccess::Public), static_member(false),
+		  mutable_member(false), inline_member(false),
 		  has_default_member_initializer(false),
 		  default_member_initializer(),
 		  has_requested_alignment(false), requested_alignment(0),
@@ -740,12 +739,13 @@ struct SpecFact
 	unsigned int cv;
 	bool is_typedef;
 	bool is_constexpr;
-	bool is_static;
+	bool is_static, is_mutable;
 	bool is_extern;
 	bool is_thread_local; bool is_auto;
 	SpecFact()
 		: base(), has_base(false), anonymous_record(), cv(0),
 		  is_typedef(false), is_constexpr(false), is_static(false),
+		  is_mutable(false),
 		  is_extern(false), is_thread_local(false), is_auto(false)
 	{}
 };
@@ -1549,6 +1549,7 @@ private:
 	;
 	void mark_static_member(BindingId id)
 	;
+	void record_mutable_member(BindingId id, TypeId type, bool record_member);
 	MemberAccess member_access(BindingId id) const
 	;
 	void set_member_access(BindingId id, MemberAccess access)
@@ -1924,8 +1925,7 @@ private:
 	;
 	TypeId expression_object_type(TypeId type) const
 	;
-	TypeId member_access_type(TypeId object, TypeId member)
-	;
+	TypeId member_access_type(TypeId object, TypeId member, BindingId member_id = BindingId());
 	enum class MemberLookupKind
 	{
 		None,

@@ -610,7 +610,7 @@ ExprInfo PA11SemanticModel::semantic_injected_member(
 	if (sidecar == NULL || !sidecar->backing_storage.valid())
 		throw std::runtime_error("PA12 injected member has no backing storage");
 	const ExprInfo object = semantic_storage_id(sidecar->backing_storage);
-	const TypeId type = member_access_type(object.type, member.type);
+	const TypeId type = member_access_type(object.type, member.type, member_id);
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
 		SemanticValueCategory::Lvalue, &node);
 	fact.token = SimpleTokenType::OP_DOT;
@@ -1317,7 +1317,7 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 					throw std::runtime_error("PA12 record member is inaccessible");
 				const ExprInfo object = semantic_this_expression(node, this_id);
 				const TypeId member_type = member_access_type(this_record,
-					member.type);
+					member.type, selection.binding);
 				SemanticFact fact(SemanticFactKind::MemberExpression,
 					member_type, SemanticValueCategory::Lvalue, &node);
 				fact.token = SimpleTokenType::OP_ARROW;
