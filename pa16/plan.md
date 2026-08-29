@@ -1,202 +1,218 @@
 # PA16 implementation plan
 
-## Stage Design
+## Stage design
 
-PA11 forms the first typed owner fact: a qualified special-member declarator is
-resolved through its `NamePath` and `declaration_scope` to the canonical class
-`ScopeId`, `NamedRecordId`, and (for destructors) `BindingId`. PA12 consumes
-that owner and publishes one `DestructorCall` fact whose only operand is the
-already-semantically-evaluated object expression. PA15 consumes the selected
-binding/type facts directly: class calls lower to the canonical destructor
-with its hidden object pointer, while scalar pseudo-destructor calls lower to
-the operand evaluation with no callee.
+PA11 owns the canonical typed identity. A qualified special-member
+NamePath/declaration_scope resolves to the class ScopeId and NamedRecordId;
+the destructor declaration, qualified definition, and base entry retain one
+canonical BindingId and typed function signature. PA12 performs the
+destructor lookup and access check, evaluates the operand once, and publishes
+one DestructorCall fact with exactly one child. PA15 consumes that fact,
+callable signature, selected binding, and semantic base-subobject path
+directly. It emits a hidden-object destructor call for a class or evaluates a
+scalar pseudo-destructor operand with no callee.
 
-Invariants are: owner scope is a class and the terminal typed name matches its
-record; an out-of-class destructor definition reuses an existing declaration
-binding; destructor names are cv-insensitive at the class-type boundary;
-scalar pseudo-destructors require the same scalar `TypeId` as the object; and
-the object expression has exactly one PA12 child/evaluation root. The only
-`ClassValue` admission is one same-class lvalue argument to an out-of-class
-constructor whose canonical record is complete, non-union, non-virtual,
-base-free, has an empty `RecordLayout.members`, and has no user-declared
-constructor/destructor/default-member-initializer flags in its
-`NamedRecordSidecar`; PA15 therefore never needs to copy a nonempty object.
-All malformed owner, binding, signature, access, and lowering facts fail
-closed. The path lookup is canonical and bounded; there is no spelling-key
-recovery, secondary semantic model, whole-TU retry, or broad rescan.
+Every speculative PA12 semantic transaction checkpoints and rolls back the
+semantic base-path arena together with its facts, children, conversions, and
+names. A retained fact therefore owns the only path tail that PA15 may
+consume.
 
-## Failure Map
+For an explicit destructor expression, PA12 is responsible for the
+cv-insensitive class lookup, scalar exact-TypeId check, access, and
+derived-to-base projection. The selected base-record path is stored in the
+typed fact arena. PA15 validates the published path and complete layout
+metadata only to form zero-offset projections; it does not redo lookup or
+recompute the relation. Invalid owner, range, binding, signature, access,
+layout, and index facts fail closed.
 
-The authoritative PA16 turn-start baseline is HEAD `c507120c`: `189/243`
-identities passed, `54` failed, and `243/243` identities were covered. The
-complete 54-failure set is the existing full map below with the two already
-fixed entries (`100-global-reference-incomplete-referent.t` and
-`200-extern-class-object-declaration.t`) omitted:
+The README puts class pass-by-value and out-of-class constructor definitions
+outside the general PA16 boundary. The checked-in nested constructor fixture
+requires one narrow compatibility extension: one lvalue source whose exact
+class type is an empty, complete, non-union, non-virtual, base-free,
+member-free, one-byte record with no requested alignment, default-member
+initializer, user-declared constructor, or user-declared destructor, passed by
+value to a direct out-of-class constructor definition. The declaration-only
+constructor surface is retained only so that fixture-required definition can
+be paired with its canonical declaration. This does not make general
+class-value semantics in scope. PA11 and PA12 preserve prior typed semantics
+for ordinary non-constructor class-valued declarations, definitions, results,
+and calls; they do not publish the narrow `ClassValue` conversion for those
+ordinary calls.
+PA15 rejects unsupported class-value result/parameter ABI when a function,
+declaration, or call is demanded or lowered, using canonical typed facts and
+failing closed. The exception is only the exact constructor shape above:
+nonvariadic, one empty-class value parameter, with the declaration-only point
+or normal out-of-class definition admitted by the semantic owner and the
+canonical declaration reused. In-class, defaulted, deleted, and other
+definition forms reject before body analysis, while wider nonempty/member/
+base/union/virtual/incomplete/stateful-lifetime/non-lvalue/additional-
+argument/copy/move/return forms never receive the exception.
 
-- `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
-- `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
-- `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
-- `pa16/tests/general/200-const-subobject-member-call.t`
-- `pa16/tests/general/200-defaulted-constructor-still-aggregate.t`
-- `pa16/tests/general/200-deleted-constructor-still-aggregate.t`
-- `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
-- `pa16/tests/general/200-elaborated-member-forward-type.t`
-- `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
-- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`
-- `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
-- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
-- `pa16/tests/general/200-member-object-lifetime.t`
-- `pa16/tests/general/200-mutable-member-const-method.t`
-- `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
-- `pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t`
-- `pa16/tests/general/200-nonliteral-field-condition-not-folded.t`
-- `pa16/tests/general/200-placement-new-expression-aggregate-brace.t`
-- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
-- `pa16/tests/general/200-pointer-subscript-class-reference-return.t`
-- `pa16/tests/general/200-qualified-friend-function-member-access.t`
-- `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
-- `pa16/tests/general/200-reference-member-class-init.t`
-- `pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`
-- `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
-- `pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`
-- `pa16/tests/general/300-adl-using-declaration-source-point.t`
-- `pa16/tests/general/300-callable-field-hides-private-base-method.t`
-- `pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t`
-- `pa16/tests/general/300-const-pointer-explicit-destructor-call.t`
-- `pa16/tests/general/300-enum-class-nonmember-operator-bitand.t`
-- `pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t`
-- `pa16/tests/general/300-friend-function-definition-skip.t`
-- `pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t`
-- `pa16/tests/general/300-mixed-member-free-shift-stress-chain.t`
-- `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
-- `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
-- `pa16/tests/general/300-operator-shift-stress-chain.t`
-- `pa16/tests/general/300-overloaded-deref-user-assignment.t`
-- `pa16/tests/general/300-packed-class-layout.t`
-- `pa16/tests/general/300-pragma-pack-followed-by-endif.t`
-- `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
-- `pa16/tests/general/300-scalar-pseudo-destructor-call.t`
-- `pa16/tests/general/300-synthesized-array-member-lifecycle.t`
-- `pa16/tests/general/300-unary-address-of-builtin-fallback.t`
-- `pa16/tests/general/300-user-defined-string-literal-operator.t`
-- `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
-- `pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`
-- `pa16/tests/general/400-bit-field-constructor-member-init.t`
-- `pa16/tests/general/400-bit-field-member-access-bad.t`
-- `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
-- `pa16/tests/general/400-bitfield-aggregate-init.t`
-- `pa16/tests/general/400-signed-bit-field-read.t`
-- `pa16/tests/general/400-signed-enum-bit-field-read.t`
+The implementation has one typed production pipeline. It uses dense indexed
+arenas and reachable worklists, with no spelling downgrade, parallel
+resolver/model, broad retry, or test-specific hardcoding.
 
-Exact owned subset for this checkpoint:
+## Failure map
 
-- `pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t`
-- `pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t`
-- `pa16/tests/general/300-const-pointer-explicit-destructor-call.t`
-- `pa16/tests/general/300-scalar-pseudo-destructor-call.t`
+Turn-start authority is clean HEAD e9d928125399aaad099b48d59e977e80771007af:
+194/243 identities passed, 49 failed, and 243/243 identities were covered.
+The exact sorted turn-start failure map is:
 
-Final residual comparison: `make test-pa16` is `194/243` with `49` failures
-and `243/243` identities covered. Relative to the 54-failure baseline, the
-five removed identities are the four owned tests plus
-`pa16/tests/general/200-pointer-subscript-class-reference-return.t`; the
-final-only set is empty. The remaining residual map is therefore the listed
-baseline map minus those five entries.
+- pa16/tests/general/100-function-pointer-nested-param-name-shadow.t
+- pa16/tests/general/100-global-aggregate-nested-array-initializer.t
+- pa16/tests/general/200-aliased-base-mem-initializer-match.t
+- pa16/tests/general/200-const-subobject-member-call.t
+- pa16/tests/general/200-defaulted-constructor-still-aggregate.t
+- pa16/tests/general/200-deleted-constructor-still-aggregate.t
+- pa16/tests/general/200-destructor-body-local-before-base-destruction.t
+- pa16/tests/general/200-elaborated-member-forward-type.t
+- pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
+- pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t
+- pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+- pa16/tests/general/200-local-default-class-array-lifecycle.t
+- pa16/tests/general/200-member-object-lifetime.t
+- pa16/tests/general/200-mutable-member-const-method.t
+- pa16/tests/general/200-nested-braced-member-aggregate-init.t
+- pa16/tests/general/200-nonliteral-field-condition-not-folded.t
+- pa16/tests/general/200-placement-new-expression-aggregate-brace.t
+- pa16/tests/general/200-placement-new-expression-constructor-call.t
+- pa16/tests/general/200-qualified-friend-function-member-access.t
+- pa16/tests/general/200-reference-indexed-pointer-member-access.t
+- pa16/tests/general/200-reference-member-class-init.t
+- pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
+- pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+- pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t
+- pa16/tests/general/300-adl-using-declaration-source-point.t
+- pa16/tests/general/300-callable-field-hides-private-base-method.t
+- pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t
+- pa16/tests/general/300-enum-class-nonmember-operator-bitand.t
+- pa16/tests/general/300-friend-function-definition-skip.t
+- pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t
+- pa16/tests/general/300-mixed-member-free-shift-stress-chain.t
+- pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+- pa16/tests/general/300-operator-nullptr-t-from-zero.t
+- pa16/tests/general/300-operator-shift-stress-chain.t
+- pa16/tests/general/300-overloaded-deref-user-assignment.t
+- pa16/tests/general/300-packed-class-layout.t
+- pa16/tests/general/300-pragma-pack-followed-by-endif.t
+- pa16/tests/general/300-prvalue-derived-base-friend-operator.t
+- pa16/tests/general/300-synthesized-array-member-lifecycle.t
+- pa16/tests/general/300-unary-address-of-builtin-fallback.t
+- pa16/tests/general/300-user-defined-string-literal-operator.t
+- pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+- pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t
+- pa16/tests/general/400-bit-field-constructor-member-init.t
+- pa16/tests/general/400-bit-field-member-access-bad.t
+- pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+- pa16/tests/general/400-bitfield-aggregate-init.t
+- pa16/tests/general/400-signed-bit-field-read.t
+- pa16/tests/general/400-signed-enum-bit-field-read.t
 
-## Active Checkpoint
+The c507120c parent authority was 189/243 with 54 failures. The landed
+c507120c..e9d92812 span removed these five identities from that map:
+200-nested-out-of-class-constructor-enclosing-type.t,
+200-pointer-subscript-class-reference-return.t,
+300-const-pointer-explicit-destructor-call.t,
+300-explicit-destructor-call-enclosing-namespace-type.t, and
+300-scalar-pseudo-destructor-call.t. The current worker audit preserves the
+e9d92812 map exactly: final-only and baseline-only identity sets are empty,
+and coverage remains 243/243.
 
-Scope is typed qualified out-of-class constructor ownership plus typed class
-and scalar explicit destructor calls. The retained source files each carry
-one part of that path:
+## Active checkpoint
 
-- `dev/src/pa11_semantic_model.h`: `DestructorCall` and its typed API boundary;
-- `dev/src/pa11_semantic_core.cpp`, `dev/src/pa11_semantic_types.cpp`:
-  destructor `NamePath` components and scoped typed-name handling;
-- `dev/src/pa11_semantic.cpp`: PA12 dump publication for the typed destructor
-  fact and out-of-class special-member body;
-- `dev/src/pa12_semantic.cpp`, `dev/src/pa12_semantic_construction.cpp`:
-  top-level special-member preparation/analysis, qualified owner resolution,
-  and the existing constructor selection boundary needed by the owned nested
-  definition;
-- `dev/src/pa12_semantic_calls.cpp`, `dev/src/pa12_semantic_selection.h`:
-  the bounded class-value constructor conversion and its typed conversion
-  kind;
-- `dev/src/pa12_semantic_member.cpp`, `dev/src/pa12_semantic_facts.cpp`:
-  one typed destructor-expression fact path and typed complete/base entry
-  identities;
-- `dev/src/pa15_lowering.h`, `dev/src/pa15_lowering.cpp`,
-  `dev/src/pa15_lowering_calls.cpp`, `dev/src/pa15_lowering_construction.cpp`,
-  `dev/src/pa15_lowering_flow.cpp`: typed destructor demand, strong ABI entry
-  metadata, class-value argument materialization, direct/pseudo lowering, and
-  expression dispatch.
+The bounded source audit covers the complete typed path in the allowed PA11,
+PA12, and PA15 files. The repair is:
 
-The implementation reuses canonical `lookup_type_path`, `ScopeId`,
-`NamedRecordId`, `BindingId`, and PA15 destructor emission/signature checks. It
-does not add virtual dispatch, templates, placement new, unrelated cleanup,
-general member overload work, or any test/ref/harness/comparator/source-set
-change. Temporary verbose diagnostics in `pa12_semantic_calls.cpp` were
-removed; its remaining changes are limited to the bounded constructor value
-conversion. This follow-up changes only `dev/src/pa12_semantic_calls.cpp` and
-this plan: every other source file listed above remains the already-committed
-typed owner/destructor data-flow path, with no parallel resolver or helper.
+- PA12 now stores the selected member/destructor derived-to-base
+  NamedRecordId path in a semantic arena. The path is recomputed, if needed,
+  only while semantic selection chooses the binding; the final selected
+  member path is what is published. PA15 demand checks the indexed range and
+  lowering consumes the path and layout offsets without
+  member_object_convertible or name lookup.
+- The class-value compatibility predicate is centralized on canonical
+  NamedRecord, RecordLayout, NamedRecordSidecar, and constructor FunctionFact
+  identity. A class-valued constructor signature is accepted only when the
+  complete signature is nonvariadic with exactly one empty-class value
+  parameter. The semantic owner additionally admits it only for the precise
+  normal declaration-only pairing point or the normal out-of-class definition;
+  in-class, defaulted, deleted, and other definition locations reject before
+  body analysis. Ordinary class-valued declarations, definitions, results, and
+  typed non-constructor calls remain available to PA12's earlier semantic dump, without a
+  `ClassValue` conversion. PA15 instead proves the whole canonical signature
+  at function/call demand and rejects unsupported ABI before lowering or any
+  per-parameter store suppression. The proof requires the exact pre-existing
+  class-owned BindingId/signature, a defined canonical binding, raw void
+  result, and clean constructor-entry metadata; materialization reuses it.
+- Qualified destructor names retain PA11 semantic components and resolve
+  through canonical class scope/type identity. PA12 creates one typed
+  DestructorCall child for both class and scalar forms; PA15 preserves
+  exactly-once operand evaluation.
 
-The focused owned set is now `4/4`. The bounded controls also pass for a
-lexically shadowed wrong destructor type (the injected class name is selected),
-an inaccessible class destructor (rejected), a mismatched scalar
-pseudo-destructor (rejected), and a derived-object qualified base destructor
-(the base binding is called). A nonempty class value-parameter probe is
-rejected with no viable constructor; the empty `Outer::Token` case remains
-accepted. The constructor value slice is therefore limited to the precise
-empty-record facts above, one lvalue argument, and an out-of-class constructor;
-other class-by-value shapes fail closed.
+Focused protected identities are:
 
-## Performance Evidence
+- pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t
+- pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t
+- pa16/tests/general/300-const-pointer-explicit-destructor-call.t
+- pa16/tests/general/300-scalar-pseudo-destructor-call.t
+- pa16/tests/general/200-pointer-subscript-class-reference-return.t
 
-Typed name resolution is O(L) in qualified path length with indexed scope/type
-lookups; the unqualified destructor rule performs only the two required typed
-candidates (lexical scope and object class scope). The class-value guard adds
-O(1) indexed record/layout/sidecar checks after the canonical `NamedRecordId`;
-the destructor fact adds O(1) work after lookup. Demand and lowering follow
-the one object child and existing reachable function edges, so the added work
-is bounded by those edges and does not scan the translation unit. Representative
-`/tmp` probes cover shadowed lookup, access, scalar mismatch, derived-base
-projection, and nonempty class-value rejection; no timing, RSS, or speedup
-claim is made.
+## Focused evidence
 
-## Validation and Checkpoint Ledger
+The bounded build and focused controls pass:
 
-Follow-up correction validation is complete:
+- make -C dev -j2 cppgm++ exits 0.
+- The PA12 class-result regression
+  `tests/general/300-elaborated-local-struct-copy-init.t` passes 1/1, as does
+  the most-vexing-function negative control.
+- The five protected handout identities pass individually, 5/5.
+- Course controls 401, 402, 403, 405, 408, 409, and 418 pass.
+- Temporary negative boundary probes reject at status 1 for wrong lexical
+  destructor type, inaccessible destructor, scalar mismatch, nonempty class
+  value, ordinary free class-value call, class-value return, two empty
+  class-value constructor parameters, class-value plus scalar constructor
+  parameters, and a mismatched out-of-class constructor definition. The
+  no-call in-class constructor probe also rejects at the semantic owner, as
+  does the required unused-body form.
+- A qualified derived-object Base destructor probe succeeds with one
+  Base destructor call. A next()->~X() probe emits one next call and one
+  X destructor call.
+- A temporary `__builtin_constant_p(p->get())` probe enters the existing
+  type-only operand guard, semantically publishes an inherited Base::get
+  path, and discards that operand fact/path before a retained `p->get()`.
+  The accepted construct's `Derived::run` LowIR has exactly one
+  `projection=base_subobject` and one `call i32 @Base__get`, with no lowered
+  builtin call; repeated runs are byte-identical with SHA-256
+  `9af1ec7acae62eefa838b112e3d77c04985d63f98991a581bd7c16a20f51e068`.
+- The nested constructor LowIR has an object-valued 1x1 parameter, stores
+  only hidden this in the constructor entry, and emits one constructor call
+  with the typed object slot.
 
-- `make -C pa16 dev-shared-target`: pass.
-- Focused owned plus directly relevant controls: `7/7` passed. The empty
-  `Outer::Token` value case remains accepted.
-- Bounded `/tmp` controls passed: lexical wrong-type shadow `0`, inaccessible
-  destructor `1`, mismatched scalar pseudo-destructor `1`, derived-object
-  base destructor `0`, and nonempty class-value parameter `1` with
-  `PA12 no viable function`.
-- The four requested identities remain exercised; coverage remains `243/243`
-  and no test identity, coverage rule, ref, or harness changed.
-- `make test-pa16`: `194/243` passed, `49` failed, `243/243` covered. The
-  failure set is exactly the prior 54-failure map minus the four owned
-  identities and `200-pointer-subscript-class-reference-return.t`; the
-  final-only set is empty.
-- Exact `n=16` through-PA15 command: `1167/1167` passed.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: passed with
-  five pre-existing header-division warnings.
-- `git diff --check`: passed. The two-file correction is the coherent
-  follow-up commit; final `git status --short` is empty.
+## Performance and structural bounds
 
-### Historical Checkpoint Ledger
+Qualified-name work is bounded by the path length and indexed scope/type
+lookups. A selected base path is bounded by the direct single-inheritance
+depth and is published once per selected fact; the type-only probe exercises
+SemanticTailGuard rollback from one saved path tail. PA15 demand visits each
+semantic fact once per reachability mode, and lowering walks only the
+published path. The whole-signature class-value guard is indexed
+record/layout/sidecar work plus one parameter-list pass. No timing, RSS,
+allocation, or speedup claim is made.
 
-| checkpoint | result |
+## Validation and next checkpoint
+
+The authorized broad gate log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-c507120c-e9d92812-checkpoint-final-authorized-20260829.log`.
+The gate remains incomplete at exactly the e9d92812 result:
+`make test-pa16` exits 2 with 194/243 passed and 49 failures. Exact sorted
+failure comparison against `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+and the 49-entry map above has empty final-only and baseline-only sets; all
+243/243 identities remain covered. The exact n=16 through-PA15 command exits
+0 with `1167 / 1167`. The required file audit exits 0 with five known
+`bad-division` warnings. `git diff --check` and the post-commit diff check
+are clean, and the checkpoint is committed in one coherent audit commit with
+an empty worktree. PA16 is still incomplete; the next checkpoint owns the
+unchanged 49-identity residual without widening this typed boundary.
+
+| checkpoint | status |
 | --- | --- |
-| `36b93869` historical aggregate handoff | `159/243` PA16 passing, `84` failures, `243/243` covered; PA1--PA15 passed. |
-| `dea01c52` aggregate implementation | Historical aggregate increment: `164/243` passing, `79` failures, `243/243` covered. |
-| `d7ed98aa` typed builtin boundary | `167/243` passing, `76` failures, `243/243` covered. |
-| `3b7d8e6a` qualified-type checkpoint | `173/243` passing, `70` failures, `243/243` covered. |
-| `30d69fc3` landed inheriting-constructor checkpoint | `176/243` passing, `67` failures, `243/243` covered. |
-| `PA16 typed access-control checkpoint` | `179/243` passing, `64` failures, `243/243` covered. |
-| `PA16 typed non-automatic lifetime checkpoint` | `184/243` passing, `59` failures, `243/243` covered; focused matrix `9/12`. |
-| `PA16 typed ordinary-value-over-tag lookup checkpoint` | `187/243` passing, `56` failures, `243/243` covered; its focused matrix was `8/8`. |
-| `b3bbf052` typed non-owning namespace object checkpointAudit | Completed the bounded ownership-path audit and repair: incomplete named-class references/glvalues retain pointer representation while owned values remain layout-gated; namespace declaration-only globals are rooted in emitted typed facts; owner/range checks fail closed; and unused member/default facts no longer create storage roots. Post-repair `make test-pa16` is `189/243` passing, `54` failures, and `243/243` covered; comparison with the landed 54-failure authority has baseline-only `0` and final-only `0`. The focused handout matrix is `16/16`, the exact through-PA15 command is `1167/1167`, file audit exits `0` with five known header-division warnings, repeated structural probes are byte-identical, and `git diff --check` passes. The incomplete namespace-object address case is out-of-contract under the PA16 complete-class namespace-object scope; course-400 DMI remains outside this increment. |
-| `PA16 typed qualified special-member/destructor checkpoint` | Focused owned set `4/4`, extended focused set `7/7`; final `make test-pa16` `194/243` with `49` failures and `243/243` covered; five baseline-only failures removed and no final-only failures; through-PA15 `1167/1167`; file audit passed with five pre-existing warnings; `git diff --check` passed; committed as the coherent checkpoint. |
-| `PA16 class-value admission correction` | Canonical `NamedRecord`/`RecordLayout`/`NamedRecordSidecar` guards restrict `ClassValue` to the empty, no-state, no-lifetime, same-class-lvalue, out-of-class-constructor slice; focused `7/7`, bounded negative probe rejected, broad `194/243` with `49` failures and `243/243` covered, through-PA15 `1167/1167`, file audit and `git diff --check` passed; committed as the follow-up correction with a clean worktree. |
+| c507120c..e9d92812 plus bounded typed-path audit | final audit preserves 194/243, the exact 49-failure map, and 243/243 coverage; through-PA15 is 1167/1167, file audit passes with five warnings, and the single coherent checkpoint commit leaves a clean tree |

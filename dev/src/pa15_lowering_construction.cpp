@@ -1065,7 +1065,9 @@ LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
 	if (!fact.selected_binding.valid())
 	{
 		if (fact.has_callee || fact.has_implicit_object ||
-			fact.callable_type.valid() || fact.selected_scope.valid())
+			fact.callable_type.valid() || fact.selected_scope.valid() ||
+			fact.base_path_begin != InvalidIdentityValue ||
+			fact.base_path_count != 0)
 			throw std::runtime_error("PA15 pseudo-destructor fact is not scalar");
 		// A scalar pseudo-destructor has no runtime callee.  Its only semantic
 		// effect is the one evaluation represented by the child fact.
@@ -1121,18 +1123,17 @@ LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
 	actual_object = model_.strip_cv_type(actual_object);
 	const TypeId required_unqualified = model_.strip_cv_type(
 		model_.expression_object_type(required_object));
-	std::vector<NamedRecordId> base_path;
-	if (!model_.member_object_convertible(actual_object, required_unqualified,
-		fact.selected_scope, &base_path, ScopeId()) ||
-		model_.class_scope_for_type(required_unqualified) != fact.selected_scope)
+	if (!validate_typed_base_path(actual_object, required_unqualified,
+		fact.selected_scope, fact.base_path_begin, fact.base_path_count))
 		throw std::runtime_error("PA15 destructor object is incompatible");
 	NamedRecordId current_record = model_.named_record_for_type(actual_object);
-	for (std::size_t i = 0; i < base_path.size(); ++i)
+	for (std::size_t i = 0; i < fact.base_path_count; ++i)
 	{
 		if (!current_record.valid() || current_record.value >= model_.named_.size())
 			throw std::runtime_error("PA15 destructor base record is invalid");
 		const NamedRecord& current = model_.named_[current_record.value];
-		const NamedRecordId base_record = base_path[i];
+		const NamedRecordId base_record = model_.semantic_base_paths_[
+			fact.base_path_begin + i];
 		if (current.kind != NamedKind::Class || !current.has_base ||
 			current.direct_base_virtual || current.direct_base != base_record)
 			throw std::runtime_error("PA15 destructor base relation is invalid");

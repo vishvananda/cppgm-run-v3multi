@@ -502,6 +502,8 @@ private:
 	LowType low_type(TypeId type) const;
 	LowType function_result_low_type(TypeId type) const;
 	bool class_object_type(TypeId type) const;
+	bool function_abi_supported(BindingId binding, const FunctionFact* function,
+		TypeId function_type) const;
 	bool checkpoint_zero_storage_eligible(TypeId type) const;
 	LowType low_reference_value_type(TypeId type) const;
 	void index_lifetime_facts();
@@ -624,6 +626,8 @@ private:
 	LoweredValue emit_decay(const LoweredValue& address);
 	LoweredValue storage_for(BindingId binding) const;
 	std::vector<SemanticFactId> children(SemanticFactId id) const;
+	bool validate_typed_base_path(TypeId actual, TypeId required,
+		ScopeId target, std::size_t begin, std::size_t count) const;
 	const AggregateElementFact* aggregate_elements(SemanticFactId id,
 		std::size_t* count, std::size_t* total_count) const;
 	LowType lvalue_type(SemanticFactId id) const;

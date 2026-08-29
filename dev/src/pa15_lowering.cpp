@@ -1142,6 +1142,17 @@ void Pa15Lowerer::collect_functions(){
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
 			const FunctionFact& fact = model_.function_facts_[i];
+			if (!fact.binding.valid() || fact.binding.value >= model_.bindings_.size())
+				throw std::runtime_error("PA15 function binding is missing");
+			const Binding& fact_binding = model_.binding(fact.binding);
+			const FunctionFact* canonical_function =
+				model_.function_fact_for_binding(fact.binding);
+			if (fact_binding.kind != BindingKind::Function ||
+				model_.type_kind(fact_binding.type) != TypeKind::Function ||
+				!function_abi_supported(fact.binding, canonical_function,
+					fact_binding.type))
+				throw std::runtime_error(
+					"PA15 unsupported class-value function ABI");
 			if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
 				model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
 				demanded_member_functions[i] == 0)
@@ -1836,6 +1847,56 @@ std::vector<SemanticFactId> Pa15Lowerer::children(SemanticFactId id) const{
 		return result;
 }
 
+bool Pa15Lowerer::validate_typed_base_path(TypeId actual, TypeId required,
+	ScopeId target, std::size_t begin, std::size_t count) const
+{
+	actual = model_.strip_cv_type(model_.expression_object_type(actual));
+	required = model_.strip_cv_type(model_.expression_object_type(required));
+	if (!actual.valid() || !required.valid() || !target.valid() ||
+		model_.type_kind(actual) != TypeKind::Named ||
+		model_.type_kind(required) != TypeKind::Named ||
+		model_.class_scope_for_type(required) != target)
+		return false;
+	const NamedRecordId actual_record = model_.named_record_for_type(actual);
+	const NamedRecordId required_record = model_.named_record_for_type(required);
+	if (!actual_record.valid() || !required_record.valid() ||
+		actual_record.value >= model_.named_.size() ||
+		required_record.value >= model_.named_.size() ||
+		actual_record.value >= model_.record_layouts_.size())
+		return false;
+	if (count == 0)
+	{
+		if (begin != InvalidIdentityValue)
+			return false;
+		return actual_record == required_record;
+	}
+	if (begin == InvalidIdentityValue || begin > model_.semantic_base_paths_.size() ||
+		count > model_.semantic_base_paths_.size() - begin)
+		return false;
+	NamedRecordId current_record = actual_record;
+	if (current_record == required_record)
+		return false;
+	for (std::size_t i = 0; i < count; ++i)
+	{
+		if (!current_record.valid() || current_record.value >= model_.named_.size() ||
+			current_record.value >= model_.record_layouts_.size())
+			return false;
+		const NamedRecord& current = model_.named_[current_record.value];
+		const NamedRecordId base_record = model_.semantic_base_paths_[begin + i];
+		if (current.kind != NamedKind::Class || !current.has_base ||
+			current.direct_base_virtual || current.direct_base != base_record ||
+			!base_record.valid() || base_record.value >= model_.named_.size())
+			return false;
+		const RecordLayout& layout = model_.record_layout(current_record);
+		if (layout.state != RecordLayoutState::Complete ||
+			!layout.has_direct_base || layout.direct_base.record != base_record ||
+			layout.direct_base.offset != 0)
+			return false;
+		current_record = base_record;
+	}
+	return current_record == required_record;
+}
+
 LowType Pa15Lowerer::lvalue_type(SemanticFactId id) const{
 	const SemanticFact& fact = model_.semantic_facts_[id.value];
 	return low_reference_value_type(fact.type);
@@ -2124,30 +2185,12 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	}
 	if (conversion.kind == ConversionKind::ClassValue)
 	{
-		const TypeId source_object = model_.strip_cv_type(
-			model_.expression_object_type(conversion.source));
-		const TypeId target_object = model_.strip_cv_type(
-			model_.expression_object_type(conversion.target));
-		if (!result->lvalue || !source_object.valid() ||
-			!target_object.valid() || model_.class_scope_for_type(source_object) !=
-				model_.class_scope_for_type(target_object) ||
-			!model_.class_scope_for_type(target_object).valid())
-			throw std::runtime_error(
-				"PA15 class-value argument materialization is invalid");
-		// The supported PA16 slice has an object lvalue as its argument.  Keep the
-		// source evaluation and the opaque ABI slot typed; no scalar load or
-		// source-spelling reconstruction is valid for a class object here.
-		(void)address_of_storage(*result);
-		const LoweredValue temporary = generated_slot(target, "argobj");
-		(void)address_of_storage(temporary);
-		(void)address_of_storage(*result);
-		result->value = temporary.value;
-		result->type = target;
-		result->physical_type = target;
-		result->lvalue = false;
-		result->bit_field_lvalue = false;
-		result->bit_field_binding = BindingId();
-		return true;
+		// ClassValue is consumed only by lower_call after it proves the complete
+		// canonical constructor signature and creates the opaque object slot.
+		// A generic conversion walk has no constructor identity, so it must never
+		// materialize a class value on a per-argument or target-type shortcut.
+		throw std::runtime_error(
+			"PA15 class-value materialization requires validated constructor call");
 	}
 	if (conversion.kind == ConversionKind::DerivedToBase)
 	{

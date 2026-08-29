@@ -686,7 +686,7 @@ ConstructorSelection PA11SemanticModel::select_constructor(
 	}
 
 	const TypedFunctionSelection function_selection = select_typed_function(
-		candidates, argument_nodes, arguments, access_scope, true, true);
+		candidates, argument_nodes, arguments, access_scope, true);
 	if (!function_selection.valid())
 		throw std::runtime_error("PA12 constructor selection is incomplete");
 	const ValueRef selected = function_selection.selected;
@@ -1172,6 +1172,57 @@ void PA11SemanticModel::publish_class_constructor_defaults(
 	}
 }
 
+BindingId PA11SemanticModel::matching_constructor_declaration(
+	NamedRecordId record_id, ScopeId owner_scope,
+	const TypeKey& requested_signature) const
+{
+	const NamedRecord& record = named_[record_id.value];
+	BindingId declared_constructor;
+	const ValueList* values = scopes_[owner_scope.value].values.find(record.name);
+	if (values != NULL)
+		for (std::size_t i = 0; i < values->entries.size(); ++i)
+		{
+			const ValueEntry& entry = values->entries[i];
+			if (entry.origin != owner_scope)
+				continue;
+			if (!entry.binding.valid() || entry.binding.value >= bindings_.size() ||
+				entry.binding.value >= binding_owners_.size() ||
+				binding_owners_[entry.binding.value] != owner_scope)
+				throw std::runtime_error(
+					"PA11 constructor declaration index identity is invalid");
+			const Binding& candidate = binding(entry.binding);
+			if (candidate.kind != BindingKind::Function ||
+				candidate.name != record.name || !candidate.type.valid() ||
+				candidate.type.value >= types_.size() ||
+				type_kind(candidate.type) != TypeKind::Function)
+				continue;
+			const BindingSidecar* candidate_sidecar =
+				binding_sidecar(entry.binding);
+			const FunctionFact* candidate_fact =
+				function_fact_for_binding(entry.binding);
+			if (candidate_sidecar == NULL || candidate_sidecar->constructor_record !=
+				record_id || candidate_fact == NULL || !candidate_fact->is_constructor ||
+				candidate_fact->constructor_record != record_id ||
+				candidate_fact->owner != owner_scope || candidate_fact->binding !=
+				entry.binding || candidate_fact->node == NULL ||
+				candidate_fact->inheriting_constructor)
+				continue;
+			const TypeKey& candidate_signature = types_[candidate.type.value];
+			if (!(candidate_signature == requested_signature) ||
+				candidate.language_linkage != current_language_linkage_ ||
+				candidate.internal_linkage)
+				continue;
+			if (declared_constructor.valid())
+				throw std::runtime_error(
+					"PA11 constructor declaration identity is ambiguous");
+			declared_constructor = entry.binding;
+		}
+	if (!declared_constructor.valid())
+		throw std::runtime_error(
+			"PA11 out-of-class constructor definition does not match declaration");
+	return declared_constructor;
+}
+
 void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	ScopeId scope)
 {
@@ -1232,7 +1283,51 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	const bool inline_member = special_member_is_inline(member_specifiers);
 	const TypeId type = make_function(parameter_types_value, variadic,
 		fundamental(FundamentalType::Void));
+	const TypeKey requested_signature = types_[type.value];
+	const bool out_of_class_definition =
+		node.kind == PA10NodeKind::SpecialMemberDefinition &&
+		owner_scope != scope;
+	bool has_class_value_parameter = false;
+	for (std::size_t parameter = 0;
+		parameter < parameter_types_value.size(); ++parameter)
+		if (class_value_type(parameter_types_value[parameter]))
+			has_class_value_parameter = true;
+	const bool narrow_class_value_signature = !requested_signature.variadic &&
+		requested_signature.parameters.size() == 1 &&
+		has_class_value_parameter &&
+		empty_class_value_type(requested_signature.parameters.front());
+	const bool constructor_declaration_only = !destructor && body == NULL &&
+		declaration_kind == FunctionDeclarationKind::Normal &&
+		node.kind == PA10NodeKind::SpecialMemberDeclaration;
+	const bool narrow_class_value_compatibility =
+		narrow_class_value_signature &&
+		(constructor_declaration_only ||
+			(out_of_class_definition &&
+				declaration_kind == FunctionDeclarationKind::Normal));
+	if (!destructor && has_class_value_parameter &&
+		!narrow_class_value_compatibility)
+		throw std::runtime_error(
+			"PA11 unsupported class-value constructor boundary");
+	if (!destructor && out_of_class_definition &&
+		!has_constructor_declaration(record_id))
+		throw std::runtime_error(
+			"PA11 out-of-class constructor definition has no declaration");
+	BindingId declared_constructor;
+	if (!destructor && out_of_class_definition)
+	{
+		declared_constructor = matching_constructor_declaration(record_id,
+			owner_scope, requested_signature);
+		const BindingSidecar* declared_sidecar =
+			binding_sidecar(declared_constructor);
+		if (declared_sidecar != NULL &&
+			declared_sidecar->nonthrowing != nonthrowing)
+			throw std::runtime_error(
+				"PA11 conflicting constructor exception specification");
+		if (binding(declared_constructor).has_definition)
+			throw std::runtime_error("duplicate constructor definition");
+	}
 	BindingId function_binding;
+	bool mark_definition = false;
 	if (destructor)
 	{
 		function_binding = destructor_binding(record_id);
@@ -1271,6 +1366,14 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 			value.language_linkage = current_language_linkage_;
 			function_binding = store_binding(owner_scope, value);
 		}
+	}
+	else if (out_of_class_definition)
+	{
+		// The definition must attach to the already-indexed declaration.  In
+		// particular, never let add_value manufacture a new constructor overload
+		// before discovering that the qualified definition was mismatched.
+		function_binding = declared_constructor;
+		mark_definition = true;
 	}
 	else
 		function_binding = add_value(owner_scope, record.name, type, true,
@@ -1327,9 +1430,9 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 		ScopeId());
 	function_fact.is_constructor = !destructor;
 	function_fact.is_destructor = destructor;
-	function_fact.out_of_class_definition =
-		node.kind == PA10NodeKind::SpecialMemberDefinition &&
-		owner_scope != scope;
+	function_fact.out_of_class_definition = out_of_class_definition;
+	if (mark_definition)
+		binding(function_binding).has_definition = true;
 	if (destructor)
 		function_fact.destructor_record = record_id;
 	else

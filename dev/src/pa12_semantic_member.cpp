@@ -2184,8 +2184,9 @@ ExprInfo PA11SemanticModel::semantic_destructor_call_expression(
 	const ScopeId target_scope = named_[target_record.value].scope;
 	if (!target_scope.valid())
 		throw std::runtime_error("PA12 destructor class scope is missing");
+	std::vector<NamedRecordId> base_path;
 	if (!object_record.valid() || !member_object_convertible(object_type,
-		named_type(target_record), target_scope, NULL, scope))
+		named_type(target_record), target_scope, &base_path, scope))
 		throw std::runtime_error("PA12 destructor object is incompatible");
 	BindingId destructor = destructor_binding(target_record);
 	if (!destructor.valid())
@@ -2209,6 +2210,7 @@ ExprInfo PA11SemanticModel::semantic_destructor_call_expression(
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result,
 		std::vector<SemanticFactId>(1, object.fact));
+	set_semantic_base_path(result, base_path);
 	return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, false);
 }
 
@@ -2364,9 +2366,14 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		const TypeId pointer_value = strip_top_cv_type(object.type);
 		record_builtin_conversion(object, pointer_value);
 	}
-	if (base_path == NULL && !member_base_path(actual_object, member_scope, NULL))
-		throw std::runtime_error("PA12 member call object owner mismatch");
-	if (base_path != NULL && base_path->empty() &&
+	std::vector<NamedRecordId> owned_base_path;
+	if (base_path == NULL)
+	{
+		if (!member_base_path(actual_object, member_scope, &owned_base_path))
+			throw std::runtime_error("PA12 member call object owner mismatch");
+		base_path = &owned_base_path;
+	}
+	if (base_path->empty() &&
 		class_scope_for_type(actual_object) != member_scope)
 		throw std::runtime_error("PA12 member call object owner mismatch");
 
@@ -2400,14 +2407,25 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		arguments, scope, allow_static);
 	if (!selection.valid())
 		throw std::runtime_error("PA12 member call selection is incomplete");
+	std::vector<NamedRecordId> selected_base_path;
+	const std::vector<NamedRecordId>* selected_path = NULL;
+	if (!is_static_member(selection.selected.binding))
+	{
+		if (!member_base_path(actual_object, selection.selected.scope,
+			&selected_base_path))
+			throw std::runtime_error(
+				"PA12 selected member object owner mismatch");
+		selected_path = &selected_base_path;
+	}
 	return finish_member_call(node, scope, member_token, object, actual_object,
-		arguments, argument_nodes, selection.selected, selection.type,
+		selected_path, arguments, argument_nodes, selection.selected, selection.type,
 		is_static_member(selection.selected.binding), implicit_this);
 }
 
 ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	ScopeId scope, SimpleTokenType member_token, const ExprInfo& object,
-	TypeId actual_object, std::vector<ExprInfo>& arguments,
+	TypeId actual_object, const std::vector<NamedRecordId>* base_path,
+	std::vector<ExprInfo>& arguments,
 	const std::vector<const PA10AstNode*>& argument_nodes, ValueRef selected,
 	TypeId selected_type, bool selected_static, BindingId implicit_this)
 {
@@ -2477,6 +2495,8 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 		children.push_back(arguments[i].fact);
 	const SemanticFactId result = make_semantic_fact(fact);
 	set_semantic_children(result, children);
+	if (!selected_static && base_path != NULL)
+		set_semantic_base_path(result, *base_path);
 	return ExprInfo(result, result_type, result_category, false);
 }
 

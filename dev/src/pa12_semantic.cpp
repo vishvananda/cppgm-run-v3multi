@@ -338,6 +338,7 @@ PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model
 	  constant_address_bytes_begin_(model.constant_address_literal_bytes_.size()),
 	  conversion_begin_(model.conversion_facts_.size()),
 	  conversion_base_path_begin_(model.conversion_base_paths_.size()),
+	  semantic_base_path_begin_(model.semantic_base_paths_.size()),
 	  names_begin_(model.semantic_name_components_.size()), active_(true)
 {}
 PA11SemanticModel::SemanticTailGuard::~SemanticTailGuard()
@@ -362,6 +363,7 @@ void PA11SemanticModel::SemanticTailGuard::discard()
 	model_.constant_address_literal_bytes_.resize(constant_address_bytes_begin_);
 	model_.conversion_facts_.resize(conversion_begin_);
 	model_.conversion_base_paths_.resize(conversion_base_path_begin_);
+	model_.semantic_base_paths_.resize(semantic_base_path_begin_);
 	model_.semantic_name_components_.resize(names_begin_);
 	active_ = false;
 }
@@ -750,6 +752,28 @@ void PA11SemanticModel::set_semantic_children(SemanticFactId fact,
 	semantic_children_.insert(semantic_children_.end(), children.begin(),
 		children.end());
 }
+void PA11SemanticModel::set_semantic_base_path(SemanticFactId fact,
+	const std::vector<NamedRecordId>& path)
+{
+	if (!fact.valid() || fact.value >= semantic_facts_.size())
+		throw std::runtime_error("PA12 base-path fact identity is invalid");
+	SemanticFact& owner = semantic_facts_[fact.value];
+	if (owner.base_path_begin != InvalidIdentityValue ||
+		owner.base_path_count != 0)
+		throw std::runtime_error("PA12 base-path fact is already published");
+	if (path.empty())
+		return;
+	if (path.size() > std::numeric_limits<std::size_t>::max() -
+		semantic_base_paths_.size())
+		throw std::runtime_error("PA12 base-path range overflow");
+	for (std::size_t i = 0; i < path.size(); ++i)
+		if (!path[i].valid() || path[i].value >= named_.size())
+			throw std::runtime_error("PA12 base-path identity is invalid");
+	owner.base_path_begin = semantic_base_paths_.size();
+	owner.base_path_count = path.size();
+	semantic_base_paths_.insert(semantic_base_paths_.end(), path.begin(),
+		path.end());
+}
 void PA11SemanticModel::set_semantic_aggregate_elements(SemanticFactId fact,
 	const std::vector<AggregateElementFact>& elements,
 	std::size_t total_count)
@@ -815,6 +839,114 @@ TypeId PA11SemanticModel::function_result_type(TypeId type) const
 	if (type_kind(type) != TypeKind::Function)
 		throw std::runtime_error("PA12 callable is not a function");
 	return types_[type.value].result;
+}
+bool PA11SemanticModel::class_value_type(TypeId type) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	const TypeKind kind = type_kind(type);
+	if (kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference)
+		return false;
+	const TypeId object = strip_cv_type(expression_object_type(type));
+	return object.valid() && class_scope_for_type(object).valid();
+}
+bool PA11SemanticModel::empty_class_value_type(TypeId type) const
+{
+	if (!class_value_type(type))
+		return false;
+	const TypeId object = strip_cv_type(expression_object_type(type));
+	const NamedRecordId record_id = named_record_for_type(object);
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		record_id.value >= record_layouts_.size())
+		return false;
+	const NamedRecord& record = named_[record_id.value];
+	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+		!record.defined || record.has_base || record.direct_base.valid() ||
+		record.direct_base_virtual || record.has_virtual_member ||
+		record.has_requested_alignment || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
+		return false;
+	const RecordLayout& layout = record_layout(record_id);
+	if (layout.state != RecordLayoutState::Complete || layout.size != 1 ||
+		layout.alignment != 1 || layout.has_direct_base ||
+		!layout.checkpoint_zero_storage_eligible || !layout.members.empty())
+		return false;
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	return sidecar == NULL || (!sidecar->has_constructor_declaration &&
+		!sidecar->has_destructor_declaration &&
+		!sidecar->has_default_member_initializer);
+}
+bool PA11SemanticModel::narrow_class_value_constructor(
+	const FunctionFact& function) const
+{
+	const FunctionFact* canonical = &function;
+	if (function.constructor_base_entry)
+	{
+		if (!function.constructor_entry_source.valid() ||
+			function.inherited_base_record.valid() ||
+			function.inherited_base_constructor.valid() ||
+			function.destructor_base_entry ||
+			function.destructor_entry_source.valid())
+			return false;
+		canonical = function_fact_for_binding(function.constructor_entry_source);
+		if (canonical == NULL)
+			return false;
+	}
+	else if (function.constructor_entry_source.valid() ||
+		function.inherited_base_record.valid() ||
+		function.inherited_base_constructor.valid() ||
+		function.destructor_base_entry ||
+		function.destructor_entry_source.valid())
+		return false;
+	if (canonical->constructor_base_entry ||
+		canonical->constructor_entry_source.valid() ||
+		canonical->inherited_base_record.valid() ||
+		canonical->inherited_base_constructor.valid() ||
+		canonical->destructor_base_entry ||
+		canonical->destructor_entry_source.valid())
+		return false;
+	if (!canonical->is_constructor || !canonical->out_of_class_definition ||
+		canonical->node == NULL ||
+		!canonical->binding.valid() || canonical->binding.value >= bindings_.size() ||
+		canonical->binding.value >= binding_owners_.size() ||
+		!canonical->constructor_record.valid() ||
+		canonical->constructor_record.value >= named_.size())
+		return false;
+	const NamedRecord& record = named_[canonical->constructor_record.value];
+	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+		!record.name.valid() || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() || canonical->owner != record.scope ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != canonical->constructor_record ||
+		binding_owners_[canonical->binding.value] != canonical->owner)
+		return false;
+	const Binding& value = binding(canonical->binding);
+	if (value.kind != BindingKind::Function || value.name != record.name ||
+		!value.type.valid() || value.type.value >= types_.size() ||
+		type_kind(value.type) != TypeKind::Function || !value.has_definition)
+		return false;
+	const BindingSidecar* sidecar = binding_sidecar(canonical->binding);
+	if (sidecar == NULL || sidecar->constructor_record !=
+		canonical->constructor_record)
+		return false;
+	const ValueList* values = scopes_[record.scope.value].values.find(record.name);
+	bool canonical_indexed = false;
+	if (values != NULL)
+		for (std::size_t i = 0; i < values->entries.size(); ++i)
+			if (values->entries[i].binding == canonical->binding &&
+				values->entries[i].origin == record.scope)
+			{
+				canonical_indexed = true;
+				break;
+			}
+	if (!canonical_indexed)
+		return false;
+	const TypeKey& signature = types_[value.type.value];
+	return void_id(signature.result) && !signature.variadic &&
+		signature.parameters.size() == 1 &&
+		empty_class_value_type(signature.parameters.front());
 }
 TypeId PA11SemanticModel::callable_function_type(TypeId type) const
 {
@@ -1260,7 +1392,7 @@ ExprInfo PA11SemanticModel::semantic_postfix_expression(const PA10AstNode& node,
 		const ExprInfo overloaded = semantic_operator_call(node, scope,
 			PA10OperatorFunctionKind::Token, node.token, operand,
 			associated_objects, member_nodes, member_arguments,
-			nonmember_nodes, nonmember_arguments, true);
+			nonmember_nodes, nonmember_arguments);
 		if (overloaded.fact.valid())
 		{
 			overload_tail.commit();
@@ -1346,7 +1478,7 @@ ExprInfo PA11SemanticModel::semantic_binary_expression(const PA10AstNode& node, 
 	const ExprInfo overloaded = semantic_operator_call(node, scope,
 		PA10OperatorFunctionKind::Token, node.token, left,
 		associated_objects, member_nodes, member_arguments,
-		nonmember_nodes, nonmember_arguments, true);
+		nonmember_nodes, nonmember_arguments);
 	if (overloaded.fact.valid())
 		return overloaded;
 	switch (node.token)
@@ -1567,7 +1699,7 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 		const ExprInfo overloaded = semantic_operator_call(node, scope,
 			PA10OperatorFunctionKind::Token, node.token, left,
 			associated_objects, member_nodes, member_arguments,
-			nonmember_nodes, nonmember_arguments, true);
+			nonmember_nodes, nonmember_arguments);
 		if (overloaded.fact.valid())
 			return overloaded;
 		const bool pointer_plus = pointer_id(target) &&
@@ -1871,7 +2003,7 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 		const ExprInfo overloaded = semantic_operator_call(node, scope,
 			PA10OperatorFunctionKind::Subscript, node.token,
 			sequence_expression, associated_objects, member_nodes,
-			member_arguments, no_nonmember_nodes, no_nonmember_arguments, true);
+			member_arguments, no_nonmember_nodes, no_nonmember_arguments);
 		if (overloaded.fact.valid())
 			return overloaded;
 		TypeId sequence = strip_cv_type(expression_object_type(sequence_expression.type));

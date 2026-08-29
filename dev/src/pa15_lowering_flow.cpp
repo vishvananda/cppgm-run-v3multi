@@ -400,6 +400,29 @@ bool Pa15Lowerer::class_object_type(TypeId type) const{
 		model_.named_[record.value].kind == NamedKind::Class;
 }
 
+bool Pa15Lowerer::function_abi_supported(BindingId binding,
+	const FunctionFact* function, TypeId function_type) const
+{
+	if (!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[function_type.value];
+	bool has_class_value = model_.class_value_type(signature.result);
+	for (std::size_t parameter = 0;
+		parameter < signature.parameters.size(); ++parameter)
+		if (model_.class_value_type(signature.parameters[parameter]))
+			has_class_value = true;
+	if (!has_class_value)
+		return true;
+	if (function == NULL || !binding.valid() || function->binding != binding ||
+		!function->is_constructor ||
+		!model_.narrow_class_value_constructor(*function))
+		return false;
+	return model_.void_id(signature.result) && !signature.variadic &&
+		signature.parameters.size() == 1 &&
+		model_.empty_class_value_type(signature.parameters.front());
+}
+
 bool Pa15Lowerer::checkpoint_zero_storage_eligible(TypeId type) const{
 	// RecordLayout owns the class summary.  PA15 only unwraps type wrappers;
 	// it never walks a class binding scope while collecting globals.
@@ -734,6 +757,13 @@ LowType Pa15Lowerer::low_reference_value_type(TypeId type) const{
 
 void Pa15Lowerer::demand_function_declaration(BindingId binding){
 		if (!binding.valid()) return;
+		if (binding.value >= model_.bindings_.size())
+			throw std::runtime_error("PA15 demanded function binding is invalid");
+		const Binding& target = model_.binding(binding);
+		const FunctionFact* function = model_.function_fact_for_binding(binding);
+		if (target.kind != BindingKind::Function ||
+			!function_abi_supported(binding, function, target.type))
+			throw std::runtime_error("PA15 unsupported class-value function ABI");
 		if (function_declaration_plans_.find(binding.value) !=
 			function_declaration_plans_.end())
 			demanded_function_declarations_.insert(binding.value);
@@ -752,6 +782,12 @@ void Pa15Lowerer::materialize_function_declarations(){
 				if (demanded_function_declarations_.find(binding_id.value) ==
 					demanded_function_declarations_.end())
 					continue;
+				const Binding& binding = model_.binding(binding_id);
+				const FunctionFact* function =
+					model_.function_fact_for_binding(binding_id);
+				if (!function_abi_supported(binding_id, function, binding.type))
+					throw std::runtime_error(
+						"PA15 unsupported class-value function ABI");
 				const std::map<std::size_t, FunctionDeclaration>::const_iterator plan =
 					function_declaration_plans_.find(binding_id.value);
 				if (plan != function_declaration_plans_.end())
@@ -2455,21 +2491,59 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 			used_value_names_.insert(spelling(target.params[i].name_id));
 		target.value_begin = ValueId(next_value_);
-		for (std::size_t i = 0; i < target.params.size(); ++i)
-			target.params[i].value_id = allocate_value();
-		const std::size_t value_begin = target.value_begin.index;
-		std::vector<unsigned char> class_value_parameter_stores;
+	for (std::size_t i = 0; i < target.params.size(); ++i)
+		target.params[i].value_id = allocate_value();
+	bool suppress_class_value_parameter_store = false;
+	if (fact.is_constructor)
+	{
+		if (!fact.binding.valid() || fact.binding.value >= model_.bindings_.size() ||
+			model_.binding(fact.binding).kind != BindingKind::Function ||
+			!model_.binding(fact.binding).type.valid() ||
+			model_.binding(fact.binding).type.value >= model_.types_.size() ||
+			model_.type_kind(model_.binding(fact.binding).type) != TypeKind::Function)
+			throw std::runtime_error("PA15 constructor signature is invalid");
+		const TypeKey& signature = model_.types_[
+			model_.binding(fact.binding).type.value];
+		bool signature_has_class_value = false;
+		for (std::size_t parameter = 0;
+			parameter < signature.parameters.size(); ++parameter)
+			if (model_.class_value_type(signature.parameters[parameter]))
+				signature_has_class_value = true;
+		std::vector<TypeId> explicit_parameter_types;
+		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+		{
+			const BindingId parameter_id = function_scope.bindings[i];
+			const Binding& parameter = model_.binding(parameter_id);
+			if (parameter.kind == BindingKind::Parameter &&
+				parameter_id != function_scope.implicit_object_binding)
+				explicit_parameter_types.push_back(parameter.type);
+		}
+		if (explicit_parameter_types.size() != signature.parameters.size())
+			throw std::runtime_error(
+				"PA15 constructor parameter signature is malformed");
+		for (std::size_t parameter = 0;
+			parameter < signature.parameters.size(); ++parameter)
+			if (explicit_parameter_types[parameter] !=
+				signature.parameters[parameter])
+				throw std::runtime_error(
+					"PA15 constructor parameter signature changed");
+		if (signature_has_class_value)
+		{
+			if (!model_.narrow_class_value_constructor(fact))
+				throw std::runtime_error(
+					"PA15 constructor class-value boundary is invalid");
+			suppress_class_value_parameter_store = true;
+		}
+	}
+	const std::size_t value_begin = target.value_begin.index;
+	std::vector<unsigned char> class_value_parameter_stores;
 		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
 		{
 			const Binding& parameter = model_.binding(function_scope.bindings[i]);
 			if (parameter.kind != BindingKind::Parameter)
 				continue;
-			const TypeId object = model_.strip_cv_type(
-				model_.expression_object_type(parameter.type));
-			const bool class_value = fact.out_of_class_definition &&
-				fact.is_constructor && model_.class_scope_for_type(object).valid() &&
-				model_.type_kind(parameter.type) != TypeKind::LvalueReference &&
-				model_.type_kind(parameter.type) != TypeKind::RvalueReference;
+			const bool class_value = suppress_class_value_parameter_store &&
+				model_.class_value_type(parameter.type);
 			class_value_parameter_stores.push_back(class_value ? 0 : 1);
 		}
 		const BlockId entry = block_id(new_block("entry"));

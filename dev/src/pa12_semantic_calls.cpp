@@ -84,7 +84,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	const std::vector<ValueRef>& candidates,
 	const std::vector<const PA10AstNode*>& argument_nodes,
 	const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-	bool reject_class_by_value, bool allow_pa16_class_value)
+	bool allow_pa16_class_value)
 {
 	if (argument_nodes.size() != initial_arguments.size())
 		throw std::runtime_error("PA12 function argument boundary mismatch");
@@ -109,8 +109,14 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			return false;
 		const FunctionFact* function = function_fact_for_binding(
 			candidate_ref.binding);
-		if (function == NULL || !function->is_constructor ||
-			!function->out_of_class_definition)
+		if (function == NULL || !narrow_class_value_constructor(*function))
+			return false;
+		if (parameter != 0 || candidate_ref.binding.value >= bindings_.size())
+			return false;
+		const TypeId function_type = binding(candidate_ref.binding).type;
+		if (!function_type.valid() || function_type.value >= types_.size() ||
+			type_kind(function_type) != TypeKind::Function ||
+			types_[function_type.value].parameters.front() != parameter_type)
 			return false;
 		const TypeId parameter_object = strip_cv_type(
 			expression_object_type(parameter_type));
@@ -120,23 +126,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			type_kind(parameter_type) == TypeKind::LvalueReference ||
 			type_kind(parameter_type) == TypeKind::RvalueReference)
 			return false;
-		const NamedRecord& record = named_[parameter_record.value];
-		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
-			!record.defined || record.has_base || record.direct_base.valid() ||
-			record.direct_base_virtual || record.has_virtual_member ||
-			!record.scope.valid() || record.scope.value >= scopes_.size() ||
-			scopes_[record.scope.value].kind != ScopeKind::Class ||
-			scopes_[record.scope.value].record != parameter_record)
-			return false;
-		const RecordLayout& layout = record_layout(parameter_record);
-		if (layout.state != RecordLayoutState::Complete ||
-			layout.has_direct_base || !layout.members.empty())
-			return false;
-		const NamedRecordSidecar* sidecar = named_record_sidecar(
-			parameter_record);
-		if (sidecar != NULL && (sidecar->has_constructor_declaration ||
-			sidecar->has_destructor_declaration ||
-			sidecar->has_default_member_initializer))
+		if (!empty_class_value_type(parameter_type))
 			return false;
 		const ExprInfo& argument = arguments[parameter];
 		return argument.fact.valid() &&
@@ -165,28 +155,19 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		// specialization may publish more typed facts and invalidate a vector
 		// reference into types_.
 		const TypeKey function = types_[candidate_type.value];
-		if (reject_class_by_value)
+		if (allow_pa16_class_value)
 		{
 			bool supported = true;
 			for (std::size_t parameter = 0;
 				parameter < function.parameters.size(); ++parameter)
 			{
 				const TypeId parameter_type = function.parameters[parameter];
-				const TypeId parameter_object = strip_cv_type(
-					expression_object_type(parameter_type));
-				const NamedRecordId parameter_record =
-					named_record_for_type(parameter_object);
-				if (type_kind(parameter_type) != TypeKind::LvalueReference &&
-					type_kind(parameter_type) != TypeKind::RvalueReference &&
-					parameter_record.valid() && parameter_record.value < named_.size() &&
-					named_[parameter_record.value].kind == NamedKind::Class)
-				{
-					if (!supported_class_value_parameter(candidate_ref, parameter,
+				if (class_value_type(parameter_type) &&
+					!supported_class_value_parameter(candidate_ref, parameter,
 						parameter_type))
-					{
-						supported = false;
-						break;
-					}
+				{
+					supported = false;
+					break;
 				}
 			}
 			if (!supported)
@@ -520,8 +501,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 	const std::vector<const PA10AstNode*>& member_argument_nodes,
 	const std::vector<ExprInfo>& member_arguments,
 	const std::vector<const PA10AstNode*>& nonmember_argument_nodes,
-	const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope,
-	bool reject_class_by_value)
+	const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope)
 {
 	if (member_argument_nodes.size() != member_arguments.size() ||
 		nonmember_argument_nodes.size() != nonmember_arguments.size())
@@ -689,29 +669,6 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 			else if (scopes_[candidate_ref.scope.value].kind != ScopeKind::Namespace)
 				continue;
 			const TypeKey function = types_[candidate.type.value];
-			if (reject_class_by_value)
-			{
-				bool supported = true;
-				for (std::size_t parameter = 0;
-					parameter < function.parameters.size(); ++parameter)
-				{
-					const TypeId parameter_type = function.parameters[parameter];
-					const TypeId parameter_object = strip_cv_type(
-						expression_object_type(parameter_type));
-					const NamedRecordId parameter_record =
-						named_record_for_type(parameter_object);
-					if (type_kind(parameter_type) != TypeKind::LvalueReference &&
-						type_kind(parameter_type) != TypeKind::RvalueReference &&
-						parameter_record.valid() && parameter_record.value < named_.size() &&
-						named_[parameter_record.value].kind == NamedKind::Class)
-					{
-						supported = false;
-						break;
-					}
-				}
-				if (!supported)
-					continue;
-			}
 			std::size_t required = function.parameters.size();
 			while (required != 0 && function_default_argument(
 				candidate_ref.binding, required - 1).valid())
@@ -903,8 +860,7 @@ ExprInfo PA11SemanticModel::semantic_operator_call(
 	const std::vector<const PA10AstNode*>& member_argument_nodes,
 	const std::vector<ExprInfo>& member_arguments,
 	const std::vector<const PA10AstNode*>& nonmember_argument_nodes,
-	const std::vector<ExprInfo>& nonmember_arguments,
-	bool reject_class_by_value)
+	const std::vector<ExprInfo>& nonmember_arguments)
 {
 	std::vector<ValueRef> member_candidates;
 	std::vector<ValueRef> nonmember_candidates;
@@ -915,7 +871,7 @@ ExprInfo PA11SemanticModel::semantic_operator_call(
 	const TypedOperatorSelection selection = select_typed_operator(
 		member_candidates, nonmember_candidates, member_object,
 		member_argument_nodes, member_arguments, nonmember_argument_nodes,
-		nonmember_arguments, scope, reject_class_by_value);
+		nonmember_arguments, scope);
 	if (!selection.valid())
 		return ExprInfo();
 	const TypeId result_type = function_result_type(selection.type);
@@ -1100,7 +1056,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 			const ExprInfo overloaded = semantic_operator_call(node, scope,
 				PA10OperatorFunctionKind::Call, node.token, indirect_callee,
 				associated_objects, member_nodes, member_arguments,
-				no_nonmember_nodes, no_nonmember_arguments, true);
+				no_nonmember_nodes, no_nonmember_arguments);
 			if (overloaded.fact.valid())
 				return overloaded;
 		}

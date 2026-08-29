@@ -1871,7 +1871,7 @@ ExprInfo PA11SemanticModel::semantic_unary_expression(const PA10AstNode& node, S
 	const ExprInfo overloaded = semantic_operator_call(node, scope,
 		PA10OperatorFunctionKind::Token, node.token, operand,
 		associated_objects, no_member_nodes, no_member_arguments,
-		nonmember_nodes, nonmember_arguments, true);
+		nonmember_nodes, nonmember_arguments);
 	if (overloaded.fact.valid())
 		return overloaded;
 	if (node.token == SimpleTokenType::OP_AMP &&

@@ -932,6 +932,8 @@ struct SemanticFact
 	bool name_global;
 	std::size_t child_begin;
 	std::size_t child_count;
+	// PA12-owned path consumed directly by PA15.
+	std::size_t base_path_begin; std::size_t base_path_count;
 	std::size_t conversion_begin;
 	std::size_t conversion_count;
 	std::size_t literal_element_count;
@@ -970,6 +972,7 @@ struct SemanticFact
 		  token(SimpleTokenType::OP_SEMICOLON), source(source),
 		  name_begin(0), name_count(0), name_global(false),
 		  child_begin(InvalidIdentityValue), child_count(0),
+		  base_path_begin(InvalidIdentityValue), base_path_count(0),
 		  conversion_begin(InvalidIdentityValue), conversion_count(0),
 			literal_element_count(0), literal_value(0), has_literal_value(false),
 			literal_value_unsigned(false), literal_value_negative(false),
@@ -1326,7 +1329,7 @@ private:
 	FlatIndex<const PA10AstNode*, ScopeId, PointerHash>
 		substatement_scope_index_;
 	std::vector<SemanticFact> semantic_facts_;
-	std::vector<SemanticFactId> semantic_children_; std::vector<AggregateElementFact> aggregate_elements_;
+	std::vector<SemanticFactId> semantic_children_; std::vector<AggregateElementFact> aggregate_elements_; std::vector<NamedRecordId> semantic_base_paths_;
 	FlatIndex<SemanticFactId, AggregateFactRange, IdentityHash<SemanticFactId> > aggregate_ranges_;
 	std::vector<FloatingLiteralFact> floating_literal_facts_;
 	std::vector<std::uint8_t> floating_literal_bytes_;
@@ -1782,14 +1785,10 @@ private:
 	void process_class_body(const PA10AstNode& node, TypeId type, ScopeId owner,
 		bool alignment_applied)
 	;
-	void process_special_member(const PA10AstNode& node, ScopeId scope)
-	;
-	TypeId type_from_type_id(const PA10AstNode& node, ScopeId scope)
-	;
-	DeclaratorOp pointer_op(const PA10AstNode& node, ScopeId scope)
-	;
-	ArrayBound literal_bound(const PA10AstNode& node) const
-	;
+	void process_special_member(const PA10AstNode& node, ScopeId scope); BindingId matching_constructor_declaration(NamedRecordId record_id, ScopeId owner_scope, const TypeKey& requested_signature) const;
+	TypeId type_from_type_id(const PA10AstNode& node, ScopeId scope);
+	DeclaratorOp pointer_op(const PA10AstNode& node, ScopeId scope);
+	ArrayBound literal_bound(const PA10AstNode& node) const;
 	bool contains_parameter_pack(const PA10AstNode& node) const
 	;
 	std::vector<TypeId> parameter_types(const PA10AstNode& clause, ScopeId scope,
@@ -1988,12 +1987,11 @@ private:
 		const std::vector<ValueRef>& candidates,
 		const std::vector<const PA10AstNode*>& argument_nodes,
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-		bool reject_class_by_value = false,
 		bool allow_pa16_class_value = false)
 	;
-	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope, bool reject_class_by_value = false);
+	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
-	ExprInfo semantic_operator_call(const PA10AstNode& node, ScopeId scope, PA10OperatorFunctionKind kind, SimpleTokenType token, const ExprInfo& member_object, const std::vector<TypeId>& associated_objects, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, bool reject_class_by_value = false);
+	ExprInfo semantic_operator_call(const PA10AstNode& node, ScopeId scope, PA10OperatorFunctionKind kind, SimpleTokenType token, const ExprInfo& member_object, const std::vector<TypeId>& associated_objects, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments);
 	bool member_accessible(BindingId binding, ScopeId member_scope, ScopeId access_scope, TypeId object, bool has_access_override = false,
 		MemberAccess access_override = MemberAccess::Public, ScopeId access_view_owner = ScopeId()) const
 	;
@@ -2021,7 +2019,7 @@ private:
 		const std::vector<NamedRecordId>* base_path = NULL,
 		bool allow_static = false, BindingId implicit_this = BindingId(), const std::vector<const PA10AstNode*>* supplied_argument_nodes = NULL, const std::vector<ExprInfo>* supplied_arguments = NULL)
 	;
-	ExprInfo finish_member_call(const PA10AstNode& node, ScopeId scope, SimpleTokenType member_token, const ExprInfo& object, TypeId actual_object, std::vector<ExprInfo>& arguments, const std::vector<const PA10AstNode*>& argument_nodes, ValueRef selected, TypeId selected_type, bool selected_static, BindingId implicit_this);
+	ExprInfo finish_member_call(const PA10AstNode& node, ScopeId scope, SimpleTokenType member_token, const ExprInfo& object, TypeId actual_object, const std::vector<NamedRecordId>* base_path, std::vector<ExprInfo>& arguments, const std::vector<const PA10AstNode*>& argument_nodes, ValueRef selected, TypeId selected_type, bool selected_static, BindingId implicit_this);
 	ExprInfo semantic_member_call_with_implicit_object(const PA10AstNode& node, ScopeId scope, BindingId this_binding, TypeId actual_object, ScopeId member_scope, const std::vector<ValueRef>& candidates, const std::vector<const PA10AstNode*>* supplied_argument_nodes = NULL, const std::vector<ExprInfo>* supplied_arguments = NULL);
 	ExprInfo semantic_ambiguous_member_call(const PA10AstNode& node, ScopeId scope, const NamePath& path, const PA10AstNode& argument_node, const ExprInfo& argument, bool* claimed);
 	ExprInfo semantic_unqualified_member_call(const PA10AstNode& node,
@@ -2125,7 +2123,7 @@ private:
 		std::size_t constant_address_begin_;
 		std::size_t constant_address_bytes_begin_;
 		std::size_t conversion_begin_;
-		std::size_t conversion_base_path_begin_;
+		std::size_t conversion_base_path_begin_; std::size_t semantic_base_path_begin_;
 		std::size_t names_begin_;
 		bool active_;
 	};
@@ -2134,6 +2132,7 @@ private:
 	void set_semantic_children(SemanticFactId fact,
 	const std::vector<SemanticFactId>& children)
 	;
+	void set_semantic_base_path(SemanticFactId fact, const std::vector<NamedRecordId>& path);
 	void set_semantic_aggregate_elements(SemanticFactId fact, const std::vector<AggregateElementFact>& elements, std::size_t total_count);
 	void set_semantic_name(SemanticFactId fact, const NamePath& path)
 	;
@@ -2186,6 +2185,7 @@ private:
 	;
 	TypeId function_result_type(TypeId type) const
 	;
+	bool class_value_type(TypeId type) const; bool empty_class_value_type(TypeId type) const; bool narrow_class_value_constructor(const FunctionFact& function) const;
 	TypeId callable_function_type(TypeId type) const
 	;
 	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId(), TypeId source_operation_type = TypeId(), BindingId source_binding = BindingId()) const;

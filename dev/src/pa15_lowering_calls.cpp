@@ -161,6 +161,19 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		model_.semantic_facts_.size(), 0);
 	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
+	const auto validate_fact_base_path = [this](const SemanticFact& fact) {
+		if (fact.base_path_count == 0)
+		{
+			if (fact.base_path_begin != InvalidIdentityValue)
+				throw std::runtime_error("PA15 semantic base path is malformed");
+			return;
+		}
+		if (fact.base_path_begin == InvalidIdentityValue ||
+			fact.base_path_begin > model_.semantic_base_paths_.size() ||
+			fact.base_path_count > model_.semantic_base_paths_.size() -
+				fact.base_path_begin)
+			throw std::runtime_error("PA15 semantic base path is malformed");
+	};
 	const auto demand_special_member_base_entry = [this, demanded,
 		&function_work](BindingId source, bool constructor) {
 		const BindingId* entry = constructor ?
@@ -377,6 +390,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			continue;
 		scanned_global_fact_modes[fact_id.value] |= global_mode;
 		const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+		validate_fact_base_path(fact);
 		if (model_.aggregate_ranges_.find(fact_id) != NULL)
 		{
 			std::size_t element_count = 0;
@@ -598,6 +612,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				continue;
 			scanned_runtime_facts[fact_id.value] = 1;
 			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+			validate_fact_base_path(fact);
 			if (model_.aggregate_ranges_.find(fact_id) != NULL)
 			{
 				std::size_t element_count = 0;
@@ -1119,6 +1134,11 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 		callee_binding = &model_.binding(fact.selected_binding);
 		if (model_.type_kind(callee_binding->type) != TypeKind::Function)
 			throw std::runtime_error("PA15 direct call target is not a function");
+		const FunctionFact* selected_function =
+			model_.function_fact_for_binding(fact.selected_binding);
+		if (!function_abi_supported(fact.selected_binding, selected_function,
+			callee_binding->type))
+			throw std::runtime_error("PA15 unsupported class-value function ABI");
 		instruction.direct_callee_id = symbol->second;
 		instruction.first = global_operand(symbol->second,
 			function_name_ids_.find(fact.selected_binding.value)->second);
@@ -1167,6 +1187,20 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 					!class_value_target.valid())
 					throw std::runtime_error(
 						"PA15 unsupported class-value constructor argument shape");
+				const FunctionFact* constructor_fact =
+					model_.function_fact_for_binding(fact.selected_binding);
+				if (constructor_fact == NULL || !constructor_fact->is_constructor ||
+					!model_.narrow_class_value_constructor(*constructor_fact) ||
+					!model_.binding(fact.selected_binding).type.valid() ||
+					model_.binding(fact.selected_binding).type.value >=
+						model_.types_.size() ||
+					model_.type_kind(model_.binding(fact.selected_binding).type) !=
+						TypeKind::Function ||
+					model_.types_[model_.binding(fact.selected_binding).type.value].parameters.front() !=
+						class_value_target ||
+					!model_.empty_class_value_type(class_value_target))
+					throw std::runtime_error(
+						"PA15 class-value constructor boundary is invalid");
 				class_value_source = lower_expression_impl(facts[argument_begin],
 					false, false, false, true);
 				if (!class_value_source.lvalue || !class_value_source.type.is_object())
@@ -1260,32 +1294,22 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				actual_object = model_.expression_object_type(object_fact.type);
 				object = lower_address(facts.front());
 			}
-			std::vector<NamedRecordId> base_path;
-			if (!model_.member_object_convertible(actual_object,
-				required_object, member_owner, &base_path) ||
+			actual_object = model_.strip_cv_type(
+				model_.expression_object_type(actual_object));
+			if (!validate_typed_base_path(actual_object, required_object,
+				member_owner, fact.base_path_begin, fact.base_path_count) ||
 				!object.type.is_pointer())
 				throw std::runtime_error("PA15 member call object is incompatible");
 			NamedRecordId current_record = model_.named_record_for_type(
 				actual_object);
-			for (std::size_t i = 0; i < base_path.size(); ++i)
+			for (std::size_t i = 0; i < fact.base_path_count; ++i)
 			{
 				if (!current_record.valid() || current_record.value >=
 					model_.named_.size())
 					throw std::runtime_error(
 						"PA15 member call base record is invalid");
-				const NamedRecord& current = model_.named_[current_record.value];
-				const NamedRecordId base_record = base_path[i];
-				if (current.kind != NamedKind::Class || !current.has_base ||
-					current.direct_base_virtual || current.direct_base != base_record)
-					throw std::runtime_error(
-						"PA15 member call base relation is invalid");
-				const RecordLayout& layout = model_.record_layout(current_record);
-				if (layout.state != RecordLayoutState::Complete ||
-					!layout.has_direct_base ||
-					layout.direct_base.record != base_record ||
-					layout.direct_base.offset != 0)
-					throw std::runtime_error(
-						"PA15 member call base layout is invalid");
+				const NamedRecordId base_record = model_.semantic_base_paths_[
+					fact.base_path_begin + i];
 				const LowType offset_type = size_low_type();
 				const LoweredValue offset(integer_operand(0, offset_type),
 					offset_type, false);
@@ -1303,6 +1327,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	else
 	{
 		if (facts.empty()) throw std::runtime_error("PA15 indirect call has no callee");
+		if (!function_abi_supported(BindingId(), NULL, fact.callable_type))
+			throw std::runtime_error("PA15 unsupported class-value function ABI");
 		argument_begin = 1;
 		instruction.has_call_signature = true;
 	}
