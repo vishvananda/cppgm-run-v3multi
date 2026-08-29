@@ -347,7 +347,7 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 	const LoweredValue this_storage = storage_for(active_constructor_this_);
 	const ValueId this_value = emit_load(this_storage, this_storage.type);
 	const Instruction& this_load = block().instructions.back();
-	const LoweredValue object(temporary_operand(this_value,
+	LoweredValue object(temporary_operand(this_value,
 		this_load.destination_name_id), this_storage.type, false);
 	const LowType offset_type = size_low_type();
 	LowType byte;
@@ -387,11 +387,13 @@ LoweredValue Pa15Lowerer::constructor_subobject_address(
 	if (offset == NULL || *offset > static_cast<std::size_t>(
 		std::numeric_limits<long long>::max()))
 		throw std::runtime_error("PA15 constructor member offset is invalid");
-	const LoweredValue address = emit_index(object, LoweredValue(integer_operand(
-		static_cast<long long>(*offset), offset_type), offset_type, false),
-		byte, lowir_model::IPK_FIELD);
-	return model_.bit_field_fact(action.member) != NULL ?
-		mark_bit_field_address(address, action.member) : address;
+	const LoweredValue member_offset(integer_operand(
+		static_cast<long long>(*offset), offset_type), offset_type, false);
+	if (model_.bit_field_fact(action.member) != NULL)
+		return emit_bit_field_index(object, member_offset, byte,
+			lowir_model::IPK_FIELD, action.member,
+			BitFieldAddressProjection::ROOT_POINTER_LOAD, this_storage);
+	return emit_index(object, member_offset, byte, lowir_model::IPK_FIELD);
 }
 
 std::size_t Pa15Lowerer::checked_array_element_offset(TypeId array,
@@ -521,11 +523,14 @@ LoweredValue Pa15Lowerer::constructor_path_address(
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
 			throw std::runtime_error("PA15 constructor path member offset is invalid");
-		result = emit_index(result, LoweredValue(integer_operand(
-			static_cast<long long>(*offset), offset_type), offset_type, false),
-			byte, lowir_model::IPK_FIELD);
+		const LoweredValue member_offset(integer_operand(
+			static_cast<long long>(*offset), offset_type), offset_type, false);
 		if (model_.bit_field_fact(path[i].member) != NULL)
-			result = mark_bit_field_address(result, path[i].member);
+			result = emit_bit_field_index(result, member_offset, byte,
+				lowir_model::IPK_FIELD, path[i].member);
+		else
+			result = emit_index(result, member_offset, byte,
+				lowir_model::IPK_FIELD);
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
@@ -590,9 +595,14 @@ LoweredValue Pa15Lowerer::aggregate_path_address(const LoweredValue& storage,
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
 			throw std::runtime_error("PA15 aggregate path member offset is invalid");
-		result = emit_index(result, LoweredValue(integer_operand(
-			static_cast<long long>(*offset), offset_type), offset_type, false),
-			byte, lowir_model::IPK_FIELD);
+		const LoweredValue member_offset(integer_operand(
+			static_cast<long long>(*offset), offset_type), offset_type, false);
+		if (model_.bit_field_fact(path[i].member) != NULL)
+			result = emit_bit_field_index(result, member_offset, byte,
+				lowir_model::IPK_FIELD, path[i].member);
+		else
+			result = emit_index(result, member_offset, byte,
+				lowir_model::IPK_FIELD);
 		current_type = model_.binding(path[i].member).type;
 	}
 	return result;
@@ -675,8 +685,6 @@ void Pa15Lowerer::initialize_global_aggregate_constructor(TypeId target,
 		member_path.push_back(ConstructorAddressStep(action.member));
 		LoweredValue destination = aggregate_path_address(aggregate_root_storage,
 			aggregate_root_type, member_path);
-		if (model_.bit_field_fact(action.member) != NULL)
-			destination = mark_bit_field_address(destination, action.member);
 		if (destination.bit_field_lvalue)
 			initialize_bit_field(destination, action.member, value, context);
 		else
@@ -1643,17 +1651,24 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				member_path = *path;
 				member_path.push_back(ConstructorAddressStep(member));
 			}
-			LoweredValue member_value = root_action != NULL && path != NULL &&
-				i != 0 ? constructor_path_address(*root_action, member_path) :
-				aggregate_root_storage != NULL && path != NULL &&
-				(path->empty() || i != 0) ?
-				aggregate_path_address(*aggregate_root_storage,
-					aggregate_root_type, member_path) :
-				emit_index(destination_value, LoweredValue(integer_operand(
+			LoweredValue member_value;
+			if (root_action != NULL && path != NULL && i != 0)
+				member_value = constructor_path_address(*root_action, member_path);
+			else if (aggregate_root_storage != NULL && path != NULL &&
+				(path->empty() || i != 0))
+				member_value = aggregate_path_address(*aggregate_root_storage,
+					aggregate_root_type, member_path);
+			else
+			{
+				const LoweredValue member_offset(integer_operand(
 					static_cast<long long>(*offset), size_low_type()), size_low_type(),
-					false), byte, lowir_model::IPK_FIELD);
-			if (model_.bit_field_fact(member) != NULL)
-				member_value = mark_bit_field_address(member_value, member);
+					false);
+				member_value = model_.bit_field_fact(member) != NULL ?
+					emit_bit_field_index(destination_value, member_offset, byte,
+						lowir_model::IPK_FIELD, member) :
+					emit_index(destination_value, member_offset, byte,
+						lowir_model::IPK_FIELD);
+			}
 			BitFieldInitializationContext* member_context =
 				model_.bit_field_fact(member) != NULL ? context : NULL;
 			const BindingSidecar* sidecar = model_.binding_sidecar(member);

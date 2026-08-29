@@ -1003,38 +1003,44 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 				model_.type_kind(model_.strip_cv_type(
 					model_.expression_object_type(model_.binding(member).type))) ==
 					TypeKind::Array);
-		LoweredValue direct_value;
-		if (direct_scalar)
-			direct_value = lower_expression(element_fact->initializer);
+		LoweredValue direct_value = direct_scalar ?
+			lower_expression(element_fact->initializer) : LoweredValue();
 		LoweredValue encoded;
 		const bool encoded_bit_field = element_fact != NULL &&
 			element_fact->initializer.valid() &&
 			model_.bit_field_fact(member) != NULL;
+		const LoweredValue bit_field_value = encoded_bit_field && !direct_scalar ?
+			lower_expression(element_fact->initializer) : direct_value;
 		const bool encode_before_address = encoded_bit_field &&
 			!bit_field_initialization_preserves_existing(member, *context);
 		if (encode_before_address)
-			encoded = encode_bit_field_value(member,
-				lower_expression(element_fact->initializer),
-				true);
-		LoweredValue member_value = root_action != NULL && path != NULL &&
-			i != 0 ? constructor_path_address(*root_action, member_path) :
-				aggregate_root_storage != NULL && path != NULL &&
-				(path->empty() || i != 0) ?
-				aggregate_path_address(*aggregate_root_storage,
-				aggregate_root_type, member_path) :
-			emit_index(destination_value, LoweredValue(integer_operand(
+			encoded = encode_bit_field_value(member, bit_field_value, true);
+		LoweredValue member_value;
+		if (root_action != NULL && path != NULL && i != 0)
+			member_value = constructor_path_address(*root_action, member_path);
+		else if (aggregate_root_storage != NULL && path != NULL &&
+			(path->empty() || i != 0))
+			member_value = aggregate_path_address(*aggregate_root_storage,
+				aggregate_root_type, member_path);
+		else
+		{
+			const LoweredValue member_offset(integer_operand(
 				static_cast<long long>(*offset), size_low_type()), size_low_type(),
-				false), byte, lowir_model::IPK_FIELD);
-		if (model_.bit_field_fact(member) != NULL)
-			member_value = mark_bit_field_address(member_value, member);
+				false);
+			member_value = model_.bit_field_fact(member) != NULL ?
+				emit_bit_field_index(destination_value, member_offset, byte,
+					lowir_model::IPK_FIELD, member) :
+				emit_index(destination_value, member_offset, byte,
+					lowir_model::IPK_FIELD);
+		}
 		if (encoded_bit_field)
 		{
 			if (encode_before_address)
 				initialize_encoded_bit_field(member_value, member, encoded,
 					*context);
 			else
-				initialize_bit_field(member_value, member,
-					lower_expression(element_fact->initializer), *context);
+				initialize_bit_field(member_value, member, bit_field_value,
+					*context);
 		}
 		else if (element_fact != NULL)
 		{

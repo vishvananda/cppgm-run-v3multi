@@ -31,6 +31,43 @@ using lowir_model::SpellingId;
 using lowir_model::SymbolId;
 using lowir_model::ValueId;
 
+// The hot LoweredValue record carries only this typed handle.  The complete
+// replay descriptor lives in Pa15Lowerer's contiguous arena and is captured
+// only at an explicit bit-field address boundary.
+struct BitFieldAddressProjectionId
+{
+	std::size_t value;
+
+	explicit BitFieldAddressProjectionId(
+		std::size_t value = pa11_semantic_storage::InvalidIdentityValue)
+		: value(value) {}
+	bool valid() const
+	{
+		return value != pa11_semantic_storage::InvalidIdentityValue;
+	}
+};
+
+// A descriptor replays one already-evaluated root plus its final typed index.
+// Nested paths use a pointer-value root, while constructor paths may use the
+// constructor's typed this slot so replay never re-evaluates source code.
+struct BitFieldAddressProjection
+{
+	enum RootKind { ROOT_STORAGE_ADDRESS, ROOT_POINTER_LOAD,
+		ROOT_POINTER_VALUE };
+	RootKind root_kind;
+	Operand root;
+	LowType root_type;
+	Operand offset;
+	LowType offset_type;
+	LowType element_type;
+	lowir_model::IndexProjectionKind index_projection;
+
+	BitFieldAddressProjection()
+		: root_kind(ROOT_POINTER_VALUE), root(), root_type(), offset(),
+		  offset_type(), element_type(),
+		  index_projection(lowir_model::IPK_NONE) {}
+};
+
 struct LoweredValue
 {
 	Operand value;
@@ -41,28 +78,32 @@ struct LoweredValue
 	LowType physical_type;
 	bool lvalue;
 	// A member lvalue carries its canonical PA11 bit-field binding through
-	// PA15.  The address is the storage-unit address; the metadata selects the
-	// masked read/write projection without consulting a rendered name.
+	// PA15.  The address is the storage-unit address; the compact typed handle
+	// selects any saved packed projection without consulting a rendered name.
 	bool bit_field_lvalue;
 	BindingId bit_field_binding;
+	BitFieldAddressProjectionId bit_field_address_projection;
 	bool canonical_truth;
 	CanonicalTruthPolicy canonical_truth_policy;
 	Operand condition_value;
 	bool has_condition_value;
 
 	LoweredValue() : value(), type(), physical_type(), lvalue(false),
-		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		bit_field_lvalue(false), bit_field_binding(),
+		bit_field_address_projection(), canonical_truth(false),
 		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue)
 		: value(value), type(type), physical_type(type), lvalue(lvalue),
-		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		bit_field_lvalue(false), bit_field_binding(),
+		bit_field_address_projection(), canonical_truth(false),
 		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 	LoweredValue(const Operand& value, const LowType& type, bool lvalue,
 		const LowType& physical_type)
 		: value(value), type(type), physical_type(physical_type), lvalue(lvalue),
-		bit_field_lvalue(false), bit_field_binding(), canonical_truth(false),
+		bit_field_lvalue(false), bit_field_binding(),
+		bit_field_address_projection(), canonical_truth(false),
 		canonical_truth_policy(CanonicalTruthPolicy::Materialize),
 		condition_value(), has_condition_value(false) {}
 };
@@ -428,6 +469,10 @@ private:
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
 	std::vector<PendingGlobalAction> pending_global_actions_;
+	// Full bit-field replay payloads are sparse: ordinary LoweredValue and
+	// emit_index paths carry no projection storage, only captured bit-field
+	// lvalues retain an index into this arena.
+	std::vector<BitFieldAddressProjection> bit_field_address_projections_;
 	bool needs_trivial_namespace_object_init_;
 	std::vector<std::vector<BindingId> > function_scope_variables_;
 	std::size_t next_symbol_;
@@ -604,12 +649,27 @@ private:
 	Operand floating_operand(long double value, const LowType& type) const;
 	ValueId destination(const LowType& type, Instruction* instruction);
 	ValueId emit_load(const LoweredValue& storage, const LowType& type);
-	void materialize_lvalue_value(LoweredValue* result, const LowType& type);
+	void materialize_lvalue_value(LoweredValue* result, const LowType& type,
+		bool publish_bit_field_value = false);
 	void emit_store(const LowType& type, const Operand& value, const Operand& storage);
 	LoweredValue mark_bit_field_address(const LoweredValue& address,
-		BindingId binding) const;
+		BindingId binding,
+		BitFieldAddressProjectionId projection = BitFieldAddressProjectionId()) const;
+	BitFieldAddressProjectionId capture_bit_field_address_projection(
+		BitFieldAddressProjection::RootKind root_kind,
+		const LoweredValue& root, const LoweredValue& offset,
+		const LowType& element, lowir_model::IndexProjectionKind projection);
+	LoweredValue emit_bit_field_index(const LoweredValue& base,
+		const LoweredValue& offset, const LowType& element,
+		lowir_model::IndexProjectionKind projection, BindingId binding);
+	LoweredValue emit_bit_field_index(const LoweredValue& base,
+		const LoweredValue& offset, const LowType& element,
+		lowir_model::IndexProjectionKind projection, BindingId binding,
+		BitFieldAddressProjection::RootKind root_kind,
+		const LoweredValue& root);
 	LoweredValue emit_bit_field_load(const LoweredValue& storage,
 		BindingId binding, const LowType& result_type);
+	LoweredValue reproject_bit_field_address(const LoweredValue& storage);
 	LoweredValue encode_bit_field_value(BindingId binding,
 		const LoweredValue& value, bool force_storage_type = false);
 	void emit_encoded_bit_field_store(const LoweredValue& storage,

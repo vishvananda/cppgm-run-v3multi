@@ -245,17 +245,50 @@ LoweredValue Pa15Lowerer::lower_member_address(SemanticFactId id){
 			throw std::runtime_error("PA15 member offset exceeds LowIR range");
 		const LoweredValue member_offset(integer_operand(
 			static_cast<long long>(*offset), offset_type), offset_type, false);
-		return emit_index(base, member_offset, byte, lowir_model::IPK_FIELD);
+		if (model_.bit_field_fact(member_id) == NULL)
+			return emit_index(base, member_offset, byte, lowir_model::IPK_FIELD);
+		// A simple object member can replay from its canonical storage slot.  A
+		// pointer/complex object has already been evaluated into base, so its
+		// typed pointer value is the only safe root to replay.
+		if (fact.token == SimpleTokenType::OP_DOT &&
+			base_path.empty() &&
+			(object_fact.kind == SemanticFactKind::IdExpression ||
+				object_fact.kind == SemanticFactKind::Variable) &&
+			object_fact.binding.valid() &&
+			!reference_binding(object_fact.binding))
+		{
+			const LoweredValue object_storage = storage_for(object_fact.binding);
+			return emit_bit_field_index(base, member_offset, byte,
+				lowir_model::IPK_FIELD, member_id,
+				BitFieldAddressProjection::ROOT_STORAGE_ADDRESS, object_storage);
+		}
+		return emit_bit_field_index(base, member_offset, byte,
+			lowir_model::IPK_FIELD, member_id);
 }
 
 void Pa15Lowerer::materialize_lvalue_value(LoweredValue* result,
-	const LowType& type)
+	const LowType& type, bool publish_bit_field_value)
 {
 	if (result == NULL || !result->lvalue) return;
 	if (result->bit_field_lvalue)
 	{
-		const LoweredValue value = emit_bit_field_load(*result,
+		LoweredValue value = emit_bit_field_load(*result,
 			result->bit_field_binding, type);
+		// A bit-field is not an addressable scalar expression.  When a normal
+		// value boundary is requested, publish its extracted operation value
+		// explicitly; update paths call emit_bit_field_load directly and do not
+		// pay for this extra materialization.
+		if (publish_bit_field_value)
+		{
+			Instruction copy;
+			copy.kind = Instruction::IK_COPY;
+			copy.type = value.type;
+			copy.first = value.value;
+			const ValueId copied = destination(value.type, &copy);
+			block().instructions.push_back(copy);
+			value = LoweredValue(temporary_operand(copied,
+				copy.destination_name_id), value.type, false);
+		}
 		*result = value;
 		return;
 	}
@@ -325,7 +358,8 @@ void Pa15Lowerer::emit_store(const LowType& type, const Operand& value,
 }
 
 LoweredValue Pa15Lowerer::mark_bit_field_address(
-	const LoweredValue& address, BindingId binding_id) const
+	const LoweredValue& address, BindingId binding_id,
+	BitFieldAddressProjectionId projection) const
 {
 	const BitFieldFact* fact = model_.bit_field_fact(binding_id);
 	if (fact == NULL || !fact->named || fact->binding != binding_id ||
@@ -340,7 +374,112 @@ LoweredValue Pa15Lowerer::mark_bit_field_address(
 	LoweredValue result(address.value, value_type, true);
 	result.bit_field_lvalue = true;
 	result.bit_field_binding = binding_id;
+	if (projection.valid())
+	{
+		if (projection.value >= bit_field_address_projections_.size())
+			throw std::runtime_error("PA15 bit-field projection handle is invalid");
+		result.bit_field_address_projection = projection;
+	}
+	else
+		result.bit_field_address_projection = address.bit_field_address_projection;
 	return result;
+}
+
+BitFieldAddressProjectionId
+Pa15Lowerer::capture_bit_field_address_projection(
+	BitFieldAddressProjection::RootKind root_kind,
+	const LoweredValue& root, const LoweredValue& offset,
+	const LowType& element, lowir_model::IndexProjectionKind projection)
+{
+	if (root_kind == BitFieldAddressProjection::ROOT_STORAGE_ADDRESS)
+	{
+		if (!root.lvalue || !root.type.is_object() ||
+			(root.value.kind != Operand::OP_SLOT &&
+				root.value.kind != Operand::OP_GLOBAL))
+			throw std::runtime_error("PA15 bit-field storage root is invalid");
+	}
+	else if (root_kind == BitFieldAddressProjection::ROOT_POINTER_LOAD ||
+		root_kind == BitFieldAddressProjection::ROOT_POINTER_VALUE)
+	{
+		if (!root.type.is_pointer())
+			throw std::runtime_error("PA15 bit-field pointer root is invalid");
+	}
+	else
+		throw std::runtime_error("PA15 bit-field projection root kind is invalid");
+	if (!offset.type.is_integer() || !element.valid())
+		throw std::runtime_error("PA15 bit-field projection index is invalid");
+	BitFieldAddressProjection descriptor;
+	descriptor.root_kind = root_kind;
+	descriptor.root = root.value;
+	descriptor.root_type = root.type;
+	descriptor.offset = offset.value;
+	descriptor.offset_type = offset.type;
+	descriptor.element_type = element;
+	descriptor.index_projection = projection;
+	bit_field_address_projections_.push_back(descriptor);
+	return BitFieldAddressProjectionId(
+		bit_field_address_projections_.size() - 1);
+}
+
+LoweredValue Pa15Lowerer::emit_bit_field_index(const LoweredValue& base,
+	const LoweredValue& offset, const LowType& element,
+	lowir_model::IndexProjectionKind projection, BindingId binding)
+{
+	return emit_bit_field_index(base, offset, element, projection, binding,
+		BitFieldAddressProjection::ROOT_POINTER_VALUE, base);
+}
+
+LoweredValue Pa15Lowerer::emit_bit_field_index(const LoweredValue& base,
+	const LoweredValue& offset, const LowType& element,
+	lowir_model::IndexProjectionKind projection, BindingId binding,
+	BitFieldAddressProjection::RootKind root_kind,
+	const LoweredValue& root)
+{
+	if (model_.bit_field_fact(binding) == NULL)
+		throw std::runtime_error("PA15 bit-field projection binding is invalid");
+	const LoweredValue address = emit_index(base, offset, element, projection);
+	const BitFieldAddressProjectionId projection_id =
+		capture_bit_field_address_projection(root_kind, root, offset, element,
+			projection);
+	return mark_bit_field_address(address, binding, projection_id);
+}
+
+LoweredValue Pa15Lowerer::reproject_bit_field_address(
+	const LoweredValue& storage)
+{
+	const BitFieldAddressProjectionId projection_id =
+		storage.bit_field_address_projection;
+	if (!projection_id.valid())
+		return storage;
+	if (projection_id.value >= bit_field_address_projections_.size())
+		throw std::runtime_error("PA15 bit-field projection handle is invalid");
+	const BitFieldAddressProjection& projection =
+		bit_field_address_projections_[projection_id.value];
+	LoweredValue base;
+	if (projection.root_kind ==
+		BitFieldAddressProjection::ROOT_STORAGE_ADDRESS)
+	{
+		base = address_of_storage(LoweredValue(projection.root,
+			projection.root_type, true));
+	}
+	else if (projection.root_kind ==
+		BitFieldAddressProjection::ROOT_POINTER_LOAD)
+	{
+		const LoweredValue root(projection.root, projection.root_type, true);
+		const ValueId loaded = emit_load(root, projection.root_type);
+		const Instruction& instruction = block().instructions.back();
+		base = LoweredValue(temporary_operand(loaded,
+			instruction.destination_name_id), projection.root_type, false);
+	}
+	else
+		base = LoweredValue(projection.root, projection.root_type, false);
+	if (!base.type.is_pointer())
+		throw std::runtime_error("PA15 bit-field projection base is not a pointer");
+	const LoweredValue offset(projection.offset, projection.offset_type, false);
+	const LoweredValue projected = emit_index(base, offset,
+		projection.element_type, projection.index_projection);
+	return mark_bit_field_address(projected, storage.bit_field_binding,
+		projection_id);
 }
 
 LoweredValue Pa15Lowerer::emit_bit_field_load(
@@ -547,7 +686,11 @@ void Pa15Lowerer::emit_bit_field_store(const LoweredValue& storage,
 			throw std::runtime_error("PA15 preserving bit-field encoding changed type");
 		const LoweredValue combined = emit_binary_value(lowir_model::BOP_OR,
 			write_type, cleared, encoded);
-		emit_store(write_type, combined.value, storage.value);
+		// The packed-unit store is a later LowIR action than value computation.
+		// Replay the saved typed root/index at that boundary so address evaluation
+		// remains single-shot while the final destination action is explicit.
+		const LoweredValue store_storage = reproject_bit_field_address(storage);
+		emit_store(write_type, combined.value, store_storage.value);
 		return;
 	}
 	const LoweredValue encoded = encode_bit_field_value(binding_id, value);

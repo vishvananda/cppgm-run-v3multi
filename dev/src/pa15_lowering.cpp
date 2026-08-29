@@ -36,6 +36,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
 		  function_plans_(), pending_global_actions_(),
+		  bit_field_address_projections_(),
 		  needs_trivial_namespace_object_init_(false),
 		  function_scope_variables_(), next_symbol_(0),
 		  literal_backing_ordinal_(0), next_value_(program.values.size()),
@@ -65,6 +66,7 @@ void Pa15Lowerer::run(){
 		initialize_spelling_ids();
 		initialize_identity_counters();
 		clear_value_records();
+		bit_field_address_projections_.clear();
 		index_binding_facts();
 		collect_functions();
 		collect_function_declarations();
@@ -1957,8 +1959,7 @@ LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 		}
 		if (fact.kind == SemanticFactKind::MemberExpression &&
 			model_.bit_field_fact(fact.selected_binding) != NULL)
-			return mark_bit_field_address(lower_member_address(id),
-				fact.selected_binding);
+			return lower_member_address(id);
 		if (fact.kind == SemanticFactKind::MemberExpression &&
 			reference_binding(fact.selected_binding))
 		{
@@ -2176,7 +2177,7 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	}
 	if (conversion.kind == ConversionKind::LvalueToRvalue)
 	{
-		materialize_lvalue_value(result, target);
+		materialize_lvalue_value(result, target, !omit_boolean_context);
 		result->type = target;
 		result->physical_type = target;
 		result->lvalue = false;
@@ -2351,7 +2352,8 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			{
 				// PA13 branches consume integer truth values.  Compare against a
 				// zero operand carrying the source float width, including f80.
-				materialize_lvalue_value(&result, source_type);
+				materialize_lvalue_value(&result, source_type,
+					!omit_boolean_context);
 				Operand zero_operand = floating_operand(0.0L, source_type);
 				zero_operand.presentation_id = intern_spelling(
 					source_type.float_kind == LowType::FLOAT_F32 ? "0.0F" :
@@ -2390,7 +2392,8 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 				source_type.is_integer() && target.is_integer() &&
 				source_type.integer_width() == target.integer_width() ?
 				target : source_type;
-			materialize_lvalue_value(&result, materialization_type);
+			materialize_lvalue_value(&result, materialization_type,
+				!omit_boolean_context);
 			if (target_is_bool && result.value.kind != Operand::OP_INTEGER &&
 				result.physical_type.is_integer())
 			{
@@ -2455,7 +2458,8 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 				result.lvalue = false;
 			}
 			else
-				materialize_lvalue_value(&result, result.type);
+				materialize_lvalue_value(&result, result.type,
+					!omit_boolean_context);
 		}
 		return result;
 	}
@@ -2681,7 +2685,18 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 				lowir_model::BOP_SUB : lowir_model::BOP_ADD, operation_type, old, one);
 		}
 		if (left.bit_field_lvalue)
-			emit_bit_field_store(left, left.bit_field_binding, updated);
+		{
+			// Prefix and postfix updates both compute their encoded value before
+			// the packed-unit RMW.  Prefix returns the updated lvalue boundary,
+			// so give its store a fresh projection; postfix can use the already
+			// evaluated projection because its result is the old value.
+			const LoweredValue operation_storage = postfix ? left :
+				reproject_bit_field_address(left);
+			const LoweredValue encoded = encode_bit_field_value(
+				left.bit_field_binding, updated);
+			emit_encoded_bit_field_store(operation_storage,
+				left.bit_field_binding, encoded, true);
+		}
 		else
 			emit_store(target_type, updated.value, left.value);
 		if (postfix) return old;
