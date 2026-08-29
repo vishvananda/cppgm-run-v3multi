@@ -2,7 +2,8 @@
 
 ## Current authority
 
-The current committed authority is the bounded checkpointAudit at HEAD
+The current committed repository state at HEAD contains the bounded
+checkpointAudit. Its source-bearing checkpointAudit commit is
 `6924315a7190aa64b68dfbe029e47ed8d6f868a9` (`PA16: complete checkpointAudit`),
 based on checkpoint input commit
 `05a3252fa2f649d7962545af92f041ba801ebd16` (`PA16: fix cv-qualified member

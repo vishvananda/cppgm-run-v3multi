@@ -4,10 +4,13 @@
 
 This final review covers checkpoint input commit
 `05a3252fa2f649d7962545af92f041ba801ebd16` (`PA16: fix cv-qualified member
-object semantics`) plus the approved bounded PA11-to-PA12 repair now committed
-in current HEAD `6924315a7190aa64b68dfbe029e47ed8d6f868a9` (`PA16: complete
-checkpointAudit`). The full validation result is 200/243 identities passed,
-exactly 43 failed, with 243/243 identities covered. The durable full-stage log is
+object semantics`) plus the approved bounded PA11-to-PA12 repair committed in
+source-bearing commit `6924315a7190aa64b68dfbe029e47ed8d6f868a9` (`PA16:
+complete checkpointAudit`). Subsequent audit-record-only authority corrections
+are also contained in the current HEAD. The source and test inputs for the
+recorded validation are unchanged. The full validation result is 200/243
+identities passed, exactly 43 failed, with 243/243 identities covered. The
+durable full-stage log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
 The checkpoint input authority is recorded in
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
