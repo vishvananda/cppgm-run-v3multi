@@ -2,14 +2,51 @@
 
 ## Current authority
 
-Current committed authority is HEAD, `PA16: fix cv-qualified member object
-semantics`. This checkpoint started at 88d15835 (`PA16 checkpointAudit:
-finalize typed canonical truth`) with 199/243 identities passed, exactly 44
-failed, and 243/243 identities covered. Its final result is 200/243 with 43
-failures, no final-only identity, and 243/243 coverage. The older e92
-194/243, 49-failure result is retained only as historical context.
+Clean landed authority is HEAD `05a3252fa2f649d7962545af92f041ba801ebd16`,
+`PA16: fix cv-qualified member object semantics`: 200/243 identities passed,
+exactly 43 failed, and 243/243 identities were covered. The validated
+checkpoint result after the approved bounded repair is also 200/243 with
+exactly 43 failures and 243/243 coverage. The authoritative clean-landed
+primary log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The final checkpoint log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
+Its parent checkpoint `88d15835` had 199/243 passed and exactly 44 failures;
+the landed delta is baseline-only
+`pa16/tests/general/200-mutable-member-const-method.t`, with final-only empty
+and coverage unchanged. Relative to clean landed HEAD, the audit repair has
+baseline-only `0`, final-only `0`, and no coverage change; the exact comparison
+is preserved at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`.
 
-## Spec alignment and stage design
+## Current checkpoint scope and spec alignment
+
+This checkpoint audits only the PA11 declaration-specifier and mutable
+`BindingSidecar` path, PA12 member-subobject cv propagation, and mixed
+member/nonmember operator implicit-object viability/ranking through the
+existing explicit hidden-`this` call boundary. `[dcl.stc]` 7.1.1 paragraph 10
+requires `mutable` to name a non-static class data member and rejects const,
+static, reference, and unnamed-bit-field ownership. `[basic.type.qualifier]`
+3.9.3 and `[expr.ref]` 5.2.5 preserve volatile while removing the containing
+object's const for a mutable member. `[over.match.oper]` 13.5.3 and
+`[over.best.ics]` 13.3.3 compare the member implicit-object conversion with
+the nonmember's first explicit operand.
+
+PA11 carries `SpecFact` and the canonical `BindingId`; named mutable members,
+including bit-fields, write one sidecar fact. PA12 passes that same binding to
+`member_access_type` for explicit dot/arrow, implicit-this, and injected
+anonymous-union views. The helper removes only const from the object cv set.
+Member calls use the typed object conversion and then the existing hidden-this
+callable type. Mixed operators keep bounded member/nonmember candidate lists;
+the nonmember parameter-zero qualification delta is represented in the typed
+conversion score. No textual recovery, duplicate model, broad invalidation,
+or PA15 widening is in scope.
+
+The mutable condition-declaration spelling is rejected at the parser boundary,
+before `process_condition_declaration`; it is parser-excluded and was not
+newly guarded there or widened into PA10.
+
+## Inherited predecessor architecture and retained evidence
 
 PA11 owns canonical typed identities: SemanticFactId, BindingId,
 FunctionFactId, typed expression ownership, declaration cv/mutable metadata,
@@ -58,10 +95,10 @@ otherwise the existing Materialize disposition remains. PA15 resets
 LoweredValue from the current ConversionFact before each conversion, so a
 Preserve conversion cannot become sticky across a later Materialize record.
 
-## Turn-start failure map
+## Final failure map
 
-The exact turn-start `make test-pa16` result is 199/243 passed, 44 failed,
-with all 243 identities covered. The exact sorted residual identities are:
+The exact final `make test-pa16` result is 200/243 passed, 43 failed, with all
+243 identities covered. The exact sorted residual identities are:
 
 - pa16/tests/general/100-function-pointer-nested-param-name-shadow.t
 - pa16/tests/general/200-aliased-base-mem-initializer-match.t
@@ -73,7 +110,6 @@ with all 243 identities covered. The exact sorted residual identities are:
 - pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
 - pa16/tests/general/200-local-default-class-array-lifecycle.t
 - pa16/tests/general/200-member-object-lifetime.t
-- pa16/tests/general/200-mutable-member-const-method.t
 - pa16/tests/general/200-nested-braced-member-aggregate-init.t
 - pa16/tests/general/200-nonliteral-field-condition-not-folded.t
 - pa16/tests/general/200-placement-new-expression-aggregate-brace.t
@@ -108,22 +144,28 @@ with all 243 identities covered. The exact sorted residual identities are:
 - pa16/tests/general/400-signed-bit-field-read.t
 - pa16/tests/general/400-signed-enum-bit-field-read.t
 
+Relative to parent `88d15835`, the landed delta is baseline-only
+`pa16/tests/general/200-mutable-member-const-method.t`, final-only empty, and
+coverage remains `243/243`. Relative to clean landed HEAD, the final audit
+repair has baseline-only `0`, final-only `0`, and coverage delta `0`.
+
 Focused identities and ownership outcomes:
 
 - `200-const-subobject-member-call.t`: PA12 already selects
   `Table::f() const` through the const `Map` subobject and exits successfully;
   the residual is a PA15 empty-aggregate no-op projection in LowIR, excluded
   from this cv/member-call checkpoint.
-- `200-mutable-member-const-method.t`: PA11 drops `mutable` and has no typed
-  member fact, so PA12 treats `&x` as const; owned by this checkpoint.
+- `200-mutable-member-const-method.t`: the clean landed authority now passes;
+  the audit also found and repaired invalid mutable consumers in function
+  definitions, parameters, type-ids, and bit-field declarations.
 - `300-member-vs-nonmember-operator-implicit-object-cv-rank.t`: PA12 records
-  the nonmember object's cv delta but omits it from its typed conversion score,
-  making the mixed candidate set ambiguous; owned by this checkpoint.
+  the nonmember object's cv delta in its typed conversion score; the mixed
+  candidate set selects the member and exits correctly. Its remaining checked
+  difference is the known unused-`$period` LowIR shape residual.
 
-The preceding identity comparison is the inherited checkpoint evidence. The
-final comparison against the turn-start
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
-recorded below.
+The exact final sorted comparison is preserved at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`;
+both logs contain the same 43 failure identities.
 
 ## Inherited focused evidence
 
@@ -150,26 +192,48 @@ recorded below.
   pre-extraction outputs; the focused log is
   `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-focused-20260829.log`.
 
-## Focused evidence
+## Current checkpoint evidence
 
 Command:
 `make -C pa16 check TEST='tests/general/200-const-subobject-member-call.t tests/general/200-mutable-member-const-method.t tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t tests/general/200-const-member-call-prefers-const-object-overload.t tests/general/200-const-object-nonconst-member-call-bad.t tests/general/200-member-call-implicit-object-cv-overload.t tests/general/200-member-call-implicit-this-cv-overload.t tests/general/200-method-cv-overload-preference.t tests/general/300-mutable-anonymous-member.t'`
 
-The corrected build succeeds and the focused matrix is `FAIL (7/9)`: all five
-member/cv controls and `200-mutable-member-const-method.t` pass. The operator
-test now has successful PA12 selection and exit status but still has a
-fixture-only LowIR difference: the checked-in reference contains an extra
-unused `addr $period`; emitting that would be an output-shape workaround.
-The const-subobject test still has the known extra empty-aggregate field
-projection. Broad validation below confirms that these are the only two
-focused presentation residuals.
+The corrected build succeeds and the focused matrix is `FAIL (7/9)`: the five
+member/cv controls, `200-mutable-member-const-method.t`, and
+`300-mutable-anonymous-member.t` pass. The operator test has successful PA12
+selection and exit status but still has a fixture-only LowIR difference: the
+checked-in reference contains an extra unused `addr $period`; emitting that
+would be an output-shape workaround. The const-subobject test still has the
+known extra empty-aggregate field projection. These remain the only two
+focused residuals and are outside this PA11-to-PA12 repair.
 
-Temporary `--emit-semantics` probes reject namespace mutable, static mutable,
-top-level-const mutable, and reference mutable with the typed PA11 checks;
-pointer-to-const mutable and volatile mutable accept. The volatile probe
-reports `volatile int` for the const-volatile object's member access.
+Temporary `--emit-semantics` probes after the repair reject mutable function
+definitions, parameters, type-ids, anonymous bit-fields, and mixed
+named/anonymous bit-field declarations. Named mutable and mutable-volatile
+bit-field writes through const objects, plus `mutable const T*`, accept. The
+condition-declaration reduction is rejected by the parser before its typed
+consumer; it is parser-excluded and was not newly guarded in
+`process_condition_declaration`.
 
-## Structural/performance evidence
+The required full-stage gate exits 2 at `200/243`, with `43` failures and
+`243/243` coverage; its durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
+The exact through-PA15 command exits 0 at `1167/1167`; its durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-through-pa15-20260829.log`.
+The required file audit exits 0 with the five existing header warnings listed
+in the audit record. `git diff --check` exits 0.
+
+## Current structural/performance bounds
+
+The mutable repair adds one canonical `BindingSidecar` write per named member
+and one keyed read at `member_access_type`; no duplicate model, scan, retry,
+or invalidation is introduced. Mixed operator selection remains bounded by
+the member/nonmember candidate lists and explicit arguments, approximately
+`O(C * A)` for `C` candidates and `A` arguments. These are structural bounds
+only; no timing, RSS, allocation, or speedup claim is made. The file audit
+reports no relevant function-size, file-size, or packed-statement defect from
+the five-file change.
+
+## Inherited predecessor structural/performance evidence
 
 No timing, RSS, allocation, or speedup claim is made. Representative
 finalizer structural samples are:
@@ -193,29 +257,30 @@ source audit also confirms the existing 2400-line header and 3000-line source
 limits remain satisfied, with no newly introduced source line packing multiple
 statements.
 
-## Final checkpoint
+## Current checkpoint boundary and next residual checkpoint
 
 Scope is the PA11-to-PA12 typed cv flow for non-static member subobjects,
 including the mutable exception, and the PA12 implicit-object conversion score
 used by mixed member/nonmember operators. Invariants are BindingId ownership,
 cv qualification only at the member-object type boundary, typed candidate
 viability/ranking, the existing explicit hidden-this call type, and the single
-typed canonical-truth finalizer. The empty aggregate's zero-work field
-projection is excluded because its semantic call selection is already correct
-and it is not caused by cv propagation. This checkpoint is complete and
-committed; the validation evidence is recorded below.
+typed canonical-truth pipeline. The empty aggregate's zero-work field
+projection and the unused `$period` shape are excluded because their semantic
+selection/exit behavior is already correct and they are not caused by this
+typed cv repair. The checkpoint is complete with the required broad validation
+and exact unchanged failure set.
 
 The operator candidate work remains bounded by the relevant member and
 nonmember candidate lists and their argument lists; no global retry or
 whole-program scan is introduced. The mutable bit is stored once on the
 canonical member BindingId sidecar and read only for that member access.
 
-The mutable sidecar lookup and cv mask are constant-time per member access.
+The mutable sidecar lookup and cv mask are one keyed access per member access.
 Existing operator selection remains an O(candidates * arguments) traversal;
-the focused mixed operator has two candidates and two explicit arguments as a
-representative bound. No timing or allocation claim is made.
+the focused mixed operator exercises the two candidate families and its typed
+hidden-object boundary. No timing or allocation claim is made.
 
-## Inherited validation evidence
+## Inherited predecessor validation evidence
 
 Full PA16 log:
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-test-pa16-20260829.log`.
@@ -229,24 +294,37 @@ The exact identity comparison is preserved at
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-identity-compare-20260829.log`.
 `git diff --check` exits 0 after the document update.
 
-The inherited full evidence above belongs to the predecessor checkpoint. Final
-evidence for this committed cv checkpoint is recorded below.
+The full evidence above belongs to the predecessor checkpoint; final evidence
+for this audit is recorded in the current checkpoint sections above and below.
 
 ## Final validation evidence
 
-`make test-pa16` exits nonzero at `200 / 243` passed and `43` failures.
-Compared with the turn-start failure identities, baseline-only is exactly
-`pa16/tests/general/200-mutable-member-const-method.t`, final-only is empty,
-and the final residual set is exactly the turn-start list above minus that
-identity. The full identity universe remains `243/243` covered.
+The final `make test-pa16` exits `2` with `200/243` passed, `43` failures, and
+`243/243` identities covered. Its durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
+The exact sorted comparison against the supplied clean-landed log is preserved
+at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`:
+baseline-only `0`, final-only `0`, and coverage delta `0`.
 
-The required through command (`n=16; ... make test-report-through-pa15`)
-passes at `1167 / 1167`. The required file audit passes with the five known
-bad-division warnings, and `git diff --check` passes.
+The exact required through-PA15 command exits `0` at `1167/1167`; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-through-pa15-20260829.log`.
+The exact file audit exits `0`; durable log:
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-file-audit-20260829.log`.
+It reports only the five existing `bad-division` warnings for
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+`pa11_semantic_model.h`, and `pa15_lowering.h`; no relevant file-size,
+function-size, or packed-statement defect was introduced. `git diff --check`
+exits `0`.
+
+The only reviewed files are `dev/src/pa11_semantic.cpp`,
+`dev/src/pa11_semantic_types.cpp`, `dev/src/pa12_semantic_facts.cpp`,
+`pa16/audit.md`, and `pa16/plan.md`. No test, fixture, reference, harness,
+comparator, coverage, source-set, or unrelated file changed.
 
 ## Checkpoint ledger
 
 | checkpoint | status |
 | --- | --- |
 | c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed predecessor: bounded finalizer and hardening are in the six authorized source owners; clean build and protected five pass, focused probes pass, final PA16 is 199/243 with the exact unchanged 44-failure map and 243/243 coverage, through-PA15 is 1167/1167, and file audit passes with five known warnings. |
-| HEAD `PA16: fix cv-qualified member object semantics` | Completed/committed: typed PA11 mutable constraints, PA12 member-subobject cv exception, and mixed operator implicit-object cv scoring pass focused semantics/probes; focused matrix is 7/9 with the two approved fixture-shape residuals, PA16 is 200/243 with exactly one baseline failure eliminated, no new failures, and 243/243 coverage, through-PA15 is 1167/1167, audit and diff-check pass. |
+| HEAD `05a3252f` plus checkpointAudit | Completed bounded PA11-to-PA12 audit and repair: reachable `SpecFact` consumers reject invalid `mutable` ownership, named bit-fields publish the canonical `BindingSidecar`, and parser-excluded mutable condition declarations remain outside `process_condition_declaration`. Member cv propagation and mixed operator scoring remain typed through the hidden-`this` boundary. Final PA16 is `200/243` with `43` failures and `243/243` coverage; exact comparison with clean landed HEAD has baseline-only `0`, final-only `0`, and coverage delta `0`. Through-PA15 is `1167/1167`; file audit exits `0` with the five existing header warnings; diff-check exits `0`; the focused matrix is `7/9` with the two approved LowIR-shape residuals. Only the three bounded source files and two PA16 records changed. |

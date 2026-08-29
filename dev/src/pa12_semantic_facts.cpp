@@ -212,6 +212,8 @@ void PA11SemanticModel::process_bit_field_declaration(
 		const std::size_t storage_unit_size = declared_storage_unit_size;
 		const std::size_t storage_width = declared_storage_width;
 		const bool named = field.children.size() == 2;
+		if (spec.is_mutable && !named)
+			throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
 		DeclaratorName name;
 		if (named)
 		{
@@ -281,6 +283,8 @@ void PA11SemanticModel::process_bit_field_declaration(
 				current_language_linkage_, FunctionDeclarationKind::Normal,
 				false, PA10OperatorFunctionKind::None,
 				SimpleTokenType::OP_SEMICOLON);
+			if (spec.is_mutable)
+				record_mutable_member(binding_id, declared_type, true);
 			fact.binding = binding_id;
 			set_bit_field_fact(binding_id, fact);
 			declaration_bindings_.push_back(binding_id);

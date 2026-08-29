@@ -1520,6 +1520,8 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	// the class scope as the typed lexical parent for lookup.
 	const ScopeId friend_type_scope = friend_record.valid() ? scope : target;
 	const SpecFact spec = spec_fact(node.children[0], friend_type_scope);
+	if (spec.is_mutable)
+		throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
 	DeclaratorBaseKind base_kind = spec.is_auto ? DeclaratorBaseKind::AutoPlaceholder : DeclaratorBaseKind::Typed;
 	const TypeId type = apply_declarator(declarator, spec.base, friend_type_scope, base_kind);
 	if (!type.valid()) throw std::runtime_error(spec.is_auto ?

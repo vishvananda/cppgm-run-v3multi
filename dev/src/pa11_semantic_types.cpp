@@ -441,6 +441,8 @@ TypeId PA11SemanticModel::type_from_type_id(const PA10AstNode& node,
 	SpecFact spec = spec_fact(node.children.front(), scope);
 	if (spec.is_auto)
 		throw std::runtime_error("PA11 auto is not a type-id");
+	if (spec.is_mutable)
+		throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
 	TypeId result = spec.base;
 	if (node.children.size() > 1)
 	{
@@ -511,6 +513,8 @@ std::vector<TypeId> PA11SemanticModel::parameter_types(
 		SpecFact spec = spec_fact(child.children.front(), scope);
 		if (spec.is_auto)
 			throw std::runtime_error("PA11 auto is not a parameter type");
+		if (spec.is_mutable)
+			throw std::runtime_error("PA11 mutable declaration is not a non-static data member");
 		TypeId type = spec.base;
 		if (!type.valid())
 			throw std::runtime_error("PA11 parameter has no typed type");

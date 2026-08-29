@@ -2,6 +2,140 @@
 
 ## Current Checkpoint Review
 
+This final review covers clean landed HEAD
+`05a3252fa2f649d7962545af92f041ba801ebd16` (`PA16: fix cv-qualified member
+object semantics`) and the approved bounded PA11-to-PA12 repair. The full
+validation result is 200/243 identities passed, exactly 43 failed, with
+243/243 identities covered. The durable full-stage log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
+The clean landed authority is recorded in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Relative to that authority, the sorted failure sets are identical:
+baseline-only `0`, final-only `0`, and coverage delta `0`; the exact two sorted
+sets and derivation are preserved in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`.
+Relative to parent checkpoint `88d15835` (199/243, 44 failures), the landed
+increment removed exactly `pa16/tests/general/200-mutable-member-const-method.t`;
+the audit repair changes no PA16 identity. The exact final residual map is in
+`pa16/plan.md`.
+
+### Contract and ownership trace
+
+The bounded path is the single typed PA11-to-PA12 path required by
+`spec.md` sections 2-5 and 7:
+
+```text
+PA11 spec_fact(DeclSpecifierSeq/TypeSpecifierSeq)
+  -> SpecFact { TypeId base, cv, mutable }
+  -> canonical BindingId + binding owner
+  -> BindingSidecar.mutable_member for a named non-static data member
+  -> PA12 member lookup/selection
+  -> member_access_type(object TypeId, member TypeId, BindingId)
+  -> existing typed hidden-this call boundary
+```
+
+`[dcl.stc]` 7.1.1 paragraph 10 limits `mutable` to named class data members,
+and forbids const, static, and reference members. `record_mutable_member`
+retains those constraints: top-level const is rejected while
+`mutable const T*` is allowed, and volatile is preserved. The reachable
+semantic consumers now enforce the same owner rule in function definitions,
+parameters, type-ids, and bit-field declarations; named bit-fields publish the
+canonical sidecar fact and unnamed bit-fields fail before publication because
+`[class.bit]` 9.6 paragraph 2 says they are not members.
+
+The condition-declaration form is parser-excluded: the attempted mutable
+condition declaration is rejected before `process_condition_declaration` is
+entered. No PA10/parser widening or new guard in that function was added.
+
+For direct dot/arrow access, implicit `this` access, and injected anonymous
+union views, PA12 reaches `member_access_type` with the selected canonical
+`BindingId`. The helper starts with `expression_object_type(object)`, clears
+only containing `const` for a mutable non-static variable, and preserves
+volatile, matching `[expr.ref]` 5.2.5's `vq12 T` rule. Member-call viability
+uses that typed object cv through `member_object_type` and
+`member_object_convertible` before the existing explicit hidden-this call fact.
+Mixed operator selection compares the member implicit-object score with the
+nonmember parameter-zero score; its qualification delta is a typed
+`ConversionChoice`/`ConversionScore`, with no textual fallback or second
+candidate model.
+
+### Findings and repair disposition
+
+- `process_function_definition` accepted `mutable int f()`; the typed owner
+  check now rejects it before function publication.
+- `parameter_types` accepted `mutable int value`; the parameter consumer now
+  rejects it before publishing a parameter fact.
+- `type_from_type_id` accepted `static_cast<mutable int>(1)`; the type-id
+  consumer now rejects the invalid storage-class word.
+- `process_bit_field_declaration` failed to record named mutable bit-fields,
+  making writes through const objects incorrectly nonmodifiable. Named fields
+  now call `record_mutable_member`; unnamed and mixed named/unnamed forms are
+  rejected.
+- No further member-subobject cv or mixed operator-ranking defect was found.
+  The const-subobject call selects `Table::f() const`, and the mixed operator
+  selects the member with the correct status path. Their remaining differences
+  are the known extra empty-aggregate projection and unused `$period` LowIR
+  shapes, outside this checkpoint and not grounds for PA15 widening.
+
+### Focused and required evidence
+
+`make -C dev cppgm++ -j2` exits 0. The focused handout matrix remains `7/9`:
+the five cv/member controls, `200-mutable-member-const-method.t`, and
+`300-mutable-anonymous-member.t` pass; only the two characterized LowIR shape
+residuals fail. The course control
+`sh cppgm.tests/course/pa16/402-typed-member-call-demand-roots-regression.sh`
+exits 0. Direct semantic probes reject the invalid reachable mutable forms and
+accept named mutable, mutable-volatile, and `mutable const T*` cases.
+
+The required `make test-pa16` exits 2 with `200/243` passed, `43` failures,
+and all `243/243` identities covered. Its exact sorted identity comparison is
+the durable log named above; no failure identity was added or removed. The
+required command
+`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
+exits 0 at `1167/1167`; its durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-through-pa15-20260829.log`.
+The required
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits 0 with
+the five existing warnings recorded below. `git diff --check` exits 0.
+
+### Structural, performance, boundaries, and changed-file audit
+
+The repair adds one typed sidecar write per named mutable binding and one
+keyed sidecar read at member access; it adds no scan, retry, invalidation,
+duplicate model, or whole-program retry. Operator selection remains bounded
+by member/nonmember candidate lists and explicit arguments, approximately
+`O(C * A)`. These are structural bounds only; no timing, RSS, allocation, or
+speedup claim is made.
+
+The file audit warnings are exactly:
+
+- `dev/src/abi_mangle.h:1` — `bad-division`, header contains substantial
+  implementation body; prefer `.cpp` ownership.
+- `dev/src/cpp_semantic_core.h:1` — `bad-division`, header contains
+  substantial implementation body; prefer `.cpp` ownership.
+- `dev/src/lowir_model.h:1` — `bad-division`, header contains substantial
+  implementation body; prefer `.cpp` ownership.
+- `dev/src/pa11_semantic_model.h:1` — `bad-division`, header contains
+  substantial implementation body; prefer `.cpp` ownership.
+- `dev/src/pa15_lowering.h:1` — `bad-division`, header contains substantial
+  implementation body; prefer `.cpp` ownership.
+
+The only reviewed changes are:
+
+- `dev/src/pa11_semantic.cpp` — function-definition mutable owner check.
+- `dev/src/pa11_semantic_types.cpp` — parameter and type-id mutable checks.
+- `dev/src/pa12_semantic_facts.cpp` — bit-field mutable ownership and sidecar.
+- `pa16/audit.md` — final checkpoint review and one current ledger row.
+- `pa16/plan.md` — final authority, failure map, evidence, and boundary.
+
+No test, fixture, `.ref`, status sidecar, harness, comparator, coverage rule,
+source-set, or unrelated file changed. The two LowIR residuals remain the
+boundary for the next residual checkpoint; any follow-up must preserve the
+single typed pipeline, canonical BindingId ownership, and the existing
+hidden-this boundary without widening PA15.
+
+## Inherited Predecessor Checkpoint Review
+
 This review covers landed c39d45634bb029a02c938c190f8ac703bd275050,
 PA16: preserve typed canonical truth boundaries, plus the bounded
 checkpoint-audit correction and its behavior-preserving structural extraction.
@@ -2046,6 +2180,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `05a3252f` plus PA11-to-PA12 cv/mutable checkpointAudit | Completed bounded audit and repair: reachable `SpecFact` consumers reject invalid `mutable` ownership, named bit-fields use the canonical `BindingSidecar`, and parser-excluded mutable condition declarations remain outside `process_condition_declaration`. Direct/implicit/injected member access preserves volatile and removes only containing const; mixed operator scoring remains typed and bounded through the existing hidden-`this` boundary. Final PA16 is `200/243` with `43` failures and `243/243` coverage; exact comparison with clean landed HEAD has baseline-only `0`, final-only `0`, and coverage delta `0`. The focused matrix is `7/9` with the two approved LowIR-shape residuals; through-PA15 is `1167/1167`; file audit exits `0` with the five existing header warnings; and diff-check exits `0`. Only the three bounded source files and two PA16 records changed. |
 | c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed the bounded audit of c39d45634bb029a02c938c190f8ac703bd275050 plus finalizer hardening and the behavior-preserving structural extraction: PA12 builds all retained facts/bodies once, then one ephemeral dense ResultNodeId graph applies explicit result edges, conservative BindingId may-provenance, canonical declaration-to-definition call mapping, and a convergent recursion worklist. PA12 publishes bool-source Preserve per ConversionFact, including bool-to-int; PA15 resets LoweredValue from each conversion so policy is non-sticky. Generic child propagation, BindingSidecar taint, deferred ambient call state, latest-fact scans, dynamic dependency layers, and diagnostics are absent. The private CanonicalTruthFinalizer separates checked domain/edge construction, propagation, and publication; the finalizer methods are below the 240-line limit and changed source lines are unpacked. Clean build and protected five are 5/5; fresh focused outputs match the pre-extraction outputs; final PA16 is 199/243 with the exact unchanged 44-failure set and 243/243 coverage; through-PA15 is 1167/1167; file audit passes with five known warnings; no new failure or coverage delta. |
 | `b3bbf052` typed non-owning namespace object checkpointAudit | Completed bounded audit and repair of the landed increment relative to `68b549f2`: PA11 canonical owner/type/definition facts flow through PA12 typed references, conversions, and address targets into PA15 pointer-vs-owned LowIR and demand-rooted global emission. Incomplete class references/glvalues remain non-owning pointers; namespace declaration-only objects require typed demand; definitions, class-static objects, address targets, nested/internal/TLS cases, and fail-closed owner/range checks remain covered. Post-repair `make test-pa16` is `189/243` with `54` failures and `243/243` coverage; comparison with the landed 54-failure authority is baseline-only `0` and final-only `0`. The 16-test handout matrix is `16/16`, the required through-PA15 command is `1167/1167`, the required file audit exits `0` with five known header-division warnings, and determinism probes are byte-identical. The direct incomplete namespace-object address case is out of contract because PA16 scopes namespace object declarations to complete class types; the unrelated course-400 DMI mismatch remains outside this increment. No handout, fixture, reference, harness, comparator, coverage, source-set, or unrelated file changed. |
 | `a5b496e8` typed ordinary-value-over-tag/member-enumerator/member-call checkpointAudit | Completed bounded audit of the landed increment relative to `1093c2b7`: PA11 preserves independent typed identities, but cross-space using coexistence is limited to a canonical real class/enum tag (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), while typedef/alias value conflicts remain rejected; PA12 member ambiguity and ordinary calls share the complete typed member selector; enumerator facts retain canonical binding/owner/type/value and one object-evaluation child through PA15. The approved follow-up is a readable, line-neutral `process_using_declaration` refactor at exactly `3000` lines, merging redundant value validation/classification/dedup staging work and using `base_path_accessible` as the single canonical relation/access walk; no newly added follow-up line exceeds `118` characters. Final PA16 is `187/243` with `56` failures and `243/243` coverage; v4 sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving stage progress. Focused handout matrix is `8/8`; course 421 has four legal status-0 cases and four exact status-1 alias conflicts. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 reproduces the same first qualified-static-call failure on current and clean `a5b496e8` (status 1) before the shared selector and remains outside the bounded ownership path. Final v4 logs and exact-set derivation are recorded in the current review. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
