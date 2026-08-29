@@ -10,6 +10,11 @@ binding on a bit-field lvalue, and the shared load/encode/RMW-store helpers
 perform all packed projection work. No source spelling, duplicate semantic
 model, or current-block scan is part of this boundary.
 
+`RecordMemberDeclaration::bit` is a layout-event copy used to calculate the
+canonical fact's offsets and masks; it is not a second semantic fact model.
+PA12 expression facts retain the same BindingId and promoted operation type
+that PA15 validates before lowering.
+
 The invariant is: evaluate a C++ lvalue once; load the canonical storage unit;
 extract or encode exactly the fact's value projection; and preserve all other
 bits on an RMW store. A value read uses the fact's operation type, including
@@ -67,20 +72,24 @@ complete turn-start failure map:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-The exact final current-stage residual set is `41/243`, consisting of every
-turn-start identity above except these two removed identities:
+The supplied current-stage residual set is exactly `41/243`, consisting of
+every turn-start identity above except these two removed identities:
 
 - `pa16/tests/general/400-bit-field-constructor-member-init.t`
 - `pa16/tests/general/400-bit-field-member-access-bad.t`
 
 Thus final-only is empty, unchanged failures number `41`, and coverage is
-unchanged at `243/243`. The six `400-*bit-field*` identities form this
-checkpoint's cluster. The focused turn-start baseline was `0/6`; the final
-cluster is `2/6`, with constructor member initialization and direct member
-access passing. The prefix fixture still has promoted-type/presentation
-differences, while the signed read fixtures retain required sign extension
-that their checked references omit. The aggregate signed read has the same
-oracle discrepancy; its duplicate initializer evaluation is repaired.
+unchanged at `243/243`; this complement is the exact final failure map, not an
+approximation. The six `400-*bit-field*` identities form this checkpoint's
+cluster. The focused turn-start baseline was `0/6`; the landed focused result
+is `2/6`, with constructor member initialization and direct member access
+passing. The earlier landed record also contains a non-equivalent `7/11`
+exploratory matrix; its durable log is retained below and must not be compared
+as though it used the fresh audit selection. The prefix fixture still has
+promoted-type/presentation differences, while the signed integral and
+signed-enum read fixtures retain required sign extension that their checked
+references omit. The aggregate signed read has the same oracle discrepancy;
+its duplicate initializer evaluation is repaired.
 
 ## Active Checkpoint
 
@@ -105,6 +114,9 @@ This checkpoint repairs the typed PA15 boundary for packed bit-field storage:
   for encoding and storage. This preserves side effects and keeps aggregate
   and constructor work linear in initializer actions.
 
+The bounded audit of the landed implementation found no additional defect, so
+the five source owners remain unchanged by this checkpoint audit.
+
 The stable boundary is the canonical `BitFieldFact` plus the PA15 helpers
 `emit_bit_field_load`, `encode_bit_field_value`,
 `emit_encoded_bit_field_store`, and `emit_bit_field_store`. The repair does
@@ -128,37 +140,52 @@ Canonical fact lookup is O(1) by `BindingId`. Each bit-field load, encode, and
 packed-unit store performs O(1) keyed work and a bounded number of LowIR
 operations; projection-ID lookup is O(1), and arena growth is O(P) for P
 lowered bit-field projections only. Aggregate and constructor handling remains
-O(declarations + initializer actions), with one evaluation per action. On the
-Linux x86_64 build, a standalone header probe reports
+O(declarations + initializer actions), with one evaluation per action. The
+landed performance/size evidence is retained in the durable final-evidence
+block below: on Linux x86_64 its standalone header probe reports
 `sizeof(LoweredValue)=336`, `sizeof(BitFieldAddressProjectionId)=8`, and
 `sizeof(BitFieldAddressProjection)=352`; the latter is arena-only rather than
-part of every hot record. For the representative two-field constructor test,
-the two constructor member actions each take the explicit capture path, while
-store reprojection reuses the ID and appends no descriptor; ordinary
-`emit_index` has no append path. The focused six-test run and 11-test matrix
-cover single-unit multi-field construction, member access, and prefix/postfix
-RMW; the PA16 course bit-field root regression exits 0. No timing claim is
-made. The final audit also bounds the implementation at 2991 lines for
-`pa15_lowering.cpp` and within the 240-line aggregate-initializer function
-limit.
+part of every hot record. It also records one projection append site and no
+ordinary `emit_index` append path. No timing, RSS, allocation, or speedup
+claim is made. The fresh audit structural log records only those append-site,
+source-size, and type-size observations; action-order findings are separately
+based on the source trace and focused/course evidence, not on that log. The
+fresh bounded measurement records the aggregate initializer's brace span as
+exactly 240 lines (signature 823, opening brace 829, closing brace 1068).
 
 ## Checkpoint Ledger
 
 | checkpoint | PA16 identities / coverage | delta from baseline | focused evidence | prior-through / audit | commit |
 | --- | --- | --- | --- | --- | --- |
 | `1694bc3e` baseline | `200/243`, `43` failures, `243/243` covered | baseline | six bit-field identities `0/6` | inherited through-PA15 `1167/1167`; prior audit passed with five known header warnings | existing HEAD |
-| typed packed bit-field boundary | `202/243`, `41` failures, `243/243` covered | `+2` identities; baseline-only exactly constructor-member-init and member-access; final-only empty | six-test exits 2 (`2/6`); 11-test matrix exits 2 (`7/11`); course regression exit 0; full `make test-pa16` exit 2; identity comparison exit 0; diff-check exit 0 | through-PA15 exit 0 (`1167/1167`); file audit exit 0 with five pre-existing header warnings | final worker commit; hash reported in handoff |
+| `7e060b28` typed packed bit-field boundary | fresh `202/243`, `41` failures, `243/243` covered | `+2` identities from the retained `43`-failure landed baseline; baseline-only exactly constructor-member-init and member-access; final-only empty | landed focused evidence is six-test `2/6` plus a non-equivalent `7/11`; fresh audit selection is explicitly separate at `6/11`; course regression exit 0 | fresh through-PA15 `1167/1167`, file audit exit 0 with five known warnings, exact current-authority comparison `41 -> 41` with no set delta, diff-check exit 0 | landed source `7e060b28`; audit commit at current HEAD (handoff hash) |
 
-Durable final evidence:
+Durable landed evidence retained from the source checkpoint:
 
 - Full PA16: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-final-rerun.log` (`make test-pa16`, exit 2; `202/243`).
 - Sorted identity comparison: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-identity-delta-final.txt` (43 baseline failures, 41 final failures, two baseline-only, final-only empty).
-- Focused cluster/matrix/course checks: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-focused-final.log` (2/6, 7/11, course exit 0, diff-check exit 0).
+- Focused cluster/matrix/course checks: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-focused-final.log` (landed six-test `2/6`, non-equivalent 11-test `7/11`, course exit 0, diff-check exit 0).
 - Prior-stage gate: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-through-pa15-final.log` (exit 0, `1167/1167`).
 - File audit: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-audit-final.log` (exit 0; five pre-existing header-division warnings, no fatals).
 - Performance evidence: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-compact-worker-performance-final.log` (size probe exit 0; `LoweredValue` 336 bytes, handle 8 bytes, descriptor 352 bytes, one append site, source bounds recorded).
 
-The authoritative baseline log is
+Fresh bounded audit evidence:
+
+- Focused cluster/matrix/course checks: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-preauth-focused-20260829.log` (fresh six-test `2/6`, explicitly listed different 11-test selection `6/11`, course exit `0`). The fresh selection adds the known unrelated `300-packed-class-layout` residual; it is not a regression and does not replace the landed `7/11` evidence or the full `243/243` authority.
+- Fresh full PA16: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-test-20260829.log` (`make test-pa16`, exit `2`; `202/243`, `41` failures, `243/243` covered).
+- Fresh sorted identity comparison: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-identity-comparison-20260829.log` (supplied current authority `41` versus fresh `41`, baseline-only `0`, final-only `0`, `243/243` both; retained landed comparison remains the separate `43 -> 41` log above).
+- Fresh prior-stage gate: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-through-pa15-20260829.log` (exit `0`, `1167/1167`).
+- Fresh file audit: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-file-audit-20260829.log` (exit `0`; five known header-division warnings, no fatals).
+- Fresh structural/performance evidence: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-performance-20260829.log` (size probe `336/8/352`, one projection append site, source sizes, and exact 240-line aggregate brace span; no timing claim).
+- Fresh diff check: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-diff-check-20260829.log` (exit `0`).
+- Structural size and append-site observations: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-preauth-structure-20260829.log` (`LoweredValue` 336 bytes, handle 8 bytes, descriptor 352 bytes, one append site). It does not contain constructor/evaluated-root traces.
+
+The authoritative current-stage log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` and
 the progress failure log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/last-stageProgress.log`.
+
+Next-checkpoint boundary: select one future residual identity separately. Do
+not reopen this typed projection path without new evidence; preserve the
+current 41-identity authority, canonical `BindingId`/`BitFieldFact` ownership,
+typed operation facts, and the evaluated-root/one-evaluation invariants.
