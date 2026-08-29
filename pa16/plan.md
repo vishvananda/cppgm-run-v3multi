@@ -2,11 +2,14 @@
 
 ## Current authority
 
-Clean landed authority is HEAD `05a3252fa2f649d7962545af92f041ba801ebd16`,
-`PA16: fix cv-qualified member object semantics`: 200/243 identities passed,
-exactly 43 failed, and 243/243 identities were covered. The validated
+The current committed authority is the bounded checkpointAudit at HEAD
+`6924315a7190aa64b68dfbe029e47ed8d6f868a9` (`PA16: complete checkpointAudit`),
+based on checkpoint input commit
+`05a3252fa2f649d7962545af92f041ba801ebd16` (`PA16: fix cv-qualified member
+object semantics`). The checkpoint input authority recorded 200/243 identities
+passed, exactly 43 failed, and 243/243 identities were covered. The validated
 checkpoint result after the approved bounded repair is also 200/243 with
-exactly 43 failures and 243/243 coverage. The authoritative clean-landed
+exactly 43 failures and 243/243 coverage. The authoritative checkpoint-input
 primary log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
 The final checkpoint log is
@@ -14,7 +17,7 @@ The final checkpoint log is
 Its parent checkpoint `88d15835` had 199/243 passed and exactly 44 failures;
 the landed delta is baseline-only
 `pa16/tests/general/200-mutable-member-const-method.t`, with final-only empty
-and coverage unchanged. Relative to clean landed HEAD, the audit repair has
+and coverage unchanged. Relative to checkpoint input `05a3252f`, the audit repair has
 baseline-only `0`, final-only `0`, and no coverage change; the exact comparison
 is preserved at
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`.
@@ -146,7 +149,7 @@ The exact final `make test-pa16` result is 200/243 passed, 43 failed, with all
 
 Relative to parent `88d15835`, the landed delta is baseline-only
 `pa16/tests/general/200-mutable-member-const-method.t`, final-only empty, and
-coverage remains `243/243`. Relative to clean landed HEAD, the final audit
+coverage remains `243/243`. Relative to checkpoint input `05a3252f`, the final audit
 repair has baseline-only `0`, final-only `0`, and coverage delta `0`.
 
 Focused identities and ownership outcomes:
@@ -302,7 +305,7 @@ for this audit is recorded in the current checkpoint sections above and below.
 The final `make test-pa16` exits `2` with `200/243` passed, `43` failures, and
 `243/243` identities covered. Its durable log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-final-20260829.log`.
-The exact sorted comparison against the supplied clean-landed log is preserved
+The exact sorted comparison against the supplied checkpoint-input log is preserved
 at
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-identity-comparison-20260829.log`:
 baseline-only `0`, final-only `0`, and coverage delta `0`.
@@ -327,4 +330,4 @@ comparator, coverage, source-set, or unrelated file changed.
 | checkpoint | status |
 | --- | --- |
 | c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed predecessor: bounded finalizer and hardening are in the six authorized source owners; clean build and protected five pass, focused probes pass, final PA16 is 199/243 with the exact unchanged 44-failure map and 243/243 coverage, through-PA15 is 1167/1167, and file audit passes with five known warnings. |
-| HEAD `05a3252f` plus checkpointAudit | Completed bounded PA11-to-PA12 audit and repair: reachable `SpecFact` consumers reject invalid `mutable` ownership, named bit-fields publish the canonical `BindingSidecar`, and parser-excluded mutable condition declarations remain outside `process_condition_declaration`. Member cv propagation and mixed operator scoring remain typed through the hidden-`this` boundary. Final PA16 is `200/243` with `43` failures and `243/243` coverage; exact comparison with clean landed HEAD has baseline-only `0`, final-only `0`, and coverage delta `0`. Through-PA15 is `1167/1167`; file audit exits `0` with the five existing header warnings; diff-check exits `0`; the focused matrix is `7/9` with the two approved LowIR-shape residuals. Only the three bounded source files and two PA16 records changed. |
+| `05a3252f` plus checkpointAudit | Completed bounded PA11-to-PA12 audit and repair: reachable `SpecFact` consumers reject invalid `mutable` ownership, named bit-fields publish the canonical `BindingSidecar`, and parser-excluded mutable condition declarations remain outside `process_condition_declaration`. Member cv propagation and mixed operator scoring remain typed through the hidden-`this` boundary. Final PA16 is `200/243` with `43` failures and `243/243` coverage; exact comparison with checkpoint input `05a3252f` has baseline-only `0`, final-only `0`, and coverage delta `0`. Through-PA15 is `1167/1167`; file audit exits `0` with the five existing header warnings; diff-check exits `0`; the focused matrix is `7/9` with the two approved LowIR-shape residuals. Only the three bounded source files and two PA16 records changed. |
