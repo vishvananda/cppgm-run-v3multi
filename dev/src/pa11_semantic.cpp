@@ -2046,7 +2046,9 @@ void PA11SemanticModel::validate_qualified_class_static_definition(
 }
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access)
 {
-	if (!scope.valid() || scope.value >= scopes_.size() || node.children.size() != 1) throw std::runtime_error("invalid PA11 using declaration");
+	if (!scope.valid() || scope.value >= scopes_.size() ||
+		node.children.size() != 1)
+		throw std::runtime_error("invalid PA11 using declaration");
 	const NamePath target_name = name_path(node.children.front());
 	const SourcePoint declaration_point(node.source_begin);
 	if (!declaration_point.valid()) throw std::runtime_error("invalid PA11 using declaration source point");
@@ -2057,92 +2059,90 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	if (record_inheriting_constructor_using(node, scope, target_name, type)) return;
 	const auto validate_type = [this](NameId name, TypeId type, BindingId declaration, ScopeId expected_owner) -> bool
 	{
-		if (!type.valid() || type.value >= types_.size() || !declaration.valid() || declaration.value >= bindings_.size() || declaration.value >= binding_owners_.size()) throw std::runtime_error("using declaration type identity is invalid");
+		if (!type.valid() || type.value >= types_.size() || !declaration.valid() ||
+			declaration.value >= bindings_.size() ||
+			declaration.value >= binding_owners_.size())
+			throw std::runtime_error("using declaration type identity is invalid");
 		const ScopeId owner = binding_owners_[declaration.value];
-		if (!owner.valid() || owner.value >= scopes_.size() || (expected_owner.valid() && owner != expected_owner)) throw std::runtime_error("using declaration type owner is invalid");
+		if (!owner.valid() || owner.value >= scopes_.size() || (expected_owner.valid() && owner != expected_owner))
+			throw std::runtime_error("using declaration type owner is invalid");
 		const Binding& candidate = bindings_[declaration.value];
-		if (candidate.name != name || candidate.type != type || (candidate.kind != BindingKind::Type && candidate.kind != BindingKind::TypeAlias) || type_declaration_identity(owner, name) != declaration) throw std::runtime_error("using declaration type declaration is invalid");
-		if (candidate.kind != BindingKind::Type) return false;
+		if (candidate.name != name || candidate.type != type ||
+			(candidate.kind != BindingKind::Type && candidate.kind != BindingKind::TypeAlias) ||
+			type_declaration_identity(owner, name) != declaration)
+			throw std::runtime_error("using declaration type declaration is invalid");
+		if (candidate.kind != BindingKind::Type)
+			return false;
 		const NamedRecordId record = named_record_for_type(type);
-		if (!record.valid() || record.value >= named_.size() || (named_[record.value].kind != NamedKind::Class && named_[record.value].kind != NamedKind::Enum)) throw std::runtime_error("using declaration tag identity is invalid");
+		if (!record.valid() || record.value >= named_.size() ||
+			(named_[record.value].kind != NamedKind::Class && named_[record.value].kind != NamedKind::Enum))
+			throw std::runtime_error("using declaration tag identity is invalid");
 		return true;
 	};
 	const TypeId* existing_type = current.types.find(introduced);
-	const bool existing_type_is_tag = existing_type == NULL || validate_type(introduced, *existing_type, type_declaration_identity(scope, introduced), scope);
-	const bool imported_type_is_tag = !type.valid() || validate_type(introduced, type, origin, ScopeId());
-	if (direct_namespace_exists(scope, introduced) || (type.valid() && (existing_type != NULL || (current.values.find(introduced) != NULL && !imported_type_is_tag))) || (!type.valid() && existing_type != NULL && !existing_type_is_tag)) throw std::runtime_error("using declaration conflicts with binding");
-	bool published_type = false; if (type.valid()) {
+	const bool existing_type_is_tag = existing_type == NULL ||
+		validate_type(introduced, *existing_type,
+			type_declaration_identity(scope, introduced), scope);
+	const bool imported_type_is_tag = !type.valid() ||
+		validate_type(introduced, type, origin, ScopeId());
+	if (direct_namespace_exists(scope, introduced) ||
+		(type.valid() && (existing_type != NULL ||
+			(current.values.find(introduced) != NULL &&
+				!imported_type_is_tag))) ||
+		(!type.valid() && existing_type != NULL && !existing_type_is_tag))
+		throw std::runtime_error("using declaration conflicts with binding");
+	if (type.valid())
+	{
 		current.types.set(introduced, type); current.using_types.set(introduced, type);
 		BindingKind kind = BindingKind::TypeAlias; if (origin.valid() && binding(origin).kind == BindingKind::Type) kind = BindingKind::Type;
 		const BindingId introduced_binding = store_binding(scope, Binding(kind, introduced, type)); set_member_access(introduced_binding, class_access_view ? member_access : MemberAccess::Public);
 		record_type_declaration(scope, introduced, SourcePoint(node.source_begin), introduced_binding);
-		published_type = true;
 	}
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
-	if (values.empty()) { if (published_type) return; throw std::runtime_error("using declaration target is not a binding"); }
-	for (std::size_t i = 0; i < values.size(); ++i) {
+	if (values.empty() && type.valid())
+		return;
+	if (values.empty())
+		throw std::runtime_error("using declaration target is not a binding");
+	const ValueList* existing = current.values.find(introduced);
+	bool existing_functions = existing != NULL && !existing->entries.empty();
+	for (std::size_t i = 0;
+		existing_functions && i < existing->entries.size(); ++i)
+	{
+		const Binding& old = binding(existing->entries[i].binding);
+		existing_functions = old.kind == BindingKind::Function &&
+			type_kind(old.type) == TypeKind::Function;
+	}
+	std::vector<ValueRef> additions;
+	std::size_t incoming_function_count = 0;
+	for (std::size_t i = 0; i < values.size(); ++i)
+	{
 		const BindingId imported_binding = values[i].binding;
 		if (!imported_binding.valid() || imported_binding.value >= bindings_.size() || imported_binding.value >= binding_owners_.size()) throw std::runtime_error("PA11 using declaration binding identity is invalid");
 		const ScopeId declared_scope = binding_owners_[imported_binding.value];
 		if (!declared_scope.valid() || declared_scope.value >= scopes_.size()) throw std::runtime_error("PA11 using declaration owner is invalid");
-		const bool class_member = class_access_view && scopes_[declared_scope.value].kind == ScopeKind::Class; const bool source_member = scopes_[declared_scope.value].kind == ScopeKind::Class;
+		const bool source_member = scopes_[declared_scope.value].kind == ScopeKind::Class;
 		if (source_member && !member_accessible(imported_binding, declared_scope, scope, TypeId())) throw std::runtime_error("PA11 using declaration member is inaccessible");
-		if (class_member && (!current.record.valid() || current.record.value >= named_.size() || named_[current.record.value].kind != NamedKind::Class || !member_base_path(named_type(current.record), declared_scope, NULL) || !base_path_accessible(named_type(current.record), declared_scope, scope))) throw std::runtime_error("PA11 using declaration member is not a base member");
-	}
-	const ValueList* existing = current.values.find(introduced);
-	bool existing_functions = existing != NULL && !existing->entries.empty();
-	if (existing_functions)
-	{
-		for (std::size_t i = 0; i < existing->entries.size(); ++i)
-		{
-			const Binding& old = binding(existing->entries[i].binding);
-			if (old.kind != BindingKind::Function ||
-				type_kind(old.type) != TypeKind::Function)
-			{
-				existing_functions = false;
-				break;
-			}
-		}
-	}
-	bool incoming_functions = true;
-	bool incoming_nonfunctions = true;
-	for (std::size_t i = 0; i < values.size(); ++i) {
-		const Binding& imported = binding(values[i].binding);
-		const bool is_function = imported.kind == BindingKind::Function &&
-			type_kind(imported.type) == TypeKind::Function;
-		incoming_functions = incoming_functions && is_function;
-		incoming_nonfunctions = incoming_nonfunctions && !is_function;
-	}
-	if (!incoming_functions && !incoming_nonfunctions)
-		throw std::runtime_error("using declaration mixes value kinds");
-	std::vector<ValueRef> additions;
-	for (std::size_t i = 0; i < values.size(); ++i) {
+		if (class_access_view && source_member &&
+			!base_path_accessible(named_type(current.record), declared_scope, scope))
+			throw std::runtime_error("PA11 using declaration member is not a base member");
+		const Binding& imported = binding(imported_binding);
+		incoming_function_count += imported.kind == BindingKind::Function && type_kind(imported.type) == TypeKind::Function;
 		bool duplicate = false;
-		if (existing != NULL)
-			for (std::size_t j = 0; j < existing->entries.size(); ++j)
-				if (existing->entries[j].binding == values[i].binding &&
-					existing->entries[j].origin == values[i].scope)
-				{
-					duplicate = true;
-					break;
-				}
+		for (std::size_t j = 0;
+			!duplicate && existing != NULL && j < existing->entries.size(); ++j)
+			duplicate = existing->entries[j].binding == imported_binding &&
+				existing->entries[j].origin == values[i].scope;
+		for (std::size_t j = 0;
+			!duplicate && j < additions.size(); ++j)
+			duplicate = additions[j].binding == imported_binding &&
+				additions[j].scope == values[i].scope;
 		if (!duplicate)
-			for (std::size_t j = 0; j < additions.size(); ++j)
-				if (additions[j].binding == values[i].binding &&
-					additions[j].scope == values[i].scope)
-				{
-					duplicate = true;
-					break;
-				}
-		if (duplicate)
-			continue;
-		const Binding& imported = binding(values[i].binding);
-		const bool is_function = imported.kind == BindingKind::Function &&
-			type_kind(imported.type) == TypeKind::Function;
-		if (existing != NULL && (!existing_functions || !is_function))
-			throw std::runtime_error("using declaration conflicts with binding");
-		additions.push_back(values[i]);
+			additions.push_back(values[i]);
 	}
+	if (incoming_function_count != 0 && incoming_function_count != values.size())
+		throw std::runtime_error("using declaration mixes value kinds");
+	if (existing != NULL && !additions.empty() && (!existing_functions || incoming_function_count != values.size()))
+		throw std::runtime_error("using declaration conflicts with binding");
 	for (std::size_t i = 0; i < additions.size(); ++i)
 	{
 			append_value_index(scope, introduced, additions[i].binding, additions[i].scope, SourcePoint(node.source_begin), class_access_view, class_access_view ? member_access : MemberAccess::Public, class_access_view ? scope : ScopeId());

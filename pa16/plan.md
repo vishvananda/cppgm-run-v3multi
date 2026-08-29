@@ -29,6 +29,13 @@ candidate lists are walked in deterministic order, with no merged namespaces,
 whole-TU scan, retry loop, or second semantic model. Unrelated bit-field,
 lifetime, and broad layout work remains outside this checkpoint.
 
+The approved follow-up is a readable, line-neutral refactor of
+`process_using_declaration`: it keeps `dev/src/pa11_semantic.cpp` at exactly
+`3000` lines, merges the redundant value validation/classification/dedup
+staging work, and uses `base_path_accessible` as the single canonical
+relation/access walk. No validation boundary is weakened and no newly added
+follow-up line exceeds `118` characters.
+
 ## Failure Map
 
 The landed increment's parent authority was clean HEAD `c2247924`: `179/243`
@@ -184,7 +191,7 @@ stage-progress result is final: `187/243` passing, `56` failures, and
 turn-start log has baseline-only `0` and final-only `0`; the complete residual
 is exactly the 59-item target map above minus the three landed identities.
 The durable derivation is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-failure-set-comparison-20260829-v2.log`.
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/failure-identity-comparison.log`.
 
 ## Active Checkpoint
 
@@ -236,6 +243,12 @@ candidate work aside from the existing base-relation checks. Its temporary
 score storage is O(C*A), with no persistent or parallel semantic model. There
 is no whole-TU scan or retry loop.
 
+The readability follow-up does not change these ownership or complexity
+boundaries. It only makes `process_using_declaration` line-neutral at `3000`
+source lines by removing redundant validation/base-relation work and retaining
+the single canonical `base_path_accessible` walk. This record makes no timing,
+RSS, allocation, or speedup claim.
+
 The landed checkpoint's deterministic source generator outside the repository
 created N unrelated namespaces, each with a same-spelled `struct f` and
 `int f(int)`, then one using-import plus a direct class member with the same
@@ -262,6 +275,9 @@ also exit `0`.
 ## Validation
 
 - `make -C dev cppgm++ -j2`: exit `0`.
+- The readability follow-up leaves `dev/src/pa11_semantic.cpp` at exactly
+  `3000` lines; its `67` added physical lines have maximum length `118`, and
+  no newly added follow-up line exceeds `118` characters.
 - The focused handout matrix containing the three landed identities and five
   preservation controls is `8/8`; its final log is
   `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-focused-matrix-final-20260829-v3.log`.
@@ -270,26 +286,26 @@ also exit `0`.
   421's four legal class/enum-tag/value-function cases exit `0`; its source
   typedef/alias into an existing value/function and source value/function into
   an existing typedef/alias each exit exactly `1`. The final syntax/run log is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course421-final-20260829.log`;
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/course421.log`;
   final controls 402/403/405/419 are in
   `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course-controls-final-20260829-v3.log`.
 - The current structural/determinism and exactly-once probes are recorded in
   `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-structural-correction-20260829.log`.
 - The exact final command `n=16; ... make test-report-through-pa15` exits `0`
   at `1167/1167`; its durable log is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-prior-through-pa15-20260829-v3.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/through-pa15.log`.
   Exact `make test-pa16` exits `2` with `187/243` passing, `56` failures, and
   `243/243` identities covered; its durable log is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16-20260829-v3.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/test-pa16.log`.
   The sorted final-vs-turn-start identity derivation has baseline-only `0` and
   final-only `0` in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-failure-set-comparison-20260829-v2.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/failure-identity-comparison.log`.
 - File audit exits `0` with five existing header-division warnings; its final
   log is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16-20260829-v3.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/file-audit-pa16.log`.
 - No handout, fixture, harness, comparator, coverage, source-set, or unrelated
   source file changed. Final `git diff --check` is recorded in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-git-diff-check-pa16-20260829.log`.
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/v4-final/diff-check.log`.
 - Course 406 is unchanged from clean `a5b496e8`: its first
   `qualified-parenthesized-static.cpp` case reports `ERROR: unknown PA11 type
   name` and exits `1` in both builds. The current and clean ASTs are identical
@@ -306,10 +322,11 @@ also exit `0`.
 
 This lookup audit is complete. Its final authority is the exact turn-start
 59-failure map minus the three landed identities: `56` failures, full
-`243/243` coverage, no final-only identity, and preserved stage progress. The
-next PA16 checkpoint should preserve this typed type/value owner flow—including
-the real-tag-versus-alias conflict boundary—and address another residual
-boundary only after an authorized focused design review.
+`243/243` coverage, no final-only identity, and preserved stage progress, as
+shown by the v4 through-PA15, PA16, file-audit, diff-check, and identity logs.
+The next PA16 checkpoint should preserve this typed type/value owner flow—
+including the real-tag-versus-alias conflict boundary—and address another
+residual boundary only after an authorized focused design review.
 
 ## Checkpoint Ledger
 
@@ -326,4 +343,4 @@ boundary only after an authorized focused design review.
 | `0fb73ad4` PA16 access turn start | Clean authority for that checkpoint: `176/243` passing, `67` failures, `243/243` covered; through-PA15 `1167/1167`, audit with five known header-division warnings. |
 | `PA16 typed access-control checkpoint` | Previous bounded access repair: `179/243` passing, `64` failures, `243/243` covered; exact residual map carried forward. |
 | `PA16 typed non-automatic lifetime checkpoint` | Completed checkpoint audit: PA11 exact per-declarator definition continuity, PA12 typed lifetime ownership, and PA15 definition-owner ordering are repaired and traced. PA16 is `184/243` passing, `59` failures, `243/243` covered; exact sorted comparison has baseline-only `0` and final-only `0`; focused matrix is `9/12` with the same three LowIR-shape residuals; course 420, through-PA15 `1167/1167`, file audit with five known warnings, diff-check, and N=8/N=32 repeatability all pass. |
-| `PA16 typed ordinary-value-over-tag lookup checkpoint` | Completed audit of landed HEAD `a5b496e8` relative to `1093c2b7`: final PA16 is `187/243` passing, `56` failures, and `243/243` covered; sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving the complete residual map and stage progress. The source repair permits cross-space coexistence only for canonical real class/enum tags (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), retains typedef/alias conflicts, and hardens enumerator/default-fact ranges. Focused handout matrix is `8/8`; courses 402, 403, 405, 419, and 421 pass; 421 proves four status-0 legal cases and four exact status-1 alias conflicts; structural probes are deterministic and exactly-once. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 has the same first qualified-static-call status-1 failure on clean `a5b496e8` and current code: identical cast-shaped ASTs reach `type_from_type_id` before the shared selector, so the parser/cast ambiguity is outside this bounded audit. Final logs and exact-set derivation are recorded above. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
+| `PA16 typed ordinary-value-over-tag lookup checkpoint` | Completed audit of landed HEAD `a5b496e8` relative to `1093c2b7`: final PA16 is `187/243` passing, `56` failures, and `243/243` covered; v4 sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving the complete residual map and stage progress. The source repair permits cross-space coexistence only for canonical real class/enum tags (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), retains typedef/alias conflicts, and hardens enumerator/default-fact ranges. The approved follow-up is a readable, line-neutral `process_using_declaration` refactor at exactly `3000` lines, merging redundant value validation/classification/dedup staging work and using `base_path_accessible` as the single canonical relation/access walk; no newly added follow-up line exceeds `118` characters. Focused handout matrix is `8/8`; course 421 proves four status-0 legal cases and four exact status-1 alias conflicts; structural probes are deterministic and exactly-once. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 has the same first qualified-static-call status-1 failure on clean `a5b496e8` and current code before the shared selector, so it remains outside this bounded audit. Final v4 logs and exact-set derivation are recorded above. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
