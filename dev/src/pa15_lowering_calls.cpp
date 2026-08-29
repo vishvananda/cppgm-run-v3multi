@@ -161,8 +161,33 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		model_.semantic_facts_.size(), 0);
 	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
+	const auto demand_special_member_base_entry = [this, demanded,
+		&function_work](BindingId source, bool constructor) {
+		const BindingId* entry = constructor ?
+			model_.constructor_base_entry_bindings_.find(source) :
+			model_.destructor_base_entry_bindings_.find(source);
+		if (entry == NULL)
+			return;
+		if (!entry->valid() || entry->value >= model_.bindings_.size())
+			throw std::runtime_error(
+				"PA15 special-member base entry identity is invalid");
+		const FunctionFactId* entry_id =
+			model_.function_binding_fact_index_.find(*entry);
+		if (entry_id == NULL || !entry_id->valid() || entry_id->value >=
+			model_.function_facts_.size() || model_.function_facts_[entry_id->value].binding !=
+			*entry || (constructor ?
+				!model_.function_facts_[entry_id->value].constructor_base_entry :
+				!model_.function_facts_[entry_id->value].destructor_base_entry))
+			throw std::runtime_error(
+				"PA15 special-member base entry fact is invalid");
+		if (!(*demanded)[entry_id->value])
+		{
+			(*demanded)[entry_id->value] = 1;
+			function_work.push_back(*entry_id);
+		}
+	};
 	const auto demand_constructor_fact = [this, demanded, declarations,
-		declaration_types, &function_work](
+		declaration_types, &function_work, &demand_special_member_base_entry](
 		const SemanticFact& fact, bool global_root) {
 		if (!fact.has_callee || !fact.selected_binding.valid() ||
 			fact.selected_binding.value >= model_.bindings_.size())
@@ -224,11 +249,83 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				fact.callable_type;
 			return;
 		}
-		if (!no_op && !(*demanded)[target_id->value])
+		if (!no_op)
+		{
+			if (!(*demanded)[target_id->value])
+			{
+				(*demanded)[target_id->value] = 1;
+				function_work.push_back(*target_id);
+			}
+			demand_special_member_base_entry(fact.selected_binding, true);
+		}
+	};
+	const auto demand_destructor_fact = [this, demanded, declarations,
+		declaration_types, &function_work,
+		&demand_special_member_base_entry](const SemanticFact& fact) {
+		if (!fact.has_callee || !fact.has_implicit_object ||
+			!fact.selected_binding.valid() || fact.selected_binding.value >=
+			model_.bindings_.size() || !fact.selected_scope.valid() ||
+			fact.selected_scope.value >= model_.scopes_.size() ||
+			model_.scopes_[fact.selected_scope.value].kind != ScopeKind::Class ||
+			!fact.callable_type.valid() || model_.type_kind(fact.callable_type) !=
+			TypeKind::Function)
+			throw std::runtime_error("PA15 destructor demand fact is incomplete");
+		const Binding& binding = model_.binding(fact.selected_binding);
+		const BindingSidecar* sidecar = model_.binding_sidecar(
+			fact.selected_binding);
+		if (binding.kind != BindingKind::Function ||
+			model_.type_kind(binding.type) != TypeKind::Function || sidecar == NULL ||
+			!sidecar->destructor_record.valid() ||
+			sidecar->destructor_record.value >= model_.named_.size())
+			throw std::runtime_error("PA15 destructor demand owner is invalid");
+		const NamedRecord& record = model_.named_[sidecar->destructor_record.value];
+		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+			!record.scope.valid() || record.scope != fact.selected_scope)
+			throw std::runtime_error("PA15 destructor demand scope is invalid");
+		const TypeKey& raw = model_.types_[binding.type.value];
+		const TypeKey& callable = model_.types_[fact.callable_type.value];
+		if (raw.variadic || !raw.parameters.empty() || raw.result != fact.type ||
+			callable.variadic || callable.parameters.size() != 1 ||
+			callable.result != fact.type)
+			throw std::runtime_error("PA15 destructor demand type is invalid");
+		const TypeId hidden = model_.strip_cv_type(
+			model_.expression_object_type(callable.parameters.front()));
+		if (!hidden.valid() || model_.type_kind(hidden) != TypeKind::Pointer ||
+			model_.class_scope_for_type(model_.strip_cv_type(
+				model_.types_[hidden.value].child)) != fact.selected_scope)
+			throw std::runtime_error("PA15 destructor demand hidden object is invalid");
+		const FunctionFactId* target_id =
+			model_.function_binding_fact_index_.find(fact.selected_binding);
+		if (target_id == NULL || !target_id->valid() || target_id->value >=
+			model_.function_facts_.size() ||
+			!model_.function_facts_[target_id->value].is_destructor ||
+			model_.function_facts_[target_id->value].binding != fact.selected_binding)
+			throw std::runtime_error("PA15 destructor demand target is invalid");
+		const FunctionFact& target = model_.function_facts_[target_id->value];
+		const bool external_declaration = !target.body_fact.valid() &&
+			!target.synthetic && !binding.has_definition;
+		if (external_declaration)
+		{
+			if (fact.selected_binding.value >= declarations->size() ||
+				fact.selected_binding.value >= declaration_types->size())
+				throw std::runtime_error("PA15 destructor declaration is invalid");
+			if ((*declaration_types)[fact.selected_binding.value].valid() &&
+				(*declaration_types)[fact.selected_binding.value] !=
+				fact.callable_type)
+				throw std::runtime_error(
+					"PA15 destructor declaration signature changed");
+			(*declarations)[fact.selected_binding.value] = 1;
+			(*declaration_types)[fact.selected_binding.value] = fact.callable_type;
+			return;
+		}
+		(void)checked_destructor_function(fact.selected_binding,
+			sidecar->destructor_record);
+		if (!(*demanded)[target_id->value])
 		{
 			(*demanded)[target_id->value] = 1;
 			function_work.push_back(*target_id);
 		}
+		demand_special_member_base_entry(fact.selected_binding, false);
 	};
 	// Global/static roots are lowered after function collection and therefore
 	// are not reachable from a namespace function body.  Walk their typed
@@ -313,8 +410,10 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			if (sidecar != NULL && sidecar->constructor_record.valid() &&
 				sidecar->constructor_record.value < model_.named_.size() &&
 				model_.named_[sidecar->constructor_record.value].name.valid())
-				demand_constructor_fact(fact, global_root);
+					demand_constructor_fact(fact, global_root);
 		}
+		if (fact.kind == SemanticFactKind::DestructorCall && fact.has_callee)
+			demand_destructor_fact(fact);
 		for (std::size_t i = 0; i < fact.child_count; ++i)
 			root_fact_work.push_back(std::make_pair(
 				model_.semantic_children_[fact.child_begin + i], global_root));
@@ -334,6 +433,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			(*demanded)[target_id->value] = 1;
 			function_work.push_back(*target_id);
 		}
+		demand_special_member_base_entry(lifetime.destructor, false);
 	}
 	while (!function_work.empty())
 	{
@@ -520,6 +620,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			if (fact.kind == SemanticFactKind::ConstructorAction &&
 				fact.has_callee)
 				demand_constructor_fact(fact, false);
+			if (fact.kind == SemanticFactKind::DestructorCall && fact.has_callee)
+				demand_destructor_fact(fact);
 			if (fact.kind == SemanticFactKind::CallExpression &&
 				fact.has_implicit_object)
 			{
@@ -665,6 +767,9 @@ void Pa15Lowerer::collect_demanded_member_functions(
 						(*demanded)[target_id->value] = 1;
 						function_work.push_back(*target_id);
 					}
+					if (!external_declaration && !no_op)
+						demand_special_member_base_entry(
+							fact.selected_binding, true);
 				}
 				const bool static_target = target.kind == BindingKind::Function &&
 					model_.type_kind(target.type) == TypeKind::Function &&
@@ -863,7 +968,10 @@ void Pa15Lowerer::collect_function_declarations(){
 			FunctionDeclaration declaration;
 			declaration.symbol_id = SymbolId(next_symbol_++);
 			std::string declaration_name = internal_value_name(owner, binding.name);
-			if (function_fact != NULL && function_fact->constructor_base_entry)
+			const bool base_entry = function_fact != NULL &&
+				(function_fact->constructor_base_entry ||
+					function_fact->destructor_base_entry);
+			if (base_entry)
 				declaration_name += "__base_entry";
 			declaration.name_id = symbol_spelling(declaration_name);
 			declaration.return_type = function_result_low_type(type.result);
@@ -875,9 +983,10 @@ void Pa15Lowerer::collect_function_declarations(){
 			if (binding.language_linkage != LanguageLinkage::C ||
 				binding.internal_linkage)
 			{
-				const std::string object_symbol = function_fact != NULL &&
-					function_fact->constructor_base_entry ? abi_symbol(*function_fact,
-						abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE) :
+				const std::string object_symbol = base_entry ? abi_symbol(*function_fact,
+					function_fact->constructor_base_entry ?
+						abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE :
+						abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE) :
 					abi_function_symbol(binding_id, owner);
 				declaration.metadata.object_symbol_id = intern_spelling(object_symbol);
 			}
@@ -888,8 +997,8 @@ void Pa15Lowerer::collect_function_declarations(){
 			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				Parameter parameter_record;
-				parameter_record.name_id = intern_spelling(function_fact != NULL &&
-					function_fact->constructor_base_entry ? "%arg0" : "%this");
+				parameter_record.name_id = intern_spelling(base_entry ? "%arg0" :
+					"%this");
 				parameter_record.type = low_type(model_.types_[
 					member_callable_type.value].parameters.front());
 				declaration.params.push_back(parameter_record);
@@ -899,8 +1008,7 @@ void Pa15Lowerer::collect_function_declarations(){
 			{
 				Parameter parameter_record;
 				std::ostringstream parameter_name;
-				parameter_name << "%arg" << parameter + (function_fact != NULL &&
-					function_fact->constructor_base_entry ? 1 : 0);
+				parameter_name << "%arg" << parameter + (base_entry ? 1 : 0);
 				parameter_record.name_id = intern_spelling(parameter_name.str());
 				parameter_record.type = low_type(type.parameters[parameter]);
 				const TypeKind parameter_kind = model_.type_kind(
@@ -988,6 +1096,9 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	const TypeKey* function_type = NULL;
 	std::size_t argument_begin = 0;
 	bool constructor_call = false;
+	bool class_value_constructor_argument = false;
+	LoweredValue class_value_source;
+	LoweredValue class_value_temporary;
 	Instruction instruction;
 	instruction.kind = Instruction::IK_CALL;
 	if (!fact.callable_type.valid() ||
@@ -1021,11 +1132,57 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 		{
 			if (fact.has_implicit_object || facts.empty())
 				throw std::runtime_error("PA15 constructor call object is missing");
-			instruction.args.push_back(lower_expression(facts.front()).value);
 			// Constructor semantic children own the hidden destination first;
 			// every remaining child is the already-converted/defaulted typed
 			// constructor argument sequence.
 			argument_begin = 1;
+			std::size_t class_value_count = 0;
+			TypeId class_value_target;
+			for (std::size_t i = argument_begin; i < facts.size(); ++i)
+			{
+				const SemanticFact& argument = model_.semantic_facts_[
+					facts[i].value];
+				if (argument.conversion_count == 0)
+					continue;
+				if (argument.conversion_begin == InvalidIdentityValue ||
+					argument.conversion_begin > model_.conversion_facts_.size() ||
+					argument.conversion_count > model_.conversion_facts_.size() -
+						argument.conversion_begin)
+					throw std::runtime_error(
+						"PA15 constructor argument conversion range is invalid");
+				for (std::size_t conversion = 0;
+					conversion < argument.conversion_count; ++conversion)
+				{
+					const ConversionFact& selected = model_.conversion_facts_[
+						argument.conversion_begin + conversion];
+					if (selected.kind != ConversionKind::ClassValue)
+						continue;
+					++class_value_count;
+					class_value_target = selected.target;
+				}
+			}
+			if (class_value_count != 0)
+			{
+				if (class_value_count != 1 || facts.size() - argument_begin != 1 ||
+					!class_value_target.valid())
+					throw std::runtime_error(
+						"PA15 unsupported class-value constructor argument shape");
+				class_value_source = lower_expression_impl(facts[argument_begin],
+					false, false, false, true);
+				if (!class_value_source.lvalue || !class_value_source.type.is_object())
+					throw std::runtime_error(
+						"PA15 class-value constructor source is not an object lvalue");
+				(void)address_of_storage(class_value_source);
+				class_value_constructor_argument = true;
+			}
+			instruction.args.push_back(lower_expression(facts.front()).value);
+			if (class_value_constructor_argument)
+			{
+				class_value_temporary = generated_slot(low_type(class_value_target),
+					"argobj");
+				(void)address_of_storage(class_value_temporary);
+				(void)address_of_storage(class_value_source);
+			}
 		}
 		else if (fact.has_implicit_object)
 		{
@@ -1163,7 +1320,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	for (std::size_t i = 0; i < explicit_argument_count; ++i)
 	{
 		const SemanticFactId argument = facts[argument_begin + i];
-		instruction.args.push_back(lower_expression(argument).value);
+		instruction.args.push_back(class_value_constructor_argument && i == 0 ?
+			class_value_temporary.value : lower_expression(argument).value);
 	}
 	if (!fact.has_callee)
 		instruction.first = lower_expression(facts.front()).value;

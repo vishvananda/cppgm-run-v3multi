@@ -120,6 +120,37 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 				return emit_index(sequence, offset, element,
 					lowir_model::IPK_ARRAY_ELEMENT);
 			}
+			if (sequence_type.valid() && sequence_type.value < model_.types_.size() &&
+				model_.type_kind(sequence_type) == TypeKind::Pointer)
+			{
+				const TypeId child = model_.types_[sequence_type.value].child;
+				const TypeId child_object = model_.strip_cv_type(
+					model_.expression_object_type(child));
+				const bool byte_projection = (child_object.valid() &&
+					model_.type_kind(child_object) == TypeKind::Array) ||
+					class_object_type(child);
+				if (byte_projection)
+				{
+					const std::size_t stride = model_.type_size(child);
+					LoweredValue offset = index;
+					if (stride != 1)
+					{
+						if (stride > static_cast<std::size_t>(
+							std::numeric_limits<long long>::max()))
+							throw std::runtime_error(
+								"PA15 pointer subscript element stride is invalid");
+						const TypeId index_type = model_.semantic_facts_[
+							facts.back().value].type;
+						offset = emit_binary_value(lowir_model::BOP_MUL,
+								size_low_type(), integer_i64(index, index_type),
+								LoweredValue(integer_operand(static_cast<long long>(stride),
+									size_low_type()), size_low_type(), false));
+					}
+					return emit_index(sequence, offset,
+						array_element_instruction_type(child),
+						lowir_model::IPK_ARRAY_ELEMENT);
+				}
+			}
 			const LowType element = low_type(fact.type);
 			return emit_index(sequence, index, element, lowir_model::IPK_NONE);
 		}
@@ -145,6 +176,8 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 			if (fact.temporary_object)
 				return address_of_storage(lower_constructor_expression(id));
 			break;
+		case SemanticFactKind::DestructorCall:
+			throw std::runtime_error("PA15 destructor call has no address");
 		case SemanticFactKind::CastExpression:
 			if (facts.size() == 1) return lower_address(facts.front());
 			break;
@@ -1019,6 +1052,109 @@ void Pa15Lowerer::emit_destructor_call(BindingId destructor,
 	instruction.call_boundary.arity = lowir_model::CAM_FIXED;
 	instruction.args.push_back(destination_value.value);
 	block().instructions.push_back(instruction);
+}
+
+LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
+{
+	const SemanticFact& fact = model_.semantic_facts_[id.value];
+	const std::vector<SemanticFactId> facts = children(id);
+	if (facts.size() != 1 || !model_.void_id(fact.type) ||
+		(fact.token != SimpleTokenType::OP_DOT &&
+			fact.token != SimpleTokenType::OP_ARROW))
+		throw std::runtime_error("PA15 invalid destructor call fact");
+	if (!fact.selected_binding.valid())
+	{
+		if (fact.has_callee || fact.has_implicit_object ||
+			fact.callable_type.valid() || fact.selected_scope.valid())
+			throw std::runtime_error("PA15 pseudo-destructor fact is not scalar");
+		// A scalar pseudo-destructor has no runtime callee.  Its only semantic
+		// effect is the one evaluation represented by the child fact.
+		if (fact.token == SimpleTokenType::OP_ARROW)
+			(void)lower_expression(facts.front());
+		else
+			lower_discarded_expression(facts.front());
+		return LoweredValue(Operand(), low_type(fact.type), false);
+	}
+	if (!fact.has_callee || !fact.has_implicit_object ||
+		!fact.selected_scope.valid() || fact.selected_scope.value >=
+		model_.scopes_.size() || model_.scopes_[fact.selected_scope.value].kind !=
+		ScopeKind::Class || !fact.callable_type.valid() ||
+		model_.type_kind(fact.callable_type) != TypeKind::Function)
+		throw std::runtime_error("PA15 destructor call target is incomplete");
+	const NamedRecordId record = model_.scopes_[fact.selected_scope.value].record;
+	const FunctionFact& function = checked_destructor_function(
+		fact.selected_binding, record);
+	const Binding& destructor = model_.binding(fact.selected_binding);
+	const TypeKey& raw_signature = model_.types_[destructor.type.value];
+	const TypeKey& callable_signature = model_.types_[fact.callable_type.value];
+	if (raw_signature.variadic || !raw_signature.parameters.empty() ||
+		raw_signature.result != fact.type || callable_signature.variadic ||
+		callable_signature.parameters.size() != 1 ||
+		callable_signature.result != fact.type ||
+		function.owner != fact.selected_scope)
+		throw std::runtime_error("PA15 destructor call signature is invalid");
+	const TypeId hidden_pointer = model_.strip_cv_type(
+		model_.expression_object_type(callable_signature.parameters.front()));
+	if (!hidden_pointer.valid() || model_.type_kind(hidden_pointer) !=
+		TypeKind::Pointer)
+		throw std::runtime_error("PA15 destructor hidden object is not a pointer");
+	const TypeId required_object = model_.types_[hidden_pointer.value].child;
+	const SemanticFact& object_fact = model_.semantic_facts_[facts.front().value];
+	TypeId actual_object;
+	LoweredValue object;
+	if (fact.token == SimpleTokenType::OP_ARROW)
+	{
+		const TypeId pointer = model_.strip_cv_type(
+			model_.expression_object_type(object_fact.type));
+		if (!pointer.valid() || model_.type_kind(pointer) != TypeKind::Pointer)
+			throw std::runtime_error("PA15 destructor arrow object is not a pointer");
+		actual_object = model_.types_[pointer.value].child;
+		object = lower_expression(facts.front());
+	}
+	else
+	{
+		actual_object = model_.expression_object_type(object_fact.type);
+		object = lower_address(facts.front());
+	}
+	if (!object.type.is_pointer())
+		throw std::runtime_error("PA15 destructor object has no address");
+	actual_object = model_.strip_cv_type(actual_object);
+	const TypeId required_unqualified = model_.strip_cv_type(
+		model_.expression_object_type(required_object));
+	std::vector<NamedRecordId> base_path;
+	if (!model_.member_object_convertible(actual_object, required_unqualified,
+		fact.selected_scope, &base_path, ScopeId()) ||
+		model_.class_scope_for_type(required_unqualified) != fact.selected_scope)
+		throw std::runtime_error("PA15 destructor object is incompatible");
+	NamedRecordId current_record = model_.named_record_for_type(actual_object);
+	for (std::size_t i = 0; i < base_path.size(); ++i)
+	{
+		if (!current_record.valid() || current_record.value >= model_.named_.size())
+			throw std::runtime_error("PA15 destructor base record is invalid");
+		const NamedRecord& current = model_.named_[current_record.value];
+		const NamedRecordId base_record = base_path[i];
+		if (current.kind != NamedKind::Class || !current.has_base ||
+			current.direct_base_virtual || current.direct_base != base_record)
+			throw std::runtime_error("PA15 destructor base relation is invalid");
+		const RecordLayout& layout = model_.record_layout(current_record);
+		if (layout.state != RecordLayoutState::Complete ||
+			!layout.has_direct_base || layout.direct_base.record != base_record ||
+			layout.direct_base.offset != 0)
+			throw std::runtime_error("PA15 destructor base layout is invalid");
+		const LowType offset_type = size_low_type();
+		const LoweredValue offset(integer_operand(0, offset_type),
+			offset_type, false);
+		LowType byte;
+		byte.kind = LowType::TYPE_INTEGER;
+		byte.integer_kind = LowType::INTEGER_I8;
+		object = emit_index(object, offset, byte,
+			lowir_model::IPK_BASE_SUBOBJECT);
+		current_record = base_record;
+	}
+	if (current_record != record)
+		throw std::runtime_error("PA15 destructor base path ended at wrong record");
+	emit_destructor_call(fact.selected_binding, object);
+	return LoweredValue(Operand(), low_type(fact.type), false);
 }
 
 void Pa15Lowerer::emit_destructor_elements(TypeId target,

@@ -271,6 +271,7 @@ struct BindingSidecar
 	bool hidden_friend; std::vector<NamedRecordId> friend_records;
 	MemberAccess member_access;
 	bool static_member;
+	bool inline_member;
 	bool has_default_member_initializer;
 	SemanticFactId default_member_initializer;
 	// Non-static member alignment is retained on the canonical binding until
@@ -287,14 +288,14 @@ struct BindingSidecar
 	FunctionDeclarationKind declaration_kind;
 	TemplateSpecializationId template_specialization;
 	TypeId unadjusted_type;
-
 	BindingSidecar(BindingId backing_storage = BindingId(),
 		NamedRecordId constructor_record = NamedRecordId(),
 		NamedRecordId generated_name_record = NamedRecordId())
 		: backing_storage(backing_storage), constructor_record(constructor_record), destructor_record(),
 		  generated_name_record(generated_name_record),
-		  hidden_friend(false), friend_records(),
-		  member_access(MemberAccess::Public), static_member(false),
+			hidden_friend(false), friend_records(),
+			member_access(MemberAccess::Public), static_member(false),
+			inline_member(false),
 		  has_default_member_initializer(false),
 		  default_member_initializer(),
 		  has_requested_alignment(false), requested_alignment(0),
@@ -313,29 +314,24 @@ struct FriendLexicalScopeRelation
 struct ValueEntry
 {
 	BindingId binding; ScopeId origin; SourcePoint declaration_point; bool has_access_override; MemberAccess access_override; ScopeId access_view_owner;
-
 	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId(), SourcePoint declaration_point = SourcePoint(),
 		bool has_access_override = false, MemberAccess access_override = MemberAccess::Public, ScopeId access_view_owner = ScopeId())
 		: binding(binding), origin(origin), declaration_point(declaration_point), has_access_override(has_access_override), access_override(access_override), access_view_owner(access_view_owner)
 	{}
 };
-
 struct ValueList
 {
 	std::vector<ValueEntry> entries;
 };
-
 struct UsingDirectiveRelation
 {
 	ScopeId target;
 	SourcePoint declaration_point;
-
 	UsingDirectiveRelation(ScopeId target = ScopeId(),
 		SourcePoint declaration_point = SourcePoint())
 		: target(target), declaration_point(declaration_point)
 	{}
 };
-
 struct InheritingConstructorRelation {
 	NamedRecordId base_record; SourcePoint declaration_point;
 };
@@ -344,7 +340,6 @@ struct EffectiveUsingDirective
 	ScopeId target;
 	ScopeId lexical_scope;
 	SourcePoint declaration_point;
-
 	EffectiveUsingDirective(ScopeId target = ScopeId(),
 		ScopeId lexical_scope = ScopeId(),
 		SourcePoint declaration_point = SourcePoint())
@@ -352,7 +347,6 @@ struct EffectiveUsingDirective
 		  declaration_point(declaration_point)
 	{}
 };
-
 // Namespace aliases are rare declaration-point relations.  Keep their
 // source points in a sparse side index rather than enlarging every Scope or
 // replacing the canonical NameId -> ScopeId alias map.
@@ -360,18 +354,15 @@ struct NamespaceAliasRelation
 {
 	NameId name;
 	SourcePoint declaration_point;
-
 	NamespaceAliasRelation(NameId name = NameId(),
 		SourcePoint declaration_point = SourcePoint())
 		: name(name), declaration_point(declaration_point)
 	{}
 };
-
 struct NamespaceAliasList
 {
 	std::vector<NamespaceAliasRelation> entries;
 };
-
 // Namespace-owned type declarations are formed before deferred function-body
 // semantics.  Retain their declaration points sparsely so a later typedef,
 // alias, class, enum, or using-declaration cannot enter an earlier lookup.
@@ -380,7 +371,6 @@ struct TypeDeclarationRelation
 	NameId name;
 	SourcePoint declaration_point;
 	BindingId declaration;
-
 	TypeDeclarationRelation(NameId name = NameId(),
 		SourcePoint declaration_point = SourcePoint(),
 		BindingId declaration = BindingId())
@@ -819,6 +809,7 @@ enum class SemanticFactKind
 	ReturnStatement,
 	ExpressionStatement,
 	CallExpression,
+	DestructorCall,
 	IdExpression,
 	MemberExpression,
 	Literal,
@@ -1070,6 +1061,7 @@ struct FunctionFact
 	NamedRecordId constructor_record; NamedRecordId destructor_record;
 	bool inheriting_constructor; NamedRecordId inherited_base_record;
 	BindingId inherited_base_constructor; bool constructor_base_entry; BindingId constructor_entry_source;
+	bool out_of_class_definition; bool destructor_base_entry; BindingId destructor_entry_source;
 	std::size_t constructor_action_begin, constructor_action_count; std::size_t destructor_action_begin, destructor_action_count;
 
 	FunctionFact(const PA10AstNode* node = NULL, ScopeId owner = ScopeId(),
@@ -1080,7 +1072,7 @@ struct FunctionFact
 		  label_table(),
 		  default_argument_begin(InvalidIdentityValue),
 		  default_argument_count(0), is_constructor(false), is_destructor(false),
-		  synthetic(false), constructor_record(), destructor_record(), inheriting_constructor(false), inherited_base_record(), inherited_base_constructor(), constructor_base_entry(false), constructor_entry_source(),
+		  synthetic(false), constructor_record(), destructor_record(), inheriting_constructor(false), inherited_base_record(), inherited_base_constructor(), constructor_base_entry(false), constructor_entry_source(), out_of_class_definition(false), destructor_base_entry(false), destructor_entry_source(),
 		  constructor_action_begin(InvalidIdentityValue), constructor_action_count(0),
 		  destructor_action_begin(InvalidIdentityValue),
 		  destructor_action_count(0)
@@ -1306,6 +1298,7 @@ private:
 		function_fact_index_;
 	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> > function_binding_fact_index_;
 	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> > constructor_base_entry_bindings_;
+	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> > destructor_base_entry_bindings_;
 	std::vector<SemanticFactId> function_default_arguments_;
 	std::vector<LabelFact> label_facts_;
 	std::vector<FunctionLabelTable> label_tables_;
@@ -1891,9 +1884,12 @@ private:
 	void append_constructor_scalar_action(ScopeId function_scope, BindingId member, const PA10AstNode* argument, std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments);
 	void append_constructor_member_actions(NamedRecordId record, ScopeId function_scope, const ConstructorMemberInitializerIndex& member_initializers, std::vector<ConstructorActionFact>& actions, std::vector<SemanticFactId>& arguments);
 	void build_constructor_actions(FunctionFactId function);
+	BindingId ensure_special_member_base_entry(BindingId special_member,
+		bool constructor);
 	BindingId ensure_aggregate_constructor(NamedRecordId record);
 	BindingId ensure_inheriting_constructor(NamedRecordId derived, NamedRecordId base, BindingId base_constructor, std::size_t parameter_count);
 	BindingId ensure_constructor_base_entry(BindingId constructor);
+	BindingId ensure_destructor_base_entry(BindingId destructor);
 	void prepare_pa12_compound(const PA10AstNode& node, ScopeId parent);
 	void prepare_pa12_statement(const PA10AstNode& node, ScopeId scope);
 	void prepare_pa12_labels(const PA10AstNode& body, FunctionFact& function);
@@ -1992,7 +1988,8 @@ private:
 		const std::vector<ValueRef>& candidates,
 		const std::vector<const PA10AstNode*>& argument_nodes,
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-		bool reject_class_by_value = false)
+		bool reject_class_by_value = false,
+		bool allow_pa16_class_value = false)
 	;
 	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope, bool reject_class_by_value = false);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
@@ -2010,6 +2007,9 @@ private:
 	;
 	ExprInfo semantic_member_expression(const PA10AstNode& node,
 		ScopeId scope)
+	;
+	ExprInfo semantic_destructor_call_expression(const PA10AstNode& node,
+		const PA10AstNode& member_node, ScopeId scope)
 	;
 	ExprInfo semantic_member_call_expression(const PA10AstNode& node,
 		const PA10AstNode& member_node, ScopeId scope)

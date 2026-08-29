@@ -665,6 +665,7 @@ private:
 	SimpleTokenType fact_token(SemanticFactId id) const;
 	LoweredValue lower_assignment(SemanticFactId id, bool preserve_lvalue = false);
 	LoweredValue lower_call(SemanticFactId id);
+	LoweredValue lower_destructor_call(SemanticFactId id);
 	bool conditional_address_result(SemanticFactId id) const;
 	LoweredValue lower_conditional_address(SemanticFactId id);
 	LoweredValue lower_conditional_value(SemanticFactId id);

@@ -20,6 +20,13 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node, ScopeId scope)
 	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
 		result.components.push_back(operator_name(node.operator_function_kind,
 			node.operator_token));
+	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor)
+	{
+		if (node.unqualified_id_spelling == 0)
+			throw std::runtime_error("PA11 destructor name has no semantic component");
+		result.components.push_back(name_from_spelling(
+			node.unqualified_id_spelling));
+	}
 	if (node.name_prefix_count != 0)
 	{
 		if (!scope.valid() || node.name_prefix_count != 1 ||
@@ -32,7 +39,7 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node, ScopeId scope)
 		if (!result.decltype_root.valid())
 			throw std::runtime_error("unresolved typed decltype qualifier");
 	}
-	if (result.components.empty())
+	if (result.components.empty() && !result.decltype_root.valid())
 		throw std::runtime_error("PA11 name has no semantic component");
 	return result;
 }

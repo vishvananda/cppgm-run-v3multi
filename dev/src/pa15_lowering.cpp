@@ -281,7 +281,7 @@ std::vector<std::string> Pa15Lowerer::function_components(const FunctionFact& fa
 	else
 		reversed.push_back(model_.name_text(
 			model_.binding(fact.binding).name));
-	if (fact.constructor_base_entry)
+	if (fact.constructor_base_entry || fact.destructor_base_entry)
 		reversed.push_back("base_entry");
 	return reversed;
 }
@@ -1189,7 +1189,11 @@ void Pa15Lowerer::collect_functions(){
 				if (constructor_is_nothrow(FunctionFactId(i)))
 					function.boundary.unwind = lowir_model::CUM_NO;
 			}
-			function.metadata.binding = is_special_member ?
+			const bool strong_out_of_class_special = is_special_member &&
+				fact.out_of_class_definition && sidecar != NULL &&
+				!sidecar->inline_member;
+			function.metadata.binding = strong_out_of_class_special ?
+				lowir_model::SBM_STRONG : is_special_member ?
 				lowir_model::SBM_WEAK : (binding.internal_linkage ?
 				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG);
 			if (binding.language_linkage == LanguageLinkage::C)
@@ -1204,6 +1208,8 @@ void Pa15Lowerer::collect_functions(){
 				function.metadata.object_symbol_id = intern_spelling(abi_symbol(fact,
 					fact.constructor_base_entry ?
 					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_BASE :
+					fact.destructor_base_entry ?
+					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_BASE :
 					abi_mangle::ABI_SPECIAL_TERMINAL_NONE));
 
 			const std::size_t function_index = program_.functions.size();
@@ -1212,7 +1218,8 @@ void Pa15Lowerer::collect_functions(){
 			function_symbols_[fact.binding.value] = function.symbol_id;
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
-			if (is_special_member && !fact.constructor_base_entry)
+			if (is_special_member && !fact.constructor_base_entry &&
+				!fact.destructor_base_entry)
 			{
 				lowir_model::ObjectAlias alias;
 				alias.object_name_id = intern_spelling(abi_symbol(fact,
@@ -2113,6 +2120,33 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 		result->type = target;
 		result->physical_type = target;
 		result->lvalue = false;
+		return true;
+	}
+	if (conversion.kind == ConversionKind::ClassValue)
+	{
+		const TypeId source_object = model_.strip_cv_type(
+			model_.expression_object_type(conversion.source));
+		const TypeId target_object = model_.strip_cv_type(
+			model_.expression_object_type(conversion.target));
+		if (!result->lvalue || !source_object.valid() ||
+			!target_object.valid() || model_.class_scope_for_type(source_object) !=
+				model_.class_scope_for_type(target_object) ||
+			!model_.class_scope_for_type(target_object).valid())
+			throw std::runtime_error(
+				"PA15 class-value argument materialization is invalid");
+		// The supported PA16 slice has an object lvalue as its argument.  Keep the
+		// source evaluation and the opaque ABI slot typed; no scalar load or
+		// source-spelling reconstruction is valid for a class object here.
+		(void)address_of_storage(*result);
+		const LoweredValue temporary = generated_slot(target, "argobj");
+		(void)address_of_storage(temporary);
+		(void)address_of_storage(*result);
+		result->value = temporary.value;
+		result->type = target;
+		result->physical_type = target;
+		result->lvalue = false;
+		result->bit_field_lvalue = false;
+		result->bit_field_binding = BindingId();
 		return true;
 	}
 	if (conversion.kind == ConversionKind::DerivedToBase)

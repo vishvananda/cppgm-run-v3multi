@@ -2814,6 +2814,10 @@ void PA11SemanticModel::analyze_pa12_node(const PA10AstNode& node, ScopeId scope
 		function_facts_[function_id.value].body_fact = body_fact;
 		break;
 	}
+	case PA10NodeKind::SpecialMemberDefinition:
+	case PA10NodeKind::SpecialMemberDeclaration:
+		analyze_special_member(node, scope);
+		break;
 	default:
 		break;
 	}

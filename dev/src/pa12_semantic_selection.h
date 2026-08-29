@@ -112,6 +112,7 @@ enum class ConversionKind
 	Identity,
 	DerivedToBase,
 	LvalueToRvalue,
+	ClassValue,
 	Integral,
 	PointerQualification,
 	PointerToVoid,
@@ -148,6 +149,7 @@ inline ConversionRankCategory conversion_rank_category(ConversionKind kind,
 	{
 	case ConversionKind::Identity:
 	case ConversionKind::LvalueToRvalue:
+	case ConversionKind::ClassValue:
 	case ConversionKind::PointerQualification:
 	case ConversionKind::ArrayToPointer:
 	case ConversionKind::FunctionToPointer:

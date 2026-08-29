@@ -481,75 +481,105 @@ BindingId PA11SemanticModel::ensure_aggregate_constructor(
 	return binding_id;
 }
 
-BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor)
+BindingId PA11SemanticModel::ensure_special_member_base_entry(
+	BindingId special_member, bool constructor)
 {
-	if (!constructor.valid() || constructor.value >= bindings_.size() ||
-		constructor.value >= binding_owners_.size())
-		throw std::runtime_error("PA12 base constructor entry binding is invalid");
-	const BindingId* existing = constructor_base_entry_bindings_.find(constructor);
+	if (!special_member.valid() || special_member.value >= bindings_.size() ||
+		special_member.value >= binding_owners_.size())
+		throw std::runtime_error("PA12 special-member base entry binding is invalid");
+	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> >& entry_bindings =
+		constructor ? constructor_base_entry_bindings_ :
+		destructor_base_entry_bindings_;
+	const BindingId* existing = entry_bindings.find(special_member);
 	if (existing != NULL)
 		return *existing;
 	const FunctionFactId* source_id =
-		function_binding_fact_index_.find(constructor);
+		function_binding_fact_index_.find(special_member);
 	if (source_id == NULL || !source_id->valid() ||
 		source_id->value >= function_facts_.size())
-		throw std::runtime_error("PA12 base constructor entry fact is missing");
+		throw std::runtime_error("PA12 special-member base entry fact is missing");
 	FunctionFact source = function_facts_[source_id->value];
-	if (!source.is_constructor || source.binding != constructor ||
-		!source.constructor_record.valid() ||
-		source.constructor_record.value >= named_.size() ||
+	const NamedRecordId record_id = constructor ? source.constructor_record :
+		source.destructor_record;
+	if ((constructor ? !source.is_constructor : !source.is_destructor) ||
+		source.binding != special_member || !record_id.valid() ||
+		record_id.value >= named_.size() ||
 		!source.owner.valid() || source.owner.value >= scopes_.size() ||
 		scopes_[source.owner.value].kind != ScopeKind::Class ||
-		source.owner != named_[source.constructor_record.value].scope ||
-		binding_owners_[constructor.value] != source.owner ||
+		source.owner != named_[record_id.value].scope ||
+		binding_owners_[special_member.value] != source.owner ||
 		!source.function_scope.valid() ||
 		source.function_scope.value >= scopes_.size() ||
 		scopes_[source.function_scope.value].kind != ScopeKind::Function ||
 		scopes_[source.function_scope.value].parent != source.owner)
-		throw std::runtime_error("PA12 base constructor entry owner is invalid");
-	if (source.constructor_base_entry)
+		throw std::runtime_error("PA12 special-member base entry owner is invalid");
+	if ((constructor && source.constructor_base_entry) ||
+		(!constructor && source.destructor_base_entry))
 	{
-		constructor_base_entry_bindings_.set(constructor, constructor);
-		return constructor;
+		entry_bindings.set(special_member, special_member);
+		return special_member;
 	}
-	if (source.constructor_action_begin == InvalidIdentityValue &&
+	if (constructor && source.constructor_action_begin == InvalidIdentityValue &&
 		(source.body_fact.valid() || source.synthetic))
 	{
 		build_constructor_actions(*source_id);
 		source = function_facts_[source_id->value];
 	}
-	if (source.constructor_action_begin != InvalidIdentityValue &&
+	if (constructor && source.constructor_action_begin != InvalidIdentityValue &&
 		(source.constructor_action_begin > constructor_actions_.size() ||
 			source.constructor_action_count > constructor_actions_.size() -
 				source.constructor_action_begin))
-		throw std::runtime_error("PA12 base constructor entry actions are invalid");
+		throw std::runtime_error("PA12 constructor base entry actions are invalid");
+	if (!constructor && source.destructor_action_count != 0)
+		throw std::runtime_error(
+			"PA16 destructor base entries with member cleanup are outside checkpoint");
 
-	const Binding source_binding = binding(constructor);
+	const Binding source_binding = binding(special_member);
 	Binding entry_binding = source_binding;
 	const BindingId entry_id = store_binding(source.owner, entry_binding);
-	const BindingSidecar* source_sidecar = binding_sidecar(constructor);
+	const BindingSidecar* source_sidecar = binding_sidecar(special_member);
 	if (source_sidecar == NULL ||
-		source_sidecar->constructor_record != source.constructor_record)
-		throw std::runtime_error("PA12 base constructor entry sidecar is invalid");
+		(constructor ? source_sidecar->constructor_record != record_id :
+			source_sidecar->destructor_record != record_id))
+		throw std::runtime_error("PA12 special-member base entry sidecar is invalid");
 	BindingSidecar entry_sidecar = *source_sidecar;
 	set_binding_sidecar(entry_id, entry_sidecar);
 
 	FunctionFact entry = source;
 	entry.node = NULL;
 	entry.binding = entry_id;
-	entry.constructor_base_entry = true;
-	entry.constructor_entry_source = constructor;
+	if (constructor)
+	{
+		entry.constructor_base_entry = true;
+		entry.constructor_entry_source = special_member;
+	}
+	else
+	{
+		entry.destructor_base_entry = true;
+		entry.destructor_entry_source = special_member;
+	}
 	// Preserve the source fact's synthetic bit.  A generated entry for a
 	// user-defined empty constructor still has a real body and must not be
 	// folded as an unused synthetic no-op by PA15's demand walk.
 	entry.synthetic = source.synthetic;
-	entry.constructor_action_begin = InvalidIdentityValue;
-	entry.constructor_action_count = 0;
+	if (constructor)
+	{
+		entry.constructor_action_begin = InvalidIdentityValue;
+		entry.constructor_action_count = 0;
+	}
+	else
+	{
+		// A base-entry destructor has no member/base cleanup of its own.  Keep
+		// an empty, valid range so the existing PA15 destructor fact checks remain
+		// truthful for both the complete and base ABI entries.
+		entry.destructor_action_begin = destructor_actions_.size();
+		entry.destructor_action_count = 0;
+	}
 	const FunctionFactId entry_id_fact(function_facts_.size());
 	function_facts_.push_back(entry);
 	function_binding_fact_index_.set(entry_id, entry_id_fact);
 
-	if (source.constructor_action_begin != InvalidIdentityValue)
+	if (constructor && source.constructor_action_begin != InvalidIdentityValue)
 	{
 		const std::size_t action_begin = constructor_actions_.size();
 		for (std::size_t i = 0; i < source.constructor_action_count; ++i)
@@ -559,7 +589,7 @@ BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor
 			if (action.constructor.valid() &&
 				action.target == ConstructorActionTarget::Base)
 			{
-				action.constructor = ensure_constructor_base_entry(
+					action.constructor = ensure_constructor_base_entry(
 					action.constructor);
 				if (!action.callable_type.valid())
 					action.callable_type = constructor_callable_type(
@@ -571,8 +601,18 @@ BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor
 		function_facts_[entry_id_fact.value].constructor_action_count =
 			source.constructor_action_count;
 	}
-	constructor_base_entry_bindings_.set(constructor, entry_id);
+	entry_bindings.set(special_member, entry_id);
 	return entry_id;
+}
+
+BindingId PA11SemanticModel::ensure_constructor_base_entry(BindingId constructor)
+{
+	return ensure_special_member_base_entry(constructor, true);
+}
+
+BindingId PA11SemanticModel::ensure_destructor_base_entry(BindingId destructor)
+{
+	return ensure_special_member_base_entry(destructor, false);
 }
 
 BindingId PA11SemanticModel::ensure_inheriting_constructor(
@@ -728,9 +768,7 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 	wrapper_function.inheriting_constructor = true;
 	wrapper_function.inherited_base_record = base_id;
 	wrapper_function.inherited_base_constructor = base_constructor;
-	// Default arguments are not inherited.  Each wrapper has one concrete
-	// notional parameter list, and omitted base parameters are forwarded by its
-	// base action below.
+	// Default arguments are forwarded by the wrapper's base action below.
 	prepare_pa12_member_parameter(wrapper_function);
 	std::vector<BindingId> wrapper_parameters;
 	for (std::size_t i = 0; i < parameter_count; ++i)
@@ -746,7 +784,6 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 	const FunctionFactId wrapper_function_id(function_facts_.size());
 	function_facts_.push_back(wrapper_function);
 	function_binding_fact_index_.set(wrapper_id, wrapper_function_id);
-
 	std::vector<SemanticFactId> base_arguments;
 	base_arguments.reserve(base_signature.parameters.size());
 	for (std::size_t i = 0; i < wrapper_parameters.size(); ++i)
@@ -787,13 +824,10 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 		base_action.argument_begin = argument_begin;
 		base_action.argument_count = base_arguments.size();
 	}
-
 	std::vector<ConstructorActionFact> member_actions;
 	std::vector<SemanticFactId> member_arguments;
 	const ConstructorMemberInitializerIndex no_member_initializers;
-	// The shared helper collects direct members in declaration order.  It uses
-	// local action/argument arenas because nested member selection can publish
-	// additional facts before this wrapper's range is committed.
+	// Collect direct members in declaration order through local action arenas.
 	append_constructor_member_actions(derived_id, wrapper_scope,
 		no_member_initializers, member_actions, member_arguments);
 	if (member_arguments.size() > std::numeric_limits<std::size_t>::max() -
@@ -811,7 +845,7 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 				throw std::runtime_error(
 					"PA12 inherited constructor member argument range overflow");
 			member_actions[i].argument_begin += member_argument_begin;
-		}
+	}
 	const std::size_t action_begin = constructor_actions_.size();
 	constructor_actions_.push_back(base_action);
 	constructor_actions_.insert(constructor_actions_.end(),

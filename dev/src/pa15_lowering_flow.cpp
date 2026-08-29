@@ -499,7 +499,8 @@ bool Pa15Lowerer::constructor_initializer_is_nothrow(SemanticFactId root)
 				continue;
 			const SemanticFact& fact = model_.semantic_facts_[id.value];
 			bool result = fact.kind != SemanticFactKind::CallExpression &&
-				fact.kind != SemanticFactKind::ConstructorAction;
+				fact.kind != SemanticFactKind::ConstructorAction &&
+				fact.kind != SemanticFactKind::DestructorCall;
 			bool invalid = semantic_nothrow_invalid_[id.value] != 0;
 			if (fact.child_count != 0 &&
 				(fact.child_begin == InvalidIdentityValue ||
@@ -549,7 +550,8 @@ bool Pa15Lowerer::constructor_initializer_is_nothrow(SemanticFactId root)
 		work.push_back(std::make_pair(id, static_cast<unsigned char>(1)));
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		if (fact.kind == SemanticFactKind::CallExpression ||
-			fact.kind == SemanticFactKind::ConstructorAction)
+			fact.kind == SemanticFactKind::ConstructorAction ||
+			fact.kind == SemanticFactKind::DestructorCall)
 			continue;
 		if (fact.child_count != 0 &&
 			(fact.child_begin == InvalidIdentityValue ||
@@ -1111,6 +1113,9 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			break;
 		case SemanticFactKind::CallExpression:
 			result = lower_call(id);
+			break;
+		case SemanticFactKind::DestructorCall:
+			result = lower_destructor_call(id);
 			break;
 		case SemanticFactKind::ConstructorAction:
 			result = lower_constructor_expression(id);
@@ -2435,6 +2440,12 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		reachable_blocks_.clear();
 		reachability_work_.clear();
 		Function& target = function();
+		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
+		if (!fact.function_scope.valid() || fact.function_scope.value >=
+			lifetime_function_scope_flags_.size() ||
+			model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function)
+			throw std::runtime_error("PA15 function scope is invalid");
+		const Scope& function_scope = model_.scopes_[fact.function_scope.value];
 		slot_by_binding_ = plan.slot_bindings;
 		used_slot_names_.clear();
 		slot_collision_counters_.clear();
@@ -2447,13 +2458,29 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 			target.params[i].value_id = allocate_value();
 		const std::size_t value_begin = target.value_begin.index;
+		std::vector<unsigned char> class_value_parameter_stores;
+		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
+		{
+			const Binding& parameter = model_.binding(function_scope.bindings[i]);
+			if (parameter.kind != BindingKind::Parameter)
+				continue;
+			const TypeId object = model_.strip_cv_type(
+				model_.expression_object_type(parameter.type));
+			const bool class_value = fact.out_of_class_definition &&
+				fact.is_constructor && model_.class_scope_for_type(object).valid() &&
+				model_.type_kind(parameter.type) != TypeKind::LvalueReference &&
+				model_.type_kind(parameter.type) != TypeKind::RvalueReference;
+			class_value_parameter_stores.push_back(class_value ? 0 : 1);
+		}
 		const BlockId entry = block_id(new_block("entry"));
 		set_current(entry);
 		mark_reachable(entry);
 		for (std::size_t i = 0; i < target.params.size(); ++i)
 		{
 			const lowir_model::Parameter& parameter = target.params[i];
-			if (i < target.slots.size())
+			if (i < target.slots.size() &&
+				(i >= class_value_parameter_stores.size() ||
+					class_value_parameter_stores[i] != 0))
 			{
 				Instruction store;
 				store.kind = Instruction::IK_STORE;
@@ -2463,11 +2490,6 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				block().instructions.push_back(store);
 			}
 		}
-		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
-		if (!fact.function_scope.valid() || fact.function_scope.value >=
-			lifetime_function_scope_flags_.size() ||
-			model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function)
-			throw std::runtime_error("PA15 function scope is invalid");
 		function_has_nontrivial_lifetime_ =
 			lifetime_function_scope_flags_[fact.function_scope.value] != 0;
 		active_constructor_record_ = NamedRecordId();
@@ -2484,7 +2506,6 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				model_.scopes_[fact.function_scope.value].parent != fact.owner ||
 				!model_.scopes_[fact.function_scope.value].implicit_object_binding.valid())
 				throw std::runtime_error("PA15 constructor object parameter is missing");
-			const Scope& function_scope = model_.scopes_[fact.function_scope.value];
 			const BindingId this_binding = function_scope.implicit_object_binding;
 			if (this_binding.value >= model_.bindings_.size() ||
 				this_binding.value >= model_.binding_owners_.size() ||

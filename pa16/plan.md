@@ -2,48 +2,40 @@
 
 ## Stage Design
 
-PA11 owns the canonical `BindingId`, binding owner scope, declared `TypeId`,
-definition bit, and storage/linkage facts. PA12 owns the typed initializer
-tree, reference-binding/conversion facts, and constant-address targets. PA15
-consumes those facts directly: `low_type` is the owned-storage boundary,
-while reference and glvalue lowering may carry an address without asking for a
-class layout. After `collect_functions`, global demand retains one bounded
-structural validation of the typed arenas and then uses roots from emitted
-`FunctionPlan`s and namespace/static global initializers; reachable child,
-aggregate, and address edges are visited once before global symbols are
-collected.
+PA11 forms the first typed owner fact: a qualified special-member declarator is
+resolved through its `NamePath` and `declaration_scope` to the canonical class
+`ScopeId`, `NamedRecordId`, and (for destructors) `BindingId`. PA12 consumes
+that owner and publishes one `DestructorCall` fact whose only operand is the
+already-semantically-evaluated object expression. PA15 consumes the selected
+binding/type facts directly: class calls lower to the canonical destructor
+with its hidden object pointer, while scalar pseudo-destructor calls lower to
+the operand evaluation with no callee.
 
-The invariants for this stage are:
-
-- a reference to an incomplete class is pointer storage and never an owned
-  class object; a value load still requires a complete layout;
-- a declaration-only namespace variable is collected only when a typed demand
-  root requires its external declaration; definitions and the existing
-  class-static demand rule remain unchanged;
-- namespace and static-member demand accepts only a canonical variable with a
-  valid namespace/class owner; malformed owner/range data fails closed;
-- the reference initializer address is lowered exactly once from its PA12 fact
-  into `__cppgm_init`;
-- no source spelling recovery, textual downgrade, full-TU retry, second
-  semantic model, or repeated class-member scan is introduced.
+Invariants are: owner scope is a class and the terminal typed name matches its
+record; an out-of-class destructor definition reuses an existing declaration
+binding; destructor names are cv-insensitive at the class-type boundary;
+scalar pseudo-destructors require the same scalar `TypeId` as the object; and
+the object expression has exactly one PA12 child/evaluation root. All malformed
+owner, binding, signature, access, and lowering facts fail closed. The path
+lookup is canonical and bounded; there is no spelling-key recovery, secondary
+semantic model, whole-TU retry, or broad rescan.
 
 ## Failure Map
 
-The authoritative clean turn-start baseline is HEAD `68b549f2`: `187/243`
-PA16 identities passed, `56` failed, and `243/243` identities were covered.
-The complete residual map from
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is:
+The authoritative PA16 turn-start baseline is HEAD `c507120c`: `189/243`
+identities passed, `54` failed, and `243/243` identities were covered. The
+complete 54-failure set is the existing full map below with the two already
+fixed entries (`100-global-reference-incomplete-referent.t` and
+`200-extern-class-object-declaration.t`) omitted:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
 - `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
-- `pa16/tests/general/100-global-reference-incomplete-referent.t`
 - `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
 - `pa16/tests/general/200-const-subobject-member-call.t`
 - `pa16/tests/general/200-defaulted-constructor-still-aggregate.t`
 - `pa16/tests/general/200-deleted-constructor-still-aggregate.t`
 - `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
 - `pa16/tests/general/200-elaborated-member-forward-type.t`
-- `pa16/tests/general/200-extern-class-object-declaration.t`
 - `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
 - `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`
 - `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
@@ -91,129 +83,96 @@ The complete residual map from
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Owned subset for this checkpoint:
+Exact owned subset for this checkpoint:
 
-- `pa16/tests/general/100-global-reference-incomplete-referent.t`: PA15
-  requested a complete layout for a non-owning reference referent;
-- `pa16/tests/general/200-extern-class-object-declaration.t`: PA15 emitted an
-  unused declaration-only extern class object instead of applying demand roots.
+- `pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t`
+- `pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t`
+- `pa16/tests/general/300-const-pointer-explicit-destructor-call.t`
+- `pa16/tests/general/300-scalar-pseudo-destructor-call.t`
 
-The landed-head authority and the post-repair result are `189/243` passing,
-`54` failing, with `243/243` identities covered. The exact sorted comparison
-against the landed `final-failures.txt` is recorded under
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-nonowning-namespace-object-20260829/`:
-baseline-only and final-only are both empty. The two identities removed from
-the 56-failure parent map are exactly
-`100-global-reference-incomplete-referent.t` and
-`200-extern-class-object-declaration.t`; the post-repair residual map is
-byte-for-byte the landed 54-failure authority.
+Final residual comparison: `make test-pa16` is `194/243` with `49` failures
+and `243/243` identities covered. Relative to the 54-failure baseline, the
+five removed identities are the four owned tests plus
+`pa16/tests/general/200-pointer-subscript-class-reference-return.t`; the
+final-only set is empty. The remaining residual map is therefore the listed
+baseline map minus those five entries.
 
 ## Active Checkpoint
 
-Landed implementation files:
+Scope is typed qualified out-of-class constructor ownership plus typed class
+and scalar explicit destructor calls. The retained source files each carry
+one part of that path:
 
-- `dev/src/pa15_lowering_flow.cpp`
-- `dev/src/pa15_lowering_globals.cpp`
+- `dev/src/pa11_semantic_model.h`: `DestructorCall` and its typed API boundary;
+- `dev/src/pa11_semantic_core.cpp`, `dev/src/pa11_semantic_types.cpp`:
+  destructor `NamePath` components and scoped typed-name handling;
+- `dev/src/pa11_semantic.cpp`: PA12 dump publication for the typed destructor
+  fact and out-of-class special-member body;
+- `dev/src/pa12_semantic.cpp`, `dev/src/pa12_semantic_construction.cpp`:
+  top-level special-member preparation/analysis, qualified owner resolution,
+  and the existing constructor selection boundary needed by the owned nested
+  definition;
+- `dev/src/pa12_semantic_calls.cpp`, `dev/src/pa12_semantic_selection.h`:
+  the bounded class-value constructor conversion and its typed conversion
+  kind;
+- `dev/src/pa12_semantic_member.cpp`, `dev/src/pa12_semantic_facts.cpp`:
+  one typed destructor-expression fact path and typed complete/base entry
+  identities;
+- `dev/src/pa15_lowering.h`, `dev/src/pa15_lowering.cpp`,
+  `dev/src/pa15_lowering_calls.cpp`, `dev/src/pa15_lowering_construction.cpp`,
+  `dev/src/pa15_lowering_flow.cpp`: typed destructor demand, strong ABI entry
+  metadata, class-value argument materialization, direct/pseudo lowering, and
+  expression dispatch.
 
-`low_reference_value_type` now returns a typed pointer for an incomplete named
-class object carried through a reference/glvalue boundary. This lets PA12's
-typed `ReferenceBinding` initializer preserve the address of
-`*forward_declared_object`; a later value materialization still reaches
-`low_type` and therefore cannot silently materialize incomplete owned storage.
+The implementation reuses canonical `lookup_type_path`, `ScopeId`,
+`NamedRecordId`, `BindingId`, and PA15 destructor emission/signature checks. It
+does not add virtual dispatch, templates, placement new, unrelated cleanup,
+general member overload work, or any test/ref/harness/comparator/source-set
+change. Temporary verbose diagnostics in `pa12_semantic_calls.cpp` were
+removed; its remaining changes are limited to the bounded constructor value
+conversion.
 
-The landed PA15 global-demand pass recognizes namespace-owned variables as
-well as class-static variables from canonical typed bindings and constant
-address targets. Both global indexing and collection preserve the preceding
-class-scope non-static rejection, then apply one declaration-only no-demand
-check. Definitions and demanded declarations remain available through the
-same `required_global_bindings_` vector; required extern declarations and
-class-static behavior remain demand-driven.
-
-The bounded audit found that the landed all-fact demand marking could promote
-an un-emitted member body or unused default argument into a namespace storage
-root. The completed repair keeps the complete typed range/DAG validation but
-seeds demand from emitted function plans and namespace/static global
-initializers, follows typed reachable edges once, and uses a separate address
-worklist for address-of/cast targets. It also makes namespace/class owner
-eligibility fail closed. No handout, fixture, harness, comparator, coverage
-rule, source set, or unrelated source changed.
-
-The implementation repair is confined to `dev/src/pa15_lowering_flow.cpp`;
-the two required documentation files are updated as part of this checkpoint
-audit. The complete post-repair gate evidence is recorded below.
+The focused owned set is now `4/4`. The bounded controls also pass for a
+lexically shadowed wrong destructor type (the injected class name is selected),
+an inaccessible class destructor (rejected), a mismatched scalar
+pseudo-destructor (rejected), and a derived-object qualified base destructor
+(the base binding is called). The constructor value slice is limited to one
+lvalue class argument for an out-of-class constructor; other class-by-value
+shapes fail closed.
 
 ## Performance Evidence
 
-The new global predicate is O(1) per typed binding demand after canonical
-owner/index lookup. Structural range and DAG checks remain bounded passes over
-the typed semantic arenas; demand marking now walks only reachable facts and
-aggregate/address edges, with dense seen vectors, so its worst-case work is
-O(F + E) and temporary mark state is O(F). Constructor action arguments are
-seeded only for emitted constructor plans. Global scope/binding indexing
-remains O(S + B), with no whole-TU retry or repeated broad demand scan. The
-incomplete-class check is a constant-size typed wrapper/layout-state query at
-the reference boundary; it does not scan class members.
+Typed name resolution is O(L) in qualified path length with indexed scope/type
+lookups; the unqualified destructor rule performs only the two required typed
+candidates (lexical scope and object class scope). The destructor fact adds
+O(1) work after lookup. Demand and lowering follow the one object child and
+existing reachable function edges, so the added work is bounded by those edges
+and does not scan the translation unit. Representative `/tmp` probes cover
+shadowed lookup, access, scalar mismatch, and derived-base projection; no
+timing, RSS, or speedup claim is made.
 
-Collected structural/conformance evidence is in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-nonowning-namespace-object-20260829/determinism-probes.log`.
-Each probe used `--emit-lowir -O0` and was compiled twice after the repair;
-`cmp` reported byte-identical output:
+## Validation and Checkpoint Ledger
 
-- complete used class extern (`struct Y { int x; }; extern Y g; ...`):
-  `251` bytes, `9` lines, `declare_global=1`, `global=0`, SHA-256
-  `04494956d6e5172b8e4e0db01829b613bc32d810143af278417f39b5cfb26b62`, with
-  `declare global @g : obj<4x4>` present;
-- used scalar address extern (`extern int scalar; int *address = &scalar; ...`):
-  `552` bytes, `23` lines, `declare_global=1`, `global=1`, SHA-256
-  `0d701eb51278f09ec5e22f13dbb4efbf577f46dba67243c684346c3cabee7f05`, with
-  `declare global @scalar : i32` and `global @address ... = addr @scalar`;
-- unused handout extern control
-  `200-extern-class-object-declaration.t`: `106` bytes, `4` lines,
-  `declare_global=0`, `global=0`, SHA-256
-  `485fc8e3251fe7b25d56cc0db4e5cc73da7486c3984948de64f662839846898f`, with
-  no global declaration.
+Broad validation and the repository commit are complete:
 
-These are conformance and determinism observations, not timing, RSS,
-allocation, or speedup claims. No timing or memory measurement was collected.
+- `make -C pa16 dev-shared-target`: pass.
+- Focused `make -C pa16 check TEST='tests/general/200-nested-out-of-class-constructor-enclosing-type.t tests/general/300-explicit-destructor-call-enclosing-namespace-type.t tests/general/300-const-pointer-explicit-destructor-call.t tests/general/300-scalar-pseudo-destructor-call.t'`:
+  `4/4` passed; the extended directly relevant set was `7/7`.
+- Direct controls: `100-out-of-class-methods.t`,
+  `spec/200-nested-class-enclosing-access.t`, and
+  `300-member-operator-bang-out-of-class.t` passed. The four bounded `/tmp`
+  controls passed with expected accept/reject statuses.
+- The four requested identities were exercised; the turn-start coverage
+  authority remains `243/243` and no coverage rule or test identity changed.
+- `make test-pa16`: `194/243` passed, `49` failed, `243/243` covered, with no
+  final-only failure identity.
+- Exact `n=16` through-PA15 command: `1167/1167` passed.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: passed with
+  five pre-existing header-division warnings.
+- `git diff --check`: passed. The coherent checkpoint was committed; the final
+  commit id is reported in the repository handoff.
 
-## Validation
-
-- `make -C dev cppgm++ -j2`: pass.
-- Owned identities pass `2/2`; the expanded 16-test handout matrix passes
-  `16/16`, with no focused failure identity.
-- Course controls 402, 404, 407, 408, 409, 412, 415, and 420 each exit `0`;
-  course 410 also exits `0` and reports the expected structural counts for
-  `E=8`, `E=16`, and `E=32`.
-- Root-reachability reductions show unused member/default facts do not emit
-  `declare global @x`, while used roots do. Incomplete reference/glvalue
-  output uses pointer LowIR; direct incomplete value materialization fails
-  closed in PA12. Repeated class/scalar/address and unused-extern probes are
-  byte-identical.
-- `make test-pa16` exits `2` at `189/243` passing, `54` failures, and
-  `243/243` coverage. Comparison with the landed `final-failures.txt` has
-  baseline-only `0` and final-only `0`; the full log and sorted identity files
-  are under
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-nonowning-namespace-object-20260829/`
-  (`post-repair-test-pa16-final-20260829.log` and
-  `post-repair-identity-comparison-final.log`).
-- The exact requested `n=16` through-PA15 command exits `0` at `1167/1167`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
-  with five known header-division warnings; the warning paths are recorded in
-  the audit review and `post-repair-file-audit-20260829.log`.
-- `git diff --check`: pass.
-- Test and fixture identities remain unchanged because no test or harness file
-  was edited.
-
-## Next Checkpoint
-
-Select the next residual PA16 owner without widening this typed non-owning-
-storage boundary. Preserve the canonical PA11/PA12 facts and the single
-typed demand-root model. The incomplete namespace-object address case is
-out-of-contract because PA16 scopes namespace object declarations to complete
-class types; it is deferred. The unrelated course-400 DMI control remains
-outside this landed increment.
-
-## Checkpoint Ledger
+### Historical Checkpoint Ledger
 
 | checkpoint | result |
 | --- | --- |
@@ -226,3 +185,4 @@ outside this landed increment.
 | `PA16 typed non-automatic lifetime checkpoint` | `184/243` passing, `59` failures, `243/243` covered; focused matrix `9/12`. |
 | `PA16 typed ordinary-value-over-tag lookup checkpoint` | `187/243` passing, `56` failures, `243/243` covered; its focused matrix was `8/8`. |
 | `b3bbf052` typed non-owning namespace object checkpointAudit | Completed the bounded ownership-path audit and repair: incomplete named-class references/glvalues retain pointer representation while owned values remain layout-gated; namespace declaration-only globals are rooted in emitted typed facts; owner/range checks fail closed; and unused member/default facts no longer create storage roots. Post-repair `make test-pa16` is `189/243` passing, `54` failures, and `243/243` covered; comparison with the landed 54-failure authority has baseline-only `0` and final-only `0`. The focused handout matrix is `16/16`, the exact through-PA15 command is `1167/1167`, file audit exits `0` with five known header-division warnings, repeated structural probes are byte-identical, and `git diff --check` passes. The incomplete namespace-object address case is out-of-contract under the PA16 complete-class namespace-object scope; course-400 DMI remains outside this increment. |
+| `PA16 typed qualified special-member/destructor checkpoint` | Focused owned set `4/4`, extended focused set `7/7`; final `make test-pa16` `194/243` with `49` failures and `243/243` covered; five baseline-only failures removed and no final-only failures; through-PA15 `1167/1167`; file audit passed with five pre-existing warnings; `git diff --check` passed; committed as the coherent checkpoint. |

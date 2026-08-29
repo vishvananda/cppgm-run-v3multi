@@ -84,7 +84,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	const std::vector<ValueRef>& candidates,
 	const std::vector<const PA10AstNode*>& argument_nodes,
 	const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-	bool reject_class_by_value)
+	bool reject_class_by_value, bool allow_pa16_class_value)
 {
 	if (argument_nodes.size() != initial_arguments.size())
 		throw std::runtime_error("PA12 function argument boundary mismatch");
@@ -101,6 +101,32 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	};
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
+	const auto supported_class_value_parameter = [this, &arguments,
+		allow_pa16_class_value](const ValueRef& candidate_ref,
+		std::size_t parameter, TypeId parameter_type) -> bool
+	{
+		if (!allow_pa16_class_value || parameter >= arguments.size())
+			return false;
+		const FunctionFact* function = function_fact_for_binding(
+			candidate_ref.binding);
+		if (function == NULL || !function->is_constructor ||
+			!function->out_of_class_definition)
+			return false;
+		const TypeId parameter_object = strip_cv_type(
+			expression_object_type(parameter_type));
+		const NamedRecordId parameter_record = named_record_for_type(
+			parameter_object);
+		if (!parameter_record.valid() || parameter_record.value >= named_.size() ||
+			named_[parameter_record.value].kind != NamedKind::Class ||
+			type_kind(parameter_type) == TypeKind::LvalueReference ||
+			type_kind(parameter_type) == TypeKind::RvalueReference)
+			return false;
+		const ExprInfo& argument = arguments[parameter];
+		return argument.fact.valid() &&
+			argument.category == SemanticValueCategory::Lvalue &&
+			strip_cv_type(expression_object_type(argument.type)) ==
+			parameter_object;
+	};
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
 		const ValueRef& candidate_ref = candidates[i];
@@ -138,8 +164,12 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 					parameter_record.valid() && parameter_record.value < named_.size() &&
 					named_[parameter_record.value].kind == NamedKind::Class)
 				{
-					supported = false;
-					break;
+					if (!supported_class_value_parameter(candidate_ref, parameter,
+						parameter_type))
+					{
+						supported = false;
+						break;
+					}
 				}
 			}
 			if (!supported)
@@ -173,6 +203,17 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 					semantic_facts_[arguments[argument].fact.value];
 				choice = conversion_for(arguments[argument],
 					function.parameters[argument], fact.source, scope);
+				if (choice.valid &&
+					type_kind(function.parameters[argument]) !=
+						TypeKind::LvalueReference &&
+						type_kind(function.parameters[argument]) !=
+						TypeKind::RvalueReference &&
+						supported_class_value_parameter(candidate_ref, argument,
+							function.parameters[argument]))
+				{
+					choice.kind = ConversionKind::ClassValue;
+					choice.rank_category = ConversionRankCategory::Exact;
+				}
 			}
 			else
 			{
@@ -250,10 +291,20 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		if (!arguments[argument].fact.valid() || arguments[argument].fact.value >=
 			semantic_facts_.size())
 			throw std::runtime_error("PA12 selected function argument is invalid");
+		const bool class_value = supported_class_value_parameter(selected, argument,
+			selected_function.parameters[argument]);
 		const PA10AstNode* source = semantic_facts_[
 			arguments[argument].fact.value].source;
-		arguments[argument] = apply_context_conversion(arguments[argument],
-			selected_function.parameters[argument], source, scope);
+		if (class_value)
+		{
+			set_fact_conversion(arguments[argument].fact,
+				add_conversion(arguments[argument].type,
+					selected_function.parameters[argument],
+					ConversionChoice(true, 0, ConversionKind::ClassValue)));
+		}
+		else
+			arguments[argument] = apply_context_conversion(arguments[argument],
+				selected_function.parameters[argument], source, scope);
 	}
 	apply_call_argument_conversions(arguments, selected_type, scope);
 	TypedFunctionSelection result(selected, selected_type);

@@ -2045,6 +2045,173 @@ ExprInfo PA11SemanticModel::semantic_this_expression(
 		false);
 }
 
+ExprInfo PA11SemanticModel::semantic_destructor_call_expression(
+	const PA10AstNode& node, const PA10AstNode& member_node, ScopeId scope)
+{
+	if (node.kind != PA10NodeKind::CallExpression ||
+		node.children.size() != 2 ||
+		(node.children.back().kind != PA10NodeKind::ArgumentList &&
+			node.children.back().kind != PA10NodeKind::ParenArgumentList) ||
+		!node.children.back().children.empty() ||
+		member_node.kind != PA10NodeKind::MemberExpression ||
+		member_node.children.size() != 2 || !member_node.has_token ||
+		(member_node.token != SimpleTokenType::OP_DOT &&
+			member_node.token != SimpleTokenType::OP_ARROW) ||
+		member_node.children.back().kind != PA10NodeKind::Identifier ||
+		member_node.children.back().unqualified_id_kind !=
+			PA10UnqualifiedIdKind::Destructor)
+		throw std::runtime_error("PA12 invalid destructor call expression");
+
+	// The operand is deliberately formed before any name lookup and is stored
+	// as the sole child of the typed destructor fact.  PA15 therefore has one
+	// canonical evaluation root for both explicit class calls and scalar
+	// pseudo-destructor calls.
+	const ExprInfo object = semantic_expression(member_node.children.front(),
+		scope);
+	TypeId actual_object = expression_object_type(object.type);
+	if (member_node.token == SimpleTokenType::OP_ARROW)
+	{
+		const TypeId pointer = strip_cv_type(actual_object);
+		if (!pointer.valid() || type_kind(pointer) != TypeKind::Pointer)
+			throw std::runtime_error("PA12 destructor arrow operand is not a pointer");
+		actual_object = types_[pointer.value].child;
+	}
+	const TypeId unqualified_object = strip_cv_type(actual_object);
+	if (!complete_object_type(unqualified_object))
+		throw std::runtime_error("PA12 destructor operand is incomplete");
+
+	const NamePath path = name_path(member_node.children.back(), scope);
+	TypeId target;
+	if (path.components.empty())
+	{
+		if (!path.decltype_root.valid())
+			throw std::runtime_error("PA12 destructor name is not typed");
+		target = path.decltype_root;
+	}
+	else if (path.components.size() == 1)
+	{
+		const TypeId lexical_target = lookup_type_path(path, scope,
+			SourcePoint(), NULL, scope);
+		TypeId object_scope_target;
+		const NamedRecordId object_record = named_record_for_type(
+			strip_cv_type(unqualified_object));
+		if (object_record.valid() && object_record.value < named_.size())
+		{
+			const ScopeId object_scope = named_[object_record.value].scope;
+			if (object_scope.valid())
+				object_scope_target = lookup_type_path(path, object_scope,
+					SourcePoint(), NULL, scope);
+		}
+		const TypeId object_type = strip_cv_type(unqualified_object);
+		const bool lexical_matches = lexical_target.valid() &&
+			strip_cv_type(lexical_target) == object_type;
+		const bool object_scope_matches = object_scope_target.valid() &&
+			strip_cv_type(object_scope_target) == object_type;
+		if (lexical_matches && object_scope_matches)
+		{
+			if (strip_cv_type(lexical_target) !=
+				strip_cv_type(object_scope_target))
+				throw std::runtime_error(
+					"PA12 destructor name lookup is ambiguous");
+			target = lexical_target;
+		}
+		else if (lexical_matches)
+			target = lexical_target;
+		else if (object_scope_matches)
+			target = object_scope_target;
+		else
+			target = TypeId();
+	}
+	else
+	{
+		// The final component is the destructor name.  Resolve the preceding
+		// typed path through the canonical type lookup; this handles both
+		// class-name::~class-name and qualified scalar pseudo-destructors.
+		NamePath qualifier = path;
+		qualifier.components.pop_back();
+		target = lookup_type_path(qualifier, scope, SourcePoint(), NULL, scope);
+		if (target.valid())
+		{
+			NamePath final_name;
+			final_name.components.push_back(path.last());
+			ScopeId final_scope = class_scope_for_type(target);
+			if (!final_scope.valid())
+			{
+				NamePath prefix = qualifier;
+				prefix.components.pop_back();
+				if (prefix.components.empty())
+					final_scope = qualifier.decltype_root.valid() ?
+						scope_for_type(qualifier.decltype_root) :
+						(qualifier.global ? global_ : scope);
+				else
+					final_scope = qualifier.global ?
+						resolve_global_qualifier_scope(prefix.components,
+							SourcePoint(), scope) : resolve_qualifier_scope(
+							prefix.components, scope, SourcePoint(), scope);
+			}
+			const TypeId final_target = final_scope.valid() ?
+				lookup_type_path(final_name, final_scope, SourcePoint(), NULL,
+					scope) : TypeId();
+			if (!final_target.valid() || strip_cv_type(final_target) !=
+				strip_cv_type(target))
+				target = TypeId();
+		}
+	}
+
+	if (target.valid())
+		target = strip_cv_type(target);
+	const TypeId object_type = strip_cv_type(unqualified_object);
+	const NamedRecordId object_record = named_record_for_type(object_type);
+	if (!target.valid() || !complete_object_type(target))
+		throw std::runtime_error("PA12 destructor name does not match object type");
+
+	const NamedRecordId target_record = named_record_for_type(target);
+	if (!target_record.valid() || target_record.value >= named_.size() ||
+		named_[target_record.value].kind != NamedKind::Class)
+	{
+		if (!scalar_id(target) || !scalar_id(object_type) || target != object_type)
+			throw std::runtime_error("PA12 pseudo-destructor type mismatch");
+		SemanticFact fact(SemanticFactKind::DestructorCall,
+			fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue,
+			&node);
+		fact.token = member_node.token;
+		const SemanticFactId result = make_semantic_fact(fact);
+		set_semantic_children(result,
+			std::vector<SemanticFactId>(1, object.fact));
+		return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, false);
+	}
+
+	const ScopeId target_scope = named_[target_record.value].scope;
+	if (!target_scope.valid())
+		throw std::runtime_error("PA12 destructor class scope is missing");
+	if (!object_record.valid() || !member_object_convertible(object_type,
+		named_type(target_record), target_scope, NULL, scope))
+		throw std::runtime_error("PA12 destructor object is incompatible");
+	BindingId destructor = destructor_binding(target_record);
+	if (!destructor.valid())
+		destructor = ensure_implicit_destructor(target_record);
+	if (!destructor.valid())
+		throw std::runtime_error("PA12 destructor binding is missing");
+	if (!member_accessible(destructor, target_scope, scope, object_type))
+		throw std::runtime_error("PA12 destructor is inaccessible");
+	const TypeId callable = member_function_expression_type(
+		binding(destructor).type, target_scope, destructor);
+	if (!callable.valid() || type_kind(callable) != TypeKind::Function)
+		throw std::runtime_error("PA12 destructor callable type is missing");
+	SemanticFact fact(SemanticFactKind::DestructorCall,
+		fundamental(FundamentalType::Void), SemanticValueCategory::Prvalue, &node);
+	fact.token = member_node.token;
+	fact.selected_binding = destructor;
+	fact.selected_scope = target_scope;
+	fact.callable_type = callable;
+	fact.has_callee = true;
+	fact.has_implicit_object = true;
+	const SemanticFactId result = make_semantic_fact(fact);
+	set_semantic_children(result,
+		std::vector<SemanticFactId>(1, object.fact));
+	return ExprInfo(result, fact.type, SemanticValueCategory::Prvalue, false);
+}
+
 ExprInfo PA11SemanticModel::semantic_member_expression(
 	const PA10AstNode& node, ScopeId scope)
 {
@@ -2054,6 +2221,9 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 			node.token != SimpleTokenType::OP_ARROW) ||
 		node.children[1].kind != PA10NodeKind::Identifier)
 		throw std::runtime_error("PA12 invalid member expression");
+	if (node.children[1].unqualified_id_kind ==
+		PA10UnqualifiedIdKind::Destructor)
+		throw std::runtime_error("PA12 destructor expression is not a value");
 	const ExprInfo object = semantic_expression(node.children.front(), scope);
 	const NamePath member_name = name_path(node.children.back());
 	if (member_name.global || member_name.components.size() != 1)
@@ -2118,6 +2288,9 @@ ExprInfo PA11SemanticModel::semantic_member_call_expression(
 			member_node.token != SimpleTokenType::OP_ARROW) ||
 		member_node.children[1].kind != PA10NodeKind::Identifier)
 		throw std::runtime_error("PA12 invalid member call expression");
+	if (member_node.children[1].unqualified_id_kind ==
+		PA10UnqualifiedIdKind::Destructor)
+		return semantic_destructor_call_expression(node, member_node, scope);
 	const NamePath member_name = name_path(member_node.children.back());
 	if (member_name.global || member_name.components.size() != 1)
 		throw std::runtime_error("PA12 qualified member call is unsupported");

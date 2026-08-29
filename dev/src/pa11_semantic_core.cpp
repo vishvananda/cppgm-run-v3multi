@@ -213,7 +213,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	declaration_fact_index_(), declaration_bindings_(),
 	declaration_definition_flags_(), function_facts_(),
 	function_fact_index_(), function_binding_fact_index_(),
-	constructor_base_entry_bindings_(),
+	constructor_base_entry_bindings_(), destructor_base_entry_bindings_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
 	class_function_facts_(), constructor_actions_(), constructor_arguments_(),
 	destructor_actions_(), lifetime_facts_(),
@@ -384,11 +384,15 @@ NamePath PA11SemanticModel::name_path(const PA10AstNode& node)
 	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
 		result.components.push_back(operator_name(node.operator_function_kind,
 			node.operator_token));
+	if (node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor) {
+		if (node.unqualified_id_spelling == 0) throw std::runtime_error(
+			"PA11 destructor name has no semantic component");
+		result.components.push_back(name_from_spelling(node.unqualified_id_spelling));
+	}
 	if (result.components.empty())
 		throw std::runtime_error("PA11 name has no semantic component");
 	return result;
 }
-
 TypeId PA11SemanticModel::strip_cv_type(TypeId type) const
 {
 	return type_kind(type) == TypeKind::Cv ? types_[type.value].child : type;
@@ -407,7 +411,8 @@ bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node,
 	if (node.kind == PA10NodeKind::Identifier &&
 		(node.producer_spelling != 0 || !node.name_parts.empty() ||
 			node.global_name || node.name_prefix_count != 0 ||
-			node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction))
+				node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction ||
+				node.unqualified_id_kind == PA10UnqualifiedIdKind::Destructor))
 	{
 		result->path = name_path(node);
 		if (node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction)
@@ -1035,7 +1040,6 @@ TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name,
 	}
 	return TypeId();
 }
-
 bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 	std::vector<ValueRef>* result, bool include_using, SourcePoint point) const
 {
@@ -1227,7 +1231,6 @@ ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& co
 	}
 	return scope;
 }
-
 ScopeId PA11SemanticModel::resolve_global_qualifier_scope(const std::vector<NameId>& components, SourcePoint point, ScopeId access_scope) const
 {
 	if (components.empty())
@@ -2016,7 +2019,6 @@ void PA11SemanticModel::add_type_binding(ScopeId scope, NameId name,
 	const BindingId declaration = store_binding(scope, binding);
 	record_type_declaration(scope, name, declaration_point, declaration);
 }
-
 BindingId PA11SemanticModel::add_type_alias(ScopeId scope, NameId name,
 	TypeId type, SourcePoint declaration_point)
 {
