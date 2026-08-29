@@ -23,9 +23,59 @@ void Pa15Lowerer::index_global_storage_demands(){
 		const std::size_t fact_count = model_.semantic_facts_.size();
 		const std::size_t child_count = model_.semantic_children_.size();
 		const std::size_t conversion_count = model_.conversion_facts_.size();
+		auto global_storage_binding = [this](BindingId binding_id) -> BindingId {
+			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
+				throw std::runtime_error("PA15 global demand binding is invalid");
+			const Binding& binding = model_.binding(binding_id);
+			if (binding.kind != BindingKind::Variable)
+				return BindingId();
+			if (binding_id.value >= model_.binding_owners_.size())
+				throw std::runtime_error("PA15 global demand owner is invalid");
+			const ScopeId owner = model_.binding_owners_[binding_id.value];
+			if (!owner.valid() || owner.value >= model_.scopes_.size())
+				throw std::runtime_error("PA15 global demand owner is invalid");
+			const ScopeKind owner_kind = model_.scopes_[owner.value].kind;
+			if (model_.is_static_member(binding_id))
+				return owner_kind == ScopeKind::Class ? binding_id : BindingId();
+			if (owner_kind == ScopeKind::Namespace)
+				return binding_id;
+			return BindingId();
+		};
+		auto global_variable = [this, &global_storage_binding](
+			const SemanticFact& fact) -> BindingId {
+			BindingId binding_id;
+			if (fact.kind == SemanticFactKind::IdExpression)
+				binding_id = fact.binding;
+			else if (fact.kind == SemanticFactKind::MemberExpression)
+				binding_id = fact.selected_binding;
+			else
+				return BindingId();
+			return global_storage_binding(binding_id);
+		};
 		for (std::size_t i = 0; i < fact_count; ++i)
 		{
 			const SemanticFact& fact = model_.semantic_facts_[i];
+			(void) global_variable(fact);
+			if (fact.constant_address.valid())
+			{
+				if (fact.constant_address.value >=
+					model_.constant_address_facts_.size())
+					throw std::runtime_error(
+						"PA15 global demand address fact is invalid");
+				const ConstantAddressFact& address =
+					model_.constant_address_facts_[fact.constant_address.value];
+				if (address.valid && address.kind != ConstantAddressKind::Literal &&
+					(!address.target.valid() ||
+						address.target.value >= model_.bindings_.size()))
+					throw std::runtime_error(
+						"PA15 global demand address target is invalid");
+				if (address.valid && address.target.valid() &&
+					address.target.value < model_.bindings_.size())
+					(void) global_storage_binding(address.target);
+			}
+			if (fact.kind == SemanticFactKind::UnaryExpression &&
+				fact.token == SimpleTokenType::OP_AMP && fact.child_count != 1)
+				throw std::runtime_error("PA15 global demand address arity is invalid");
 			if (fact.child_count != 0 &&
 				(fact.child_begin == InvalidIdentityValue ||
 				 fact.child_begin > child_count ||
@@ -89,71 +139,115 @@ void Pa15Lowerer::index_global_storage_demands(){
 				}
 			}
 		}
-		auto global_storage_binding = [this](BindingId binding_id) -> BindingId {
-			if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
-				throw std::runtime_error("PA15 global demand binding is invalid");
-			const Binding& binding = model_.binding(binding_id);
-			if (binding.kind != BindingKind::Variable)
-				return BindingId();
-			if (model_.is_static_member(binding_id))
-				return binding_id;
-			if (binding_id.value >= model_.binding_owners_.size())
-				throw std::runtime_error("PA15 global demand owner is invalid");
-			const ScopeId owner = model_.binding_owners_[binding_id.value];
-			if (owner.valid() && owner.value < model_.scopes_.size() &&
-				model_.scopes_[owner.value].kind == ScopeKind::Namespace)
-				return binding_id;
-			return BindingId();
-		};
-		auto global_variable = [this, &global_storage_binding](
-			const SemanticFact& fact) -> BindingId {
-			BindingId binding_id;
-			if (fact.kind == SemanticFactKind::IdExpression)
-				binding_id = fact.binding;
-			else if (fact.kind == SemanticFactKind::MemberExpression)
-				binding_id = fact.selected_binding;
-			else
-				return BindingId();
-			return global_storage_binding(binding_id);
-		};
 		auto mark_global_demand = [this, &global_variable](
 			const SemanticFact& fact) {
 			const BindingId binding_id = global_variable(fact);
 			if (binding_id.valid())
 				required_global_bindings_[binding_id.value] = 1;
 		};
-		std::vector<unsigned char> transparent_cast_seen(fact_count, 0);
-		std::vector<SemanticFactId> transparent_cast_work;
-		auto queue_transparent_cast = [&](SemanticFactId cast_id) {
-			if (!cast_id.valid() || cast_id.value >= fact_count ||
-				model_.semantic_facts_[cast_id.value].kind !=
-					SemanticFactKind::CastExpression)
-				throw std::runtime_error("PA15 global demand cast is invalid");
-			if (transparent_cast_seen[cast_id.value] == 0)
+		// Demand marking is rooted in facts that a later lowering phase will
+		// actually consume.  The range/DAG validation above remains bounded
+		// structural validation over the complete typed arena; this worklist must not
+		// turn an un-emitted member body or an unused default argument into a
+		// storage root merely because its fact exists in that arena.
+		std::vector<SemanticFactId> demand_work;
+		std::vector<unsigned char> demand_seen(fact_count, 0);
+		std::vector<SemanticFactId> address_work;
+		std::vector<unsigned char> address_seen(fact_count, 0);
+		auto queue_demand_fact = [&](SemanticFactId fact_id) {
+			if (!fact_id.valid() || fact_id.value >= fact_count)
+				throw std::runtime_error("PA15 global demand root fact is invalid");
+			if (demand_seen[fact_id.value] == 0)
 			{
-				transparent_cast_seen[cast_id.value] = 1;
-				transparent_cast_work.push_back(cast_id);
+				demand_seen[fact_id.value] = 1;
+				demand_work.push_back(fact_id);
 			}
 		};
-		for (std::size_t i = 0; i < fact_count; ++i)
+		auto queue_address_fact = [&](SemanticFactId fact_id) {
+			if (!fact_id.valid() || fact_id.value >= fact_count)
+				throw std::runtime_error("PA15 global demand address fact is invalid");
+			if (address_seen[fact_id.value] == 0)
+			{
+				address_seen[fact_id.value] = 1;
+				address_work.push_back(fact_id);
+			}
+		};
+		auto queue_constructor_roots = [&](const FunctionFact& function) {
+			if (!function.is_constructor)
+				return;
+			if (function.constructor_action_begin == InvalidIdentityValue ||
+				function.constructor_action_begin >
+					model_.constructor_actions_.size() ||
+					function.constructor_action_count >
+					model_.constructor_actions_.size() -
+					function.constructor_action_begin)
+				throw std::runtime_error(
+					"PA15 global demand constructor action range is invalid");
+			for (std::size_t i = 0; i < function.constructor_action_count; ++i)
+			{
+				const ConstructorActionFact& action =
+					model_.constructor_actions_[function.constructor_action_begin + i];
+				if (action.argument_count != 0 &&
+					(action.argument_begin == InvalidIdentityValue ||
+						action.argument_begin > model_.constructor_arguments_.size() ||
+						action.argument_count > model_.constructor_arguments_.size() -
+							action.argument_begin))
+					throw std::runtime_error(
+						"PA15 global demand constructor argument range is invalid");
+				if (action.argument_count == 0 &&
+					action.argument_begin != InvalidIdentityValue &&
+					action.argument_begin > model_.constructor_arguments_.size())
+					throw std::runtime_error(
+						"PA15 global demand constructor argument range is invalid");
+				if (action.initializer.valid())
+					queue_demand_fact(action.initializer);
+				if (action.argument_begin != InvalidIdentityValue)
+					for (std::size_t argument = 0;
+						argument < action.argument_count; ++argument)
+						queue_demand_fact(model_.constructor_arguments_[
+							action.argument_begin + argument]);
+			}
+		};
+		for (std::size_t i = 0; i < function_plans_.size(); ++i)
 		{
-			const SemanticFact& fact = model_.semantic_facts_[i];
+			const FunctionPlan& plan = function_plans_[i];
+			if (plan.fact_index >= model_.function_facts_.size())
+				throw std::runtime_error(
+					"PA15 global demand function fact is invalid");
+			const FunctionFact& function = model_.function_facts_[plan.fact_index];
+			if (function.body_fact.valid())
+				queue_demand_fact(function.body_fact);
+			queue_constructor_roots(function);
+		}
+		for (std::map<std::size_t, SemanticFactId>::const_iterator root =
+			variable_facts_.begin(); root != variable_facts_.end(); ++root)
+		{
+			if (!root->second.valid() || root->first >= model_.bindings_.size())
+				continue;
+			const std::map<std::size_t, const DeclarationFact*>::const_iterator
+				declaration = declaration_by_binding_.find(root->first);
+			const bool namespace_definition = declaration !=
+				declaration_by_binding_.end() && declaration->second != NULL &&
+				declaration->second->scope.valid() &&
+				declaration->second->scope.value < model_.scopes_.size() &&
+				model_.scopes_[declaration->second->scope.value].kind ==
+				ScopeKind::Namespace;
+			const bool static_member_definition = model_.is_static_member(
+				BindingId(root->first));
+			if (namespace_definition || static_member_definition)
+				queue_demand_fact(root->second);
+		}
+		while (!demand_work.empty())
+		{
+			const SemanticFactId fact_id = demand_work.back();
+			demand_work.pop_back();
+			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 			const BindingId binding_id = global_variable(fact);
 			if (fact.constant_address.valid())
 			{
-				if (fact.constant_address.value >=
-					model_.constant_address_facts_.size())
-					throw std::runtime_error(
-						"PA15 global demand address fact is invalid");
 				const ConstantAddressFact& address =
 					model_.constant_address_facts_[fact.constant_address.value];
-				if (address.valid && address.kind != ConstantAddressKind::Literal &&
-					(!address.target.valid() ||
-					 address.target.value >= model_.bindings_.size()))
-					throw std::runtime_error(
-						"PA15 global demand address target is invalid");
-				if (address.valid && address.target.valid() &&
-					address.target.value < model_.bindings_.size())
+				if (address.valid && address.target.valid())
 				{
 					const BindingId global_target =
 						global_storage_binding(address.target);
@@ -176,49 +270,36 @@ void Pa15Lowerer::index_global_storage_demands(){
 							required_global_bindings_[binding_id.value] = 1;
 				}
 			}
-			if (fact.kind == SemanticFactKind::CastExpression &&
-				fact.category == SemanticValueCategory::Lvalue)
-			{
-				for (std::size_t j = 0; j < fact.conversion_count; ++j)
-					if (model_.conversion_facts_[fact.conversion_begin + j].kind ==
-						ConversionKind::ReferenceBinding ||
-						model_.conversion_facts_[fact.conversion_begin + j].kind ==
-						ConversionKind::DerivedToBase)
-					{
-						queue_transparent_cast(SemanticFactId(i));
-						break;
-					}
-			}
 			if (fact.kind == SemanticFactKind::UnaryExpression &&
 				fact.token == SimpleTokenType::OP_AMP)
+				queue_address_fact(model_.semantic_children_[fact.child_begin]);
+			if (model_.aggregate_ranges_.find(fact_id) != NULL)
+			{
+				std::size_t element_count = 0;
+				std::size_t total_count = 0;
+				const AggregateElementFact* elements = aggregate_elements(fact_id,
+					&element_count, &total_count);
+				(void) total_count;
+				for (std::size_t i = 0; i < element_count; ++i)
+					queue_demand_fact(elements[i].initializer);
+			}
+			for (std::size_t i = 0; i < fact.child_count; ++i)
+				queue_demand_fact(model_.semantic_children_[fact.child_begin + i]);
+		}
+		while (!address_work.empty())
+		{
+			const SemanticFactId fact_id = address_work.back();
+			address_work.pop_back();
+			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+			if (fact.kind == SemanticFactKind::CastExpression)
 			{
 				if (fact.child_count != 1)
 					throw std::runtime_error(
-						"PA15 global demand address arity is invalid");
-				const SemanticFactId operand = model_.semantic_children_[
-					fact.child_begin];
-				if (model_.semantic_facts_[operand.value].kind ==
-					SemanticFactKind::CastExpression)
-					queue_transparent_cast(operand);
-				else
-					mark_global_demand(model_.semantic_facts_[operand.value]);
+						"PA15 global demand cast arity is invalid");
+				queue_address_fact(model_.semantic_children_[fact.child_begin]);
 			}
-		}
-		while (!transparent_cast_work.empty())
-		{
-			const SemanticFactId cast_id = transparent_cast_work.back();
-			transparent_cast_work.pop_back();
-			const SemanticFact& cast = model_.semantic_facts_[cast_id.value];
-			if (cast.child_count != 1)
-				throw std::runtime_error(
-					"PA15 global demand cast arity is invalid");
-			const SemanticFactId operand = model_.semantic_children_[
-				cast.child_begin];
-			if (model_.semantic_facts_[operand.value].kind ==
-				SemanticFactKind::CastExpression)
-				queue_transparent_cast(operand);
 			else
-				mark_global_demand(model_.semantic_facts_[operand.value]);
+				mark_global_demand(fact);
 		}
 	}
 

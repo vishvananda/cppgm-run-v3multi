@@ -2,6 +2,165 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `b3bbf052cc218ab5a66f42b785f1606f7c5e7040`
+(`PA16: fix typed non-owning namespace objects`) relative to its clean parent
+`68b549f2`, plus the bounded demand-root repair completed in this checkpoint.
+The landed source increment changed `dev/src/pa15_lowering_flow.cpp` and
+`dev/src/pa15_lowering_globals.cpp`; the repair is confined to
+`dev/src/pa15_lowering_flow.cpp`. The required checkpoint documentation is
+also updated here and in `pa16/plan.md`. No handout test, fixture, `.ref` or
+exit-status sidecar, harness, comparator, coverage rule, or source-set file
+changed.
+
+### Contract and ownership
+
+The path was checked against `pa16/README.md`, the relevant `spec.md`
+requirements on one typed pipeline, canonical identity/demand, typed LowIR,
+and bounded work, plus the preserved PA11--PA15 interfaces. The representative
+ownership trace is:
+
+```text
+PA11 BindingId + binding owner ScopeId + declared TypeId + definition/linkage/storage facts
+  -> PA12 typed initializer/reference-binding conversions and constant-address facts
+  -> PA15 FunctionPlan/global-initializer roots, typed demand indexing, symbol collection,
+     and reference/glvalue LowIR
+```
+
+PA11 remains the source of the canonical binding, its owner, declared type,
+definition bit, and storage/linkage distinctions. PA12 retains the binding
+and declared type in `IdExpression`/`MemberExpression` facts, publishes
+`ReferenceBinding`/`DerivedToBase` conversions, and records typed constant
+address targets. PA15 runs demand indexing after function collection and
+before global collection. `low_type` remains the owned-storage boundary;
+`low_reference_value_type` queries the PA12 expression object type and returns
+a pointer for a named incomplete class, while ordinary class values still
+reach the complete-layout check.
+
+For the incomplete-referent case, PA12's reference initializer carries the
+address of `*forward_declared_object`; PA15's reference/glvalue lowering uses
+the pointer representation and stores that address in the reference object.
+It does not load or allocate an incomplete class value. A direct incomplete
+class value probe still fails in PA12, and an owned namespace object cannot
+reach storage without a complete class layout.
+
+The landed globals change removes the old class-static-only declaration
+exception: a declaration-only namespace variable is emitted only when its
+canonical binding is in `required_global_bindings_`, while a definition keeps
+its existing definition path. Class-static behavior, used scalar/class
+externs, address targets, nested namespaces, unnamed-namespace/internal
+linkage, `thread_local`, and wrapper metadata remain in the existing typed
+global symbol path. The bounded repair tightens the demand helper so a
+variable is eligible only with a valid owner in the namespace scope or, for a
+static member, the class scope; malformed owner/range data fails closed.
+
+### Findings and bounded repair
+
+- The landed incomplete-class fix is semantically in the correct PA15
+  boundary: only reference/glvalue representation is relaxed, and later
+  value materialization still calls the complete-layout-owned `low_type` path.
+- The landed namespace-demand fix correctly changes declaration-only
+  collection to `!has_definition && !required_global_bindings_[id]`, while
+  definitions remain roots and class-static collection remains eligible.
+  Its demand marking, however, visited every semantic fact in the arena. An
+  unused emitted-free member body and an unused default-argument fact could
+  therefore make an otherwise irrelevant namespace extern appear as a global
+  declaration.
+- The repair retains the existing complete-arena range and semantic-DAG
+  validation, then marks demand from facts PA15 will actually consume:
+  emitted `FunctionPlan` bodies and constructor actions, namespace/static
+  global initializer roots, and their typed child, aggregate, conversion,
+  and constant-address edges. A separate deduplicated address worklist walks
+  unary-address operands through cast facts so address demand is preserved
+  even when the target has a constant value. Dense `SemanticFactId` seen
+  vectors prevent repeated traversal.
+- The repaired path has no source-spelling recovery, textual downgrade,
+  second semantic model, full-TU retry, repeated broad demand scan, invalid
+  fallback, or test-specific shortcut. It derives all decisions from
+  canonical typed facts and uses deterministic `function_plans_` order and
+  the ordered `variable_facts_` map for roots.
+
+### Focused evidence and disposition
+
+The clean-parent baseline is `187/243` passing, `56` failures, and
+`243/243` identities covered. The landed-head authority and the post-repair
+result are both `189/243` passing, `54` failures, and `243/243` covered. The
+exact comparison against the landed `final-failures.txt` has baseline-only
+`0` and final-only `0`; the two identities removed from the 56-failure parent
+map are
+`100-global-reference-incomplete-referent.t` and
+`200-extern-class-object-declaration.t`.
+
+- `make -C dev cppgm++ -j2` exits `0` after the bounded repair.
+- The two owned handout identities pass `2/2`. A 16-test handout matrix
+  containing both owned identities plus incomplete-class, class/scalar,
+  aggregate, static, address, and TLS controls passes `16/16`.
+- The focused course controls `402`, `404`, `407`, `408`, `409`, `412`,
+  `415`, and `420` each exit `0`; course 410 also exits `0` and reports its
+  expected `E=8/16/32` structural cleanup counts. Course 402's expected
+  rejected inherited-noncallable case prints its diagnostic but the script
+  passes.
+- Reductions show an unused member body and unused default argument do not
+  emit `declare global @x`, while used member/default roots do. A repeated
+  static-const address through transparent casts still emits its required
+  declaration. Incomplete class reference/glvalue lowering emits pointer
+  LowIR; direct incomplete value materialization fails closed in PA12.
+- Two compilations of each representative class-extern, scalar-address, and
+  unused-extern probe compare byte-identically. The outputs are respectively
+  `251`/`552`/`106` bytes and `9`/`23`/`4` lines, with hashes
+  `04494956d6e5172b8e4e0db01829b613bc32d810143af278417f39b5cfb26b62`,
+  `0d701eb51278f09ec5e22f13dbb4efbf577f46dba67243c684346c3cabee7f05`, and
+  `485fc8e3251fe7b25d56cc0db4e5cc73da7486c3984948de64f662839846898f`.
+
+The broad `make test-pa16` exits `2` only because the known residuals remain;
+its exact identity set matches the landed 54-failure authority. The required
+through-PA15 command exits `0` at `1167/1167`, and the required file audit
+exits `0` with five pre-existing header-division warnings. The course-400
+DMI control still reports its status-0/expected-1 mismatch outside this
+landed increment; no lifetime/zero-storage surface was widened to address it.
+The direct incomplete namespace-object address reduction is out of contract,
+because `pa16/README.md` scopes namespace object declarations to complete
+class types; it is explicitly deferred and is not an in-scope correctness
+defect for this checkpoint.
+
+The durable post-repair full-stage log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-nonowning-namespace-object-20260829/post-repair-test-pa16-final-20260829.log`.
+The exact sorted comparison is
+`post-repair-identity-comparison-final.log` in the same directory. Durable
+through-stage and file-audit logs are
+`post-repair-through-pa15-20260829.log` and
+`post-repair-file-audit-20260829.log` there.
+
+### Performance and structural bounds
+
+Owner/range eligibility is constant-time after the canonical dense binding and
+owner tables are indexed. The existing structural checks visit the semantic
+fact/child/conversion arenas and DAG edges in bounded passes; demand marking
+then visits each reachable typed fact and each reachable aggregate/address
+edge at most once, with dense seen storage. Constructor action arguments are
+seeded only for emitted constructor plans. The resulting demand work is
+bounded by reachable facts and edges, with O(F + E) worst-case arena work and
+O(F) temporary mark state; no whole-TU retry or repeated broad marking loop
+was added. Global scope/binding indexing remains O(S + B). No timing, RSS,
+allocation, or speedup claim is made.
+
+The byte-identical repeated probes above are the structural determinism
+evidence. They also show the intended distinction: a used complete class
+extern has one declaration and no definition, a scalar address target has its
+declaration plus the address global, and the unused declaration-only class
+extern has neither global emission nor a declaration.
+
+### Boundaries and next checkpoint
+
+No unrelated PA16 surface was re-audited. The next checkpoint is to run the
+next residual PA16 audit without widening this typed non-owning-storage
+boundary. The complete final gate evidence and exact identity comparison are
+in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-typed-nonowning-namespace-object-20260829/`.
+The incomplete namespace-object address case remains explicitly out of
+contract/deferred, and the unrelated course-400 DMI control remains outside
+this landed increment.
+
+## Historical Member Lookup Review
+
 This review covers landed commit `a5b496e81d0bc9592900c6bb19715343fc6a960c`
 (`PA16: fix typed member lookup boundary`) relative to its audit parent
 `1093c2b7`. The bounded scope is the landed ordinary-value-over-tag,
@@ -1636,6 +1795,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `b3bbf052` typed non-owning namespace object checkpointAudit | Completed bounded audit and repair of the landed increment relative to `68b549f2`: PA11 canonical owner/type/definition facts flow through PA12 typed references, conversions, and address targets into PA15 pointer-vs-owned LowIR and demand-rooted global emission. Incomplete class references/glvalues remain non-owning pointers; namespace declaration-only objects require typed demand; definitions, class-static objects, address targets, nested/internal/TLS cases, and fail-closed owner/range checks remain covered. Post-repair `make test-pa16` is `189/243` with `54` failures and `243/243` coverage; comparison with the landed 54-failure authority is baseline-only `0` and final-only `0`. The 16-test handout matrix is `16/16`, the required through-PA15 command is `1167/1167`, the required file audit exits `0` with five known header-division warnings, and determinism probes are byte-identical. The direct incomplete namespace-object address case is out of contract because PA16 scopes namespace object declarations to complete class types; the unrelated course-400 DMI mismatch remains outside this increment. No handout, fixture, reference, harness, comparator, coverage, source-set, or unrelated file changed. |
 | `a5b496e8` typed ordinary-value-over-tag/member-enumerator/member-call checkpointAudit | Completed bounded audit of the landed increment relative to `1093c2b7`: PA11 preserves independent typed identities, but cross-space using coexistence is limited to a canonical real class/enum tag (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), while typedef/alias value conflicts remain rejected; PA12 member ambiguity and ordinary calls share the complete typed member selector; enumerator facts retain canonical binding/owner/type/value and one object-evaluation child through PA15. The approved follow-up is a readable, line-neutral `process_using_declaration` refactor at exactly `3000` lines, merging redundant value validation/classification/dedup staging work and using `base_path_accessible` as the single canonical relation/access walk; no newly added follow-up line exceeds `118` characters. Final PA16 is `187/243` with `56` failures and `243/243` coverage; v4 sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving stage progress. Focused handout matrix is `8/8`; course 421 has four legal status-0 cases and four exact status-1 alias conflicts. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 reproduces the same first qualified-static-call failure on current and clean `a5b496e8` (status 1) before the shared selector and remains outside the bounded ownership path. Final v4 logs and exact-set derivation are recorded in the current review. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
 | `a1a2cf83` typed non-automatic lifetime checkpointAudit | Completed bounded audit of the landed typed lifetime path relative to `c2247924`: canonical BindingId/TypeId and declaration-owned initializer/lifetime continuity, PA11 exact per-declarator definition flags, namespace/static-member storage, TLS mode separation and collision-free helpers, aggregate/local recursive actions, source-order initialization, and reverse-order destruction are traced. The audit repairs typed PA11-to-PA12 definition continuity and PA15 definition-owner retention, preventing bodyless-extern duplicate lifetime publication and redeclaration source-order drift. The five fixed identities pass `5/5`; course controls 404, 407, 409, 410, 415, and the new 420 regression pass; the relevant handout matrix is `9/12` with the same three LowIR-shape residuals. Final PA16 is `184/243` with `59` failures and `243/243` coverage; the exact sorted comparison has baseline-only `0` and final-only `0`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings; diff-check passes; final logs and N=8/N=32 hashes are recorded above. No handout, fixture, reference, harness, comparator, or unrelated stage surface changed. |
 | `135e3a95` typed access-control checkpointAudit | Completed bounded audit and repair of landed `135e3a95` relative to `0fb73ad4`: canonical owner/access, direct friend identity, paired using view/publishing scope, typed qualified type/value and base access, source declaration accessibility, private/protected/friend/protected-object rules, and PA15 per-edge projection are traced. The type using fix preserves canonical `TypeId` while recording the introduced declaration/access owner; public class-member type/value using remains supported at namespace or block scope, inaccessible sources are rejected by the p17 access boundary, and namespace-to-namespace using remains valid. Operator access propagation is traced through candidates; unrelated operator behavior is out of scope. Final PA16 is `179/243` with `64` failures and `243/243` coverage; exact comparison has final-only `0` and baseline-only `0`. Focused PA16 is `12/14` with two checked-in LowIR residuals, courses 405/411/419 and `sh -n` pass, and structural noise evidence is recorded. Through-PA15 is `1167/1167`; file audit exits `0` with five known warnings. No handout, fixture, reference, harness, comparator, or exit-status file changed. |
