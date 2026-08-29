@@ -612,7 +612,10 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						candidate_ref.scope, NULL, scope))
 					continue;
 				if (!member_accessible(candidate_ref.binding, candidate_ref.scope,
-					scope, expression_object_type(object.type)))
+					scope, expression_object_type(object.type),
+					candidate_ref.has_access_override,
+					candidate_ref.access_override,
+					candidate_ref.access_view_owner))
 					continue;
 			}
 			else if (scopes_[candidate_ref.scope.value].kind != ScopeKind::Namespace)

@@ -312,15 +312,11 @@ struct FriendLexicalScopeRelation
 };
 struct ValueEntry
 {
-	BindingId binding;
-	// A using-declaration retains the canonical source scope beside the
-	// binding identity; the pair cannot become length-mismatched.
-	ScopeId origin;
-	SourcePoint declaration_point;
+	BindingId binding; ScopeId origin; SourcePoint declaration_point; bool has_access_override; MemberAccess access_override; ScopeId access_view_owner;
 
-	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId(),
-		SourcePoint declaration_point = SourcePoint())
-		: binding(binding), origin(origin), declaration_point(declaration_point)
+	ValueEntry(BindingId binding = BindingId(), ScopeId origin = ScopeId(), SourcePoint declaration_point = SourcePoint(),
+		bool has_access_override = false, MemberAccess access_override = MemberAccess::Public, ScopeId access_view_owner = ScopeId())
+		: binding(binding), origin(origin), declaration_point(declaration_point), has_access_override(has_access_override), access_override(access_override), access_view_owner(access_view_owner)
 	{}
 };
 
@@ -692,7 +688,9 @@ struct NamedRecordSidecar
 	bool has_constructor_declaration; bool has_destructor_declaration; bool has_default_member_initializer;
 	bool has_display_path;
 	NamePath display_path;
-	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions; std::vector<InheritingConstructorRelation> inheriting_constructors;
+	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions;
+	std::vector<NamedRecordId> friend_class_records;
+	std::vector<InheritingConstructorRelation> inheriting_constructors;
 
 	NamedRecordSidecar(bool local_object_name = false,
 		BindingId backing_storage = BindingId(),
@@ -705,7 +703,7 @@ struct NamedRecordSidecar
 		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
 		  has_destructor_declaration(false), has_default_member_initializer(false),
 		  has_display_path(false),
-		  display_path(), hidden_friend_functions(), inheriting_constructors()
+		display_path(), hidden_friend_functions(), friend_class_records(), inheriting_constructors()
 	{}
 };
 struct AnonymousUnionFact
@@ -1252,6 +1250,7 @@ private:
 	FlatIndex<BindingId, BitFieldFact, IdentityHash<BindingId> > bit_field_facts_;
 	FlatIndex<NamedRecordId, NamedRecordSidecar, IdentityHash<NamedRecordId> >
 		named_record_sidecars_;
+	FlatIndex<NamedRecordId, std::vector<NamedRecordId>, IdentityHash<NamedRecordId> > friend_class_owners_;
 	FlatIndex<NamedRecordId, NamedRecordAlignmentFact,
 		IdentityHash<NamedRecordId> > named_record_alignment_facts_;
 	std::vector<TemplateFunctionFact> template_function_facts_;
@@ -1531,8 +1530,8 @@ private:
 	ScopeId resolve_qualifier_scope(const std::vector<NameId>& components,
 		ScopeId start, SourcePoint point = SourcePoint()) const
 	;
-	TypeId lookup_type_path(const NamePath& path, ScopeId start,
-		SourcePoint point = SourcePoint(), BindingId* declaration = NULL) const
+	TypeId lookup_type_path(const NamePath& path, ScopeId start, SourcePoint point = SourcePoint(),
+		BindingId* declaration = NULL, ScopeId access_scope = ScopeId()) const
 	;
 	ScopeId resolve_global_qualifier_scope(
 		const std::vector<NameId>& components,
@@ -1579,9 +1578,8 @@ private:
 	;
 	Binding& binding(BindingId id)
 	;
-	void append_value_index(ScopeId scope, NameId name, BindingId id,
-		ScopeId origin = ScopeId(),
-		SourcePoint declaration_point = SourcePoint())
+	void append_value_index(ScopeId scope, NameId name, BindingId id, ScopeId origin = ScopeId(), SourcePoint declaration_point = SourcePoint(),
+		bool has_access_override = false, MemberAccess access_override = MemberAccess::Public, ScopeId access_view_owner = ScopeId())
 	;
 	TypeId ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -1762,10 +1760,11 @@ private:
 	ScopeId friend_namespace_scope(ScopeId scope) const;
 	NamedRecordId friend_record_for_scope(ScopeId scope) const;
 	void record_friend_function(BindingId binding, NamedRecordId record, bool hidden, SourcePoint declaration_point);
+	void record_friend_class(NamedRecordId owner, NamedRecordId friend_record);
 	void validate_nonmember_operator(BindingId binding) const;
 	ScopeId declaration_scope(const NamePath& path, ScopeId current) const
 	;
-	SpecFact spec_fact(const PA10AstNode& node, ScopeId scope)
+	SpecFact spec_fact(const PA10AstNode& node, ScopeId scope, ScopeId type_access_scope = ScopeId())
 	;
 	NamePath class_name(const PA10AstNode& node)
 	;
@@ -1831,7 +1830,7 @@ private:
 	;
 	void process_using_directive(const PA10AstNode& node, ScopeId scope)
 	;
-	void process_using_declaration(const PA10AstNode& node, ScopeId scope);
+	void process_using_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access = MemberAccess::Public);
 	bool record_inheriting_constructor_using(const PA10AstNode& node, ScopeId scope, const NamePath& target_name, TypeId type);
 	NameId template_parameter_name(const PA10AstNode& node)
 	;
@@ -1842,7 +1841,7 @@ private:
 	;
 	void process_template_declaration(const PA10AstNode& node, ScopeId parent)
 	;
-	void process_declaration(const PA10AstNode& node, ScopeId scope)
+	void process_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access = MemberAccess::Public)
 	;
 	const DeclarationFact* declaration_fact(const PA10AstNode& node) const
 	;
@@ -1945,9 +1944,10 @@ private:
 		ScopeId owner;
 		TypeId type;
 		std::vector<NamedRecordId> base_path;
+		bool has_access_override; MemberAccess access_override; ScopeId access_view_owner;
 
 		MemberLookup(MemberLookupKind kind = MemberLookupKind::None)
-			: kind(kind), binding(), owner(), type(), base_path()
+			: kind(kind), binding(), owner(), type(), base_path(), has_access_override(false), access_override(MemberAccess::Public), access_view_owner()
 		{}
 	};
 	MemberLookup member_lookup(TypeId object, NameId name) const
@@ -1993,8 +1993,8 @@ private:
 	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope, bool reject_class_by_value = false);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
 	ExprInfo semantic_operator_call(const PA10AstNode& node, ScopeId scope, PA10OperatorFunctionKind kind, SimpleTokenType token, const ExprInfo& member_object, const std::vector<TypeId>& associated_objects, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, bool reject_class_by_value = false);
-	bool member_accessible(BindingId binding, ScopeId member_scope,
-		ScopeId access_scope, TypeId object) const
+	bool member_accessible(BindingId binding, ScopeId member_scope, ScopeId access_scope, TypeId object, bool has_access_override = false,
+		MemberAccess access_override = MemberAccess::Public, ScopeId access_view_owner = ScopeId()) const
 	;
 	BindingId implicit_this_binding(ScopeId scope) const
 	;

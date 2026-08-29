@@ -880,8 +880,42 @@ bool PA11SemanticModel::base_path_accessible(TypeId object, ScopeId target,
 									class_is_derived_from(
 										named_[friend_record.value].scope, owner))))
 								return true;
-						}
+					}
 				}
+			}
+			if (scopes_[cursor.value].kind == ScopeKind::Class)
+			{
+				const Scope& class_scope = scopes_[cursor.value];
+				if (!class_scope.record.valid() ||
+					class_scope.record.value >= named_.size() ||
+					named_[class_scope.record.value].kind != NamedKind::Class ||
+					named_[class_scope.record.value].scope != cursor)
+					throw std::runtime_error(
+						"PA12 base access class identity is invalid");
+				const std::vector<NamedRecordId>* owners =
+					friend_class_owners_.find(class_scope.record);
+				if (owners != NULL)
+					for (std::size_t i = 0; i < owners->size(); ++i)
+					{
+						const NamedRecordId friend_owner = (*owners)[i];
+						if (!friend_owner.valid() ||
+							friend_owner.value >= named_.size() ||
+							named_[friend_owner.value].kind != NamedKind::Class ||
+							!named_[friend_owner.value].scope.valid() ||
+							named_[friend_owner.value].scope.value >= scopes_.size() ||
+							scopes_[named_[friend_owner.value].scope.value].kind !=
+								ScopeKind::Class ||
+							scopes_[named_[friend_owner.value].scope.value].record !=
+								friend_owner)
+							throw std::runtime_error(
+								"PA12 base friend owner identity is invalid");
+						const ScopeId friend_scope =
+							named_[friend_owner.value].scope;
+						if (friend_scope == owner ||
+							(edge_access == MemberAccess::Protected &&
+								class_is_derived_from(friend_scope, owner)))
+							return true;
+					}
 			}
 			cursor = scopes_[cursor.value].parent;
 		}
@@ -982,7 +1016,7 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::member_lookup(
 	// the declaration set at the first owning class authoritative: a derived
 	// declaration hides every base declaration, while a using-import or an
 	// ambiguous set is not guessed at from the canonical binding alone.
-	const auto inspect_scope = [this, name](ScopeId scope) -> MemberLookup
+	const auto inspect_scope = [this, name, record_type](ScopeId scope) -> MemberLookup
 	{
 		MemberLookup found;
 		if (!scope.valid() || scope.value >= scopes_.size() ||
@@ -992,22 +1026,33 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::member_lookup(
 		const ValueList* values = current.values.find(name);
 		if (values != NULL && !values->entries.empty())
 		{
-			bool imported = false;
 			bool all_functions = true;
 			for (std::size_t i = 0; i < values->entries.size(); ++i)
 			{
 				const ValueEntry& entry = values->entries[i];
 				if (!entry.binding.valid() || entry.binding.value >=
-					bindings_.size() || entry.binding.value >= binding_owners_.size())
+					bindings_.size() || entry.binding.value >= binding_owners_.size() ||
+					!entry.origin.valid() || entry.origin.value >= scopes_.size() ||
+					binding_owners_[entry.binding.value] != entry.origin)
 					throw std::runtime_error("PA12 member value owner is invalid");
-				if (entry.origin != scope)
-					imported = true;
+				if (entry.has_access_override)
+				{
+					if (!entry.access_view_owner.valid() ||
+						entry.access_view_owner != scope ||
+						!member_base_path(record_type, entry.access_view_owner,
+							NULL))
+						throw std::runtime_error(
+							"PA12 member access view owner is invalid");
+				}
+				else if (entry.access_view_owner.valid())
+					throw std::runtime_error(
+						"PA12 unowned member access view is invalid");
 				const Binding& candidate = binding(entry.binding);
 				all_functions = all_functions &&
 					candidate.kind == BindingKind::Function &&
 					type_kind(candidate.type) == TypeKind::Function;
 			}
-			if (!all_functions && (imported || values->entries.size() != 1))
+			if (!all_functions && values->entries.size() != 1)
 			{
 				found.kind = MemberLookupKind::Blocked;
 				found.owner = scope;
@@ -1017,7 +1062,25 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::member_lookup(
 			found.owner = scope;
 			if (values->entries.size() == 1)
 			{
-				found.binding = values->entries.front().binding;
+				const ValueEntry& entry = values->entries.front();
+				found.binding = entry.binding;
+				found.has_access_override = entry.has_access_override;
+				found.access_override = entry.access_override;
+				found.access_view_owner = entry.access_view_owner;
+				const Binding& candidate = binding(found.binding);
+				if (candidate.kind != BindingKind::Function &&
+					entry.origin != scope)
+				{
+					if (entry.origin.value >= scopes_.size() ||
+						scopes_[entry.origin.value].kind != ScopeKind::Class ||
+						!member_base_path(record_type, entry.origin, NULL))
+					{
+						found.kind = MemberLookupKind::Blocked;
+						found.owner = scope;
+						return found;
+					}
+					found.owner = entry.origin;
+				}
 				if (found.binding.valid())
 					found.type = binding(found.binding).type;
 			}
@@ -1075,13 +1138,28 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::unqualified_member_lookup(
 		if (lookup_value_graph(cursor, name, &values, false, point))
 		{
 			for (std::size_t i = 0; i < values.size(); ++i)
+			{
 				if (values[i].scope != cursor)
 					return result;
+				if (values[i].has_access_override &&
+					(!values[i].access_view_owner.valid() ||
+						values[i].access_view_owner != cursor ||
+						!member_base_path(object, values[i].access_view_owner, NULL)))
+					throw std::runtime_error(
+						"PA12 unqualified member access view owner is invalid");
+				if (!values[i].has_access_override &&
+					values[i].access_view_owner.valid())
+					throw std::runtime_error(
+						"PA12 unowned unqualified member access view is invalid");
+			}
 			result.kind = MemberLookupKind::Value;
 			result.owner = cursor;
 			if (values.size() == 1)
 			{
 				result.binding = values.front().binding;
+				result.has_access_override = values.front().has_access_override;
+				result.access_override = values.front().access_override;
+				result.access_view_owner = values.front().access_view_owner;
 				if (result.binding.valid())
 					result.type = binding(result.binding).type;
 			}
@@ -1132,7 +1210,9 @@ ExprInfo PA11SemanticModel::semantic_static_data_member(
 	*claimed = true;
 	if (!is_static_member(selection.binding))
 		return ExprInfo();
-	if (!member_accessible(selection.binding, selection.owner, scope, TypeId()))
+	if (!member_accessible(selection.binding, selection.owner, scope, TypeId(),
+		selection.has_access_override, selection.access_override,
+		selection.access_view_owner))
 		throw std::runtime_error("PA12 record member is inaccessible");
 	TypeId member_type = member.type;
 	if (type_kind(member_type) == TypeKind::LvalueReference ||
@@ -1228,6 +1308,15 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	{
 		const BindingId candidate_id = values->entries[i].binding;
 		const Binding& candidate = binding(candidate_id);
+		if (values->entries[i].has_access_override)
+		{
+			if (values->entries[i].access_view_owner != member_scope)
+				throw std::runtime_error(
+					"PA12 member access view owner is invalid");
+		}
+		else if (values->entries[i].access_view_owner.valid())
+			throw std::runtime_error(
+				"PA12 unowned member access view is invalid");
 		if (candidate.kind == BindingKind::Function &&
 			type_kind(candidate.type) == TypeKind::Function &&
 			!is_static_member(candidate_id))
@@ -1239,7 +1328,10 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 				candidate_id.value >= binding_owners_.size() ||
 				binding_owners_[candidate_id.value] != owner)
 				throw std::runtime_error("PA12 member candidate owner is invalid");
-			result.push_back(ValueRef(owner, candidate_id));
+			result.push_back(ValueRef(owner, candidate_id,
+				values->entries[i].has_access_override,
+				values->entries[i].access_override,
+				values->entries[i].access_view_owner));
 		}
 	}
 	return result;
@@ -1258,6 +1350,15 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 	{
 		const BindingId candidate_id = values->entries[i].binding;
 		const Binding& candidate = binding(candidate_id);
+		if (values->entries[i].has_access_override)
+		{
+			if (values->entries[i].access_view_owner != member_scope)
+				throw std::runtime_error(
+					"PA12 static access view owner is invalid");
+		}
+		else if (values->entries[i].access_view_owner.valid())
+			throw std::runtime_error(
+				"PA12 unowned static access view is invalid");
 		if (candidate.kind == BindingKind::Function &&
 			type_kind(candidate.type) == TypeKind::Function &&
 			is_static_member(candidate_id))
@@ -1269,7 +1370,10 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 				candidate_id.value >= binding_owners_.size() ||
 				binding_owners_[candidate_id.value] != owner)
 				throw std::runtime_error("PA12 static member candidate owner is invalid");
-			result.push_back(ValueRef(owner, candidate_id));
+			result.push_back(ValueRef(owner, candidate_id,
+				values->entries[i].has_access_override,
+				values->entries[i].access_override,
+				values->entries[i].access_view_owner));
 		}
 	}
 	return result;
@@ -1467,28 +1571,67 @@ void PA11SemanticModel::validate_direct_static_member_call(
 	{
 		if (!selected_class_static || selected.scope != qualified_static_scope ||
 			!member_accessible(selected.binding, selected.scope, access_scope,
-				TypeId()))
+				TypeId(), selected.has_access_override,
+				selected.access_override, selected.access_view_owner))
 			throw std::runtime_error("PA12 static member call is inaccessible");
 	}
 	else if (selected_class_static && !member_accessible(selected.binding,
-		selected.scope, access_scope, TypeId()))
+		selected.scope, access_scope, TypeId(), selected.has_access_override,
+		selected.access_override, selected.access_view_owner))
 		throw std::runtime_error("PA12 static member call is inaccessible");
 }
 bool PA11SemanticModel::member_accessible(BindingId binding_id,
-	ScopeId member_scope, ScopeId access_scope, TypeId object) const
+	ScopeId member_scope, ScopeId access_scope, TypeId object,
+	bool has_access_override, MemberAccess access_override,
+	ScopeId access_view_owner) const
 {
-	const MemberAccess access = member_access(binding_id);
-	if (access == MemberAccess::Public)
-		return true;
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		binding_id.value >= binding_owners_.size())
+		return false;
+	const ScopeId declared_scope = binding_owners_[binding_id.value];
+	if (!declared_scope.valid() || declared_scope.value >= scopes_.size() ||
+		scopes_[declared_scope.value].kind != ScopeKind::Class ||
+		!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class ||
+		member_scope != declared_scope)
+		return false;
+	const MemberAccess access = has_access_override ? access_override :
+		member_access(binding_id);
+	const ScopeId access_owner = has_access_override ? access_view_owner :
+		declared_scope;
+	if (has_access_override)
+	{
+		if (!access_owner.valid() || access_owner.value >= scopes_.size() ||
+			scopes_[access_owner.value].kind != ScopeKind::Class ||
+			!scopes_[access_owner.value].record.valid() ||
+			scopes_[access_owner.value].record.value >= named_.size() ||
+			named_[scopes_[access_owner.value].record.value].kind !=
+				NamedKind::Class ||
+			named_[scopes_[access_owner.value].record.value].scope != access_owner ||
+			!member_base_path(named_type(scopes_[access_owner.value].record),
+				declared_scope, NULL))
+			return false;
+	}
+	else if (access_view_owner.valid())
+		return false;
+
+	std::vector<ScopeId> lexical_classes;
+	std::vector<ScopeId> effective_classes;
+	const auto append_scope = [](std::vector<ScopeId>* scopes, ScopeId value) {
+		if (!value.valid())
+			return;
+		for (std::size_t i = 0; i < scopes->size(); ++i)
+			if ((*scopes)[i] == value)
+				return;
+		scopes->push_back(value);
+	};
 	ScopeId cursor = access_scope;
-	std::vector<ScopeId> access_classes;
 	for (std::size_t lexical_steps = 0;
 		cursor.valid() && cursor.value < scopes_.size() &&
 		lexical_steps < scopes_.size(); ++lexical_steps)
 	{
-		if (cursor == member_scope)
-			return true;
-		if (scopes_[cursor.value].kind == ScopeKind::Function)
+		const Scope& current = scopes_[cursor.value];
+		if (current.kind == ScopeKind::Function)
 		{
 			const BindingId* function_binding = function_bindings_.find(cursor);
 			if (function_binding != NULL)
@@ -1501,76 +1644,151 @@ bool PA11SemanticModel::member_accessible(BindingId binding_id,
 					{
 						const NamedRecordId friend_record =
 							function_sidecar->friend_records[i];
-						if (friend_record.valid() && friend_record.value < named_.size() &&
-							named_[friend_record.value].kind == NamedKind::Class &&
-							named_[friend_record.value].scope == member_scope)
-							return true;
+						if (!friend_record.valid() || friend_record.value >= named_.size() ||
+							named_[friend_record.value].kind != NamedKind::Class ||
+							!named_[friend_record.value].scope.valid() ||
+							named_[friend_record.value].scope.value >= scopes_.size() ||
+							scopes_[named_[friend_record.value].scope.value].kind !=
+								ScopeKind::Class ||
+							scopes_[named_[friend_record.value].scope.value].record !=
+								friend_record)
+							throw std::runtime_error(
+								"PA12 friend class access identity is invalid");
+						append_scope(&effective_classes,
+							named_[friend_record.value].scope);
 					}
 			}
 		}
-		if (scopes_[cursor.value].kind == ScopeKind::Class)
-			access_classes.push_back(cursor);
-		cursor = scopes_[cursor.value].parent;
+		if (current.kind == ScopeKind::Class)
+		{
+			if (!current.record.valid() || current.record.value >= named_.size() ||
+				named_[current.record.value].kind != NamedKind::Class ||
+				named_[current.record.value].scope != cursor)
+				throw std::runtime_error("PA12 lexical class identity is invalid");
+			append_scope(&lexical_classes, cursor);
+			append_scope(&effective_classes, cursor);
+		}
+		cursor = current.parent;
 	}
 	// A valid but out-of-range cursor, or a valid cursor left after the
 	// scope-vector bound was exhausted, is malformed ancestry.  Do not let
-	// classes collected before that point grant protected access.
+	// classes collected before that point grant access.
 	if (cursor.valid())
 		return false;
-	// Protected members are also accessible from a member body of a derived
-	// class.  A nested class is itself a member, so its enclosing class scopes
-	// are eligible access classes as well.  Keep this narrow: private members
-	// still require the owning class, and an unrelated/non-class access scope
-	// cannot acquire protected access.
-	if (access != MemberAccess::Protected || access_classes.empty())
-		return false;
-	// Protected access has two independent typed requirements.  First, an
-	// eligible access class must derive from the declaring owner.  The
-	// canonical named type is already interned; looking it up by TypeKey keeps
-	// this const path O(1) without manufacturing a parallel type identity.
-	// The object-expression restriction is specific to protected non-static
-	// members.  Protected static members still require the derived access
-	// class proof above, but their spelling through an object does not impose a
-	// second object-type relation.
+
+	// Friendship is directional and non-transitive.  Expand only the direct
+	// friend-class owners of lexical classes; do not recursively expand newly
+	// effective classes.
+	for (std::size_t i = 0; i < lexical_classes.size(); ++i)
+	{
+		const ScopeId lexical_class = lexical_classes[i];
+		const NamedRecordId friend_record = scopes_[lexical_class.value].record;
+		const std::vector<NamedRecordId>* owners =
+			friend_class_owners_.find(friend_record);
+		if (owners == NULL)
+			continue;
+		for (std::size_t j = 0; j < owners->size(); ++j)
+		{
+			const NamedRecordId owner = (*owners)[j];
+			if (!owner.valid() || owner.value >= named_.size() ||
+				named_[owner.value].kind != NamedKind::Class ||
+				!named_[owner.value].scope.valid() ||
+				named_[owner.value].scope.value >= scopes_.size() ||
+				scopes_[named_[owner.value].scope.value].kind != ScopeKind::Class ||
+				scopes_[named_[owner.value].scope.value].record != owner)
+				throw std::runtime_error("PA12 friend owner identity is invalid");
+			append_scope(&effective_classes, named_[owner.value].scope);
+		}
+	}
 	const bool static_member = is_static_member(binding_id);
 	const BindingSidecar* sidecar = binding_sidecar(binding_id);
+	const NamedRecordId declared_record = scopes_[declared_scope.value].record;
 	const bool constructor = sidecar != NULL &&
 		sidecar->constructor_record.valid() &&
-		sidecar->constructor_record.value < named_.size() &&
-		named_[sidecar->constructor_record.value].kind == NamedKind::Class &&
-		named_[sidecar->constructor_record.value].scope == member_scope;
-	// C++ additionally restricts the object expression: it must have the
-	// accessing class type (or a further-derived type), not merely the
-	// declaring base type.  This prevents Derived::f(Base&) from acquiring
-	// Base's protected member through an arbitrary Base object.
-	const TypeId object_record = (static_member || constructor) ? TypeId() :
-		strip_cv_type(expression_object_type(object));
-	if (!static_member && !constructor && (!object_record.valid() ||
+		sidecar->constructor_record == declared_record;
+	const bool object_restricted = !static_member && !constructor && object.valid();
+	const TypeId object_record = object_restricted ?
+		strip_cv_type(expression_object_type(object)) : TypeId();
+	if (object_restricted && (!object_record.valid() ||
 		type_kind(object_record) != TypeKind::Named ||
 		!class_scope_for_type(object_record).valid()))
 		return false;
-	for (std::size_t i = 0; i < access_classes.size(); ++i)
+	if (has_access_override && object_restricted &&
+		(!member_base_path(object_record, declared_scope, NULL) ||
+			!member_base_path(object_record, access_owner, NULL)))
+		return false;
+	const auto object_path_accessible = [this, object_restricted, object_record,
+		declared_scope, access_scope](ScopeId context) -> bool {
+		if (!object_restricted)
+			return true;
+		const ScopeId effective_context = context.valid() ? context : access_scope;
+		return base_path_accessible(object_record, declared_scope,
+			effective_context);
+	};
+	const auto view_object_path_accessible = [this, object_restricted,
+		object_record, access_owner, access_scope](ScopeId context) -> bool {
+		if (!object_restricted)
+			return true;
+		const ScopeId effective_context = context.valid() ? context : access_scope;
+		return base_path_accessible(object_record, access_owner,
+			effective_context);
+	};
+
+	if (access == MemberAccess::Public)
 	{
-		const ScopeId access_class = access_classes[i];
+		if (has_access_override)
+			return view_object_path_accessible(ScopeId());
+		if (!object_restricted)
+			return true;
+		for (std::size_t i = 0; i < effective_classes.size(); ++i)
+			if (object_path_accessible(effective_classes[i]))
+				return true;
+		return object_path_accessible(ScopeId());
+	}
+
+	if (access == MemberAccess::Private)
+	{
+		for (std::size_t i = 0; i < effective_classes.size(); ++i)
+			if (effective_classes[i] == access_owner &&
+				(has_access_override ?
+					view_object_path_accessible(effective_classes[i]) :
+					object_path_accessible(effective_classes[i])))
+				return true;
+		return false;
+	}
+
+	if (access != MemberAccess::Protected)
+		return false;
+	for (std::size_t i = 0; i < effective_classes.size(); ++i)
+	{
+		const ScopeId access_class = effective_classes[i];
 		if (access_class.value >= scopes_.size() ||
 			!scopes_[access_class.value].record.valid())
 			continue;
 		const NamedRecordId access_record = scopes_[access_class.value].record;
 		if (access_record.value >= named_.size() ||
 			named_[access_record.value].kind != NamedKind::Class ||
-			!named_[access_record.value].scope.valid() ||
 			named_[access_record.value].scope != access_class)
 			continue;
-		TypeKey access_key;
-		access_key.kind = TypeKind::Named;
-		access_key.named = access_record;
-		const TypeId* access_type = type_ids_.find(access_key);
-		if (access_type == NULL ||
-			!member_base_path(*access_type, member_scope, NULL))
+		if (!member_base_path(named_type(access_record), declared_scope, NULL))
 			continue;
-		if (static_member || constructor ||
-			member_base_path(object_record, access_class, NULL))
-			return true;
+		if (has_access_override)
+		{
+			if (!member_base_path(named_type(access_record), access_owner, NULL) ||
+				!base_path_accessible(named_type(access_record), access_owner,
+					access_class))
+				continue;
+		}
+		else if (!base_path_accessible(named_type(access_record), declared_scope,
+			access_class))
+			continue;
+		if (object_restricted &&
+			(!member_base_path(object_record, access_class, NULL) ||
+				(has_access_override ?
+					!view_object_path_accessible(access_class) :
+					!object_path_accessible(access_class))))
+			continue;
+		return true;
 	}
 	return false;
 }
@@ -1645,7 +1863,9 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 	const Binding& member = binding(member_id);
 	if (member.kind != BindingKind::Variable)
 		throw std::runtime_error("PA12 member function access is unsupported");
-	if (!member_accessible(member_id, selection.owner, scope, record_object))
+	if (!member_accessible(member_id, selection.owner, scope, record_object,
+		selection.has_access_override, selection.access_override,
+		selection.access_view_owner))
 		throw std::runtime_error("PA12 record member is inaccessible");
 	const TypeId type = member_access_type(record_object, member.type);
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
@@ -1926,7 +2146,9 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	TypeId selected_type, bool selected_static, BindingId implicit_this)
 {
 	if (!member_accessible(selected.binding, selected.scope, scope,
-		selected_static ? TypeId() : actual_object))
+		selected_static ? TypeId() : actual_object,
+		selected.has_access_override, selected.access_override,
+		selected.access_view_owner))
 		throw std::runtime_error("PA12 member call is inaccessible");
 	if (function_declaration_kind(selected.binding) ==
 		FunctionDeclarationKind::Deleted)

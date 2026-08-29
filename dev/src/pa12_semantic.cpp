@@ -1112,7 +1112,8 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 				(sidecar == NULL || !sidecar->backing_storage.valid()))
 			{
 				if (!member_accessible(selection.binding, selection.owner, scope,
-					this_record))
+					this_record, selection.has_access_override,
+					selection.access_override, selection.access_view_owner))
 					throw std::runtime_error("PA12 record member is inaccessible");
 				const ExprInfo object = semantic_this_expression(node, this_id);
 				const TypeId member_type = member_access_type(this_record,

@@ -84,10 +84,28 @@ TypeId PA11SemanticModel::lookup_type_qualified(ScopeId scope, NameId name,
 }
 
 TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
-	SourcePoint point, BindingId* declaration) const
+	SourcePoint point, BindingId* declaration, ScopeId access_scope) const
 {
-	if (declaration != NULL)
-		*declaration = BindingId();
+	BindingId local_declaration;
+	BindingId* resolved_declaration = declaration != NULL ? declaration :
+		&local_declaration;
+	*resolved_declaration = BindingId();
+	const ScopeId effective_access_scope = access_scope.valid() ? access_scope :
+		start;
+	const auto type_accessible = [this, effective_access_scope](
+		BindingId candidate) -> bool {
+		if (!candidate.valid())
+			return true;
+		if (candidate.value >= bindings_.size() ||
+			candidate.value >= binding_owners_.size())
+			throw std::runtime_error("PA11 type declaration identity is invalid");
+		const ScopeId owner = binding_owners_[candidate.value];
+		if (!owner.valid() || owner.value >= scopes_.size() ||
+			scopes_[owner.value].kind != ScopeKind::Class)
+			return true;
+		return member_accessible(candidate, owner, effective_access_scope,
+			TypeId());
+	};
 	if (path.components.empty())
 		return TypeId();
 	if (!point.valid())
@@ -95,10 +113,12 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 	if (path.components.size() == 1 && !path.decltype_root.valid())
 	{
 		const TypeId found = path.global ?
-			lookup_type_qualified(global_, path.last(), point, declaration) :
-			lookup_type_unqualified(start, path.last(), point, declaration);
+			lookup_type_qualified(global_, path.last(), point,
+				resolved_declaration) :
+			lookup_type_unqualified(start, path.last(), point,
+				resolved_declaration);
 		if (found.valid())
-			return found;
+			return type_accessible(*resolved_declaration) ? found : TypeId();
 		if (name_text(path.last()) == "nullptr_t")
 			return fundamental(FundamentalType::NullptrT);
 		return found;
@@ -131,8 +151,12 @@ TypeId PA11SemanticModel::lookup_type_path(const NamePath& path, ScopeId start,
 			resolve_global_qualifier_scope(prefix, point) :
 			resolve_qualifier_scope(prefix, start, point);
 	}
-	return !scope.valid() ? TypeId() :
-		lookup_type_qualified(scope, path.last(), point, declaration);
+	if (!scope.valid())
+		return TypeId();
+	const TypeId found = lookup_type_qualified(scope, path.last(), point,
+		resolved_declaration);
+	return found.valid() && type_accessible(*resolved_declaration) ? found :
+		TypeId();
 }
 
 TypeId PA11SemanticModel::make_cv(TypeId child, unsigned int qualifiers)

@@ -8,6 +8,8 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+enum class MemberAccess;
+
 struct SourcePoint
 {
 	std::size_t value;
@@ -74,9 +76,20 @@ struct ValueRef
 {
 	ScopeId scope;
 	BindingId binding;
+	// A using-declaration may publish a canonical member through a different
+	// access view.  Keep that view beside the typed candidate; the binding's
+	// declared access remains canonical in its PA11 sidecar.
+	bool has_access_override;
+	MemberAccess access_override;
+	ScopeId access_view_owner;
 
-	ValueRef(ScopeId scope = ScopeId(), BindingId binding = BindingId())
-		: scope(scope), binding(binding)
+	ValueRef(ScopeId scope = ScopeId(), BindingId binding = BindingId(),
+		bool has_access_override = false,
+		MemberAccess access_override = MemberAccess(),
+		ScopeId access_view_owner = ScopeId())
+		: scope(scope), binding(binding),
+		  has_access_override(has_access_override),
+		  access_override(access_override), access_view_owner(access_view_owner)
 	{}
 };
 

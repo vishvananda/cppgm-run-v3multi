@@ -1,9 +1,7 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
-
 #include <algorithm>
 #include <limits>
-
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
@@ -380,7 +378,7 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 		if (kind == PA10NodeKind::EmptyDeclaration)
 			continue;
 		const std::size_t binding_begin = scopes_[class_scope.value].bindings.size();
-		process_declaration(child, class_scope);
+		process_declaration(child, class_scope, access);
 		Scope& current = scopes_[class_scope.value];
 		for (std::size_t binding_index = binding_begin;
 			binding_index < current.bindings.size(); ++binding_index)
@@ -389,7 +387,6 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 	complete_record_layout(named_record_for_type(type));
 	(void)owner;
 }
-
 static bool is_constant_comparison_token(SimpleTokenType token)
 {
 	switch (token)
@@ -405,7 +402,6 @@ static bool is_constant_comparison_token(SimpleTokenType token)
 		return false;
 	}
 }
-
 TypeId PA11SemanticModel::conditional_common_type(TypeId when_true,
 	TypeId when_false) const
 {
@@ -419,7 +415,6 @@ TypeId PA11SemanticModel::conditional_common_type(TypeId when_true,
 		return common_integral_type(when_true, when_false);
 	return TypeId();
 }
-
 TypeId PA11SemanticModel::constant_expression_type(
 	const PA10AstNode& node, ScopeId scope,
 	bool allow_scoped_enum_integral_comparison)
@@ -511,7 +506,6 @@ TypeId PA11SemanticModel::constant_expression_type(
 	}
 	return TypeId();
 }
-
 ConstValue PA11SemanticModel::constant_value_as_type(
 	const ConstValue& value, TypeId type) const
 {
@@ -552,7 +546,6 @@ ConstValue PA11SemanticModel::constant_value_as_type(
 		throw NonConstantExpression("constant expression overflow");
 	return ConstValue(true, value.value, false, object_type);
 }
-
 ConstValue PA11SemanticModel::eval_constexpr_unary(const PA10AstNode& node,
 	ScopeId scope, bool allow_scoped_enum_integral_comparison)
 {
@@ -587,7 +580,6 @@ ConstValue PA11SemanticModel::eval_constexpr_unary(const PA10AstNode& node,
 		return constant_value_as_type(value, fundamental(FundamentalType::Bool));
 	return constant_value_as_type(value, operation_type);
 }
-
 ConstValue PA11SemanticModel::eval_constexpr_binary(const PA10AstNode& node,
 	ScopeId scope, bool allow_scoped_enum_integral_comparison)
 {
@@ -746,7 +738,6 @@ ConstValue PA11SemanticModel::eval_constexpr_binary(const PA10AstNode& node,
 		return right;
 	return constant_value_as_type(result, operation_type);
 }
-
 ConstValue PA11SemanticModel::eval_constexpr_conditional(
 	const PA10AstNode& node, ScopeId scope,
 	bool allow_scoped_enum_integral_comparison)
@@ -768,7 +759,6 @@ ConstValue PA11SemanticModel::eval_constexpr_conditional(
 		throw NonConstantExpression("invalid conditional constant expression");
 	return constant_value_as_type(value, common_type);
 }
-
 ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node,
 	ScopeId scope, bool allow_scoped_enum_integral_comparison)
 {
@@ -844,7 +834,6 @@ ConstValue PA11SemanticModel::eval_constexpr(const PA10AstNode& node,
 	}
 	throw NonConstantExpression("unsupported constant expression");
 }
-
 TypeId PA11SemanticModel::process_enum_specifier(const PA10AstNode& node, ScopeId scope,
 	NamedRecordId* anonymous_record)
 {
@@ -1017,7 +1006,6 @@ void PA11SemanticModel::add_enumerator(ScopeId scope, NameId name, TypeId type,
 	const BindingId index = store_binding(scope, enumerator);
 	append_value_index(scope, name, index, ScopeId(), declaration_point);
 }
-
 void PA11SemanticModel::dump(std::ostream& output) const
 {
 	output << "translation-unit\n";
@@ -1109,7 +1097,6 @@ std::string PA11SemanticModel::render_type(TypeId type) const
 		bool text;
 		TypeId type;
 		std::string value;
-
 		Task(bool text, TypeId type, const char* value)
 			: text(text), type(type), value(value == NULL ? "" : value)
 		{}
@@ -1455,7 +1442,6 @@ void PA11SemanticModel::dump_scope(std::ostream& output, ScopeId scope, std::siz
 		break;
 	}
 	output << '\n';
-
 	std::size_t view_index = 0;
 	for (std::size_t binding_index = 0;
 		binding_index <= current.bindings.size(); ++binding_index)
@@ -1486,7 +1472,6 @@ void PA11SemanticModel::dump_scope(std::ostream& output, ScopeId scope, std::siz
 		dump_binding(output, current.bindings[binding_index],
 			depth + 1);
 	}
-
 	for (int function_pass = 0; function_pass != 2; ++function_pass)
 	{
 		if (function_pass == 1)
@@ -1615,7 +1600,6 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	function_fact_index_.set(&node, function_id);
 	function_binding_fact_index_.set(function_binding, function_id);
 }
-
 void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	ScopeId scope)
 {
@@ -1759,7 +1743,6 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 	function_fact_index_.set(&node, function_id);
 	function_binding_fact_index_.set(function_binding, function_id);
 }
-
 ScopeId PA11SemanticModel::process_compound_statement(const PA10AstNode& node, ScopeId parent)
 {
 	if (node.kind != PA10NodeKind::CompoundStatement)
@@ -2061,7 +2044,7 @@ void PA11SemanticModel::validate_qualified_class_static_definition(
 		throw std::runtime_error(
 			"qualified class definition is not a direct static member");
 }
-void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope)
+void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access)
 {
 	if (!scope.valid() || scope.value >= scopes_.size() || node.children.size() != 1)
 		throw std::runtime_error("invalid PA11 using declaration");
@@ -2071,7 +2054,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	BindingId origin;
 	const TypeId type = lookup_type_path(target_name, scope, declaration_point, &origin);
 	const NameId introduced = target_name.last();
-	Scope& current = scopes_[scope.value];
+	Scope& current = scopes_[scope.value]; const bool class_access_view = current.kind == ScopeKind::Class;
 	if (record_inheriting_constructor_using(node, scope, target_name, type)) return;
 	if (current.types.find(introduced) != NULL ||
 		direct_namespace_exists(scope, introduced))
@@ -2095,6 +2078,15 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
 	if (values.empty())
 		throw std::runtime_error("using declaration target is not a binding");
+	for (std::size_t i = 0; i < values.size(); ++i) {
+		const BindingId imported_binding = values[i].binding;
+		if (!imported_binding.valid() || imported_binding.value >= bindings_.size() || imported_binding.value >= binding_owners_.size()) throw std::runtime_error("PA11 using declaration binding identity is invalid");
+		const ScopeId declared_scope = binding_owners_[imported_binding.value];
+		if (!declared_scope.valid() || declared_scope.value >= scopes_.size()) throw std::runtime_error("PA11 using declaration owner is invalid");
+		const bool class_member = class_access_view && scopes_[declared_scope.value].kind == ScopeKind::Class;
+		if (class_member && (!current.record.valid() || current.record.value >= named_.size() || named_[current.record.value].kind != NamedKind::Class || !member_base_path(named_type(current.record), declared_scope, NULL) || !base_path_accessible(named_type(current.record), declared_scope, scope))) throw std::runtime_error("PA11 using declaration member is not a base member");
+		if (class_member && !member_accessible(imported_binding, declared_scope, scope, TypeId())) throw std::runtime_error("PA11 using declaration member is inaccessible");
+	}
 	const ValueList* existing = current.values.find(introduced);
 	bool existing_functions = existing != NULL && !existing->entries.empty();
 	if (existing_functions)
@@ -2153,8 +2145,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	}
 	for (std::size_t i = 0; i < additions.size(); ++i)
 	{
-		append_value_index(scope, introduced, additions[i].binding,
-			additions[i].scope, SourcePoint(node.source_begin));
+			append_value_index(scope, introduced, additions[i].binding, additions[i].scope, SourcePoint(node.source_begin), class_access_view, class_access_view ? member_access : MemberAccess::Public, class_access_view ? scope : ScopeId());
 		// Keep one PA11 dump view per imported canonical binding in this
 		// scope.  Lookup retains the full (BindingId, origin ScopeId) pair.
 		bool have_view = false;
@@ -2454,6 +2445,16 @@ void PA11SemanticModel::record_friend_function(BindingId binding_id,
 			declaration_point));
 	set_named_record_sidecar(record, record_sidecar);
 }
+void PA11SemanticModel::record_friend_class(NamedRecordId owner, NamedRecordId friend_record) {
+	if (!owner.valid() || owner.value >= named_.size() || named_[owner.value].kind != NamedKind::Class || !named_[owner.value].scope.valid() || !friend_record.valid() || friend_record.value >= named_.size() || named_[friend_record.value].kind != NamedKind::Class) throw std::runtime_error("invalid PA11 friend class relation");
+	NamedRecordSidecar owner_sidecar; const NamedRecordSidecar* existing_owner = named_record_sidecar(owner); if (existing_owner != NULL) owner_sidecar = *existing_owner;
+	bool owner_relation_present = false; for (std::size_t i = 0; i < owner_sidecar.friend_class_records.size(); ++i) if (owner_sidecar.friend_class_records[i] == friend_record) { owner_relation_present = true; break; }
+	if (!owner_relation_present) { owner_sidecar.friend_class_records.push_back(friend_record); set_named_record_sidecar(owner, owner_sidecar); }
+	std::vector<NamedRecordId>* owners = friend_class_owners_.find(friend_record); if (owners == NULL) { friend_class_owners_.set(friend_record, std::vector<NamedRecordId>()); owners = friend_class_owners_.find(friend_record); }
+	if (owners == NULL) throw std::runtime_error("friend class reverse relation is missing");
+	for (std::size_t i = 0; i < owners->size(); ++i) if ((*owners)[i] == owner) return;
+	owners->push_back(owner);
+}
 void PA11SemanticModel::validate_nonmember_operator(BindingId binding_id) const
 {
 	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
@@ -2494,7 +2495,6 @@ void emit_pa11_types(const PA10Ast& ast, std::ostream& output)
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
-
 const char* PA11SemanticModel::semantic_category_name(
 	SemanticValueCategory category) const
 {

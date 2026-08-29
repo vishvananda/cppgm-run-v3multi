@@ -194,7 +194,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	: ast_(ast), names_(), name_ids_(), types_(), type_ids_(), named_(),
 	  record_layouts_(), record_member_declarations_(),
 	  record_member_event_owners_(),
-	  bit_field_facts_(), named_record_sidecars_(),
+	  bit_field_facts_(), named_record_sidecars_(), friend_class_owners_(),
 	  named_record_alignment_facts_(), template_function_facts_(),
 	  template_function_index_(), template_specialization_facts_(),
 	  template_specialization_index_(), scopes_(),
@@ -1066,7 +1066,9 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 					if (!relation_visible_at(frame.scope, entry.declaration_point,
 						point))
 						continue;
-					result->push_back(ValueRef(entry.origin, entry.binding));
+					if (entry.has_access_override && (!entry.access_view_owner.valid() || entry.access_view_owner != frame.scope || frame.scope.value >= scopes_.size() || scopes_[frame.scope.value].kind != ScopeKind::Class)) throw std::runtime_error("PA11 access view owner identity is invalid");
+					else if (!entry.has_access_override && entry.access_view_owner.valid()) throw std::runtime_error("PA11 unowned access view identity is invalid");
+					result->push_back(ValueRef(entry.origin, entry.binding, entry.has_access_override, entry.access_override, entry.access_view_owner));
 					have_visible = true;
 				}
 				if (have_visible)
@@ -1469,9 +1471,11 @@ Binding& PA11SemanticModel::binding(BindingId id)
 	return const_cast<Binding&>(
 		static_cast<const PA11SemanticModel*>(this)->binding(id));
 }
-void PA11SemanticModel::append_value_index(ScopeId scope, NameId name,
-	BindingId id, ScopeId origin, SourcePoint declaration_point)
+void PA11SemanticModel::append_value_index(ScopeId scope, NameId name, BindingId id, ScopeId origin, SourcePoint declaration_point,
+	bool has_access_override, MemberAccess access_override, ScopeId access_view_owner)
 {
+	if (has_access_override && (!scope.valid() || scope.value >= scopes_.size() || scopes_[scope.value].kind != ScopeKind::Class || access_view_owner != scope)) throw std::runtime_error("PA11 access view publication owner is invalid");
+	if (!has_access_override && access_view_owner.valid()) throw std::runtime_error("PA11 unowned access view publication is invalid");
 	FlatIndex<NameId, ValueList, IdentityHash<NameId> >& index =
 		scopes_[scope.value].values;
 	ValueList* list = index.find(name);
@@ -1480,8 +1484,7 @@ void PA11SemanticModel::append_value_index(ScopeId scope, NameId name,
 		index.set(name, ValueList());
 		list = index.find(name);
 	}
-	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope,
-		declaration_point));
+	list->entries.push_back(ValueEntry(id, origin.valid() ? origin : scope, declaration_point, has_access_override, access_override, access_view_owner));
 }
 TypeId PA11SemanticModel::ensure_named_class(ScopeId owner, NameId name, ClassTag tag,
 	bool definition)
@@ -2060,7 +2063,7 @@ ScopeId PA11SemanticModel::declaration_scope(const NamePath& path, ScopeId curre
 	return path.global ? resolve_global_qualifier_scope(prefix) :
 		resolve_qualifier_scope(prefix, current);
 }
-SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
+SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope, ScopeId type_access_scope)
 {
 	if (node.kind != PA10NodeKind::DeclSpecifierSeq &&
 		node.kind != PA10NodeKind::TypeSpecifierSeq)
@@ -2107,7 +2110,9 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			if (name.empty())
 				unsupported("anonymous class forward declaration");
 			const ClassTag tag = class_tag(child);
-			const TypeId visible = lookup_type_path(name, scope);
+			const bool friend_class_declaration = has_friend_specifier(node) && !name.global && name.components.size() == 1;
+			const ScopeId friend_scope = friend_class_declaration ? friend_namespace_scope(scope) : scope;
+			const TypeId visible = lookup_type_path(name, friend_class_declaration ? friend_scope : scope);
 			TypeId type;
 			if (visible.valid())
 			{
@@ -2120,7 +2125,7 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 			}
 			else
 			{
-				const ScopeId owner = declaration_scope(name, scope);
+				const ScopeId owner = friend_class_declaration ? friend_scope : declaration_scope(name, scope);
 				if (!owner.valid())
 					throw std::runtime_error("unresolved class declaration scope");
 				type = ensure_named_class(owner, name.last(), tag, false);
@@ -2155,7 +2160,7 @@ SpecFact PA11SemanticModel::spec_fact(const PA10AstNode& node, ScopeId scope)
 				(!child.name_parts.empty() || child.producer_spelling != 0)))
 		{
 			const NamePath name = name_path(child, scope);
-			const TypeId type = lookup_type_path(name, scope);
+			const TypeId type = lookup_type_path(name, scope, SourcePoint(), NULL, type_access_scope);
 			if (!type.valid())
 				throw std::runtime_error("unknown PA11 type name");
 			if (name.global)
@@ -2372,10 +2377,23 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 	if (ambiguous_call_statement(node, scope, NULL, NULL) ||
 		ambiguous_assignment_statement(node, scope, NULL, NULL, NULL))
 		return;
-	const SpecFact spec = spec_fact(node.children.front(), scope);
+	ScopeId type_access_scope;
+	if (node.children.size() > 1 && node.children[1].kind == PA10NodeKind::InitDeclaratorList && !node.children[1].children.empty()) {
+		const PA10AstNode& first_init = node.children[1].children.front();
+		if (first_init.kind == PA10NodeKind::InitDeclarator && !first_init.children.empty()) {
+			const DeclaratorName first_name = declarator_name(first_init.children.front());
+			if (first_name.found && (first_name.path.global || first_name.path.components.size() > 1)) {
+				const ScopeId target = declaration_scope(first_name.path, scope);
+				if (target.valid() && target.value < scopes_.size() && scopes_[target.value].kind == ScopeKind::Class) type_access_scope = target;
+			}}}
+	const SpecFact spec = spec_fact(node.children.front(), scope, type_access_scope);
 	const bool friend_declaration = has_friend_specifier(node.children.front());
 	const NamedRecordId friend_record = friend_declaration ?
 		friend_record_for_scope(scope) : NamedRecordId();
+	if (friend_record.valid() && node.children.size() == 1 && spec.has_base) {
+		const TypeId friend_type = strip_cv_type(spec.base); const NamedRecordId friend_class = named_record_for_type(friend_type);
+		if (friend_class.valid() && friend_class.value < named_.size() && named_[friend_class.value].kind == NamedKind::Class) record_friend_class(friend_record, friend_class);
+	}
 	if (node.children.size() == 1)
 	{
 		if (spec.is_auto) throw std::runtime_error("PA11 auto declaration has no declarator");
@@ -2698,7 +2716,7 @@ bool PA11SemanticModel::ambiguous_assignment_statement(const PA10AstNode& node,
 		*right = &initializer;
 	return true;
 }
-void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId scope)
+void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access)
 {
 	switch (node.kind)
 	{
@@ -2714,7 +2732,7 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 		process_using_directive(node, scope);
 		return;
 	case PA10NodeKind::UsingDeclaration:
-		process_using_declaration(node, scope);
+		process_using_declaration(node, scope, member_access);
 		return;
 	case PA10NodeKind::AliasDeclaration:
 		if (node.producer_spelling == 0 || node.children.size() != 1)
