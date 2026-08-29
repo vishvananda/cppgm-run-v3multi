@@ -2,121 +2,240 @@
 
 ## Stage Design
 
-PA11 remains the typed owner of canonical member access. This checkpoint
-extends that owner/data flow with sparse typed friend-class relations
-(`NamedRecordId` owner and friend plus the reverse index) and a paired
-using-declaration access view: `MemberAccess` plus its publishing `ScopeId`.
-The view never rewrites the canonical binding/origin owner. A type using
-preserves its canonical `TypeId` while recording the introduced declaration
-and its class-member access; a value using carries canonical binding/origin
-with the paired publishing view. PA12 carries both facts through `ValueRef`,
-`MemberLookup`, and member/operator candidates; `member_accessible` evaluates
-canonical private/protected/public access, friendship, base paths, and the
-protected object rule. PA15 consumes selected typed facts and retains every
-validated direct-base edge as a LowIR projection. No rendered-name recovery,
-duplicate access table, whole-TU rescan, or retry loop is used.
+PA12 owns typed constructor/destructor selection and records lifetime facts at
+the declaration that owns the object. Namespace and static class-member
+definitions use the same typed initializer path; supported named class
+subobjects receive typed constructor and namespace-lifetime facts, while
+aggregate arrays retain their existing aggregate path. A declaration-only
+object has no construction fact. Thread-local construction is represented by
+the typed pending global action and is not modeled as a namespace destruction
+edge in this checkpoint.
 
-The behavior is checked against the PA16 README, `spec.md` §§2--5 and 7,
-and N3485 §§7.3.3 p17--18, 11.2 p4--6, 11.3 p1--10, and 11.4 p1: each named
-declaration and base path is accessible; aliases have the access of their
-member-declaration context; PA11-supported public class-member using at
-namespace or block scope remains valid; friendship is neither inherited nor
-transitive; and protected object expressions satisfy the additional object-class
-rule.
-Operator access-view propagation is traced through candidate formation;
-unrelated operator behavior remains out of scope. The bounded model is
-single, direct, non-virtual inheritance. Templates, variadics, and unrelated
-PA16 residuals remain out of scope.
+PA15 consumes those facts through a separate semantic-demand and
+emission-demand path. Its global work item is `(SemanticFactId, global_root)`:
+the ordinary-global and TLS roots occupy separate bits in
+`scanned_global_fact_modes`, so a fact reached in both modes is scanned once
+per mode. Each scan follows only typed semantic children and demanded typed
+constructor/destructor edges, giving bounded O(facts + typed edges) work with
+no whole-TU rescan and no retry-until-stable loop. The global/TLS materializer
+emits only demanded actions and keeps one deterministic source-ordered init
+and fini family.
+
+Generated TLS helper names are derived once from typed `BindingId`, its
+canonical owner/name, and an explicit generated-kind prefix. `SymbolId` and
+`SpellingId` are carried as output identities; no rendered spelling is read
+back or parsed to recover ownership or kind. The low-level output therefore
+retains typed ownership, typed lifetime actions, and deterministic symbols.
+This follows the PA16 README and the relevant `spec.md` §§1--5 and 7
+boundaries; unrelated bit-fields, operators, access control, and broad layout
+work remain outside this checkpoint.
 
 ## Failure Map
 
-The final PA16 run remains `179/243` identities passing, `64` failing, with
-all `243/243` identities covered. The exact comparison against the turn-start
-authority reports `64` authority failures, `64` final failures, final-only
-`0`, and baseline-only `0`; durable logs are recorded in `pa16/audit.md`.
-The bounded repairs address intermediate qualified type/value components,
-friend-context qualified base specifiers, class-owned using source access and
-views, and fail-closed binding/view provenance.
+Turn-start authority was clean HEAD `c2247924`: `179/243` PA16 identities
+passed, `64` failed, and all `243/243` identities were covered. The complete
+turn-start failure map was:
 
-The selected existing matrix is `12/14`: the two documented checked-in
-LowIR-shape residuals remain, while their semantic status paths pass. Courses
-405, 411, and 419 plus the 419 syntax check are green. Course 419 is reduced
-observation coverage and is not stage progress. Through-PA15 is `1167/1167`,
-including the unchanged PA11 class-constants and using fixture. No handout,
-reference, fixture, harness, comparator, or exit-status file changed.
+- `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
+- `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
+- `pa16/tests/general/100-global-reference-incomplete-referent.t`
+- `pa16/tests/general/100-object-member-enumerator-constant.t`
+- `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
+- `pa16/tests/general/200-const-subobject-member-call.t`
+- `pa16/tests/general/200-defaulted-constructor-still-aggregate.t`
+- `pa16/tests/general/200-deleted-constructor-still-aggregate.t`
+- `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
+- `pa16/tests/general/200-elaborated-member-forward-type.t`
+- `pa16/tests/general/200-extern-class-object-declaration.t`
+- `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
+- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`
+- `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
+- `pa16/tests/general/200-global-constructor.t`
+- `pa16/tests/general/200-global-function-style-constructor.t`
+- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+- `pa16/tests/general/200-member-call-hides-outer-type-declaration.t`
+- `pa16/tests/general/200-member-object-lifetime.t`
+- `pa16/tests/general/200-mutable-member-const-method.t`
+- `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
+- `pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t`
+- `pa16/tests/general/200-nonliteral-field-condition-not-folded.t`
+- `pa16/tests/general/200-placement-new-expression-aggregate-brace.t`
+- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
+- `pa16/tests/general/200-pointer-subscript-class-reference-return.t`
+- `pa16/tests/general/200-qualified-friend-function-member-access.t`
+- `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
+- `pa16/tests/general/200-reference-member-class-init.t`
+- `pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`
+- `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
+- `pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`
+- `pa16/tests/general/300-adl-using-declaration-source-point.t`
+- `pa16/tests/general/300-callable-field-hides-private-base-method.t`
+- `pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t`
+- `pa16/tests/general/300-const-pointer-explicit-destructor-call.t`
+- `pa16/tests/general/300-enum-class-nonmember-operator-bitand.t`
+- `pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t`
+- `pa16/tests/general/300-friend-function-definition-skip.t`
+- `pa16/tests/general/300-header-static-class-init.t`
+- `pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t`
+- `pa16/tests/general/300-mixed-member-free-shift-stress-chain.t`
+- `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
+- `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
+- `pa16/tests/general/300-operator-shift-stress-chain.t`
+- `pa16/tests/general/300-overloaded-deref-user-assignment.t`
+- `pa16/tests/general/300-packed-class-layout.t`
+- `pa16/tests/general/300-pragma-pack-followed-by-endif.t`
+- `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
+- `pa16/tests/general/300-scalar-pseudo-destructor-call.t`
+- `pa16/tests/general/300-static-class-member-object-definition.t`
+- `pa16/tests/general/300-synthesized-array-member-lifecycle.t`
+- `pa16/tests/general/300-thread-local-synthetic-symbol-family-isolation.t`
+- `pa16/tests/general/300-unary-address-of-builtin-fallback.t`
+- `pa16/tests/general/300-user-defined-string-literal-operator.t`
+- `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
+- `pa16/tests/general/300-using-declaration-function-hides-tag.t`
+- `pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`
+- `pa16/tests/general/400-bit-field-constructor-member-init.t`
+- `pa16/tests/general/400-bit-field-member-access-bad.t`
+- `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
+- `pa16/tests/general/400-bitfield-aggregate-init.t`
+- `pa16/tests/general/400-signed-bit-field-read.t`
+- `pa16/tests/general/400-signed-enum-bit-field-read.t`
+
+Final PA16 is `184/243` passing, `59` failing, with `243/243` identities
+covered. The exact final map is:
+
+- `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
+- `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
+- `pa16/tests/general/100-global-reference-incomplete-referent.t`
+- `pa16/tests/general/100-object-member-enumerator-constant.t`
+- `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
+- `pa16/tests/general/200-const-subobject-member-call.t`
+- `pa16/tests/general/200-defaulted-constructor-still-aggregate.t`
+- `pa16/tests/general/200-deleted-constructor-still-aggregate.t`
+- `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
+- `pa16/tests/general/200-elaborated-member-forward-type.t`
+- `pa16/tests/general/200-extern-class-object-declaration.t`
+- `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
+- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`
+- `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
+- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+- `pa16/tests/general/200-member-call-hides-outer-type-declaration.t`
+- `pa16/tests/general/200-member-object-lifetime.t`
+- `pa16/tests/general/200-mutable-member-const-method.t`
+- `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
+- `pa16/tests/general/200-nested-out-of-class-constructor-enclosing-type.t`
+- `pa16/tests/general/200-nonliteral-field-condition-not-folded.t`
+- `pa16/tests/general/200-placement-new-expression-aggregate-brace.t`
+- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
+- `pa16/tests/general/200-pointer-subscript-class-reference-return.t`
+- `pa16/tests/general/200-qualified-friend-function-member-access.t`
+- `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
+- `pa16/tests/general/200-reference-member-class-init.t`
+- `pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`
+- `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
+- `pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`
+- `pa16/tests/general/300-adl-using-declaration-source-point.t`
+- `pa16/tests/general/300-callable-field-hides-private-base-method.t`
+- `pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t`
+- `pa16/tests/general/300-const-pointer-explicit-destructor-call.t`
+- `pa16/tests/general/300-enum-class-nonmember-operator-bitand.t`
+- `pa16/tests/general/300-explicit-destructor-call-enclosing-namespace-type.t`
+- `pa16/tests/general/300-friend-function-definition-skip.t`
+- `pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t`
+- `pa16/tests/general/300-mixed-member-free-shift-stress-chain.t`
+- `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
+- `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
+- `pa16/tests/general/300-operator-shift-stress-chain.t`
+- `pa16/tests/general/300-overloaded-deref-user-assignment.t`
+- `pa16/tests/general/300-packed-class-layout.t`
+- `pa16/tests/general/300-pragma-pack-followed-by-endif.t`
+- `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
+- `pa16/tests/general/300-scalar-pseudo-destructor-call.t`
+- `pa16/tests/general/300-synthesized-array-member-lifecycle.t`
+- `pa16/tests/general/300-unary-address-of-builtin-fallback.t`
+- `pa16/tests/general/300-user-defined-string-literal-operator.t`
+- `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
+- `pa16/tests/general/300-using-declaration-function-hides-tag.t`
+- `pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`
+- `pa16/tests/general/400-bit-field-constructor-member-init.t`
+- `pa16/tests/general/400-bit-field-member-access-bad.t`
+- `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
+- `pa16/tests/general/400-bitfield-aggregate-init.t`
+- `pa16/tests/general/400-signed-bit-field-read.t`
+- `pa16/tests/general/400-signed-enum-bit-field-read.t`
+
+The five baseline-only identities fixed are
+`200-global-constructor`, `200-global-function-style-constructor`,
+`300-header-static-class-init`, `300-static-class-member-object-definition`,
+and `300-thread-local-synthetic-symbol-family-isolation`; final-only is zero.
+The failure delta is `64 -> 59` (`+5` passing), with no coverage reduction.
 
 ## Active Checkpoint
 
-The audited ownership path is the landed PA16 access increment across:
+This checkpoint implements typed non-automatic class-object lifetime and
+demand-driven helper emission in the following implementation files:
 
+- `dev/frontend_source_sets.mk`
 - `dev/src/pa11_semantic_model.h`
-- `dev/src/pa11_semantic_core.cpp`
-- `dev/src/pa11_semantic.cpp`
-- `dev/src/pa11_semantic_types.cpp`
-- `dev/src/pa12_semantic_selection.h`
 - `dev/src/pa12_semantic.cpp`
-- `dev/src/pa12_semantic_calls.cpp`
-- `dev/src/pa12_semantic_member.cpp`
-- `cppgm.tests/course/pa16/419-typed-using-access-regression.sh`
+- `dev/src/pa12_semantic_construction.cpp`
+- `dev/src/pa12_semantic_facts.cpp`
+- `dev/src/pa15_lowering.cpp`
+- `dev/src/pa15_lowering.h`
+- `dev/src/pa15_lowering_calls.cpp`
+- `dev/src/pa15_lowering_construction.cpp`
+- `dev/src/pa15_lowering_flow.cpp`
+- `dev/src/pa15_lowering_globals.cpp`
 
-The current repair is limited to the first four implementation files and
-the permitted 419 control. The type-valid using branch preserves the
-canonical `TypeId`, records the introduced binding as the declaration/access
-owner, and applies `process_class_body`'s current access. Source access is
-validated before publication; public class-member type/value using remains
-supported at namespace or block scope, while inaccessible private/protected
-sources are rejected unless the publishing context has access. Namespace-to-
-namespace using remains valid. Typed lookup checks every class qualifier and
-uses the derived class as the base-specifier access context.
+`LifetimeStorageKind` is intentionally only `Automatic` or `Namespace`.
+Thread-local objects do not receive a namespace destruction fact; their
+per-thread construction remains an explicit typed pending action. PA12
+preserves aggregate-array initialization and local-object lifetime behavior,
+while named namespace/static class objects use the declaration-owned typed
+constructor path. PA15 emits static storage, constructor calls, destructor
+calls, and TLS guard/wrapper/init helpers only after typed demand reaches the
+binding. The TLS family uses canonical owner/name data plus generated-kind
+prefixes and passes output identities directly to materializers.
 
-`ValueEntry` starts with canonical binding/origin and declaration point, and
-carries the optional access view/publishing scope. PA12 preserves the canonical
-owner and using view through member, static, non-static, and operator
-candidates; `member_accessible` checks source declaration, reachable base,
-friend, private/protected, and protected-object rules. PA15 lowering is
-unchanged and keeps the full selected direct-base path. Friend relations are
-sparse and direct only. The 419 additions cover public protected-type
-re-exposure, private/protected alias views, friend/private source access,
-public namespace-scope class-member using, and valid namespace using while retaining all
-existing coverage.
+Focused validation is green at `8/8` for the five fixed identities, both
+static-thread-local member tests, the collision test, and
+`100-global-class-zero.t`. The latter remains a no-eager-helper control.
+No handout, reference, existing test, harness, comparator, or exit-status
+file was changed.
 
 ## Performance Evidence
 
-The access path uses a sparse friend reverse index, bounded lexical ancestry
-walks, named-component qualification, and the relevant direct-single-base
-chain. Publication and lookup validate only typed identity/view tuples;
-candidate work is bounded by the selected class/base chain. The structural
-noise replay compares a 40-line case with the same case plus 64 unrelated
-empty classes (105 lines): both repository-compiler outputs are byte-identical
-at 59/59 LowIR lines and six/six base projections, with LowIR SHA-256
-`a994e25767151654c710b2724364f1b5f3d9b071c3b9326aef284b962a1b2fd6`; the
-negative stderr SHA-256 is identically
-`37e6f8ed897d209b62c1b3b33e831cb114a86a06e792e0aa8c0645df156d3fd3`.
-Evidence summary:
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-access-boundary-probe-final-20260829-v4/summary.log`.
-This is structural noise-isolation evidence only; no timing, RSS, allocation,
-or speedup claim is made.
+A temporary generated case with many non-automatic `Item` objects was run at
+N=8 and N=32. Repeated compiler outputs were byte-identical for each N. The
+observed structural counts were:
+
+| objects | init functions | fini functions | ctor calls | dtor calls | LowIR lines |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 1 | 1 | 8 | 8 | 122 |
+| 32 | 1 | 1 | 32 | 32 | 290 |
+
+The N=32 init calls appeared in source order with arguments 1 through 32,
+and the fini family contained the corresponding 32 source-ordered destructor
+calls. This is structural bounded-work evidence only; no timing, allocation,
+RSS, or speed claim is made.
 
 ## Validation
 
-Final evidence is durable in the paths cited by `pa16/audit.md`: build and
-courses 405/411/419 (including `sh -n`) exit `0`; the selected 14-test
-command exits `2` at `12/14` with only the two documented LowIR residuals;
-`make test-pa16` exits `2` at `179/243`; the exact identity comparison has
-no final-only or baseline-only identities; through-PA15 exits `0` at
-`1167/1167` including the unchanged PA11 class-constants/using fixture; and
-`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
-with five known header-division warnings. `git diff --check` exits `0`.
-No existing handout, reference, fixture, harness, comparator, or exit-status
-file changed.
+- `make -C dev cppgm++ -j2`: exit `0`.
+- Focused PA16 matrix: `8/8`, exit `0`.
+- `make test-pa16`: exit `2`, `184/243` passing, `59` failing, `243/243`
+  covered; exact final map above and no final-only identities.
+- Required `n=16` through command: exit `0`, PA1--PA15 `1167/1167`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: exit `0`
+  with five known header-division warnings.
+- `git diff --check`: required before commit.
 
 ## Next Checkpoint
 
-The next checkpoint is a remaining PA16 semantic/lifecycle/layout residual
-family outside typed access control. It must preserve the exact 64-identity
-map unless a later authorized rerun proves otherwise, canonical ownership,
-direct non-transitive friendship, protected object rules, supported using
-behavior, and full per-edge single-base lowering.
+The remaining 59 identities are outside this typed non-automatic lifetime
+increment. Any next PA16 work must preserve this exact final map unless a
+later authorized run proves a new net improvement, retain typed ownership and
+mode-sensitive demand, and avoid eager helper emission.
 
 ## Checkpoint Ledger
 
@@ -129,6 +248,7 @@ behavior, and full per-edge single-base lowering.
 | `f290784f` typed builtin audit | Historical clean baseline: `167/243`, `76` failures, `243/243` covered; PA1--PA15 and audit pass. |
 | `3b7d8e6a` qualified-type checkpoint | `173/243` passing, `70` failures, `243/243` covered; prior broad evidence preserved. |
 | `working tree after 3b7d8e6a` historical constructor first stop | Selected constructor family and preservation controls passed before the later constructor increment. |
-| `30d69fc3` landed inheriting-constructor checkpoint | Historical landed increment: `176/243` passing, `67` failures, `243/243` covered; typed N3485 wrapper/default/DMI/copy/order-independent evidence and durable broad/identity/probe logs are retained above. |
-| `0fb73ad4` PA16 access turn start | Clean authority for this checkpoint: `176/243` passing, `67` failures, `243/243` covered; through-PA15 `1167/1167`, audit with five known header-division warnings. |
-| `PA16 typed access-control checkpoint` | Completed bounded audit/repair of landed `135e3a95` relative to `0fb73ad4`: canonical owner/access, direct friend identity, paired using view/publishing scope, typed qualified type/value and base access, source accessibility, private/protected/friend/protected-object rules, and PA15 per-edge projection are traced. The type using fix preserves canonical `TypeId` while assigning the introduced declaration/access owner; public class-member type/value using remains supported at namespace or block scope, inaccessible sources are rejected by the p17 access boundary, and namespace-to-namespace using remains valid. Operator access propagation is traced through candidates; unrelated operator behavior is out of scope. Final PA16 is `179/243` with `64` failures and `243/243` coverage, with exact final-only and baseline-only sets both empty. Focused PA16 is `12/14` with two checked-in LowIR residuals; courses 405/411/419 and `sh -n` pass; structural noise evidence is recorded. Through-PA15 is `1167/1167`; file audit exits `0` with five known warnings. No handout, fixture, reference, harness, comparator, or exit-status file changed. |
+| `30d69fc3` landed inheriting-constructor checkpoint | Historical landed increment: `176/243` passing, `67` failures, `243/243` covered; typed N3485 wrapper/default/DMI/copy/order-independent evidence retained. |
+| `0fb73ad4` PA16 access turn start | Clean authority for that checkpoint: `176/243` passing, `67` failures, `243/243` covered; through-PA15 `1167/1167`, audit with five known header-division warnings. |
+| `PA16 typed access-control checkpoint` | Previous bounded access repair: `179/243` passing, `64` failures, `243/243` covered; exact residual map carried forward. |
+| `PA16 typed non-automatic lifetime checkpoint` | `184/243` passing, `59` failures, `243/243` covered; five baseline identities fixed, zero final-only identities; focused matrix `8/8`, through-PA15 `1167/1167`, audit clean except five known warnings, and structural N=8/N=32 evidence recorded above. |

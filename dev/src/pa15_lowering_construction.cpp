@@ -751,6 +751,23 @@ void Pa15Lowerer::index_lifetime_facts()
 			if (model_.destructor_binding(record) != lifetime.destructor)
 				throw std::runtime_error("PA15 lifetime destructor identity is invalid");
 			(void)checked_destructor_function(lifetime.destructor, record);
+			if (lifetime.storage != LifetimeStorageKind::Automatic)
+			{
+				const Scope& owner = model_.scopes_[lifetime.scope.value];
+				if ((owner.kind != ScopeKind::Namespace &&
+					owner.kind != ScopeKind::Class) ||
+					(owner.kind == ScopeKind::Class &&
+						!model_.is_static_member(lifetime.object)) ||
+					(owner.kind == ScopeKind::Namespace &&
+						model_.is_static_member(lifetime.object)))
+					throw std::runtime_error(
+						"PA15 namespace lifetime scope is invalid");
+				if (lifetime_by_binding_.find(lifetime.object.value) !=
+					lifetime_by_binding_.end())
+					throw std::runtime_error("PA15 duplicate lifetime fact identity");
+				lifetime_by_binding_[lifetime.object.value] = &lifetime;
+				continue;
+			}
 			ScopeId function_scope;
 			ScopeId scope = lifetime.scope;
 			for (std::size_t depth = 0; depth < model_.scopes_.size(); ++depth)

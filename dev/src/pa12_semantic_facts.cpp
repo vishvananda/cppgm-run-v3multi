@@ -954,6 +954,31 @@ void PA11SemanticModel::record_automatic_lifetime(BindingId object,
 	lifetime_facts_.push_back(LifetimeFact(object, object_type, destructor, scope));
 }
 
+void PA11SemanticModel::record_namespace_lifetime(BindingId object,
+	TypeId object_type, ScopeId scope)
+{
+	if (!object.valid() || object.value >= bindings_.size() ||
+		object.value >= binding_owners_.size() || !scope.valid() ||
+		scope.value >= scopes_.size() || binding_owners_[object.value] != scope ||
+		binding(object).kind != BindingKind::Variable)
+		throw std::runtime_error("PA16 namespace lifetime object is invalid");
+	const Scope& owner = scopes_[scope.value];
+	if (owner.kind != ScopeKind::Namespace && owner.kind != ScopeKind::Class)
+		throw std::runtime_error("PA16 namespace lifetime scope is invalid");
+	if (owner.kind == ScopeKind::Class && !is_static_member(object))
+		throw std::runtime_error("PA16 namespace lifetime class object is invalid");
+	if (owner.kind == ScopeKind::Namespace && is_static_member(object))
+		throw std::runtime_error("PA16 namespace lifetime member owner is invalid");
+	const NamedRecordId record = class_record_for_object_type(object_type);
+	if (!record.valid() || !destructor_requires_runtime(record))
+		return;
+	const BindingId destructor = ensure_implicit_destructor(record);
+	if (!destructor.valid())
+		throw std::runtime_error("PA16 namespace lifetime destructor is missing");
+	lifetime_facts_.push_back(LifetimeFact(object, object_type, destructor, scope,
+		LifetimeStorageKind::Namespace));
+}
+
 TypeId PA11SemanticModel::constructor_callable_type(BindingId constructor)
 {
 	if (!constructor.valid() || constructor.value >= bindings_.size())
@@ -1712,6 +1737,8 @@ void PA11SemanticModel::record_constant_initializer(SemanticFactId fact_id,
 				semantic_children_[fact.child_begin + i], scope);
 		return;
 	}
+	if (fact.kind == SemanticFactKind::ConstructorAction)
+		return;
 	record_constant_expression_value(fact_id, scope);
 	// The complete expression tree has now been folded once where its typed
 	// facts permit it.  Resolve the address/relocation relation exactly once at

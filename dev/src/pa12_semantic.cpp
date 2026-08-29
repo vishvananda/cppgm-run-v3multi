@@ -2002,36 +2002,9 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		fact.selected_scope = declaration->scope;
 		SemanticFactId variable = make_semantic_fact(fact);
 		const NamedRecordId record = class_record_for_object_type(value.type);
-		const NamedRecordSidecar* record_sidecar =
-			named_record_sidecar(record);
-		const bool anonymous_union_object = record.valid() &&
-			record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Class &&
-			named_[record.value].class_tag == ClassTag::Union &&
-			record_sidecar != NULL && record_sidecar->local_object_name;
-		const bool local_object_scope = declaration->scope.valid() &&
-			declaration->scope.value < scopes_.size() &&
-			scopes_[declaration->scope.value].kind == ScopeKind::Block;
-		const bool default_object = init.children.size() == 1 && local_object_scope &&
-			record.valid() && record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Class;
-		const bool legacy_empty_default_object = default_object &&
-			!named_[record.value].has_base && named_[record.value].scope.valid() &&
-			named_[record.value].scope.value < scopes_.size() &&
-			scopes_[named_[record.value].scope.value].bindings.empty();
-		const bool special_function_initializer = value.kind == BindingKind::Function &&
-			function_declaration_kind(binding_id) !=
-				FunctionDeclarationKind::Normal;
 		const PA10AstNode* direct_operand = NULL;
 		const bool direct_operand_initializer = direct_initializer_operand(init,
 			declaration->scope, &direct_operand);
-		const bool local_class_object = value.kind == BindingKind::Variable &&
-			local_object_scope && record.valid() && record.value < named_.size() &&
-			named_[record.value].kind == NamedKind::Class &&
-			named_[record.value].class_tag != ClassTag::Union;
-		if (default_object && !direct_operand_initializer &&
-			!has_constructor_declaration(record))
-			(void)implicit_default_constructor_supported(record);
 		const PA10AstNode* clause = NULL;
 		ConstructorInitializationContext initialization_context =
 			ConstructorInitializationContext::Direct;
@@ -2055,63 +2028,9 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 			else
 				clause = &initializer;
 		}
-		const bool constructor_initializer = local_class_object &&
-			semantic_local_class_initializer(binding_id, variable, init,
-				direct_operand, clause, record, declaration->scope,
-				initialization_context);
 		SemanticFactId initializer_fact;
-		if (!special_function_initializer && !constructor_initializer && direct_operand_initializer)
-		{
-			const ExprInfo expression = semantic_expression_for_target(
-				*direct_operand, declaration->scope, value.type);
-			const ExprInfo converted = apply_context_conversion(expression, value.type,
-				semantic_facts_[expression.fact.value].source, declaration->scope);
-			if (converted.fact.valid() &&
-				semantic_facts_[converted.fact.value].literal_element_count != 0)
-				record_constant_address(converted.fact, declaration->scope);
-			set_semantic_children(variable,
-				std::vector<SemanticFactId>(1, converted.fact));
-			initializer_fact = converted.fact;
-		}
-		else if (!special_function_initializer && !constructor_initializer &&
-			init.children.size() > 1)
-		{
-			const PA10AstNode* expression_clause = clause;
-			if (expression_clause->kind == PA10NodeKind::ParenInitializer)
-			{
-				if (expression_clause->children.size() != 1)
-					throw std::runtime_error(
-						"PA12 invalid parenthesized initializer");
-				expression_clause = &expression_clause->children.front();
-			}
-			const bool class_member_declaration = declaration->scope.valid() &&
-				declaration->scope.value < scopes_.size() &&
-				scopes_[declaration->scope.value].kind == ScopeKind::Class;
-			const ExprInfo expression = class_member_declaration ?
-				semantic_default_member_initializer(*expression_clause,
-					declaration->scope, value.type) :
-				semantic_expression_for_target(*expression_clause,
-					declaration->scope, value.type);
-			ExprInfo converted = expression;
-			if (expression_clause->kind != PA10NodeKind::BracedInitList)
-				converted = apply_context_conversion(expression, value.type,
-					semantic_facts_[expression.fact.value].source, declaration->scope);
-			if (converted.fact.valid() &&
-				semantic_facts_[converted.fact.value].literal_element_count != 0)
-				record_constant_address(converted.fact, declaration->scope);
-			if (declaration->is_constexpr)
-				retarget_constexpr_literal(converted.fact, value.type);
-			set_semantic_children(variable,
-				std::vector<SemanticFactId>(1, converted.fact));
-			initializer_fact = converted.fact;
-		}
-		else if (anonymous_union_object || legacy_empty_default_object ||
-			(default_object && constructor_requires_runtime(record)))
-		{
-			set_semantic_children(variable,
-				std::vector<SemanticFactId>(1,
-					semantic_constructor_action(binding_id, init)));
-		}
+		semantic_variable_initializer(binding_id, variable, init, value, *declaration,
+			record, direct_operand, clause, initialization_context, &initializer_fact);
 		if (initializer_fact.valid() &&
 			value.kind == BindingKind::Variable && !is_static_member(binding_id) &&
 			declaration->scope.valid() &&

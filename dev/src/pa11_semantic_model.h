@@ -1045,13 +1045,13 @@ struct DestructorActionFact
 	{}
 };
 
+enum class LifetimeStorageKind { Automatic, Namespace };
 struct LifetimeFact
 {
-	BindingId object; TypeId object_type; BindingId destructor; ScopeId scope;
+	BindingId object; TypeId object_type; BindingId destructor; ScopeId scope; LifetimeStorageKind storage;
 	LifetimeFact(BindingId object = BindingId(), TypeId object_type = TypeId(),
-		BindingId destructor = BindingId(), ScopeId scope = ScopeId())
-		: object(object), object_type(object_type), destructor(destructor), scope(scope)
-	{}
+		BindingId destructor = BindingId(), ScopeId scope = ScopeId(), LifetimeStorageKind storage = LifetimeStorageKind::Automatic)
+		: object(object), object_type(object_type), destructor(destructor), scope(scope), storage(storage) {}
 };
 
 enum class ConstructorRuntimeCacheState : std::uint8_t { Unseen, InProgress, Complete };
@@ -1639,9 +1639,8 @@ private:
 	;
 	void build_destructor_actions(FunctionFactId function)
 	;
-	void record_automatic_lifetime(BindingId object, TypeId object_type,
-		ScopeId scope)
-	;
+	void record_automatic_lifetime(BindingId object, TypeId object_type, ScopeId scope);
+	void record_namespace_lifetime(BindingId object, TypeId object_type, ScopeId scope);
 	ConstructorSelection select_constructor(NamedRecordId record, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool allow_implicit_default, ConstructorInitializationContext context, BindingId forced_binding = BindingId());
 	void expand_inheriting_constructor_candidates(NamedRecordId record, ConstructorInitializationContext context, std::vector<ValueRef>& candidates, std::vector<NamedRecordId>& active);
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
@@ -2036,12 +2035,11 @@ private:
 	ExprInfo semantic_storage_id(BindingId storage,
 		const PA10AstNode* source = NULL)
 	;
-	bool semantic_local_class_initializer(
-		BindingId storage, SemanticFactId variable,
+	bool semantic_class_object_initializer(BindingId storage, SemanticFactId variable,
 		const PA10AstNode& source, const PA10AstNode* direct_operand,
 		const PA10AstNode* clause, NamedRecordId record, ScopeId access_scope,
-		ConstructorInitializationContext context)
-	;
+		ConstructorInitializationContext context);
+	void semantic_variable_initializer(BindingId storage, SemanticFactId variable, const PA10AstNode& source, const Binding& value, const DeclarationFact& declaration, NamedRecordId record, const PA10AstNode* direct_operand, const PA10AstNode* clause, ConstructorInitializationContext context, SemanticFactId* initializer_fact);
 	SemanticFactId semantic_constructor_action(BindingId storage,
 		const PA10AstNode& source,
 		const std::vector<const PA10AstNode*>& argument_nodes =

@@ -78,7 +78,8 @@ struct FunctionPlan
 // materializer and never causes source reconstruction or aggregate rediscovery.
 struct PendingGlobalAction
 {
-	enum Kind { ADDRESS_PROJECTION, SCALAR_VALUE, AGGREGATE_VALUE };
+	enum Kind { ADDRESS_PROJECTION, SCALAR_VALUE, AGGREGATE_VALUE,
+		THREAD_LOCAL_CONSTRUCTION };
 	Kind kind;
 	SymbolId global;
 	SymbolId target;
@@ -88,6 +89,7 @@ struct PendingGlobalAction
 	SemanticFactId initializer;
 	std::size_t source_declaration;
 	std::size_t source_declarator;
+	BindingId binding;
 
 	PendingGlobalAction(Kind kind = SCALAR_VALUE,
 		SymbolId global = SymbolId(), SymbolId target = SymbolId(),
@@ -95,11 +97,11 @@ struct PendingGlobalAction
 		const LowType& element_type = LowType(), TypeId type = TypeId(),
 		SemanticFactId initializer = SemanticFactId(),
 		std::size_t source_declaration = InvalidIdentityValue,
-		std::size_t source_declarator = 0)
+		std::size_t source_declarator = 0, BindingId binding = BindingId())
 		: kind(kind), global(global), target(target), index(index),
 		  element_type(element_type), type(type), initializer(initializer),
 		  source_declaration(source_declaration),
-		  source_declarator(source_declarator) {}
+		  source_declarator(source_declarator), binding(binding) {}
 };
 
 // Literal backing storage is interned by typed payload identity.  The bytes
@@ -376,6 +378,9 @@ private:
 	std::map<std::size_t, bool> thread_local_by_binding_;
 	std::vector<unsigned char> required_global_bindings_;
 	std::set<std::size_t> emitted_tls_wrappers_;
+	std::map<std::size_t, SymbolId> tls_guard_symbols_;
+	std::map<std::size_t, SpellingId> tls_guard_name_ids_;
+	std::map<std::size_t, SpellingId> tls_init_name_ids_;
 	std::map<std::size_t, SpellingId> symbol_name_ids_;
 	std::map<std::size_t, SymbolId> literal_address_symbols_;
 	std::map<LiteralContentKey, std::vector<LiteralContentIdentity> >
@@ -504,6 +509,9 @@ private:
 	void index_global_storage_demands();
 	void append_tls_wrapper(BindingId binding_id, ScopeId owner,
 		SpellingId global_name);
+	void append_tls_guard_wrapper(BindingId binding_id, SpellingId guard_name,
+		SpellingId wrapper_name);
+	void ensure_tls_lifetime_support(BindingId binding_id);
 	bool constant_integer(SemanticFactId id, const LowType& type, Operand* result);
 	bool typed_pointer_zero(SemanticFactId id, TypeId destination) const;
 	bool map_constant_address(SemanticFactId id, SymbolId* target,
@@ -512,11 +520,18 @@ private:
 	SpellingId symbol_name_for(SymbolId target) const;
 	bool append_typed_global_data(GlobalDefinition* global, TypeId type,
 		SemanticFactId initializer);
+	void index_global_symbols();
 	void collect_globals();
 	void global_declaration_position(BindingId binding_id,
 		const DeclarationFact* declaration, std::size_t* source_declaration,
 		std::size_t* source_declarator) const;
 	void materialize_pending_global_initializers();
+	void materialize_namespace_lifetime_destructors();
+	std::size_t begin_generated_function(const std::string& base,
+		lowir_model::SymbolRole role);
+	std::size_t begin_generated_function(SpellingId name_id,
+		lowir_model::SymbolRole role);
+	void finish_generated_function();
 	void index_function_scope_variables();
 	void collect_demanded_member_functions(
 		std::vector<unsigned char>* demanded,

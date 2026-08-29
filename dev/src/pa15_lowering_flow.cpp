@@ -240,6 +240,65 @@ void Pa15Lowerer::append_tls_wrapper(BindingId binding_id, ScopeId owner,
 	emitted_tls_wrappers_.insert(binding_id.value);
 }
 
+void Pa15Lowerer::append_tls_guard_wrapper(BindingId binding_id,
+	SpellingId guard_name, SpellingId wrapper_name)
+{
+	if (!binding_id.valid() || binding_id.value >= model_.bindings_.size() ||
+		binding_id.value >= model_.binding_owners_.size() ||
+		model_.binding(binding_id).kind != BindingKind::Variable ||
+		!model_.binding_owners_[binding_id.value].valid() ||
+		!guard_name.valid() || !wrapper_name.valid())
+		throw std::runtime_error("PA15 TLS guard wrapper identity is invalid");
+	FunctionDeclaration wrapper;
+	wrapper.symbol_id = SymbolId(next_symbol_++);
+	wrapper.name_id = wrapper_name;
+	wrapper.return_type.kind = LowType::TYPE_POINTER;
+	wrapper.metadata.binding = lowir_model::SBM_INTERNAL;
+	wrapper.metadata.tls_for_name_id = guard_name;
+	program_.function_declarations.push_back(wrapper);
+	symbol_name_ids_[wrapper.symbol_id.index] = wrapper.name_id;
+}
+
+void Pa15Lowerer::ensure_tls_lifetime_support(BindingId binding_id)
+{
+	if (!binding_id.valid() || binding_id.value >= model_.bindings_.size() ||
+		binding_id.value >= model_.binding_owners_.size() ||
+		model_.binding(binding_id).kind != BindingKind::Variable ||
+		!model_.binding_owners_[binding_id.value].valid() ||
+		global_symbols_.find(binding_id.value) == global_symbols_.end())
+		throw std::runtime_error("PA15 TLS lifetime target is missing");
+	if (tls_guard_symbols_.find(binding_id.value) != tls_guard_symbols_.end())
+		return;
+	// The generated family is derived once from the typed binding owner/name;
+	// the resulting presentation IDs are the only identities carried onward.
+	const std::string internal_name = internal_value_name(
+		model_.binding_owners_[binding_id.value],
+		model_.binding(binding_id).name);
+	const SpellingId guard_name = symbol_spelling(
+		"__cppgm_tls_guard__" + internal_name);
+	const SpellingId guard_wrapper_name = symbol_spelling(
+		"__cppgm_tls_wrapper____cppgm_tls_guard__" + internal_name);
+	const SpellingId init_name = symbol_spelling(
+		"__cppgm_tls_init__" + internal_name);
+	const SymbolId guard_symbol = SymbolId(next_symbol_++);
+	LowType i64;
+	i64.kind = LowType::TYPE_INTEGER;
+	i64.integer_kind = LowType::INTEGER_I64;
+	GlobalDefinition guard;
+	guard.symbol_id = guard_symbol;
+	guard.name_id = guard_name;
+	guard.type = i64;
+	guard.storage = lowir_model::GSM_THREAD_LOCAL;
+	guard.init_kind = GlobalDefinition::INIT_ZERO;
+	guard.metadata.binding = lowir_model::SBM_INTERNAL;
+	program_.globals.push_back(guard);
+	symbol_name_ids_[guard_symbol.index] = guard_name;
+	tls_guard_symbols_[binding_id.value] = guard_symbol;
+	tls_guard_name_ids_[binding_id.value] = guard_name;
+	tls_init_name_ids_[binding_id.value] = init_name;
+	append_tls_guard_wrapper(binding_id, guard_name, guard_wrapper_name);
+}
+
 bool Pa15Lowerer::class_object_type(TypeId type) const{
 	type = model_.strip_cv_type(model_.expression_object_type(type));
 	if (!type.valid() || model_.type_kind(type) != TypeKind::Named)

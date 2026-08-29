@@ -153,7 +153,11 @@ void Pa15Lowerer::collect_demanded_member_functions(
 	// while function lowering must still demand that helper when its call is
 	// reachable.  Keep the two reachability domains independent; one visited
 	// bit must never turn a context-sensitive demand into a global shortcut.
-	std::vector<unsigned char> scanned_global_facts(
+	// Each typed fact may be reached by an ordinary global root (where a
+	// proven aggregate constructor can be inlined) and by a TLS root (where
+	// the constructor must remain a demanded call).  Keep one visited bit per
+	// root mode so the first traversal cannot suppress the other semantics.
+	std::vector<unsigned char> scanned_global_fact_modes(
 		model_.semantic_facts_.size(), 0);
 	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
@@ -251,7 +255,17 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		const bool static_member_definition = model_.is_static_member(
 			BindingId(root->first));
 		if (namespace_definition || static_member_definition)
-			root_fact_work.push_back(std::make_pair(root->second, true));
+		{
+			const std::map<std::size_t, bool>::const_iterator tls =
+				thread_local_by_binding_.find(root->first);
+			// TLS construction runs through its guarded helper, so its typed
+			// aggregate constructor must remain a real demand even when an
+			// ordinary namespace aggregate may use the static-data fast path.
+			const bool inline_global_root = tls == thread_local_by_binding_.end() ||
+				!tls->second;
+			root_fact_work.push_back(std::make_pair(root->second,
+				inline_global_root));
+		}
 	}
 	while (!root_fact_work.empty())
 	{
@@ -261,9 +275,10 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		const bool global_root = work.second;
 		if (!fact_id.valid() || fact_id.value >= model_.semantic_facts_.size())
 			throw std::runtime_error("PA15 root demand fact is invalid");
-		if (scanned_global_facts[fact_id.value] != 0)
+		const unsigned char global_mode = global_root ? 1 : 2;
+		if ((scanned_global_fact_modes[fact_id.value] & global_mode) != 0)
 			continue;
-		scanned_global_facts[fact_id.value] = 1;
+		scanned_global_fact_modes[fact_id.value] |= global_mode;
 		const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 		if (model_.aggregate_ranges_.find(fact_id) != NULL)
 		{
@@ -284,6 +299,22 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			throw std::runtime_error("PA15 root demand child range is invalid");
 		if (fact.kind == SemanticFactKind::ConstructorAction && fact.has_callee)
 			demand_constructor_fact(fact, global_root);
+		// A storage-backed constructor action owns a typed CallExpression child
+		// rather than duplicating the callee on the wrapper fact.  Global roots
+		// must consume that child for emission demand just as function-body roots
+		// do; otherwise the later initializer materializer can reach a direct
+		// constructor call whose selected function was never emitted.
+		if (fact.kind == SemanticFactKind::CallExpression && fact.has_callee &&
+			!fact.has_implicit_object && fact.selected_binding.valid() &&
+			fact.selected_binding.value < model_.bindings_.size())
+		{
+			const BindingSidecar* sidecar = model_.binding_sidecar(
+				fact.selected_binding);
+			if (sidecar != NULL && sidecar->constructor_record.valid() &&
+				sidecar->constructor_record.value < model_.named_.size() &&
+				model_.named_[sidecar->constructor_record.value].name.valid())
+				demand_constructor_fact(fact, global_root);
+		}
 		for (std::size_t i = 0; i < fact.child_count; ++i)
 			root_fact_work.push_back(std::make_pair(
 				model_.semantic_children_[fact.child_begin + i], global_root));
