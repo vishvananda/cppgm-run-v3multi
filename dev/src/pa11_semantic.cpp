@@ -2046,8 +2046,7 @@ void PA11SemanticModel::validate_qualified_class_static_definition(
 }
 void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, ScopeId scope, MemberAccess member_access)
 {
-	if (!scope.valid() || scope.value >= scopes_.size() || node.children.size() != 1)
-		throw std::runtime_error("invalid PA11 using declaration");
+	if (!scope.valid() || scope.value >= scopes_.size() || node.children.size() != 1) throw std::runtime_error("invalid PA11 using declaration");
 	const NamePath target_name = name_path(node.children.front());
 	const SourcePoint declaration_point(node.source_begin);
 	if (!declaration_point.valid()) throw std::runtime_error("invalid PA11 using declaration source point");
@@ -2056,14 +2055,23 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	const NameId introduced = target_name.last();
 	Scope& current = scopes_[scope.value]; const bool class_access_view = current.kind == ScopeKind::Class;
 	if (record_inheriting_constructor_using(node, scope, target_name, type)) return;
-	if (current.types.find(introduced) != NULL ||
-		direct_namespace_exists(scope, introduced))
-		throw std::runtime_error("using declaration conflicts with binding");
-	bool published_type = false;
-	if (type.valid())
+	const auto validate_type = [this](NameId name, TypeId type, BindingId declaration, ScopeId expected_owner) -> bool
 	{
-		if (direct_value_exists(scope, introduced))
-			throw std::runtime_error("using declaration conflicts with binding");
+		if (!type.valid() || type.value >= types_.size() || !declaration.valid() || declaration.value >= bindings_.size() || declaration.value >= binding_owners_.size()) throw std::runtime_error("using declaration type identity is invalid");
+		const ScopeId owner = binding_owners_[declaration.value];
+		if (!owner.valid() || owner.value >= scopes_.size() || (expected_owner.valid() && owner != expected_owner)) throw std::runtime_error("using declaration type owner is invalid");
+		const Binding& candidate = bindings_[declaration.value];
+		if (candidate.name != name || candidate.type != type || (candidate.kind != BindingKind::Type && candidate.kind != BindingKind::TypeAlias) || type_declaration_identity(owner, name) != declaration) throw std::runtime_error("using declaration type declaration is invalid");
+		if (candidate.kind != BindingKind::Type) return false;
+		const NamedRecordId record = named_record_for_type(type);
+		if (!record.valid() || record.value >= named_.size() || (named_[record.value].kind != NamedKind::Class && named_[record.value].kind != NamedKind::Enum)) throw std::runtime_error("using declaration tag identity is invalid");
+		return true;
+	};
+	const TypeId* existing_type = current.types.find(introduced);
+	const bool existing_type_is_tag = existing_type == NULL || validate_type(introduced, *existing_type, type_declaration_identity(scope, introduced), scope);
+	const bool imported_type_is_tag = !type.valid() || validate_type(introduced, type, origin, ScopeId());
+	if (direct_namespace_exists(scope, introduced) || (type.valid() && (existing_type != NULL || (current.values.find(introduced) != NULL && !imported_type_is_tag))) || (!type.valid() && existing_type != NULL && !existing_type_is_tag)) throw std::runtime_error("using declaration conflicts with binding");
+	bool published_type = false; if (type.valid()) {
 		current.types.set(introduced, type); current.using_types.set(introduced, type);
 		BindingKind kind = BindingKind::TypeAlias; if (origin.valid() && binding(origin).kind == BindingKind::Type) kind = BindingKind::Type;
 		const BindingId introduced_binding = store_binding(scope, Binding(kind, introduced, type)); set_member_access(introduced_binding, class_access_view ? member_access : MemberAccess::Public);
@@ -2071,12 +2079,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		published_type = true;
 	}
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
-	if (values.empty())
-	{
-		if (published_type)
-			return;
-		throw std::runtime_error("using declaration target is not a binding");
-	}
+	if (values.empty()) { if (published_type) return; throw std::runtime_error("using declaration target is not a binding"); }
 	for (std::size_t i = 0; i < values.size(); ++i) {
 		const BindingId imported_binding = values[i].binding;
 		if (!imported_binding.valid() || imported_binding.value >= bindings_.size() || imported_binding.value >= binding_owners_.size()) throw std::runtime_error("PA11 using declaration binding identity is invalid");
@@ -2103,8 +2106,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	}
 	bool incoming_functions = true;
 	bool incoming_nonfunctions = true;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
+	for (std::size_t i = 0; i < values.size(); ++i) {
 		const Binding& imported = binding(values[i].binding);
 		const bool is_function = imported.kind == BindingKind::Function &&
 			type_kind(imported.type) == TypeKind::Function;
@@ -2114,8 +2116,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	if (!incoming_functions && !incoming_nonfunctions)
 		throw std::runtime_error("using declaration mixes value kinds");
 	std::vector<ValueRef> additions;
-	for (std::size_t i = 0; i < values.size(); ++i)
-	{
+	for (std::size_t i = 0; i < values.size(); ++i) {
 		bool duplicate = false;
 		if (existing != NULL)
 			for (std::size_t j = 0; j < existing->entries.size(); ++j)

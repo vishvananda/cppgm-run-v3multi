@@ -1471,9 +1471,16 @@ TypedFunctionSelection PA11SemanticModel::select_typed_member_function(
 				continue;
 		}
 		std::size_t required = function.parameters.size();
-		while (required != 0 && function_default_argument(
-			candidate_ref.binding, required - 1).valid())
+		while (required != 0)
+		{
+			const SemanticFactId default_fact = function_default_argument(
+				candidate_ref.binding, required - 1);
+			if (default_fact.valid() && default_fact.value >= semantic_facts_.size())
+				throw std::runtime_error("PA12 member default fact is invalid");
+			if (!default_fact.valid())
+				break;
 			--required;
+		}
 		if (initial_arguments.size() < required ||
 			(!function.variadic && initial_arguments.size() >
 				function.parameters.size()))
@@ -2248,7 +2255,7 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	{
 		const SemanticFactId default_fact = function_default_argument(
 			selected.binding, arg);
-		if (!default_fact.valid())
+		if (!default_fact.valid() || default_fact.value >= semantic_facts_.size())
 			throw std::runtime_error("PA12 selected member default is missing");
 		const SemanticFact& value = semantic_facts_[default_fact.value];
 		arguments.push_back(ExprInfo(default_fact, value.type, value.category,
@@ -2261,6 +2268,9 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 		if (!arguments[arg].fact.valid())
 			arguments[arg] = semantic_expression_for_target(
 				*argument_nodes[arg], scope, function.parameters[arg]);
+		if (!arguments[arg].fact.valid() ||
+			arguments[arg].fact.value >= semantic_facts_.size())
+			throw std::runtime_error("PA12 selected member argument is invalid");
 		arguments[arg] = apply_context_conversion(arguments[arg],
 			function.parameters[arg],
 			semantic_facts_[arguments[arg].fact.value].source, scope);

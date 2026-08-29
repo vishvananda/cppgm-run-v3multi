@@ -2,6 +2,192 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `a5b496e81d0bc9592900c6bb19715343fc6a960c`
+(`PA16: fix typed member lookup boundary`) relative to its audit parent
+`1093c2b7`. The bounded scope is the landed ordinary-value-over-tag,
+member-enumerator, and member-call increment. The audit also makes one narrow
+PA11 conflict correction and hardens the same PA12 path against malformed
+enumerator owners/types/widths and malformed member default facts. The working
+tree stays within the six permitted implementation paths, this documentation,
+and the focused executable regression
+`cppgm.tests/course/pa16/421-typed-using-separate-namespaces-regression.sh`.
+No handout test, `.ref` or exit-status fixture, harness, comparator, coverage
+rule, frontend source set, or unrelated source changed.
+
+### Contract and ownership
+
+The path was checked against `pa16/README.md`, `spec.md` §§2, 3, 4, 5, and 7,
+and the preserved PA10--PA15 typed-owner boundaries. The representative flow
+is:
+
+```text
+PA10 name/declarator facts and source point
+  -> PA11 typed TypeId/declaration BindingId and ValueRef(binding, origin ScopeId,
+     source point), with independent type and ordinary-value indices
+  -> PA12 member lookup/selection or enumerator Literal fact, retaining the
+     selected binding, owner, type, conversions, and exactly-once child facts
+  -> PA15 typed LowIR call/projection/literal lowering; no lookup reconstruction
+```
+
+For a using-declaration, `process_using_declaration` first performs typed
+`lookup_type_path` with the declaration source point and then typed
+`lookup_value_path`. A target can therefore publish a canonical type identity
+and canonical ordinary values independently. Type publication records the
+introduced declaration binding and source point; each value entry retains its
+canonical binding, owning origin scope, using view, and source point. The
+corrected conflict boundary uses the canonical declaration identity from
+`type_declaration_identity` and the origin returned by `lookup_type_path`:
+cross-space coexistence is permitted only between an ordinary value/function
+and a real class or enum tag (`BindingKind::Type` backed by `NamedKind::Class`
+or `NamedKind::Enum`). A `BindingKind::TypeAlias` never grants that exception;
+an ordinary target still conflicts with an existing direct typedef/alias.
+Namespace collisions and same-space type/value conflicts remain rejected.
+Downstream value lookup and the existing typed function selector consume the
+ordered `ValueRef` candidates; no spelling is recovered.
+
+For a direct or inherited member call, `member_lookup` checks the first
+declaring class and then the validated direct-base chain in deterministic
+order. Using views carry their canonical origin and access view. The parser's
+call-shaped/declaration ambiguity asks typed `unqualified_member_value` whether
+the implicit object's member claims the name before an outer type can claim a
+declaration. Both ordinary member calls and this ambiguity path feed the same
+`select_typed_member_function`, which walks the complete supplied member set
+and ranks non-static implicit-object cv/base conversions, explicit argument
+conversions, trailing defaults, and variadic arguments. Function-id arguments
+retain their typed target-resolution path. Selection is followed by canonical
+access/deleted checks, default-fact publication, contextual and call-argument
+conversions, and a call fact carrying selected binding/scope/callable type and
+the real implicit-this flag. PA15 emits the hidden `this` operand first.
+
+For `object.member` and `pointer->member` enumerators, PA12 evaluates the
+object expression once, validates the dot/arrow object and base path, and
+selects the canonical enumerator binding and owner. The shared enumerator
+producer now requires a valid enum type, canonical owner, underlying type, and
+bounded value; it creates a declared-type prvalue literal with one typed child
+for the object evaluation. PA15 validates that child as an enumerator-bearing
+fact, lowers the child in discarded context exactly once, and only then emits
+the literal. A call returning the pointer used by `->` therefore remains in
+LowIR exactly once.
+
+The implementation has one typed semantic model and one shared typed member
+selector. It has no textual spelling recovery, whole-translation-unit scan,
+retry loop, reduced duplicate overload algorithm, invalid fallback, or
+order-dependent second pass. Source-point, owner, binding, candidate, access,
+child-range, default-fact, and type-range checks fail closed. Unsigned enum
+normalization uses preserved value bits and a checked width before shifting;
+signed minimum values use the overflow-safe `-(raw + 1) + 1` representation.
+
+### Findings and bounded repairs
+
+- The real defect was in `process_using_declaration`: after finding a valid
+  target type, the old conflict check rejected any direct destination value and
+  the no-value branch returned before publishing a target ordinary value. This
+  incorrectly merged the C++ type and ordinary-value namespaces. This repair
+  retains independent type/value publication but limits the
+  cross-space exception to a canonical real class/enum tag declaration
+  (`BindingKind::Type`), not a typedef/alias. It validates the target and
+  existing direct type declaration identity, owner, range, name, type, and
+  kind; namespace, same-space, alias/value, and value/alias conflicts remain
+  fail-closed. Course 421 covers class and enum tags in both directions, and
+  four alias-conflict cases with exact `EXIT_FAILURE` status.
+- The audit found two fail-closed holes in the affected typed consumers. The
+  enumerator producer now validates canonical owner identity, enum record and
+  underlying type, type range, and unsigned width before constructing a
+  modulus. The shared member selector and its finalizer reject a valid-looking
+  default `SemanticFactId` outside the semantic-fact arena instead of treating
+  it as a missing or readable fact.
+- Existing access, source-point, base-conversion, static/non-static, inherited
+  and using-view checks remain in the typed lookup/candidate path. The normal
+  member-call route and grammar ambiguity route both use the same selector;
+  no reduced recovery resolver was introduced. PA15's discarded enumerator
+  child path retains effectful calls and does not fold away evaluation.
+
+### Focused evidence and disposition
+
+The authoritative turn-start result for landed `a5b496e8` is `187/243`
+passing, `56` failures, and `243/243` identities covered; the complete
+turn-start failure map and the exact three-identity landed delta are preserved
+in `pa16/plan.md` and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The authorized final result is also `187/243` with `56` failures and full
+`243/243` identity coverage. The sorted final-vs-turn-start comparison has
+baseline-only `0` and final-only `0`, preserving the complete residual map and
+stage progress; the durable derivation is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-failure-set-comparison-20260829-v2.log`.
+
+- `make -C dev cppgm++ -j2` exits `0`.
+- The focused handout matrix containing the three landed identities plus five
+  preservation controls is `8/8`; the final log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-focused-matrix-final-20260829-v3.log`.
+- Courses 402, 403, 405, 419, and the new 421 regression pass, including
+  `sh -n`; 402 prints its expected rejected inherited-noncallable control
+  diagnostic while the script exits `0`. Course 421 reports four legal cases
+  at status `0` and these exact-status negative cases: source typedef plus
+  destination value `1`, source alias plus destination function `1`, source
+  function plus destination typedef `1`, and source value plus destination alias
+  `1`. The final 421 syntax/run log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course421-final-20260829.log`,
+  and the final 402/403/405/419 controls log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course-controls-final-20260829-v3.log`.
+- The refreshed structural probe log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-structural-correction-20260829.log`.
+  Typed using output repeats byte-identically (`442` bytes, `17` lines,
+  SHA-256 `f872964c24e02f053e386733d9f5567c03d86f2c4d94abede253fea531ae1fc6`)
+  and contains two `type f` and two `function f` identities. The effectful
+  enumerator probe emits exactly one `call ptr @get_holder()`; the ambiguity
+  probe emits one `Base__f` call with its default; the static ambiguity probe
+  emits `C__f` without an implicit object; and the function-id probe emits one
+  typed `addr @selected`. Unsigned-32, signed-minimum, and 64-bit-width enum
+  probes all exit `0`.
+- Course 406 is a pre-existing residual, not a regression from this audit:
+  both the current rebuilt binary and a clean archive/build of exact commit
+  `a5b496e8` stop at its first `qualified-parenthesized-static.cpp` positive
+  with `ERROR: unknown PA11 type name` and exit `1`. Both ASTs are identical
+  (`1943` bytes, SHA-256
+  `b25a06952b8e4cf9e40a1fed597daeb0c920b4208e41f3d8d54a47cc8491c303`) and
+  contain a cast-shaped `type-id Qualified::f`; PA12 therefore enters
+  `semantic_cast_expression` and PA11 `type_from_type_id` before
+  `semantic_call_expression`, `qualified_static_member_candidates`, or
+  `select_typed_member_function`. Fixing that parser/cast ambiguity would
+  widen this audit beyond the affected selector. Current and baseline logs are
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course406-current-final-20260829-v3.log`
+  and
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course406-baseline-trace-20260829.log`.
+- Focused handout and course results are status/structural evidence only. No
+  timing, RSS, allocation, or speedup claim is made. The exact final
+  through-PA15 log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-prior-through-pa15-20260829-v3.log`
+  (`1167/1167`, status `0`); the exact PA16 log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16-20260829-v3.log`
+  (status `2`, `187/243`); and file audit passes with five warnings in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16-20260829-v3.log`.
+  The final `git diff --check` log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-git-diff-check-pa16-20260829.log`.
+
+### Performance and structural bounds
+
+The correction uses the existing per-scope typed indices, so each direct index
+query is average O(1). Relevant lexical/using and member/base walks are
+bounded by visited scopes `S`, base work `B`, and returned candidates `C`.
+The shared selector performs one candidate walk with explicit argument work
+`A` and parameter/default work `P`, bounded by O(C * (A + P + B)) for the
+existing base checks; its score storage is O(C * A). The ambiguity case does
+not scan the translation unit or retry with another resolver. The current
+probe records deterministic output bytes/lines/hashes and candidate/call
+cardinalities only; it does not support a timing or memory claim.
+
+### Boundaries, residuals, and next checkpoint
+
+The final authoritative residual is exactly the 59-item turn-start map minus
+the three landed identities: `56` failures, with no final-only identity and
+full `243/243` coverage. Unrelated lifetime, constructors, bit-fields,
+operators, virtual/multiple inheritance, and broader PA16 residuals remain out
+of scope. This checkpoint's final through-PA15, PA16, file-audit, and
+diff-check gates preserve stage progress. Course 406 remains excluded as the
+clean-a5 pre-existing qualified static-call residual described above; its
+failure occurs before the shared selector.
+
+## Historical Non-Automatic Lifetime Review
+
 This review covers landed commit `a1a2cf83d5673e0eda7e76878233eeec0a42f5d2`
 (`PA16: emit typed non-automatic lifetimes`) relative to parent `c2247924`.
 It audits the namespace/local class-object lifetime boundary, declaration-owned
@@ -1435,6 +1621,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `a5b496e8` typed ordinary-value-over-tag/member-enumerator/member-call checkpointAudit | Completed bounded audit of the landed increment relative to `1093c2b7`: PA11 preserves independent typed identities, but cross-space using coexistence is limited to a canonical real class/enum tag (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), while typedef/alias value conflicts remain rejected; PA12 member ambiguity and ordinary calls share the complete typed member selector; enumerator facts retain canonical binding/owner/type/value and one object-evaluation child through PA15. Final PA16 is `187/243` with `56` failures and `243/243` coverage; sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving stage progress. Focused handout matrix is `8/8`; courses 402, 403, 405, 419, and 421 pass; 421 has four legal status-0 cases and four exact status-1 alias conflicts. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 reproduces the same first qualified-static-call failure on current and clean `a5b496e8` (status 1) before the shared selector and is outside the bounded ownership path. Final logs and exact-set derivation are recorded in the current review. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
 | `a1a2cf83` typed non-automatic lifetime checkpointAudit | Completed bounded audit of the landed typed lifetime path relative to `c2247924`: canonical BindingId/TypeId and declaration-owned initializer/lifetime continuity, PA11 exact per-declarator definition flags, namespace/static-member storage, TLS mode separation and collision-free helpers, aggregate/local recursive actions, source-order initialization, and reverse-order destruction are traced. The audit repairs typed PA11-to-PA12 definition continuity and PA15 definition-owner retention, preventing bodyless-extern duplicate lifetime publication and redeclaration source-order drift. The five fixed identities pass `5/5`; course controls 404, 407, 409, 410, 415, and the new 420 regression pass; the relevant handout matrix is `9/12` with the same three LowIR-shape residuals. Final PA16 is `184/243` with `59` failures and `243/243` coverage; the exact sorted comparison has baseline-only `0` and final-only `0`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings; diff-check passes; final logs and N=8/N=32 hashes are recorded above. No handout, fixture, reference, harness, comparator, or unrelated stage surface changed. |
 | `135e3a95` typed access-control checkpointAudit | Completed bounded audit and repair of landed `135e3a95` relative to `0fb73ad4`: canonical owner/access, direct friend identity, paired using view/publishing scope, typed qualified type/value and base access, source declaration accessibility, private/protected/friend/protected-object rules, and PA15 per-edge projection are traced. The type using fix preserves canonical `TypeId` while recording the introduced declaration/access owner; public class-member type/value using remains supported at namespace or block scope, inaccessible sources are rejected by the p17 access boundary, and namespace-to-namespace using remains valid. Operator access propagation is traced through candidates; unrelated operator behavior is out of scope. Final PA16 is `179/243` with `64` failures and `243/243` coverage; exact comparison has final-only `0` and baseline-only `0`. Focused PA16 is `12/14` with two checked-in LowIR residuals, courses 405/411/419 and `sh -n` pass, and structural noise evidence is recorded. Through-PA15 is `1167/1167`; file audit exits `0` with five known warnings. No handout, fixture, reference, harness, comparator, or exit-status file changed. |
 | `30d69fc3` inheriting-constructor checkpointAudit | Completed bounded review of the landed PA10--PA15 inheriting-constructor path relative to `05c36f56`: typed relation/source-point ownership, direct/transitive candidate selection and access, reference parameters, complete/base-entry ABI identity, external declarations, demand/slot behavior, and structural noise bounds are traced. The repair is N3485-correct for trailing defaults: each allowed nonzero arity gets a distinct shortened typed wrapper with no inherited default facts, omitted typed defaults reach only the full-signature base entry, and no-argument construction follows the separate implicit-default path. Derived DMI/runtime member actions use one shared declaration-ordered typed owner, with local action/argument ranges and base-before-member order. Recursive expansion now materializes relevant immediate-base typed relation candidates before each derived scan, validates identities, bounds the active single-inheritance walk, and makes hard-only transitive discovery independent of prior `Soft` construction while remaining demand-driven. Focused build, seven selected handout identities (`7/7`), course 403/408/409/418 including the hard-only control, strict structural probe, and diff-check pass; the probe remains deterministic and byte-identical at 68 lines/hash `02de5e72...d78592`. Final PA16 is `176/243` with `67` failures and `243/243` coverage; exact sorted failure sets match the turn-start map with no final-only identities. Durable broad logs are `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-final-20260829.log` and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-identity-compare-20260829.log`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings. No handout, fixture, `.ref`, harness, comparator, or source-set file changed. |

@@ -1061,10 +1061,21 @@ ExprInfo PA11SemanticModel::semantic_enumerator_expression(
 	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
 		binding_id.value >= binding_owners_.size())
 		throw std::runtime_error("PA12 enumerator binding is invalid");
+	const ScopeId canonical_owner = binding_owners_[binding_id.value];
+	if (!canonical_owner.valid() || canonical_owner.value >= scopes_.size() ||
+		(owner.valid() && (owner.value >= scopes_.size() ||
+			owner != canonical_owner)))
+		throw std::runtime_error("PA12 enumerator owner is invalid");
 	const Binding& value = binding(binding_id);
 	if (value.kind != BindingKind::Enumerator || !value.type.valid() ||
-		!value.has_value)
+		value.type.value >= types_.size() || !value.has_value)
 		throw std::runtime_error("PA12 enumerator fact is invalid");
+	const NamedRecordId record = named_record_for_type(value.type);
+	if (!record.valid() || record.value >= named_.size() ||
+		named_[record.value].kind != NamedKind::Enum ||
+		!named_[record.value].has_underlying ||
+		!named_[record.value].underlying.valid())
+		throw std::runtime_error("PA12 enumerator type is invalid");
 	const bool value_unsigned = unsigned_integral_type(value.type);
 	const __int128 raw_value = value.value_unsigned ?
 		static_cast<__int128>(value.value_bits) :
@@ -1073,13 +1084,17 @@ ExprInfo PA11SemanticModel::semantic_enumerator_expression(
 		SemanticValueCategory::Prvalue, &node);
 	fact.binding = binding_id;
 	fact.selected_binding = binding_id;
-	fact.selected_scope = owner.valid() ? owner :
-		binding_owners_[binding_id.value];
+	fact.selected_scope = owner.valid() ? owner : canonical_owner;
 	fact.has_literal_value = true;
 	fact.literal_value_unsigned = value_unsigned;
 	if (value_unsigned)
 	{
-		const std::size_t width = type_size(value.type) * 8;
+		const std::size_t bytes = type_size(value.type);
+		if (bytes == 0 || bytes > sizeof(std::uint64_t))
+			throw std::runtime_error("PA12 enumerator width is invalid");
+		const std::size_t width = bytes * 8;
+		if (width >= sizeof(__int128) * 8)
+			throw std::runtime_error("PA12 enumerator shift width is invalid");
 		const __int128 modulus = static_cast<__int128>(1) << width;
 		__int128 normalized = raw_value % modulus;
 		if (normalized < 0)

@@ -24,7 +24,7 @@ implicit-object cv/base conversion, explicit conversions, defaults, and
 variadics; recovery supplies already-typed argument facts and does not run a
 reduced resolver. PA15 consumes selected bindings and child facts without
 reconstructing lookup or spelling. The design follows the PA16 README and
-`spec.md` §§2, 4, 5, and 7: relevant lexical, using, and member/base
+`spec.md` §§2, 3, 4, 5, and 7: relevant lexical, using, and member/base
 candidate lists are walked in deterministic order, with no merged namespaces,
 whole-TU scan, retry loop, or second semantic model. Unrelated bit-field,
 lifetime, and broad layout work remains outside this checkpoint.
@@ -165,9 +165,10 @@ baseline map is:
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
 The prior `64 -> 59` reduction is historical. The complete authoritative
-turn-start map above is the `184/243`, 59-failure baseline. Broad validation
-finished at `187/243`, 56 failures, with `243/243` identities covered. The
-exact baseline-to-final delta is:
+turn-start map above is the `184/243`, 59-failure baseline. The landed HEAD at
+turn start measured `187/243`, 56 failures, with `243/243` identities covered;
+that is the pre-audit authority; the final authorized result is recorded
+below. The exact landed baseline-to-HEAD delta is:
 
 - baseline-only (fixed): `100-object-member-enumerator-constant.t`,
   `200-member-call-hides-outer-type-declaration.t`, and
@@ -176,10 +177,14 @@ exact baseline-to-final delta is:
 - final residual: exactly the 59-item baseline map above minus those three
   identities.
 
-The focused matrix moved the three owned identities from `6/9` passing to
-`9/9`; the six preservation identities stayed passing. Three additional
-nearby invalid controls also pass, for `12/12` combined. The durable exact-set
-comparison is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-pa16-failure-set-comparison-lookup.log`.
+The final focused matrix is `8/8`: the three owned identities and five
+preservation controls all pass. The current exact broad delta, coverage, and
+stage-progress result is final: `187/243` passing, `56` failures, and
+`243/243` identities covered. The sorted comparison against the authoritative
+turn-start log has baseline-only `0` and final-only `0`; the complete residual
+is exactly the 59-item target map above minus the three landed identities.
+The durable derivation is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-failure-set-comparison-20260829-v2.log`.
 
 ## Active Checkpoint
 
@@ -195,20 +200,28 @@ enumerator values in the following implementation files:
 
 The scope is limited to the three owned baseline failures: class enumerator
 member access, a direct member call hiding an outer type, and a namespace
-using-declaration importing a function alongside a tag. PA11 publishes the
-two lookup identities independently; PA12 creates the typed enumerator
-literal with one object-evaluation child or the normal implicit-object member
-call. PA15 performs the one required child evaluation before the enumerator
-literal lowering; no new source-set entry is needed.
+using-declaration importing a function alongside a tag. The audit correction
+also fixes the same PA11 namespace boundary when the destination already has
+the other namespace's identity. PA11 publishes the two lookup identities
+independently; PA12 creates the typed enumerator literal with one
+object-evaluation child or the normal implicit-object member call. PA15
+performs the one required child evaluation before the enumerator literal
+lowering; no new source-set entry is needed.
 
-The implementation preserves separate type/value namespaces, canonical
+The implementation publishes canonical type and ordinary-value identities
+independently, but the using-declaration coexistence exception is limited to a
+real class/enum tag (`BindingKind::Type`); a typedef/alias remains conflicting
+with an ordinary value/function in the other namespace. Canonical
 `BindingId`/origin `ScopeId`/source-point facts, deterministic relevant-scope
-candidate order, and existing invalid-access rejection. It does not edit
-handout tests, fixtures, harnesses, comparators, coverage rules, or add a
-course regression; it adds no whole-scope/TU scan, textual name heuristic,
-retry loop, duplicate overload resolver, or duplicate lowering model. The
-previously rejected bit-field diff was restored before this checkpoint and is
-not in this scope.
+candidate order, and existing invalid-access rejection are preserved. It does not edit
+handout tests, fixtures, harnesses, comparators, coverage rules, or frontend
+source sets; the audit adds only the focused executable course regression
+`421-typed-using-separate-namespaces-regression.sh`. It adds no whole-scope/TU
+scan, textual name heuristic, retry loop, duplicate overload resolver, or
+duplicate lowering model. The audit also hardens enumerator owner/type/width
+and member default-fact range boundaries without changing the representation.
+The previously rejected bit-field diff was restored before this checkpoint and
+is not in this scope.
 
 ## Performance Evidence
 
@@ -223,11 +236,11 @@ candidate work aside from the existing base-relation checks. Its temporary
 score storage is O(C*A), with no persistent or parallel semantic model. There
 is no whole-TU scan or retry loop.
 
-The final deterministic source generator outside the repository created N
-unrelated namespaces, each with a same-spelled `struct f` and `int f(int)`,
-then one using-import plus a direct class member with the same spelling and
-calls that exercise both boundaries. Repeated `--emit-semantics` outputs were
-identical:
+The landed checkpoint's deterministic source generator outside the repository
+created N unrelated namespaces, each with a same-spelled `struct f` and
+`int f(int)`, then one using-import plus a direct class member with the same
+spelling and calls that exercise both boundaries. Repeated `--emit-semantics`
+outputs were identical:
 
 | noise namespaces | bytes | lines | repeat SHA-256 |
 | ---: | ---: | ---: | --- |
@@ -235,52 +248,68 @@ identical:
 | 32 | 8376 | 228 | `47bbb35964ae2a5a1e4c41efe5b994120e75a31c60f6c7fb0cb3d62ca2ccc974` |
 
 This is structural scaling and determinism evidence only; no timing,
-allocation, RSS, or speed claim is made. The two post-correction semantic
-probes were also run outside the repository: the effectful enumerator probe
-emitted one `call ptr @get_holder()` in 30 lines/677 bytes (SHA-256
-`448b9b925f6edc2b44e6b22b2afad5874e2762c2f8b25d85dffbaee8e4af91d8`), and the
-overload probe emitted the const-mangled `fuzz::fields` call and its `store
-i32 2` body in 52 lines/1251 bytes (SHA-256
-`ff5ce34db0f5032e78d59989fe39d68c76c8fe80658ce113cd423961b34e2c9f`).
+allocation, RSS, or speed claim is made. The current audit probe log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-structural-correction-20260829.log`:
+the typed-using output repeats byte-identically at `442` bytes/`17` lines
+(SHA-256
+`f872964c24e02f053e386733d9f5567c03d86f2c4d94abede253fea531ae1fc6`), with
+two `type f` and two `function f` identities; the effectful enumerator has one
+`get_holder` call, the ambiguity member/static
+probes have one `Base__f`/`C__f` call, and the function-id probe has one
+`addr @selected`. Unsigned-32, signed-minimum, and 64-bit-width enum probes
+also exit `0`.
 
 ## Validation
 
 - `make -C dev cppgm++ -j2`: exit `0`.
-- After restoring clean HEAD, the required 9-test matrix was `6/9`: the six
-  preservation controls passed and the three owned identities failed. With
-  this diff, the same matrix is `9/9`; the three additional nearby invalid
-  controls also pass, for `12/12` in the final combined focused run. The
-  durable log is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-focused-pa16-lookup.log`.
-- The effectful external member-enumerator probe retains exactly one
-  `get_holder` call in LowIR. The external same-spelled outer-tag/member
-  overload probe selects the const member (`_ZNK4fuzz6fieldsER6buffer`) and
-  emits its `chosen = 2` store.
-- `make test-pa16` exits `2` because the 56 residual fixture mismatches remain;
-  its measured summary is `187/243` with `243/243` identities covered. The
-  exact baseline comparison has three baseline-only identities and zero
-  final-only identities. Durable log:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16-lookup.log`.
-- The exact prior command (`n=16; ... make test-report-through-pa$((n - 1))`)
-  exits `0` at `1167/1167`. Durable log:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-report-through-pa15-lookup.log`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
-  with the five known header-division warnings. Durable log:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16-lookup.log`.
-- The final noise probe repeated identical N=8/N=32 semantic-output hashes;
-  the two semantic probes and their counts/hashes are recorded in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-semantic-probes-pa16-lookup.log`
-  and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-lookup-noise-pa16.log`.
-- `git diff --check` exits `0`; no handout, fixture, harness, comparator,
-  source-set, or test file was changed. Turn-start authority records PA1--PA15
-  at `1167/1167`.
+- The focused handout matrix containing the three landed identities and five
+  preservation controls is `8/8`; its final log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-focused-matrix-final-20260829-v3.log`.
+- Courses 402, 403, 405, 419, and new 421 pass with `sh -n`; 402 prints the
+  expected rejected inherited-noncallable diagnostic while exiting `0`. Course
+  421's four legal class/enum-tag/value-function cases exit `0`; its source
+  typedef/alias into an existing value/function and source value/function into
+  an existing typedef/alias each exit exactly `1`. The final syntax/run log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course421-final-20260829.log`;
+  final controls 402/403/405/419 are in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course-controls-final-20260829-v3.log`.
+- The current structural/determinism and exactly-once probes are recorded in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-audit-structural-correction-20260829.log`.
+- The exact final command `n=16; ... make test-report-through-pa15` exits `0`
+  at `1167/1167`; its durable log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-prior-through-pa15-20260829-v3.log`.
+  Exact `make test-pa16` exits `2` with `187/243` passing, `56` failures, and
+  `243/243` identities covered; its durable log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16-20260829-v3.log`.
+  The sorted final-vs-turn-start identity derivation has baseline-only `0` and
+  final-only `0` in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-final-failure-set-comparison-20260829-v2.log`.
+- File audit exits `0` with five existing header-division warnings; its final
+  log is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16-20260829-v3.log`.
+- No handout, fixture, harness, comparator, coverage, source-set, or unrelated
+  source file changed. Final `git diff --check` is recorded in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-git-diff-check-pa16-20260829.log`.
+- Course 406 is unchanged from clean `a5b496e8`: its first
+  `qualified-parenthesized-static.cpp` case reports `ERROR: unknown PA11 type
+  name` and exits `1` in both builds. The current and clean ASTs are identical
+  (`1943` bytes, SHA-256
+  `b25a06952b8e4cf9e40a1fed597daeb0c920b4208e41f3d8d54a47cc8491c303`) and
+  use a cast-shaped `type-id Qualified::f`, before the permitted shared
+  selector; fixing that parser/cast ambiguity would widen this bounded audit.
+  The current and clean-a5 evidence logs are
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course406-current-final-20260829-v3.log`
+  and
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-course406-baseline-trace-20260829.log`.
 
 ## Next Checkpoint
 
-This lookup checkpoint is validated and its final residual is the exact
-turn-start 59-failure map minus the three owned identities above, with no new
-failures and full coverage. The next PA16 checkpoint should preserve this
-typed type/value owner flow and address another residual boundary only after
-an authorized focused design review.
+This lookup audit is complete. Its final authority is the exact turn-start
+59-failure map minus the three landed identities: `56` failures, full
+`243/243` coverage, no final-only identity, and preserved stage progress. The
+next PA16 checkpoint should preserve this typed type/value owner flow—including
+the real-tag-versus-alias conflict boundary—and address another residual
+boundary only after an authorized focused design review.
 
 ## Checkpoint Ledger
 
@@ -297,4 +326,4 @@ an authorized focused design review.
 | `0fb73ad4` PA16 access turn start | Clean authority for that checkpoint: `176/243` passing, `67` failures, `243/243` covered; through-PA15 `1167/1167`, audit with five known header-division warnings. |
 | `PA16 typed access-control checkpoint` | Previous bounded access repair: `179/243` passing, `64` failures, `243/243` covered; exact residual map carried forward. |
 | `PA16 typed non-automatic lifetime checkpoint` | Completed checkpoint audit: PA11 exact per-declarator definition continuity, PA12 typed lifetime ownership, and PA15 definition-owner ordering are repaired and traced. PA16 is `184/243` passing, `59` failures, `243/243` covered; exact sorted comparison has baseline-only `0` and final-only `0`; focused matrix is `9/12` with the same three LowIR-shape residuals; course 420, through-PA15 `1167/1167`, file audit with five known warnings, diff-check, and N=8/N=32 repeatability all pass. |
-| `PA16 typed ordinary-value-over-tag lookup checkpoint` | Completed checkpoint: `187/243` passing, `56` failures, `243/243` covered; exact delta is three baseline-only fixes (`100-object-member-enumerator-constant`, `200-member-call-hides-outer-type-declaration`, `300-using-declaration-function-hides-tag`) and zero final-only identities. Final focused matrix is `12/12`, prior-through is `1167/1167`, audit passes with five known warnings, and final LowIR/noise probes are deterministic. |
+| `PA16 typed ordinary-value-over-tag lookup checkpoint` | Completed audit of landed HEAD `a5b496e8` relative to `1093c2b7`: final PA16 is `187/243` passing, `56` failures, and `243/243` covered; sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving the complete residual map and stage progress. The source repair permits cross-space coexistence only for canonical real class/enum tags (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), retains typedef/alias conflicts, and hardens enumerator/default-fact ranges. Focused handout matrix is `8/8`; courses 402, 403, 405, 419, and 421 pass; 421 proves four status-0 legal cases and four exact status-1 alias conflicts; structural probes are deterministic and exactly-once. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 has the same first qualified-static-call status-1 failure on clean `a5b496e8` and current code: identical cast-shaped ASTs reach `type_from_type_id` before the shared selector, so the parser/cast ambiguity is outside this bounded audit. Final logs and exact-set derivation are recorded above. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
