@@ -284,6 +284,8 @@ void PA11SemanticModel::process_bit_field_declaration(
 			fact.binding = binding_id;
 			set_bit_field_fact(binding_id, fact);
 			declaration_bindings_.push_back(binding_id);
+			declaration_definition_flags_.push_back(
+				binding(binding_id).has_definition ? 1 : 0);
 		}
 		append_record_bit_field(fact.owner_record, fact);
 	}

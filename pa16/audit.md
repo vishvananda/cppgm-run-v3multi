@@ -2,6 +2,229 @@
 
 ## Current Checkpoint Review
 
+This review covers landed commit `a1a2cf83d5673e0eda7e76878233eeec0a42f5d2`
+(`PA16: emit typed non-automatic lifetimes`) relative to parent `c2247924`.
+It audits the namespace/local class-object lifetime boundary, declaration-owned
+construction facts, namespace-scope static-member definitions, thread-local
+construction, aggregate-array preservation, recursive subobjects, local
+automatic cleanup, deterministic initialization/finalization order, and
+demand-driven helper emission. The audit also includes two narrow repairs in
+the same ownership path: PA11 now carries its exact per-declarator definition
+bit in a compact typed arena, PA12 consumes that bit without syntax
+reclassification, a bodyless `extern` redeclaration no longer publishes a
+second construction/lifetime fact, and PA15 no longer lets such a redeclaration
+move the source position of an earlier typed fact. No handout, fixture,
+existing test, exit-status file, harness, comparator, or unrelated stage
+surface changed; the one new executable course regression is
+`cppgm.tests/course/pa16/420-typed-redeclaration-lifetime-order-regression.sh`.
+
+### Contract and ownership
+
+The path is checked against PA16 README, `spec.md` §§1--5 and 7, and the
+existing PA10--PA15 typed ownership boundaries. The representative fact flow
+is:
+
+```text
+PA10 declaration syntax and storage qualifiers
+  -> PA11 canonical BindingId/TypeId, owner scope, definition/linkage/storage
+     classification, exact per-declarator definition flags parallel to
+     declaration_bindings_, declaration ranges, and complete class/array layout
+  -> PA12 declaration-owned Variable SemanticFact, typed constructor actions,
+     recursive member/base actions, and LifetimeFact(object, TypeId, dtor,
+     owner scope, storage kind)
+  -> PA15 typed semantic/emission demand: global roots are scanned per
+     ordinary/TLS mode, constructor/destructor bindings are demanded through
+     typed edges, and local LifetimeFacts are indexed by function scope
+  -> deterministic global/TLS storage, init/fini/guard/wrapper materializers
+     and typed LowIR operands/calls
+```
+
+PA11 owns the canonical declaration and type identities and computes the exact
+per-declarator `definition` bool in its declaration pass. That bool is copied
+at the same append point as each `declaration_bindings_` entry into the compact
+typed `declaration_definition_flags_` arena. `Binding::has_definition` remains
+the canonical redeclaration-merged state; it is not used to reclassify the
+current declarator. PA12 uses the carried bit and the declaration's own storage
+context when publishing a variable fact. `record_namespace_lifetime` records
+only non-thread-local namespace/static-member objects whose typed class record
+requires runtime destruction. Thread-local construction remains a deferred
+typed global action and is deliberately not a namespace destruction edge.
+
+`class_record_for_object_type` preserves the named element record through
+complete array tails. Aggregate initialization remains represented by typed
+aggregate ranges and element facts; named class objects use constructor-action
+facts. `ensure_implicit_constructor` and `ensure_implicit_destructor` retain
+the class owner and typed callable identity. Constructor actions are base
+first and declaration/layout ordered; synthesized destructor actions are
+member reverse ordered followed by the direct base. Local automatic facts are
+activated at declaration time and unwound on lexical/control exits through the
+dense function-scope lifetime index.
+
+PA15 validates the binding, definition-flag, semantic, and lifetime ranges once,
+keeps ordinary-global and TLS root traversal distinct through
+`scanned_global_fact_modes`, and follows only typed semantic children and
+demanded helper edges. `declaration_by_binding_` is updated by the typed
+definition flag, so the actual definition declaration owns ordering while a
+bodyless redeclaration leaves that owner intact. Global initialization is
+sorted by the declaration/declarator that owns the typed initializer. Namespace
+finalization uses the same source order and emits the list backwards, so
+destruction is reverse construction order. TLS guard, wrapper, and initializer
+symbols are derived from typed owner/name identities and generated-kind
+prefixes. LowIR receives typed symbols, operands, projections, and calls
+directly; no rendered spelling is parsed back, no second production model is
+introduced, and no whole-TU retry loop is used.
+
+### Findings and bounded repairs
+
+- PA12's centralized initializer path previously used the canonical binding's
+  `has_definition` bit for every redeclaration. After `A a;`, a later
+  `extern A a;` could therefore create another constructor action and append a
+  duplicate `LifetimeFact`, failing PA15 with `duplicate lifetime fact identity`.
+  PA11 already computes the exact `definition` bool at
+  `dev/src/pa11_semantic_core.cpp:2477-2488`; the repair records that bool in
+  `declaration_definition_flags_` parallel to `declaration_bindings_`. PA12
+  validates the bounded range and flag value, then passes the typed bit into
+  initializer/lifetime ownership. It no longer derives definition status from
+  `declaration.is_extern` or AST child count. Alias, condition, and bit-field
+  declaration producers keep the parallel arena continuous, and function
+  definitions retain their exact flag without being mistaken for objects.
+- PA15's `declaration_by_binding_` previously overwrote the source declaration
+  on every canonical binding occurrence. The repair validates the typed flag
+  range and updates the owner only for the exact per-declarator definition;
+  bodyless redeclarations leave the actual definition owner intact. Thus
+  definitions before or after a bodyless declaration retain their own
+  construction/destruction position, while the canonical binding and typed
+  variable fact remain shared. Zero/no-op definitions still retain the actual
+  owner even when they produce no emitted init/fini action.
+- The durable course regression `420-typed-redeclaration-lifetime-order-
+  regression.sh` covers definition-before-extern and extern-before-definition
+  ordering, a static class-member definition followed by a qualified extern,
+  and a TLS definition followed by a bodyless TLS redeclaration. It checks
+  typed LowIR storage/helper/call cardinality and init/fini order, and executes
+  the generated ordinary/static/TLS programs where the runtime has a relevant
+  entry path.
+- The audit found no need to alter the landed TLS model: a TLS object is
+  materialized through one deferred typed construction action and one guarded
+  helper family, without a synthetic program-shutdown destructor edge. The
+  collision-isolation case confirms that user spellings do not capture the
+  generated guard/initializer namespace.
+- The audit found no eager-helper regression. State-free classes and empty
+  value-initialized subobjects retain zero/no-op behavior without useless
+  implicit helpers; runtime-requiring members/bases demand their typed helpers
+  through the reachable constructor edge. Existing aggregate arrays continue
+  through typed element/layout paths; the three known lifecycle LowIR-shape
+  residuals were not widened or papered over.
+
+### Focused and authority evidence
+
+The target turn-start authority is `184/243` passed, `59` failed, and
+`243/243` identities covered, from
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+The parent comparison recorded in `plan.md` is `c2247924` at `179/243` with
+`64` failures; the landed increment removed exactly the five named
+baseline-only identities and introduced no final-only identity. The final
+`make test-pa16` remains `184/243` with `59` failures and `243/243` coverage;
+the sorted comparison against the turn-start log is baseline-only `0` and
+final-only `0`. The complete current 59-identity map remains in
+`pa16/plan.md`; no coverage identity was changed by this audit repair.
+
+- `make -C dev cppgm++ -j2` exits `0` after the two source repairs.
+- The five fixed identities — `200-global-constructor`,
+  `200-global-function-style-constructor`, `300-header-static-class-init`,
+  `300-static-class-member-object-definition`, and
+  `300-thread-local-synthetic-symbol-family-isolation` — pass the focused
+  PA16 harness `5/5`.
+- Existing course controls `404-typed-implicit-default-demand-regression.sh`,
+  `407-typed-static-data-ownership-regression.sh`,
+  `409-typed-constructor-boundary-regression.sh`,
+  `410-typed-lifetime-activation-control-exit-regression.sh`, and
+  `415-typed-global-initialization-order-regression.sh` each exit `0`.
+  Course 410 reports the expected flat cleanup counts for `E=8,16,32`.
+- `sh -n` and executable course regression
+  `420-typed-redeclaration-lifetime-order-regression.sh` exit `0`. Its
+  definition-before-extern case checks one constructor/lifetime per object and
+  init `first,second` / fini `second,first`; its extern-before-definition case
+  checks the definition-position order `second,first` / `first,second`; the
+  static-member case checks one `Cell__object` storage, init, and fini family;
+  and the TLS case checks one `tls` storage, one guard, one guarded init family,
+  and one constructor call. The generated ordinary/static/TLS programs run
+  successfully where applicable.
+- The focused relevant handout matrix is `9/12`. The unchanged three
+  comparison residuals are `200-local-default-class-array-lifecycle.t`,
+  `200-member-object-lifetime.t`, and
+  `300-synthesized-array-member-lifecycle.t`; their failures are LowIR-shape
+  differences, not a new status/coverage result.
+- A typed stdin probe with `A a; B b; extern A a;` exits `0`, emits one
+  `A`/`B` constructor call in `a,b` order and one finalization family in
+  `b,a` order. The declaration-before-definition variant also exits `0` and
+  emits the definition order `b,a` with finalization `a,b`. A static class
+  member definition followed by a bodyless qualified extern redeclaration
+  emits one storage definition, one constructor call, and one destructor call.
+  A TLS definition followed by a bodyless TLS redeclaration emits one guarded
+  `__cppgm_tls_init__t` helper.
+- A temporary typed `Item` family was compiled twice at each of `N=8` and
+  `N=32`; `cmp` matched both repetitions. Each input has `destroyed`, an
+  `Item` with an integer constructor/destructor, one source-ordered declaration
+  per item (`item1(1)` through `itemN(N)`), and a trivial `main`. The `N=8`
+  output has 102 LowIR lines, one init/fini function, and 8 constructor/8 destructor calls, with
+  init objects `item1..item8` and fini objects `item8..item1`. The `N=32`
+  output has 270 lines, one init/fini function, and 32 constructor/32
+  destructor calls, with init `item1..item32` and fini `item32..item1`.
+  The observed hashes are N=8
+  `f2b10beb5a642aa2d176762572f9590088c4f5fa74c48927f415a392a42fe1b3`
+  and N=32
+  `33b39208fea1238e270880616f99c3c838370648c4fe4064bc97257ab5eb3bda`.
+
+The final through-PA15 command exits `0` at `1167/1167`. The final
+`make test-pa16` exits `2` at `184/243` with `59` failures and full `243/243`
+coverage; the sorted failure-set comparison is exact with baseline-only `0`
+and final-only `0`. The final file audit exits `0` with the five known
+header-division warnings, and `git diff --check` exits `0`. Durable logs are
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16.log`,
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-report-through-pa15.log`,
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16.log`,
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-pa16-failure-set-comparison.log`,
+and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-focused-pa16-full.log`.
+No timing, RSS, allocation, or speedup claim is made.
+
+### Performance and structural bounds
+
+PA12's declaration pass publishes each typed variable fact once and delegates
+recursive class/array work to bounded typed layout/action ranges. PA15 builds
+the global root worklist once, scans each semantic fact at most once per
+ordinary/TLS mode, and scans each reachable function fact once. Lifetime
+ancestry is charged once into a dense function-scope flag vector; lowering
+then uses constant-time scope membership and reverse active stacks. Ordered
+global materialization is a stable `O(k log k)` sort of the typed action/lifetime
+items followed by one linear emission pass, where `k` is the typed action
+frontier. Maps are keyed by compact typed identities, so the implementation
+has no textual recovery, whole-TU retry, incomplete demand key, or
+unbounded optimization loop.
+
+The N=8/N=32 replay above is representative structural evidence: output
+repetition is byte-identical, constructor calls grow with the object family,
+and finalization is visibly reverse construction order. It is not a timing,
+RSS, allocation, or speedup claim.
+
+### Boundaries, residuals, and next checkpoint
+
+The exact target authority remains the 59-identity map in `pa16/plan.md`; the
+three focused lifecycle shape residuals and all unrelated residuals remain
+untouched. Thread-local objects intentionally have no namespace fini edge,
+and copy/move/value transfer, virtual/multiple inheritance, and broader
+special-member behavior remain outside this checkpoint. No handout or fixture
+was rewritten to make the focused result green. The new course regression is
+the only added test surface, and it does not alter handout fixtures or
+references.
+
+The next checkpoint is selected from the unchanged 59-identity map and must
+preserve declaration-owned definition status, typed initializer/lifetime
+continuity, source-order initialization, reverse-order destruction, TLS
+collision isolation, and demand-driven helper reachability. This checkpoint
+audit's broad validation is complete.
+
+## Historical Access-Control Review
+
 This review covers landed commit `135e3a953563d2356621b18ee1c37826ffce7c1c`
 (`PA16 typed access-control boundary`) relative to parent `0fb73ad4`, plus the
 bounded PA11 audit repair and corrected type-using ownership/source-access
@@ -1212,6 +1435,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `a1a2cf83` typed non-automatic lifetime checkpointAudit | Completed bounded audit of the landed typed lifetime path relative to `c2247924`: canonical BindingId/TypeId and declaration-owned initializer/lifetime continuity, PA11 exact per-declarator definition flags, namespace/static-member storage, TLS mode separation and collision-free helpers, aggregate/local recursive actions, source-order initialization, and reverse-order destruction are traced. The audit repairs typed PA11-to-PA12 definition continuity and PA15 definition-owner retention, preventing bodyless-extern duplicate lifetime publication and redeclaration source-order drift. The five fixed identities pass `5/5`; course controls 404, 407, 409, 410, 415, and the new 420 regression pass; the relevant handout matrix is `9/12` with the same three LowIR-shape residuals. Final PA16 is `184/243` with `59` failures and `243/243` coverage; the exact sorted comparison has baseline-only `0` and final-only `0`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings; diff-check passes; final logs and N=8/N=32 hashes are recorded above. No handout, fixture, reference, harness, comparator, or unrelated stage surface changed. |
 | `135e3a95` typed access-control checkpointAudit | Completed bounded audit and repair of landed `135e3a95` relative to `0fb73ad4`: canonical owner/access, direct friend identity, paired using view/publishing scope, typed qualified type/value and base access, source declaration accessibility, private/protected/friend/protected-object rules, and PA15 per-edge projection are traced. The type using fix preserves canonical `TypeId` while recording the introduced declaration/access owner; public class-member type/value using remains supported at namespace or block scope, inaccessible sources are rejected by the p17 access boundary, and namespace-to-namespace using remains valid. Operator access propagation is traced through candidates; unrelated operator behavior is out of scope. Final PA16 is `179/243` with `64` failures and `243/243` coverage; exact comparison has final-only `0` and baseline-only `0`. Focused PA16 is `12/14` with two checked-in LowIR residuals, courses 405/411/419 and `sh -n` pass, and structural noise evidence is recorded. Through-PA15 is `1167/1167`; file audit exits `0` with five known warnings. No handout, fixture, reference, harness, comparator, or exit-status file changed. |
 | `30d69fc3` inheriting-constructor checkpointAudit | Completed bounded review of the landed PA10--PA15 inheriting-constructor path relative to `05c36f56`: typed relation/source-point ownership, direct/transitive candidate selection and access, reference parameters, complete/base-entry ABI identity, external declarations, demand/slot behavior, and structural noise bounds are traced. The repair is N3485-correct for trailing defaults: each allowed nonzero arity gets a distinct shortened typed wrapper with no inherited default facts, omitted typed defaults reach only the full-signature base entry, and no-argument construction follows the separate implicit-default path. Derived DMI/runtime member actions use one shared declaration-ordered typed owner, with local action/argument ranges and base-before-member order. Recursive expansion now materializes relevant immediate-base typed relation candidates before each derived scan, validates identities, bounds the active single-inheritance walk, and makes hard-only transitive discovery independent of prior `Soft` construction while remaining demand-driven. Focused build, seven selected handout identities (`7/7`), course 403/408/409/418 including the hard-only control, strict structural probe, and diff-check pass; the probe remains deterministic and byte-identical at 68 lines/hash `02de5e72...d78592`. Final PA16 is `176/243` with `67` failures and `243/243` coverage; exact sorted failure sets match the turn-start map with no final-only identities. Durable broad logs are `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-final-20260829.log` and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-inheriting-constructor-transitive-audit-identity-compare-20260829.log`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings. No handout, fixture, `.ref`, harness, comparator, or source-set file changed. |
 | `3b7d8e6a` qualified-type checkpointAudit | Bounded audit of the PA10 qualified-component/decltype-root path and the PA11 source-point-aware typed owner: delimiter/template/rshift bounds, qualified cast and elaborated-header routing, injected identities, inherited typedefs, validated direct-base traversal, and PA12/PA15 typed consumption are traced. The audit repair extends the existing PA12 functional-cast target owner to unwrap parenthesized qualified callees, perform ordinary typed value lookup before typed type lookup, and distinguish `(N::T)(0)` from `(N::f)(0)` without spelling reconstruction. The authoritative result is `173/243` passing, `70` failures, and `243/243` coverage versus parent `167/243`, `76` failures; exact comparison has six baseline-only identities and final-only `∅`. Focused build, six-repair/six-control evidence, and course control 417 pass; broad PA16 exits `2` with the same `70` residuals, through-PA15 exits `0` at `1167/1167`, file audit exits `0` with five pre-existing warnings, and diff-check passes. No handout, fixture, reference, harness, comparator, or source-set list changed. |

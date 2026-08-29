@@ -1299,6 +1299,8 @@ private:
 	FlatIndex<const PA10AstNode*, DeclarationFactId, PointerHash>
 		declaration_fact_index_;
 	std::vector<BindingId> declaration_bindings_;
+	// Parallel PA11 per-declarator definition bit; Binding::has_definition is merged.
+	std::vector<unsigned char> declaration_definition_flags_;
 	std::vector<FunctionFact> function_facts_;
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
@@ -2039,7 +2041,7 @@ private:
 		const PA10AstNode& source, const PA10AstNode* direct_operand,
 		const PA10AstNode* clause, NamedRecordId record, ScopeId access_scope,
 		ConstructorInitializationContext context);
-	void semantic_variable_initializer(BindingId storage, SemanticFactId variable, const PA10AstNode& source, const Binding& value, const DeclarationFact& declaration, NamedRecordId record, const PA10AstNode* direct_operand, const PA10AstNode* clause, ConstructorInitializationContext context, SemanticFactId* initializer_fact);
+	void semantic_variable_initializer(BindingId storage, SemanticFactId variable, const PA10AstNode& source, const Binding& value, const DeclarationFact& declaration, bool declaration_definition, NamedRecordId record, const PA10AstNode* direct_operand, const PA10AstNode* clause, ConstructorInitializationContext context, SemanticFactId* initializer_fact);
 	SemanticFactId semantic_constructor_action(BindingId storage,
 		const PA10AstNode& source,
 		const std::vector<const PA10AstNode*>& argument_nodes =

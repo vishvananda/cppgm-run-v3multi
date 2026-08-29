@@ -19,7 +19,7 @@ per mode. Each scan follows only typed semantic children and demanded typed
 constructor/destructor edges, giving bounded O(facts + typed edges) work with
 no whole-TU rescan and no retry-until-stable loop. The global/TLS materializer
 emits only demanded actions and keeps one deterministic source-ordered init
-and fini family.
+family and reverse-construction-ordered fini family.
 
 Generated TLS helper names are derived once from typed `BindingId`, its
 canonical owner/name, and an explicit generated-kind prefix. `SymbolId` and
@@ -32,9 +32,9 @@ work remain outside this checkpoint.
 
 ## Failure Map
 
-Turn-start authority was clean HEAD `c2247924`: `179/243` PA16 identities
-passed, `64` failed, and all `243/243` identities were covered. The complete
-turn-start failure map was:
+The landed increment's parent authority was clean HEAD `c2247924`: `179/243`
+PA16 identities passed, `64` failed, and all `243/243` identities were
+covered. The complete parent failure map was:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
 - `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
@@ -101,8 +101,9 @@ turn-start failure map was:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Final PA16 is `184/243` passing, `59` failing, with `243/243` identities
-covered. The exact final map is:
+At the target turn start, clean HEAD `a1a2cf83` was `184/243` passing,
+`59` failing, with `243/243` identities covered. The exact target/final map
+is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
 - `pa16/tests/general/100-global-aggregate-nested-array-initializer.t`
@@ -176,6 +177,7 @@ This checkpoint implements typed non-automatic class-object lifetime and
 demand-driven helper emission in the following implementation files:
 
 - `dev/frontend_source_sets.mk`
+- `dev/src/pa11_semantic_core.cpp`
 - `dev/src/pa11_semantic_model.h`
 - `dev/src/pa12_semantic.cpp`
 - `dev/src/pa12_semantic_construction.cpp`
@@ -187,6 +189,9 @@ demand-driven helper emission in the following implementation files:
 - `dev/src/pa15_lowering_flow.cpp`
 - `dev/src/pa15_lowering_globals.cpp`
 
+The durable focused regression is
+`cppgm.tests/course/pa16/420-typed-redeclaration-lifetime-order-regression.sh`.
+
 `LifetimeStorageKind` is intentionally only `Automatic` or `Namespace`.
 Thread-local objects do not receive a namespace destruction fact; their
 per-thread construction remains an explicit typed pending action. PA12
@@ -197,45 +202,65 @@ calls, and TLS guard/wrapper/init helpers only after typed demand reaches the
 binding. The TLS family uses canonical owner/name data plus generated-kind
 prefixes and passes output identities directly to materializers.
 
+The checkpoint audit carries PA11's exact per-declarator `definition` bool in
+a compact typed arena parallel to `declaration_bindings_`. PA12 validates and
+consumes that bit rather than reclassifying the current declarator from
+`is_extern` or AST shape, so a bodyless `extern` redeclaration cannot publish a
+second constructor/lifetime fact. PA15 validates the same typed range and keeps
+the actual definition declaration as the ordering owner, rather than replacing
+it with a bodyless canonical redeclaration.
+
 Focused validation is green at `8/8` for the five fixed identities, both
 static-thread-local member tests, the collision test, and
 `100-global-class-zero.t`. The latter remains a no-eager-helper control.
-No handout, reference, existing test, harness, comparator, or exit-status
-file was changed.
+The new 420 executable regression and `sh -n` also pass. No handout,
+reference, existing test, harness, comparator, or exit-status file was changed.
 
 ## Performance Evidence
 
 A temporary generated case with many non-automatic `Item` objects was run at
-N=8 and N=32. Repeated compiler outputs were byte-identical for each N. The
-observed structural counts were:
+N=8 and N=32. Each input had `destroyed`, an `Item` with an integer
+constructor/destructor, one source-ordered declaration per item
+(`item1(1)` through `itemN(N)`), and a trivial `main`. Repeated compiler
+outputs were byte-identical for each N. The observed structural counts were:
 
-| objects | init functions | fini functions | ctor calls | dtor calls | LowIR lines |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 | 1 | 1 | 8 | 8 | 122 |
-| 32 | 1 | 1 | 32 | 32 | 290 |
+| objects | init functions | fini functions | ctor calls | dtor calls | LowIR lines | SHA-256 |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 8 | 1 | 1 | 8 | 8 | 102 | `f2b10beb5a642aa2d176762572f9590088c4f5fa74c48927f415a392a42fe1b3` |
+| 32 | 1 | 1 | 32 | 32 | 270 | `33b39208fea1238e270880616f99c3c838370648c4fe4064bc97257ab5eb3bda` |
 
 The N=32 init calls appeared in source order with arguments 1 through 32,
-and the fini family contained the corresponding 32 source-ordered destructor
-calls. This is structural bounded-work evidence only; no timing, allocation,
-RSS, or speed claim is made.
+and the fini family contained the corresponding 32 destructor calls in reverse
+source/construction order. This is structural bounded-work evidence only; no
+timing, allocation, RSS, or speed claim is made.
 
 ## Validation
 
 - `make -C dev cppgm++ -j2`: exit `0`.
-- Focused PA16 matrix: `8/8`, exit `0`.
-- `make test-pa16`: exit `2`, `184/243` passing, `59` failing, `243/243`
-  covered; exact final map above and no final-only identities.
-- Required `n=16` through command: exit `0`, PA1--PA15 `1167/1167`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: exit `0`
-  with five known header-division warnings.
-- `git diff --check`: required before commit.
+- Focused PA16 control set: `8/8`, exit `0`.
+- `make test-pa16` exits `2` with `184/243` passing, `59` failing, and
+  `243/243` identities covered. The sorted comparison with the authoritative
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` has
+  baseline-only `0` and final-only `0`; the exact final map is above.
+- The five fixed identities pass `5/5`; courses 404, 407, 409, 410, and 415
+  each exit `0`; the new course 420 passes `sh -n` and execution; and the
+  repeated N=8/N=32 structural probe passes. The relevant 12-test handout
+  matrix is `9/12` with the three known LowIR-shape residuals.
+- The required `n=16` through command exits `0` at `1167/1167` through PA15.
+  `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
+  with five known header-division warnings, and `git diff --check` exits `0`.
+  Durable logs are `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-pa16.log`,
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-test-report-through-pa15.log`,
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-file-audit-pa16.log`,
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-pa16-failure-set-comparison.log`,
+  and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/final-focused-pa16-full.log`.
 
 ## Next Checkpoint
 
 The remaining 59 identities are outside this typed non-automatic lifetime
-increment. Any next PA16 work must preserve this exact final map unless a
-later authorized run proves a new net improvement, retain typed ownership and
-mode-sensitive demand, and avoid eager helper emission.
+increment. This checkpoint audit is complete; any next PA16 work must preserve
+this exact map unless an authorized run proves a new net improvement, retain
+typed ownership and mode-sensitive demand, and avoid eager helper emission.
 
 ## Checkpoint Ledger
 
@@ -251,4 +276,4 @@ mode-sensitive demand, and avoid eager helper emission.
 | `30d69fc3` landed inheriting-constructor checkpoint | Historical landed increment: `176/243` passing, `67` failures, `243/243` covered; typed N3485 wrapper/default/DMI/copy/order-independent evidence retained. |
 | `0fb73ad4` PA16 access turn start | Clean authority for that checkpoint: `176/243` passing, `67` failures, `243/243` covered; through-PA15 `1167/1167`, audit with five known header-division warnings. |
 | `PA16 typed access-control checkpoint` | Previous bounded access repair: `179/243` passing, `64` failures, `243/243` covered; exact residual map carried forward. |
-| `PA16 typed non-automatic lifetime checkpoint` | `184/243` passing, `59` failures, `243/243` covered; five baseline identities fixed, zero final-only identities; focused matrix `8/8`, through-PA15 `1167/1167`, audit clean except five known warnings, and structural N=8/N=32 evidence recorded above. |
+| `PA16 typed non-automatic lifetime checkpoint` | Completed checkpoint audit: PA11 exact per-declarator definition continuity, PA12 typed lifetime ownership, and PA15 definition-owner ordering are repaired and traced. PA16 is `184/243` passing, `59` failures, `243/243` covered; exact sorted comparison has baseline-only `0` and final-only `0`; focused matrix is `9/12` with the same three LowIR-shape residuals; course 420, through-PA15 `1167/1167`, file audit with five known warnings, diff-check, and N=8/N=32 repeatability all pass. |

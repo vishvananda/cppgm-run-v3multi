@@ -669,6 +669,9 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 
 void Pa15Lowerer::index_binding_facts(){
 		index_lifetime_facts();
+		if (model_.declaration_definition_flags_.size() !=
+			model_.declaration_bindings_.size())
+			throw std::runtime_error("PA15 declaration definition arena is discontinuous");
 		for (std::size_t i = 0; i < model_.declaration_facts_.size(); ++i)
 		{
 			const DeclarationFact& declaration = model_.declaration_facts_[i];
@@ -686,6 +689,10 @@ void Pa15Lowerer::index_binding_facts(){
 				declaration.binding_count > model_.declaration_bindings_.size() -
 					declaration.binding_begin)
 				throw std::runtime_error("PA15 declaration binding range is invalid");
+			if (declaration.binding_begin > model_.declaration_definition_flags_.size() ||
+				declaration.binding_count > model_.declaration_definition_flags_.size() -
+					declaration.binding_begin)
+				throw std::runtime_error("PA15 declaration definition range is invalid");
 			if (declaration.semantic_begin != InvalidIdentityValue &&
 				(declaration.semantic_begin > model_.declaration_semantic_ids_.size() ||
 				 declaration.semantic_count > model_.declaration_semantic_ids_.size() -
@@ -693,11 +700,14 @@ void Pa15Lowerer::index_binding_facts(){
 				throw std::runtime_error("PA15 declaration semantic range is invalid");
 			for (std::size_t j = 0; j < declaration.binding_count; ++j)
 			{
+				const unsigned char definition_flag =
+					model_.declaration_definition_flags_[declaration.binding_begin + j];
+				if (definition_flag > 1)
+					throw std::runtime_error("PA15 declaration definition flag is invalid");
 				const BindingId binding = model_.declaration_bindings_[
 					declaration.binding_begin + j];
 				if (!binding.valid() || binding.value >= model_.bindings_.size())
 					throw std::runtime_error("PA15 declaration binding identity is invalid");
-				declaration_by_binding_[binding.value] = &declaration;
 				if (declaration.is_thread_local)
 					thread_local_by_binding_[binding.value] = true;
 				if (declaration.semantic_begin != InvalidIdentityValue &&
@@ -723,6 +733,12 @@ void Pa15Lowerer::index_binding_facts(){
 						(candidate_has_initializer && !existing_has_initializer))
 						variable_facts_[binding.value] = candidate;
 				}
+				// PA11's typed per-declarator definition bit is the sole owner
+				// signal.  A bodyless redeclaration shares BindingId but must not
+				// move construction or destruction relative to neighboring objects.
+				if (declaration_by_binding_.find(binding.value) ==
+					declaration_by_binding_.end() || definition_flag != 0)
+					declaration_by_binding_[binding.value] = &declaration;
 			}
 		}
 	}
@@ -840,6 +856,9 @@ void Pa15Lowerer::global_declaration_position(BindingId binding_id,
 		declaration->binding_begin == InvalidIdentityValue ||
 		declaration->binding_begin > model_.declaration_bindings_.size() ||
 		declaration->binding_count > model_.declaration_bindings_.size() -
+		declaration->binding_begin ||
+		declaration->binding_begin > model_.declaration_definition_flags_.size() ||
+		declaration->binding_count > model_.declaration_definition_flags_.size() -
 		declaration->binding_begin)
 		throw std::runtime_error("PA15 global declaration order is invalid");
 	*source_declaration = static_cast<std::size_t>(declaration - declaration_begin);

@@ -85,6 +85,7 @@ void PA11SemanticModel::process_condition_declaration(
 		!spec.is_static && !spec.is_extern && !spec.is_thread_local;
 	declaration.binding_begin = declaration_bindings_.size();
 	declaration_bindings_.push_back(binding_id);
+	declaration_definition_flags_.push_back(0);
 	declaration.binding_count = 1;
 	const DeclarationFactId declaration_id(declaration_facts_.size());
 	declaration_facts_.push_back(declaration);
@@ -1897,6 +1898,8 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 }
 SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, ScopeId scope)
 {
+	if (declaration_definition_flags_.size() != declaration_bindings_.size())
+		throw std::runtime_error("PA12 declaration definition arena is discontinuous");
 	DeclarationFact* declaration = declaration_fact(node);
 	if (declaration == NULL)
 		throw std::runtime_error("PA12 declaration fact is missing");
@@ -1958,6 +1961,11 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 	}
 	if (node.children.size() != 2 || node.children[1].kind != PA10NodeKind::InitDeclaratorList)
 		throw std::runtime_error("PA12 invalid declaration fact");
+	if (declaration->binding_begin == InvalidIdentityValue ||
+		declaration->binding_begin > declaration_definition_flags_.size() ||
+		declaration->binding_count > declaration_definition_flags_.size() -
+			declaration->binding_begin)
+		throw std::runtime_error("PA12 declaration definition range is invalid");
 	const PA10AstNode& list = node.children[1];
 	if (list.children.size() != declaration->binding_count)
 		throw std::runtime_error("PA12 declaration binding mismatch");
@@ -1967,6 +1975,10 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		const PA10AstNode& init = list.children[i];
 		const BindingId binding_id = declaration_bindings_[
 			declaration->binding_begin + i];
+		const unsigned char definition_flag = declaration_definition_flags_[
+			declaration->binding_begin + i];
+		if (definition_flag > 1)
+			throw std::runtime_error("PA12 declaration definition flag is invalid");
 		// Copy before initializer analysis can grow the binding arena.
 		const Binding value = binding(binding_id);
 		if (value.kind == BindingKind::Function && has_function_default_argument(node, i))
@@ -2030,7 +2042,8 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 		}
 		SemanticFactId initializer_fact;
 		semantic_variable_initializer(binding_id, variable, init, value, *declaration,
-			record, direct_operand, clause, initialization_context, &initializer_fact);
+			definition_flag != 0, record, direct_operand, clause,
+			initialization_context, &initializer_fact);
 		if (initializer_fact.valid() &&
 			value.kind == BindingKind::Variable && !is_static_member(binding_id) &&
 			declaration->scope.valid() &&

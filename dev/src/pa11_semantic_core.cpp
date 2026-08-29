@@ -210,7 +210,8 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	  lookup_marks_(),
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
 	lookup_frames_(), declaration_facts_(),
-	declaration_fact_index_(), declaration_bindings_(), function_facts_(),
+	declaration_fact_index_(), declaration_bindings_(),
+	declaration_definition_flags_(), function_facts_(),
 	function_fact_index_(), function_binding_fact_index_(),
 	constructor_base_entry_bindings_(),
 	function_default_arguments_(), label_facts_(), label_tables_(),
@@ -2469,6 +2470,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (spec.is_constexpr && type_kind(type) != TypeKind::Function)
 			type = make_cv(type, 1u);
 		BindingId binding_id;
+		bool declarator_definition = false;
 		if (spec.is_typedef)
 			binding_id = add_type_alias(target, name.path.last(), type,
 				SourcePoint(node.source_begin));
@@ -2481,6 +2483,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			const bool class_target = target.value < scopes_.size() && scopes_[target.value].kind == ScopeKind::Class; if (!function && class_target && (name.path.global || name.path.components.size() > 1)) validate_qualified_class_static_definition(target, name.path.last());
 			const bool definition = function ? declaration_kind != FunctionDeclarationKind::Normal :
 				(!spec.is_extern || has_initializer) && (!class_target || !spec.is_static);
+			declarator_definition = definition;
 			const bool internal_linkage = spec.is_static && target.value < scopes_.size() &&
 				scopes_[target.value].kind == ScopeKind::Namespace;
 			binding_id = add_value(target, name.path.last(), type,
@@ -2556,6 +2559,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			set_binding_sidecar(binding_id, sidecar);
 		}
 		declaration_bindings_.push_back(binding_id);
+		declaration_definition_flags_.push_back(declarator_definition ? 1 : 0);
 	}
 	declaration.binding_count = declaration_bindings_.size() -
 		declaration.binding_begin;
@@ -2745,6 +2749,7 @@ void PA11SemanticModel::process_declaration(const PA10AstNode& node, ScopeId sco
 			DeclarationFact declaration(&node, scope);
 			declaration.binding_begin = declaration_bindings_.size();
 			declaration_bindings_.push_back(binding_id);
+			declaration_definition_flags_.push_back(0);
 			declaration.binding_count = 1;
 			const DeclarationFactId declaration_id(declaration_facts_.size());
 			declaration_facts_.push_back(declaration);

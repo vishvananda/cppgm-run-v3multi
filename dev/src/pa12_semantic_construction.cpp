@@ -160,7 +160,8 @@ bool PA11SemanticModel::semantic_class_object_initializer(
 void PA11SemanticModel::semantic_variable_initializer(
 	BindingId storage, SemanticFactId variable, const PA10AstNode& source,
 	const Binding& value, const DeclarationFact& declaration,
-	NamedRecordId record, const PA10AstNode* direct_operand,
+	bool declaration_definition, NamedRecordId record,
+	const PA10AstNode* direct_operand,
 	const PA10AstNode* clause, ConstructorInitializationContext context,
 	SemanticFactId* initializer_fact)
 {
@@ -182,13 +183,19 @@ void PA11SemanticModel::semantic_variable_initializer(
 		!named_[record.value].has_base && named_[record.value].scope.valid() &&
 		named_[record.value].scope.value < scopes_.size() &&
 		scopes_[named_[record.value].scope.value].bindings.empty();
+	// PA11 owns this exact per-declarator bit.  Binding::has_definition is
+	// intentionally redeclaration-merged, so it cannot classify this source
+	// declarator without recovering syntax here.  Function definitions carry
+	// the same bit; only the variable path below uses it for object ownership.
+	const bool defines_variable = value.kind == BindingKind::Variable &&
+		declaration_definition;
 	const bool namespace_object_scope = value.kind == BindingKind::Variable &&
-		value.has_definition && declaration.scope.valid() &&
+		defines_variable && declaration.scope.valid() &&
 		declaration.scope.value < scopes_.size() &&
 		scopes_[declaration.scope.value].kind == ScopeKind::Namespace &&
 		(record.valid() && record.value < named_.size());
 	const bool static_member_definition = value.kind == BindingKind::Variable &&
-		value.has_definition && is_static_member(storage) && declaration.scope.valid() &&
+		defines_variable && is_static_member(storage) && declaration.scope.valid() &&
 		declaration.scope.value < scopes_.size() &&
 		scopes_[declaration.scope.value].kind == ScopeKind::Namespace &&
 		record.valid() && record.value < named_.size();
@@ -263,7 +270,7 @@ void PA11SemanticModel::semantic_variable_initializer(
 			constructor_requires_runtime(record)))
 		set_semantic_children(variable, std::vector<SemanticFactId>(1,
 			semantic_constructor_action(storage, source)));
-	if (value.kind == BindingKind::Variable && value.has_definition &&
+	if (defines_variable &&
 		nonautomatic_class_object && !declaration.is_thread_local)
 		record_namespace_lifetime(storage, value.type,
 			binding_owners_[storage.value]);
