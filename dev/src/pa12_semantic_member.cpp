@@ -1180,6 +1180,32 @@ PA11SemanticModel::MemberLookup PA11SemanticModel::unqualified_member_lookup(
 		return result;
 	return member_lookup(object, name);
 }
+bool PA11SemanticModel::unqualified_member_value(const NamePath& path,
+	ScopeId start) const
+{
+	if (path.global || path.components.size() != 1)
+		return false;
+	ScopeId function_scope;
+	for (ScopeId cursor = start; cursor.valid() &&
+		cursor.value < scopes_.size(); cursor = scopes_[cursor.value].parent)
+		if (scopes_[cursor.value].kind == ScopeKind::Function)
+		{
+			function_scope = cursor;
+			break;
+		}
+	if (!function_scope.valid() || !scopes_[function_scope.value].parent.valid())
+		return false;
+	const ScopeId member_scope = scopes_[function_scope.value].parent;
+	if (member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class ||
+		!scopes_[member_scope.value].record.valid())
+		return false;
+	const MemberLookup selection = unqualified_member_lookup(
+		named_type(scopes_[member_scope.value].record), path.last(), start);
+	return selection.kind == MemberLookupKind::Value &&
+		selection.owner.valid() && selection.owner.value < scopes_.size() &&
+		scopes_[selection.owner.value].kind == ScopeKind::Class;
+}
 
 ExprInfo PA11SemanticModel::semantic_static_data_member(
 	const PA10AstNode& node, ScopeId scope, const NamePath& path,
@@ -1378,6 +1404,192 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 	}
 	return result;
 }
+TypedFunctionSelection PA11SemanticModel::select_typed_member_function(
+	const std::vector<ValueRef>& candidates, const ExprInfo& object,
+	TypeId actual_object, ScopeId member_scope,
+	const std::vector<const PA10AstNode*>& argument_nodes,
+	const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
+	bool allow_static)
+{
+	if (argument_nodes.size() != initial_arguments.size())
+		throw std::runtime_error("PA12 member argument boundary mismatch");
+	for (std::size_t i = 0; i < argument_nodes.size(); ++i)
+		if (argument_nodes[i] == NULL)
+			throw std::runtime_error("PA12 member argument node is missing");
+	if (!member_scope.valid() || member_scope.value >= scopes_.size() ||
+		scopes_[member_scope.value].kind != ScopeKind::Class)
+		throw std::runtime_error("PA12 member call owner is invalid");
+	if (!allow_static && !object.fact.valid())
+		throw std::runtime_error("PA12 member call object is missing");
+	struct CandidateScore
+	{
+		ValueRef value;
+		TypeId type;
+		bool static_member;
+		unsigned int object_cv;
+		ConversionScore object_score;
+		std::vector<ConversionScore> ranks;
+	};
+	std::vector<CandidateScore> viable;
+	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
+	for (std::size_t i = 0; i < candidates.size(); ++i)
+	{
+		const ValueRef& candidate_ref = candidates[i];
+		if (!candidate_ref.binding.valid() || candidate_ref.binding.value >=
+			bindings_.size() || candidate_ref.binding.value >= binding_owners_.size() ||
+			!candidate_ref.scope.valid() || candidate_ref.scope.value >= scopes_.size() ||
+			scopes_[candidate_ref.scope.value].kind != ScopeKind::Class ||
+			binding_owners_[candidate_ref.binding.value] != candidate_ref.scope)
+			throw std::runtime_error("PA12 member candidate ownership is invalid");
+		const Binding& candidate = binding(candidate_ref.binding);
+		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
+			candidate.type.value >= types_.size() ||
+			type_kind(candidate.type) != TypeKind::Function)
+			throw std::runtime_error("PA12 member candidate type is invalid");
+		const TypeKey& function = types_[candidate.type.value];
+		const bool static_member = is_static_member(candidate_ref.binding);
+		if (static_member && !allow_static)
+			continue;
+		// A using-declaration can re-expose a base member through the derived
+		// class.  In that case the implicit object adjustment is checked in the
+		// derived declaration scope; an ordinary inherited private base member
+		// still has candidate_ref.scope == member_scope and is checked from the
+		// caller scope below.
+		const ScopeId object_access_scope = candidate_ref.scope != member_scope ?
+			member_scope : scope;
+		TypeId required_object;
+		unsigned int object_distance = 0;
+		if (!static_member)
+		{
+			required_object = member_object_type(candidate.type,
+				candidate_ref.scope);
+			if (!required_object.valid() ||
+				class_scope_for_type(required_object) != candidate_ref.scope ||
+				!member_object_convertible(actual_object, required_object,
+					candidate_ref.scope, NULL, object_access_scope,
+					&object_distance))
+				continue;
+		}
+		std::size_t required = function.parameters.size();
+		while (required != 0 && function_default_argument(
+			candidate_ref.binding, required - 1).valid())
+			--required;
+		if (initial_arguments.size() < required ||
+			(!function.variadic && initial_arguments.size() >
+				function.parameters.size()))
+			continue;
+		CandidateScore score;
+		score.value = candidate_ref;
+		score.type = candidate.type;
+		score.static_member = static_member;
+		score.object_cv = static_member ? 0 : cv_qualifiers(required_object) &
+			~cv_qualifiers(actual_object);
+		score.object_score = ConversionScore();
+		if (!static_member)
+		{
+			ConversionChoice object_choice = object_distance == 0 ?
+				ConversionChoice(true, score.object_cv == 0 ? 0 : 1,
+					score.object_cv == 0 ? ConversionKind::Identity :
+					ConversionKind::ReferenceBinding) :
+				make_derived_base_choice(actual_object, required_object,
+					object_distance, object_access_scope, score.object_cv);
+			if (object_distance == 0)
+				object_choice.added_cv = score.object_cv;
+			score.object_score = ConversionScore(object_choice);
+		}
+		score.ranks.reserve(initial_arguments.size());
+		bool arguments_viable = true;
+		for (std::size_t argument = 0; argument < initial_arguments.size();
+			++argument)
+		{
+			if (argument >= function.parameters.size())
+			{
+				if (!initial_arguments[argument].fact.valid())
+				{
+					arguments_viable = false;
+					break;
+				}
+				score.ranks.push_back(ConversionScore::ellipsis_score(
+					ellipsis_rank));
+				continue;
+			}
+			ConversionChoice choice;
+			if (initial_arguments[argument].fact.valid())
+			{
+				if (initial_arguments[argument].fact.value >= semantic_facts_.size())
+					throw std::runtime_error("PA12 member argument fact is invalid");
+				const SemanticFact& fact = semantic_facts_[
+					initial_arguments[argument].fact.value];
+				choice = conversion_for(initial_arguments[argument],
+					function.parameters[argument], fact.source, scope);
+			}
+			else
+			{
+				const PA10AstNode* function_id = target_function_id(
+					*argument_nodes[argument], scope);
+				if (function_id != NULL)
+				{
+					const FunctionIdResolution resolution = resolve_function_id_target(
+						*function_id, scope, function.parameters[argument]);
+					choice = resolution.conversion;
+				}
+			}
+			if (!choice.valid)
+			{
+				arguments_viable = false;
+				break;
+			}
+			score.ranks.push_back(ConversionScore(choice));
+		}
+		if (arguments_viable)
+			viable.push_back(score);
+	}
+	if (viable.empty())
+		throw std::runtime_error("PA12 no viable member call");
+	const auto better = [](const CandidateScore& left,
+		const CandidateScore& right) -> bool
+	{
+		bool strict = false;
+		// N3485 [over.match.best] gives a static member no implicit-object
+		// conversion sequence: its ICS1 is neither better nor worse than
+		// another candidate's.  Compare qualification only between two
+		// non-static candidates; explicit argument ranks still compare for all
+		// candidates.  For non-static candidates, qualification conversions form
+		// a subset ordering: an exact object match beats added cv, const beats
+		// const volatile, and const and volatile remain incomparable.
+		if (!left.static_member && !right.static_member)
+		{
+			const int object_comparison = compare_conversion_scores(
+				left.object_score, right.object_score);
+			if (object_comparison > 0)
+				return false;
+			if (object_comparison < 0)
+				strict = true;
+		}
+		if (left.ranks.size() != right.ranks.size())
+			return false;
+		for (std::size_t i = 0; i < left.ranks.size(); ++i)
+		{
+			const int comparison = compare_conversion_scores(left.ranks[i],
+				right.ranks[i]);
+			if (comparison > 0)
+				return false;
+			if (comparison < 0)
+				strict = true;
+		}
+		return strict;
+	};
+	std::size_t best_index = 0;
+	for (std::size_t i = 1; i < viable.size(); ++i)
+		if (better(viable[i], viable[best_index]))
+			best_index = i;
+	for (std::size_t i = 0; i < viable.size(); ++i)
+		if (i != best_index && !better(viable[best_index], viable[i]))
+			throw std::runtime_error("PA12 ambiguous member call");
+	return TypedFunctionSelection(viable[best_index].value,
+		viable[best_index].type);
+}
+
 bool PA11SemanticModel::qualified_static_member_candidates(
 	const PA10AstNode& node, ScopeId scope, std::vector<ValueRef>* candidates,
 	ScopeId* owner)
@@ -1861,12 +2073,20 @@ ExprInfo PA11SemanticModel::semantic_member_expression(
 		throw std::runtime_error("PA12 unknown or ambiguous record member");
 	const BindingId member_id = selection.binding;
 	const Binding& member = binding(member_id);
-	if (member.kind != BindingKind::Variable)
-		throw std::runtime_error("PA12 member function access is unsupported");
 	if (!member_accessible(member_id, selection.owner, scope, record_object,
 		selection.has_access_override, selection.access_override,
 		selection.access_view_owner))
 		throw std::runtime_error("PA12 record member is inaccessible");
+	if (member.kind == BindingKind::Enumerator)
+	{
+		ExprInfo result = semantic_enumerator_expression(node, member_id,
+			selection.owner);
+		set_semantic_children(result.fact,
+			std::vector<SemanticFactId>(1, object.fact));
+		return result;
+	}
+	if (member.kind != BindingKind::Variable)
+		throw std::runtime_error("PA12 member function access is unsupported");
 	const TypeId type = member_access_type(record_object, member.type);
 	SemanticFact fact(SemanticFactKind::MemberExpression, type,
 		SemanticValueCategory::Lvalue, &node);
@@ -1941,7 +2161,9 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 	TypeId actual_object, ScopeId member_scope,
 	const std::vector<ValueRef>& candidates,
 	const std::vector<NamedRecordId>* base_path, bool allow_static,
-	BindingId implicit_this)
+	BindingId implicit_this,
+	const std::vector<const PA10AstNode*>* supplied_argument_nodes,
+	const std::vector<ExprInfo>* supplied_arguments)
 {
 	if (member_token != SimpleTokenType::OP_DOT &&
 		member_token != SimpleTokenType::OP_ARROW)
@@ -1968,183 +2190,49 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_object(
 		class_scope_for_type(actual_object) != member_scope)
 		throw std::runtime_error("PA12 member call object owner mismatch");
 
-	const PA10AstNode& argument_node = node.children.back();
 	std::vector<ExprInfo> arguments;
-	for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+	std::vector<const PA10AstNode*> argument_nodes;
+	if ((supplied_argument_nodes == NULL) != (supplied_arguments == NULL))
+		throw std::runtime_error("PA12 member argument inputs are incomplete");
+	if (supplied_arguments != NULL)
 	{
-		if (target_function_id(argument_node.children[i], scope) != NULL)
-			arguments.push_back(ExprInfo());
-		else
-			arguments.push_back(semantic_expression(argument_node.children[i], scope));
+		arguments = *supplied_arguments;
+		argument_nodes = *supplied_argument_nodes;
 	}
-	struct CandidateScore
+	else
 	{
-		ValueRef value;
-		TypeId type;
-		bool static_member;
-		unsigned int object_cv;
-		ConversionScore object_score;
-		std::vector<ConversionScore> ranks;
-	};
-	std::vector<CandidateScore> viable;
-	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
-	for (std::size_t i = 0; i < candidates.size(); ++i)
-	{
-		const ValueRef& candidate_ref = candidates[i];
-		if (!candidate_ref.binding.valid() || candidate_ref.binding.value >=
-			bindings_.size() || candidate_ref.binding.value >= binding_owners_.size() ||
-			!candidate_ref.scope.valid() || candidate_ref.scope.value >= scopes_.size() ||
-			scopes_[candidate_ref.scope.value].kind != ScopeKind::Class ||
-			binding_owners_[candidate_ref.binding.value] != candidate_ref.scope)
-			throw std::runtime_error("PA12 member candidate ownership is invalid");
-		const Binding& candidate = binding(candidate_ref.binding);
-		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
-			candidate.type.value >= types_.size() ||
-			type_kind(candidate.type) != TypeKind::Function)
-			throw std::runtime_error("PA12 member candidate type is invalid");
-		const TypeKey& function = types_[candidate.type.value];
-		const bool static_member = is_static_member(candidate_ref.binding);
-		if (static_member && !allow_static)
-			continue;
-		// A using-declaration can re-expose a base member through the derived
-		// class.  In that case the implicit object adjustment is checked in the
-		// derived declaration scope; an ordinary inherited private base member
-		// still has candidate_ref.scope == member_scope and is checked from the
-		// caller scope below.
-		const ScopeId object_access_scope = candidate_ref.scope != member_scope ?
-			member_scope : scope;
-		TypeId required_object;
-		unsigned int object_distance = 0;
-		if (!static_member)
+		if (node.children.empty())
+			throw std::runtime_error("PA12 member argument list is missing");
+		const PA10AstNode& argument_node = node.children.back();
+		argument_nodes.reserve(argument_node.children.size());
+		arguments.reserve(argument_node.children.size());
+		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
 		{
-			required_object = member_object_type(candidate.type,
-				candidate_ref.scope);
-			if (!required_object.valid() ||
-				class_scope_for_type(required_object) != candidate_ref.scope ||
-				!member_object_convertible(actual_object, required_object,
-					candidate_ref.scope, NULL, object_access_scope,
-					&object_distance))
-				continue;
-		}
-		std::size_t required = function.parameters.size();
-		while (required != 0 && function_default_argument(
-			candidate_ref.binding, required - 1).valid())
-			--required;
-		if (arguments.size() < required ||
-			(!function.variadic && arguments.size() > function.parameters.size()))
-			continue;
-		CandidateScore score;
-		score.value = candidate_ref;
-		score.type = candidate.type;
-		score.static_member = static_member;
-		score.object_cv = static_member ? 0 : cv_qualifiers(required_object) &
-			~cv_qualifiers(actual_object);
-		score.object_score = ConversionScore();
-		if (!static_member)
-		{
-			ConversionChoice object_choice = object_distance == 0 ?
-				ConversionChoice(true, score.object_cv == 0 ? 0 : 1,
-					 score.object_cv == 0 ? ConversionKind::Identity :
-					 ConversionKind::ReferenceBinding) :
-				make_derived_base_choice(actual_object, required_object,
-					object_distance, object_access_scope, score.object_cv);
-			if (object_distance == 0)
-				object_choice.added_cv = score.object_cv;
-			score.object_score = ConversionScore(object_choice);
-		}
-		score.ranks.reserve(arguments.size());
-		bool arguments_viable = true;
-		for (std::size_t arg = 0; arg < arguments.size(); ++arg)
-		{
-			if (arg >= function.parameters.size())
-			{
-				if (!arguments[arg].fact.valid())
-				{
-					arguments_viable = false;
-					break;
-				}
-				score.ranks.push_back(ConversionScore::ellipsis_score(
-					ellipsis_rank));
-				continue;
-			}
-			ConversionChoice choice;
-			if (arguments[arg].fact.valid())
-				choice = conversion_for(arguments[arg], function.parameters[arg],
-					semantic_facts_[arguments[arg].fact.value].source, scope);
+			argument_nodes.push_back(&argument_node.children[i]);
+			if (target_function_id(argument_node.children[i], scope) != NULL)
+				arguments.push_back(ExprInfo());
 			else
-			{
-				const PA10AstNode* function_id = target_function_id(
-					argument_node.children[arg], scope);
-				if (function_id != NULL)
-				{
-					const FunctionIdResolution resolution = resolve_function_id_target(
-						*function_id, scope, function.parameters[arg]);
-					choice = resolution.conversion;
-				}
-			}
-			if (!choice.valid)
-			{
-				arguments_viable = false;
-				break;
-			}
-			score.ranks.push_back(ConversionScore(choice));
+				arguments.push_back(semantic_expression(argument_node.children[i], scope));
 		}
-		if (arguments_viable)
-			viable.push_back(score);
 	}
-	if (viable.empty())
-		throw std::runtime_error("PA12 no viable member call");
-	const auto better = [](const CandidateScore& left,
-		const CandidateScore& right) -> bool
-	{
-		bool strict = false;
-		// N3485 [over.match.best] gives a static member no implicit-object
-		// conversion sequence: its ICS1 is neither better nor worse than
-		// another candidate's.  Compare qualification only between two
-		// non-static candidates; explicit argument ranks still compare for all
-		// candidates.  For non-static candidates, qualification conversions form
-		// a subset ordering: an exact object match beats added cv, const beats
-		// const volatile, and const and volatile remain incomparable.
-		if (!left.static_member && !right.static_member)
-		{
-			const int object_comparison = compare_conversion_scores(
-				left.object_score, right.object_score);
-			if (object_comparison > 0)
-				return false;
-			if (object_comparison < 0)
-				strict = true;
-		}
-		if (left.ranks.size() != right.ranks.size())
-			return false;
-		for (std::size_t i = 0; i < left.ranks.size(); ++i)
-		{
-			const int comparison = compare_conversion_scores(left.ranks[i],
-				right.ranks[i]);
-			if (comparison > 0)
-				return false;
-			if (comparison < 0)
-				strict = true;
-		}
-		return strict;
-	};
-	std::size_t best_index = 0;
-	for (std::size_t i = 1; i < viable.size(); ++i)
-		if (better(viable[i], viable[best_index]))
-			best_index = i;
-	for (std::size_t i = 0; i < viable.size(); ++i)
-		if (i != best_index && !better(viable[best_index], viable[i]))
-			throw std::runtime_error("PA12 ambiguous member call");
-	const ValueRef selected = viable[best_index].value;
+	const TypedFunctionSelection selection = select_typed_member_function(
+		candidates, object, actual_object, member_scope, argument_nodes,
+		arguments, scope, allow_static);
+	if (!selection.valid())
+		throw std::runtime_error("PA12 member call selection is incomplete");
 	return finish_member_call(node, scope, member_token, object, actual_object,
-		arguments, selected, viable[best_index].type,
-		viable[best_index].static_member, implicit_this);
+		arguments, argument_nodes, selection.selected, selection.type,
+		is_static_member(selection.selected.binding), implicit_this);
 }
 
 ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	ScopeId scope, SimpleTokenType member_token, const ExprInfo& object,
-	TypeId actual_object, std::vector<ExprInfo>& arguments, ValueRef selected,
+	TypeId actual_object, std::vector<ExprInfo>& arguments,
+	const std::vector<const PA10AstNode*>& argument_nodes, ValueRef selected,
 	TypeId selected_type, bool selected_static, BindingId implicit_this)
 {
+	if (argument_nodes.size() != arguments.size())
+		throw std::runtime_error("PA12 selected member argument boundary mismatch");
 	if (!member_accessible(selected.binding, selected.scope, scope,
 		selected_static ? TypeId() : actual_object,
 		selected.has_access_override, selected.access_override,
@@ -2172,7 +2260,7 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	{
 		if (!arguments[arg].fact.valid())
 			arguments[arg] = semantic_expression_for_target(
-				node.children.back().children[arg], scope, function.parameters[arg]);
+				*argument_nodes[arg], scope, function.parameters[arg]);
 		arguments[arg] = apply_context_conversion(arguments[arg],
 			function.parameters[arg],
 			semantic_facts_[arguments[arg].fact.value].source, scope);
@@ -2212,9 +2300,13 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 ExprInfo PA11SemanticModel::semantic_member_call_with_implicit_object(
 	const PA10AstNode& node, ScopeId scope, BindingId this_binding,
 	TypeId actual_object, ScopeId member_scope,
-	const std::vector<ValueRef>& candidates)
+	const std::vector<ValueRef>& candidates,
+	const std::vector<const PA10AstNode*>* supplied_argument_nodes,
+	const std::vector<ExprInfo>* supplied_arguments)
 {
-	if (node.children.size() != 2 || !this_binding.valid() ||
+	if ((supplied_arguments == NULL && node.children.size() != 2) ||
+		(supplied_argument_nodes == NULL) != (supplied_arguments == NULL) ||
+		!this_binding.valid() ||
 		!member_scope.valid() || member_scope.value >= scopes_.size() ||
 		scopes_[member_scope.value].kind != ScopeKind::Class)
 		return ExprInfo();
@@ -2226,7 +2318,48 @@ ExprInfo PA11SemanticModel::semantic_member_call_with_implicit_object(
 		throw std::runtime_error("PA12 implicit member object is invalid");
 	return semantic_member_call_with_object(node, scope,
 		SimpleTokenType::OP_ARROW, ExprInfo(), actual_object, member_scope,
-		candidates, NULL, true, this_binding);
+		candidates, NULL, true, this_binding, supplied_argument_nodes,
+		supplied_arguments);
+}
+
+ExprInfo PA11SemanticModel::semantic_ambiguous_member_call(
+	const PA10AstNode& node, ScopeId scope, const NamePath& path,
+	const PA10AstNode& argument_node, const ExprInfo& argument, bool* claimed)
+{
+	if (claimed == NULL)
+		throw std::runtime_error("PA12 member call claim output is missing");
+	*claimed = false;
+	if (path.global || path.components.size() != 1)
+		return ExprInfo();
+	const BindingId this_binding = implicit_this_binding(scope);
+	if (!this_binding.valid())
+		return ExprInfo();
+	const Binding& this_value = binding(this_binding);
+	const TypeId this_pointer = strip_cv_type(expression_object_type(
+		this_value.type));
+	if (this_value.kind != BindingKind::Parameter ||
+		type_kind(this_pointer) != TypeKind::Pointer)
+		throw std::runtime_error("PA12 implicit member object is invalid");
+	const TypeId actual_object = types_[this_pointer.value].child;
+	const MemberLookup selection = unqualified_member_lookup(actual_object,
+		path.last(), scope);
+	if (selection.kind != MemberLookupKind::Value ||
+		!selection.owner.valid() || selection.owner.value >= scopes_.size() ||
+		scopes_[selection.owner.value].kind != ScopeKind::Class)
+		return ExprInfo();
+	*claimed = true;
+	std::vector<ValueRef> candidates = member_function_candidates_in_scope(
+		selection.owner, path.last());
+	const std::vector<ValueRef> static_candidates =
+		static_member_function_candidates_in_scope(selection.owner, path.last());
+	candidates.insert(candidates.end(), static_candidates.begin(),
+		static_candidates.end());
+	if (candidates.empty())
+		throw std::runtime_error("PA12 ambiguous member call is not callable");
+	const std::vector<const PA10AstNode*> argument_nodes(1, &argument_node);
+	const std::vector<ExprInfo> arguments(1, argument);
+	return semantic_member_call_with_implicit_object(node, scope, this_binding,
+		actual_object, selection.owner, candidates, &argument_nodes, &arguments);
 }
 
 ExprInfo PA11SemanticModel::semantic_unqualified_member_call(

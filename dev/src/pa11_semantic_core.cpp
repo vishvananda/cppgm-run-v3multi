@@ -2342,10 +2342,12 @@ bool PA11SemanticModel::ambiguous_call_statement(const PA10AstNode& node, ScopeI
 		inner.children.front().kind != PA10NodeKind::Identifier)
 		return false;
 	const NamePath function_name = name_path(spec);
-	if (lookup_type_path(function_name, scope).valid())
+	const bool member_value_claimed = unqualified_member_value(
+		function_name, scope);
+	if (!member_value_claimed && lookup_type_path(function_name, scope).valid())
 		return false;
 	const std::vector<ValueRef> values = lookup_value_path(function_name, scope);
-	if (values.empty())
+	if (values.empty() && !member_value_claimed)
 		return false;
 	if (callee != NULL)
 		*callee = function_name;

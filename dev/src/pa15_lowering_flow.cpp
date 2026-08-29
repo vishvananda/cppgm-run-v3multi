@@ -858,6 +858,16 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			result = lower_variable_expression(id);
 			break;
 		case SemanticFactKind::Literal:
+			if (fact.child_count != 0)
+			{
+				const std::vector<SemanticFactId> evaluated = children(id);
+				if (evaluated.size() != 1 || !fact.binding.valid() ||
+					fact.binding.value >= model_.bindings_.size() ||
+					model_.binding(fact.binding).kind != BindingKind::Enumerator)
+					throw std::runtime_error(
+						"PA15 enumerator object evaluation fact is invalid");
+				lower_discarded_expression(evaluated.front());
+			}
 			result = fact.literal_element_count != 0 ? lower_address(id) :
 				literal(fact);
 			break;

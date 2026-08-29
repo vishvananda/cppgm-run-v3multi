@@ -1055,6 +1055,48 @@ SemanticFactId PA11SemanticModel::make_expression_fact(SemanticFactKind kind, Ty
 	set_semantic_children(result, children);
 	return result;
 }
+ExprInfo PA11SemanticModel::semantic_enumerator_expression(
+	const PA10AstNode& node, BindingId binding_id, ScopeId owner)
+{
+	if (!binding_id.valid() || binding_id.value >= bindings_.size() ||
+		binding_id.value >= binding_owners_.size())
+		throw std::runtime_error("PA12 enumerator binding is invalid");
+	const Binding& value = binding(binding_id);
+	if (value.kind != BindingKind::Enumerator || !value.type.valid() ||
+		!value.has_value)
+		throw std::runtime_error("PA12 enumerator fact is invalid");
+	const bool value_unsigned = unsigned_integral_type(value.type);
+	const __int128 raw_value = value.value_unsigned ?
+		static_cast<__int128>(value.value_bits) :
+		static_cast<__int128>(value.value);
+	SemanticFact fact(SemanticFactKind::Literal, value.type,
+		SemanticValueCategory::Prvalue, &node);
+	fact.binding = binding_id;
+	fact.selected_binding = binding_id;
+	fact.selected_scope = owner.valid() ? owner :
+		binding_owners_[binding_id.value];
+	fact.has_literal_value = true;
+	fact.literal_value_unsigned = value_unsigned;
+	if (value_unsigned)
+	{
+		const std::size_t width = type_size(value.type) * 8;
+		const __int128 modulus = static_cast<__int128>(1) << width;
+		__int128 normalized = raw_value % modulus;
+		if (normalized < 0)
+			normalized += modulus;
+		fact.literal_value = static_cast<std::uint64_t>(normalized);
+	}
+	else
+	{
+		fact.literal_value_negative = raw_value < 0;
+		fact.literal_value = raw_value < 0 ?
+			static_cast<std::uint64_t>(-(raw_value + 1)) + 1 :
+			static_cast<std::uint64_t>(raw_value);
+	}
+	return ExprInfo(make_semantic_fact(fact), value.type,
+		SemanticValueCategory::Prvalue, false);
+}
+
 ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 {
 	if (has_template_id(node))
@@ -1150,33 +1192,8 @@ ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, Scop
 			values.front().binding);
 	SemanticValueCategory category = SemanticValueCategory::Lvalue;
 	if (value.kind == BindingKind::Enumerator)
-	{
-		const bool value_unsigned = unsigned_integral_type(value.type);
-		__int128 raw_value = value.value_unsigned ?
-			static_cast<__int128>(value.value_bits) :
-			static_cast<__int128>(value.value);
-		SemanticFact fact(SemanticFactKind::Literal, value.type,
-			SemanticValueCategory::Prvalue, &node);
-		fact.has_literal_value = true;
-		fact.literal_value_unsigned = value_unsigned;
-		if (value_unsigned)
-		{
-			const __int128 modulus = static_cast<__int128>(1) <<
-				type_size(value.type) * 8;
-			__int128 normalized = raw_value % modulus;
-			if (normalized < 0) normalized += modulus;
-			fact.literal_value = static_cast<std::uint64_t>(normalized);
-		}
-		else
-		{
-			fact.literal_value_negative = raw_value < 0;
-			fact.literal_value = raw_value < 0 ?
-				static_cast<std::uint64_t>(-(raw_value + 1)) + 1 :
-				static_cast<std::uint64_t>(raw_value);
-		}
-		return ExprInfo(make_semantic_fact(fact), value.type,
-			SemanticValueCategory::Prvalue, false);
-	}
+		return semantic_enumerator_expression(node, values.front().binding,
+			values.front().scope);
 	const BindingSidecar* sidecar = binding_sidecar(values.front().binding);
 	if (sidecar != NULL && sidecar->backing_storage.valid())
 		return semantic_injected_member(node, scope, values.front().binding);
@@ -2134,7 +2151,8 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 	fact.callable_type = selected.binding.valid() ?
 		binding(selected.binding).type : TypeId();
 	const SemanticFactId call = make_semantic_fact(fact);
-	set_semantic_children(call, std::vector<SemanticFactId>(1, converted.fact));
+	set_semantic_children(call,
+		std::vector<SemanticFactId>(1, converted.fact));
 	return ExprInfo(call, result_type, result_category, false);
 }
 SemanticFactId PA11SemanticModel::semantic_ambiguous_call_statement(
@@ -2147,12 +2165,20 @@ SemanticFactId PA11SemanticModel::semantic_ambiguous_call_statement(
 		&argument_node, &right_node))
 	{
 		const ExprInfo argument = semantic_id_expression(*argument_node, scope);
-		const FunctionIdResolution resolution =
-			resolve_single_argument_function(function_name, scope, argument);
-		if (!resolution.valid)
-			throw std::runtime_error("PA12 no viable call");
-		const ExprInfo left = semantic_single_argument_call(node, resolution, argument,
-			scope);
+		bool member_claimed = false;
+		ExprInfo left = semantic_ambiguous_member_call(node, scope, function_name,
+			*argument_node, argument, &member_claimed);
+		if (!member_claimed)
+		{
+			const FunctionIdResolution resolution =
+				resolve_single_argument_function(function_name, scope, argument);
+			if (!resolution.valid)
+				throw std::runtime_error("PA12 no viable call");
+			left = semantic_single_argument_call(node, resolution, argument,
+				scope);
+		}
+		else if (!left.fact.valid())
+			throw std::runtime_error("PA12 no viable member call");
 		if (left.category != SemanticValueCategory::Lvalue)
 			throw std::runtime_error("PA12 assignment requires lvalue");
 		if (!modifiable_lvalue(left.type))
@@ -2175,12 +2201,19 @@ SemanticFactId PA11SemanticModel::semantic_ambiguous_call_statement(
 		argument_node == NULL)
 		throw std::runtime_error("PA12 unsupported declaration statement");
 	const ExprInfo argument = semantic_id_expression(*argument_node, scope);
-	const FunctionIdResolution resolution =
-		resolve_single_argument_function(function_name, scope, argument);
-	if (!resolution.valid)
-		throw std::runtime_error("PA12 no viable call");
-	const ExprInfo call = semantic_single_argument_call(node, resolution, argument,
-		scope);
+	bool member_claimed = false;
+	ExprInfo call = semantic_ambiguous_member_call(node, scope, function_name,
+		*argument_node, argument, &member_claimed);
+	if (!member_claimed)
+	{
+		const FunctionIdResolution resolution =
+			resolve_single_argument_function(function_name, scope, argument);
+		if (!resolution.valid)
+			throw std::runtime_error("PA12 no viable call");
+		call = semantic_single_argument_call(node, resolution, argument, scope);
+	}
+	else if (!call.fact.valid())
+		throw std::runtime_error("PA12 no viable member call");
 	return make_expression_fact(SemanticFactKind::ExpressionStatement,
 		TypeId(), SemanticValueCategory::Prvalue, node,
 		std::vector<SemanticFactId>(1, call.fact));

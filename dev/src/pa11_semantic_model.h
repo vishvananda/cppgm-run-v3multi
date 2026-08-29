@@ -1957,6 +1957,7 @@ private:
 	MemberLookup unqualified_member_lookup(TypeId object, NameId name,
 		ScopeId start) const
 	;
+	bool unqualified_member_value(const NamePath& path, ScopeId start) const;
 	ExprInfo semantic_static_data_member(const PA10AstNode& node, ScopeId scope,
 		const NamePath& path, const MemberLookup& selection, bool* claimed)
 	;
@@ -1975,6 +1976,7 @@ private:
 	std::vector<ValueRef> static_member_function_candidates_in_scope(
 		ScopeId scope, NameId name) const
 	;
+	TypedFunctionSelection select_typed_member_function(const std::vector<ValueRef>& candidates, const ExprInfo& object, TypeId actual_object, ScopeId member_scope, const std::vector<const PA10AstNode*>& argument_nodes, const std::vector<ExprInfo>& initial_arguments, ScopeId scope, bool allow_static = false);
 	bool qualified_static_member_candidates(const PA10AstNode& node,
 		ScopeId scope, std::vector<ValueRef>* candidates, ScopeId* owner)
 	;
@@ -2017,14 +2019,11 @@ private:
 		const ExprInfo& object, TypeId actual_object, ScopeId member_scope,
 		const std::vector<ValueRef>& candidates,
 		const std::vector<NamedRecordId>* base_path = NULL,
-		bool allow_static = false, BindingId implicit_this = BindingId())
+		bool allow_static = false, BindingId implicit_this = BindingId(), const std::vector<const PA10AstNode*>* supplied_argument_nodes = NULL, const std::vector<ExprInfo>* supplied_arguments = NULL)
 	;
-	ExprInfo finish_member_call(const PA10AstNode& node, ScopeId scope, SimpleTokenType member_token, const ExprInfo& object, TypeId actual_object, std::vector<ExprInfo>& arguments, ValueRef selected, TypeId selected_type, bool selected_static, BindingId implicit_this);
-	ExprInfo semantic_member_call_with_implicit_object(
-		const PA10AstNode& node, ScopeId scope, BindingId this_binding,
-		TypeId actual_object, ScopeId member_scope,
-		const std::vector<ValueRef>& candidates)
-	;
+	ExprInfo finish_member_call(const PA10AstNode& node, ScopeId scope, SimpleTokenType member_token, const ExprInfo& object, TypeId actual_object, std::vector<ExprInfo>& arguments, const std::vector<const PA10AstNode*>& argument_nodes, ValueRef selected, TypeId selected_type, bool selected_static, BindingId implicit_this);
+	ExprInfo semantic_member_call_with_implicit_object(const PA10AstNode& node, ScopeId scope, BindingId this_binding, TypeId actual_object, ScopeId member_scope, const std::vector<ValueRef>& candidates, const std::vector<const PA10AstNode*>* supplied_argument_nodes = NULL, const std::vector<ExprInfo>* supplied_arguments = NULL);
+	ExprInfo semantic_ambiguous_member_call(const PA10AstNode& node, ScopeId scope, const NamePath& path, const PA10AstNode& argument_node, const ExprInfo& argument, bool* claimed);
 	ExprInfo semantic_unqualified_member_call(const PA10AstNode& node,
 		const PA10AstNode& callee_node, ScopeId scope)
 	;
@@ -2231,6 +2230,7 @@ private:
 	;
 	ExprInfo semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 	;
+	ExprInfo semantic_enumerator_expression(const PA10AstNode& node, BindingId binding, ScopeId owner = ScopeId());
 	ExprInfo semantic_unary_expression(const PA10AstNode& node, ScopeId scope)
 	;
 	ExprInfo semantic_postfix_expression(const PA10AstNode& node, ScopeId scope)

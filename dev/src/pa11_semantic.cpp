@@ -2059,6 +2059,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	if (current.types.find(introduced) != NULL ||
 		direct_namespace_exists(scope, introduced))
 		throw std::runtime_error("using declaration conflicts with binding");
+	bool published_type = false;
 	if (type.valid())
 	{
 		if (direct_value_exists(scope, introduced))
@@ -2067,11 +2068,15 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		BindingKind kind = BindingKind::TypeAlias; if (origin.valid() && binding(origin).kind == BindingKind::Type) kind = BindingKind::Type;
 		const BindingId introduced_binding = store_binding(scope, Binding(kind, introduced, type)); set_member_access(introduced_binding, class_access_view ? member_access : MemberAccess::Public);
 		record_type_declaration(scope, introduced, SourcePoint(node.source_begin), introduced_binding);
-		return;
+		published_type = true;
 	}
 	const std::vector<ValueRef> values = lookup_value_path(target_name, scope, declaration_point);
 	if (values.empty())
+	{
+		if (published_type)
+			return;
 		throw std::runtime_error("using declaration target is not a binding");
+	}
 	for (std::size_t i = 0; i < values.size(); ++i) {
 		const BindingId imported_binding = values[i].binding;
 		if (!imported_binding.valid() || imported_binding.value >= bindings_.size() || imported_binding.value >= binding_owners_.size()) throw std::runtime_error("PA11 using declaration binding identity is invalid");
