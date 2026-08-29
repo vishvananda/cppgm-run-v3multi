@@ -302,6 +302,8 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 					throw std::runtime_error(
 						"PA15 local constructor action is incomplete");
 			}
+			else if (storage.type.is_object() && class_object_type(declared_type))
+				(void)address_of_storage(storage);
 		}
 		else if (storage.type.is_object() &&
 			initializer_fact.kind == SemanticFactKind::BracedInitList)

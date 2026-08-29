@@ -1112,6 +1112,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	std::size_t argument_begin = 0;
 	bool constructor_call = false;
 	bool class_value_constructor_argument = false;
+	bool class_value_source_has_declaration_address = false;
 	LoweredValue class_value_source;
 	LoweredValue class_value_temporary;
 	Instruction instruction;
@@ -1201,12 +1202,55 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 					!model_.empty_class_value_type(class_value_target))
 					throw std::runtime_error(
 						"PA15 class-value constructor boundary is invalid");
+				const SemanticFact& class_value_argument =
+					model_.semantic_facts_[facts[argument_begin].value];
+				if (class_value_argument.kind == SemanticFactKind::IdExpression &&
+					class_value_argument.binding.valid())
+				{
+					const std::map<std::size_t, const DeclarationFact*>::const_iterator
+						declaration = declaration_by_binding_.find(
+							class_value_argument.binding.value);
+					const bool automatic_local_declaration =
+						declaration != declaration_by_binding_.end() &&
+						declaration->second != NULL &&
+						declaration->second->automatic_storage &&
+						declaration->second->scope.valid() &&
+						declaration->second->scope.value < model_.scopes_.size() &&
+						model_.scopes_[declaration->second->scope.value].kind ==
+							ScopeKind::Block;
+					const std::map<std::size_t, SemanticFactId>::const_iterator
+						variable = variable_facts_.find(
+							class_value_argument.binding.value);
+					if (variable != variable_facts_.end())
+					{
+						const std::vector<SemanticFactId> declaration_initializers =
+							children(variable->second);
+						if (declaration_initializers.size() == 1)
+						{
+							const SemanticFact& declaration_initializer =
+								model_.semantic_facts_[declaration_initializers.front().value];
+							class_value_source_has_declaration_address =
+								automatic_local_declaration &&
+								declaration_initializer.kind ==
+									SemanticFactKind::ConstructorAction &&
+								storage_for(class_value_argument.binding).type.is_object() &&
+								class_object_type(model_.binding(
+									class_value_argument.binding).type) &&
+								constructor_action_is_noop(declaration_initializer);
+						}
+					}
+				}
 				class_value_source = lower_expression_impl(facts[argument_begin],
 					false, false, false, true);
 				if (!class_value_source.lvalue || !class_value_source.type.is_object())
 					throw std::runtime_error(
 						"PA15 class-value constructor source is not an object lvalue");
-				(void)address_of_storage(class_value_source);
+				// A no-op local class declaration has already materialized its
+				// declaration-owned address.  The class-value ABI path retains its
+				// later source-address operation, but must not duplicate the
+				// pre-copy address solely because declaration lowering now owns it.
+				if (!class_value_source_has_declaration_address)
+					(void)address_of_storage(class_value_source);
 				class_value_constructor_argument = true;
 			}
 			instruction.args.push_back(lower_expression(facts.front()).value);
