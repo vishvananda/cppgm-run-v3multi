@@ -15,10 +15,15 @@ Invariants are: owner scope is a class and the terminal typed name matches its
 record; an out-of-class destructor definition reuses an existing declaration
 binding; destructor names are cv-insensitive at the class-type boundary;
 scalar pseudo-destructors require the same scalar `TypeId` as the object; and
-the object expression has exactly one PA12 child/evaluation root. All malformed
-owner, binding, signature, access, and lowering facts fail closed. The path
-lookup is canonical and bounded; there is no spelling-key recovery, secondary
-semantic model, whole-TU retry, or broad rescan.
+the object expression has exactly one PA12 child/evaluation root. The only
+`ClassValue` admission is one same-class lvalue argument to an out-of-class
+constructor whose canonical record is complete, non-union, non-virtual,
+base-free, has an empty `RecordLayout.members`, and has no user-declared
+constructor/destructor/default-member-initializer flags in its
+`NamedRecordSidecar`; PA15 therefore never needs to copy a nonempty object.
+All malformed owner, binding, signature, access, and lowering facts fail
+closed. The path lookup is canonical and bounded; there is no spelling-key
+recovery, secondary semantic model, whole-TU retry, or broad rescan.
 
 ## Failure Map
 
@@ -130,47 +135,55 @@ does not add virtual dispatch, templates, placement new, unrelated cleanup,
 general member overload work, or any test/ref/harness/comparator/source-set
 change. Temporary verbose diagnostics in `pa12_semantic_calls.cpp` were
 removed; its remaining changes are limited to the bounded constructor value
-conversion.
+conversion. This follow-up changes only `dev/src/pa12_semantic_calls.cpp` and
+this plan: every other source file listed above remains the already-committed
+typed owner/destructor data-flow path, with no parallel resolver or helper.
 
 The focused owned set is now `4/4`. The bounded controls also pass for a
 lexically shadowed wrong destructor type (the injected class name is selected),
 an inaccessible class destructor (rejected), a mismatched scalar
 pseudo-destructor (rejected), and a derived-object qualified base destructor
-(the base binding is called). The constructor value slice is limited to one
-lvalue class argument for an out-of-class constructor; other class-by-value
-shapes fail closed.
+(the base binding is called). A nonempty class value-parameter probe is
+rejected with no viable constructor; the empty `Outer::Token` case remains
+accepted. The constructor value slice is therefore limited to the precise
+empty-record facts above, one lvalue argument, and an out-of-class constructor;
+other class-by-value shapes fail closed.
 
 ## Performance Evidence
 
 Typed name resolution is O(L) in qualified path length with indexed scope/type
 lookups; the unqualified destructor rule performs only the two required typed
-candidates (lexical scope and object class scope). The destructor fact adds
-O(1) work after lookup. Demand and lowering follow the one object child and
-existing reachable function edges, so the added work is bounded by those edges
-and does not scan the translation unit. Representative `/tmp` probes cover
-shadowed lookup, access, scalar mismatch, and derived-base projection; no
-timing, RSS, or speedup claim is made.
+candidates (lexical scope and object class scope). The class-value guard adds
+O(1) indexed record/layout/sidecar checks after the canonical `NamedRecordId`;
+the destructor fact adds O(1) work after lookup. Demand and lowering follow
+the one object child and existing reachable function edges, so the added work
+is bounded by those edges and does not scan the translation unit. Representative
+`/tmp` probes cover shadowed lookup, access, scalar mismatch, derived-base
+projection, and nonempty class-value rejection; no timing, RSS, or speedup
+claim is made.
 
 ## Validation and Checkpoint Ledger
 
-Broad validation and the repository commit are complete:
+Follow-up correction validation is complete:
 
 - `make -C pa16 dev-shared-target`: pass.
-- Focused `make -C pa16 check TEST='tests/general/200-nested-out-of-class-constructor-enclosing-type.t tests/general/300-explicit-destructor-call-enclosing-namespace-type.t tests/general/300-const-pointer-explicit-destructor-call.t tests/general/300-scalar-pseudo-destructor-call.t'`:
-  `4/4` passed; the extended directly relevant set was `7/7`.
-- Direct controls: `100-out-of-class-methods.t`,
-  `spec/200-nested-class-enclosing-access.t`, and
-  `300-member-operator-bang-out-of-class.t` passed. The four bounded `/tmp`
-  controls passed with expected accept/reject statuses.
-- The four requested identities were exercised; the turn-start coverage
-  authority remains `243/243` and no coverage rule or test identity changed.
-- `make test-pa16`: `194/243` passed, `49` failed, `243/243` covered, with no
-  final-only failure identity.
+- Focused owned plus directly relevant controls: `7/7` passed. The empty
+  `Outer::Token` value case remains accepted.
+- Bounded `/tmp` controls passed: lexical wrong-type shadow `0`, inaccessible
+  destructor `1`, mismatched scalar pseudo-destructor `1`, derived-object
+  base destructor `0`, and nonempty class-value parameter `1` with
+  `PA12 no viable function`.
+- The four requested identities remain exercised; coverage remains `243/243`
+  and no test identity, coverage rule, ref, or harness changed.
+- `make test-pa16`: `194/243` passed, `49` failed, `243/243` covered. The
+  failure set is exactly the prior 54-failure map minus the four owned
+  identities and `200-pointer-subscript-class-reference-return.t`; the
+  final-only set is empty.
 - Exact `n=16` through-PA15 command: `1167/1167` passed.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: passed with
   five pre-existing header-division warnings.
-- `git diff --check`: passed. The coherent checkpoint was committed; the final
-  commit id is reported in the repository handoff.
+- `git diff --check`: passed. The two-file correction is the coherent
+  follow-up commit; final `git status --short` is empty.
 
 ### Historical Checkpoint Ledger
 
@@ -186,3 +199,4 @@ Broad validation and the repository commit are complete:
 | `PA16 typed ordinary-value-over-tag lookup checkpoint` | `187/243` passing, `56` failures, `243/243` covered; its focused matrix was `8/8`. |
 | `b3bbf052` typed non-owning namespace object checkpointAudit | Completed the bounded ownership-path audit and repair: incomplete named-class references/glvalues retain pointer representation while owned values remain layout-gated; namespace declaration-only globals are rooted in emitted typed facts; owner/range checks fail closed; and unused member/default facts no longer create storage roots. Post-repair `make test-pa16` is `189/243` passing, `54` failures, and `243/243` covered; comparison with the landed 54-failure authority has baseline-only `0` and final-only `0`. The focused handout matrix is `16/16`, the exact through-PA15 command is `1167/1167`, file audit exits `0` with five known header-division warnings, repeated structural probes are byte-identical, and `git diff --check` passes. The incomplete namespace-object address case is out-of-contract under the PA16 complete-class namespace-object scope; course-400 DMI remains outside this increment. |
 | `PA16 typed qualified special-member/destructor checkpoint` | Focused owned set `4/4`, extended focused set `7/7`; final `make test-pa16` `194/243` with `49` failures and `243/243` covered; five baseline-only failures removed and no final-only failures; through-PA15 `1167/1167`; file audit passed with five pre-existing warnings; `git diff --check` passed; committed as the coherent checkpoint. |
+| `PA16 class-value admission correction` | Canonical `NamedRecord`/`RecordLayout`/`NamedRecordSidecar` guards restrict `ClassValue` to the empty, no-state, no-lifetime, same-class-lvalue, out-of-class-constructor slice; focused `7/7`, bounded negative probe rejected, broad `194/243` with `49` failures and `243/243` covered, through-PA15 `1167/1167`, file audit and `git diff --check` passed; committed as the follow-up correction with a clean worktree. |

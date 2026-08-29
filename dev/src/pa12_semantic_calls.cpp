@@ -117,9 +117,26 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		const NamedRecordId parameter_record = named_record_for_type(
 			parameter_object);
 		if (!parameter_record.valid() || parameter_record.value >= named_.size() ||
-			named_[parameter_record.value].kind != NamedKind::Class ||
 			type_kind(parameter_type) == TypeKind::LvalueReference ||
 			type_kind(parameter_type) == TypeKind::RvalueReference)
+			return false;
+		const NamedRecord& record = named_[parameter_record.value];
+		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+			!record.defined || record.has_base || record.direct_base.valid() ||
+			record.direct_base_virtual || record.has_virtual_member ||
+			!record.scope.valid() || record.scope.value >= scopes_.size() ||
+			scopes_[record.scope.value].kind != ScopeKind::Class ||
+			scopes_[record.scope.value].record != parameter_record)
+			return false;
+		const RecordLayout& layout = record_layout(parameter_record);
+		if (layout.state != RecordLayoutState::Complete ||
+			layout.has_direct_base || !layout.members.empty())
+			return false;
+		const NamedRecordSidecar* sidecar = named_record_sidecar(
+			parameter_record);
+		if (sidecar != NULL && (sidecar->has_constructor_declaration ||
+			sidecar->has_destructor_declaration ||
+			sidecar->has_default_member_initializer))
 			return false;
 		const ExprInfo& argument = arguments[parameter];
 		return argument.fact.valid() &&
