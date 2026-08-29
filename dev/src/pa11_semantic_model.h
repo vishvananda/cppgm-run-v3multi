@@ -276,7 +276,6 @@ struct BindingSidecar
 	bool inline_member;
 	bool has_default_member_initializer;
 	SemanticFactId default_member_initializer;
-	bool has_member_value_provenance;
 	// Non-static member alignment is retained on the canonical binding until
 	// RecordLayout consumes it; static members never participate in layout.
 	bool has_requested_alignment;
@@ -302,7 +301,6 @@ struct BindingSidecar
 			inline_member(false),
 		  has_default_member_initializer(false),
 		  default_member_initializer(),
-		  has_member_value_provenance(false),
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
 		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
@@ -1300,6 +1298,7 @@ private:
 	FlatIndex<const PA10AstNode*, FunctionFactId, PointerHash>
 		function_fact_index_;
 	FlatIndex<BindingId, FunctionFactId, IdentityHash<BindingId> > function_binding_fact_index_;
+	std::vector<std::pair<SemanticFactId, FunctionFactId> > function_return_owners_;
 	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> > constructor_base_entry_bindings_;
 	FlatIndex<BindingId, BindingId, IdentityHash<BindingId> > destructor_base_entry_bindings_;
 	std::vector<SemanticFactId> function_default_arguments_;
@@ -2129,9 +2128,9 @@ private:
 	};
 	SemanticFactId make_semantic_fact(const SemanticFact& fact)
 	;
-	void set_semantic_children(SemanticFactId fact,
-	const std::vector<SemanticFactId>& children)
-	;
+	void set_semantic_children(SemanticFactId fact, const std::vector<SemanticFactId>& children);
+	class CanonicalTruthFinalizer;
+	void finalize_canonical_truth();
 	void set_semantic_base_path(SemanticFactId fact, const std::vector<NamedRecordId>& path);
 	void set_semantic_aggregate_elements(SemanticFactId fact, const std::vector<AggregateElementFact>& elements, std::size_t total_count);
 	void set_semantic_name(SemanticFactId fact, const NamePath& path)
@@ -2237,6 +2236,7 @@ private:
 	;
 	ExprInfo semantic_binary_expression(const PA10AstNode& node, ScopeId scope)
 	;
+	bool has_implicit_this_result(ScopeId scope, SimpleTokenType token, const std::vector<SemanticFactId>& children) const;
 	ExprInfo semantic_assignment_expression(const PA10AstNode& node,
 	ScopeId scope)
 	;

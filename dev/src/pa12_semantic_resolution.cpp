@@ -1113,15 +1113,15 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 	const SemanticFactId result = make_expression_fact(
 		SemanticFactKind::ReturnStatement,
 		TypeId(), SemanticValueCategory::Prvalue, node, children);
-	// Publish only the value provenance rooted at this ReturnStatement.  The
-	// enclosing compound may contain arbitrary accesses and side effects that
-	// are not part of the function result.
-	if (function.binding.valid() &&
-		semantic_facts_[result.value].contains_member_value)
+	// Retained function bodies pass their typed owner into statement analysis.
+	// Keep only this compact pair; the finalizer resolves declaration owners to
+	// the canonical definition after all PA12 construction is complete.
+	if (function.node != NULL)
 	{
-		FunctionFact* owner = function_fact_for_binding(function.binding);
-		if (owner != NULL)
-			owner->return_result_contains_member_value = true;
+		const FunctionFactId* owner = function_fact_index_.find(function.node);
+		if (owner != NULL && owner->valid() && owner->value < function_facts_.size())
+			function_return_owners_.push_back(
+				std::make_pair(result, *owner));
 	}
 	return result;
 }

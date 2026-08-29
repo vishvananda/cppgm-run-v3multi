@@ -2,6 +2,7 @@
 #include "pa11_semantic_model.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace pa11_semantic_internal
 {
@@ -1496,6 +1497,436 @@ void PA11SemanticModel::prepare_pa12()
 		prepare_pa12_node(ast_.root.children[i], global_);
 }
 
+class PA11SemanticModel::CanonicalTruthFinalizer
+{
+public:
+	explicit CanonicalTruthFinalizer(PA11SemanticModel& model)
+		: model_(model),
+		  semantic_count_(model.semantic_facts_.size()),
+		  binding_count_(model.bindings_.size()),
+		  binding_base_(semantic_count_),
+		  function_base_(0),
+		  invalid_(),
+		  node_count_(0)
+	{
+		initialize_domain();
+	}
+
+	void build_edges();
+	void propagate();
+	void publish();
+
+private:
+	struct ResultNodeId
+	{
+		std::size_t value;
+
+		explicit ResultNodeId(std::size_t value = InvalidIdentityValue)
+			: value(value)
+		{}
+
+		bool valid() const
+		{
+			return value != InvalidIdentityValue;
+		}
+	};
+
+	struct ResultEdge
+	{
+		ResultNodeId target;
+		ResultNodeId next;
+
+		ResultEdge(ResultNodeId target = ResultNodeId(),
+			ResultNodeId next = ResultNodeId())
+			: target(target), next(next)
+		{}
+	};
+
+	void initialize_domain();
+	void add_edge(ResultNodeId source, ResultNodeId target);
+	void add_semantic_edge(SemanticFactId source, ResultNodeId target);
+	void seed(ResultNodeId node);
+	bool is_result_edge(const SemanticFact& owner, std::size_t child) const;
+	void build_binding_edges(const SemanticFact& owner, std::size_t node);
+	void build_call_edge(const SemanticFact& owner, std::size_t node);
+	void build_child_edges(const SemanticFact& owner, std::size_t node);
+	void build_return_owner_edges();
+	void publish_functions();
+	void publish_semantic();
+	void publish_conversions();
+
+	PA11SemanticModel& model_;
+	std::size_t semantic_count_;
+	std::size_t binding_count_;
+	std::size_t binding_base_;
+	std::size_t function_base_;
+	ResultNodeId invalid_;
+	std::size_t node_count_;
+	std::vector<FunctionFactId> definition_by_binding_;
+	std::vector<FunctionFactId> defined_functions_;
+	std::vector<ResultNodeId> function_nodes_;
+	std::vector<ResultNodeId> heads_;
+	std::vector<ResultEdge> edges_;
+	std::vector<unsigned char> true_nodes_;
+	std::vector<unsigned char> queued_;
+	std::vector<ResultNodeId> worklist_;
+};
+
+void PA11SemanticModel::CanonicalTruthFinalizer::initialize_domain()
+{
+	const std::size_t max_value =
+		std::numeric_limits<std::size_t>::max();
+	binding_base_ = semantic_count_;
+	if (binding_count_ > max_value - binding_base_)
+		throw std::runtime_error(
+			"PA12 canonical truth binding node domain overflow");
+	function_base_ = binding_base_ + binding_count_;
+	if (model_.function_facts_.size() > max_value - function_base_)
+		throw std::runtime_error(
+			"PA12 canonical truth function node domain overflow");
+
+	definition_by_binding_.assign(binding_count_, FunctionFactId());
+	for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
+	{
+		const FunctionFact& function = model_.function_facts_[i];
+		if (function.node == NULL ||
+			function.node->kind != PA10NodeKind::FunctionDefinition)
+			continue;
+		const FunctionFactId id(i);
+		defined_functions_.push_back(id);
+		if (function.binding.valid() &&
+			function.binding.value < binding_count_ &&
+			!definition_by_binding_[function.binding.value].valid())
+			definition_by_binding_[function.binding.value] = id;
+	}
+	if (defined_functions_.size() > max_value - function_base_)
+		throw std::runtime_error(
+			"PA12 canonical truth result node domain overflow");
+	node_count_ = function_base_ + defined_functions_.size();
+
+	function_nodes_.assign(model_.function_facts_.size(), invalid_);
+	for (std::size_t i = 0; i < defined_functions_.size(); ++i)
+	{
+		const FunctionFactId function = defined_functions_[i];
+		function_nodes_[function.value] =
+			ResultNodeId(function_base_ + i);
+	}
+	heads_.assign(node_count_, invalid_);
+	true_nodes_.assign(node_count_, 0);
+	queued_.assign(node_count_, 0);
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::add_edge(
+	ResultNodeId source, ResultNodeId target)
+{
+	if (!source.valid() || !target.valid() ||
+		source.value >= node_count_ || target.value >= node_count_)
+		throw std::runtime_error(
+			"PA12 canonical truth edge endpoint is out of range");
+	const std::size_t edge = edges_.size();
+	edges_.push_back(ResultEdge(target, heads_[source.value]));
+	heads_[source.value] = ResultNodeId(edge);
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::add_semantic_edge(
+	SemanticFactId source, ResultNodeId target)
+{
+	if (!source.valid())
+		return;
+	if (source.value >= semantic_count_)
+		throw std::runtime_error(
+			"PA12 canonical truth semantic edge endpoint is out of range");
+	add_edge(ResultNodeId(source.value), target);
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::seed(ResultNodeId node)
+{
+	if (!node.valid() || node.value >= node_count_)
+		throw std::runtime_error(
+			"PA12 canonical truth seed endpoint is out of range");
+	if (true_nodes_[node.value] != 0)
+		return;
+	true_nodes_[node.value] = 1;
+	if (queued_[node.value] == 0)
+	{
+		queued_[node.value] = 1;
+		worklist_.push_back(node);
+	}
+}
+
+bool PA11SemanticModel::CanonicalTruthFinalizer::is_result_edge(
+	const SemanticFact& owner, std::size_t child) const
+{
+	switch (owner.kind)
+	{
+	case SemanticFactKind::Variable:
+	case SemanticFactKind::ReturnStatement:
+		return child == 0;
+	case SemanticFactKind::UnaryExpression:
+		return owner.token != SimpleTokenType::OP_AMP &&
+			child == 0;
+	case SemanticFactKind::PostfixExpression:
+	case SemanticFactKind::CastExpression:
+		return child == 0;
+	case SemanticFactKind::BinaryExpression:
+		return owner.token != SimpleTokenType::OP_COMMA ||
+			child == 1;
+	case SemanticFactKind::AssignmentExpression:
+		return owner.token == SimpleTokenType::OP_ASS ?
+			child == 1 : child < 2;
+	case SemanticFactKind::ConditionalExpression:
+		return child == 1 || child == 2;
+	case SemanticFactKind::SubscriptExpression:
+		return child == 0;
+	default:
+		return false;
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::build_binding_edges(
+	const SemanticFact& owner, std::size_t node)
+{
+	if (owner.binding.valid() &&
+		owner.binding.value >= binding_count_)
+		throw std::runtime_error(
+			"PA12 canonical truth binding endpoint is out of range");
+	const bool variable_binding = owner.binding.valid() &&
+		owner.binding.value < binding_count_ &&
+		model_.binding(owner.binding).kind == BindingKind::Variable;
+	if ((owner.kind == SemanticFactKind::Variable ||
+		owner.kind == SemanticFactKind::AssignmentExpression) &&
+		variable_binding &&
+		(owner.kind == SemanticFactKind::AssignmentExpression ||
+			owner.child_count != 0))
+		add_edge(ResultNodeId(node),
+			ResultNodeId(binding_base_ + owner.binding.value));
+	if (owner.kind == SemanticFactKind::IdExpression &&
+		variable_binding)
+		add_edge(ResultNodeId(binding_base_ + owner.binding.value),
+			ResultNodeId(node));
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::build_call_edge(
+	const SemanticFact& owner, std::size_t node)
+{
+	if (owner.kind != SemanticFactKind::CallExpression ||
+		!owner.has_callee || !owner.selected_binding.valid())
+		return;
+	if (owner.selected_binding.value >= binding_count_)
+		throw std::runtime_error(
+			"PA12 canonical truth selected binding endpoint is out of range");
+	const FunctionFactId definition =
+		definition_by_binding_[owner.selected_binding.value];
+	if (!definition.valid())
+		return;
+	if (definition.value >= function_nodes_.size())
+		throw std::runtime_error(
+			"PA12 canonical truth function endpoint is out of range");
+	const ResultNodeId function_node = function_nodes_[definition.value];
+	if (!function_node.valid())
+		throw std::runtime_error(
+			"PA12 canonical truth definition node is invalid");
+	add_edge(function_node, ResultNodeId(node));
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::build_child_edges(
+	const SemanticFact& owner, std::size_t node)
+{
+	if (owner.child_count == 0)
+		return;
+	if (owner.child_begin == invalid_.value ||
+		owner.child_begin > model_.semantic_children_.size() ||
+		owner.child_count > model_.semantic_children_.size() -
+			owner.child_begin)
+		throw std::runtime_error(
+			"PA12 semantic result edge range is invalid");
+	for (std::size_t child = 0; child < owner.child_count; ++child)
+	{
+		if (!is_result_edge(owner, child))
+			continue;
+		const SemanticFactId source =
+			model_.semantic_children_[owner.child_begin + child];
+		add_semantic_edge(source, ResultNodeId(node));
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::build_return_owner_edges()
+{
+	for (std::size_t i = 0;
+		i < model_.function_return_owners_.size(); ++i)
+	{
+		const std::pair<SemanticFactId, FunctionFactId>& owner =
+			model_.function_return_owners_[i];
+		const SemanticFactId result = owner.first;
+		const FunctionFactId function = owner.second;
+		if (!result.valid() || result.value >= semantic_count_ ||
+			!function.valid() ||
+			function.value >= model_.function_facts_.size())
+			throw std::runtime_error(
+				"PA12 retained return owner identity is malformed");
+		if (model_.semantic_facts_[result.value].kind !=
+			SemanticFactKind::ReturnStatement)
+			throw std::runtime_error(
+				"PA12 retained return owner result is not a return statement");
+		const FunctionFact& source_function =
+			model_.function_facts_[function.value];
+		if (source_function.node == NULL ||
+			source_function.node->kind != PA10NodeKind::FunctionDefinition ||
+			!source_function.body_fact.valid() ||
+			source_function.body_fact.value >= semantic_count_ ||
+			!source_function.binding.valid() ||
+			source_function.binding.value >= binding_count_)
+			throw std::runtime_error(
+				"PA12 retained return owner is not definition-owned");
+		const FunctionFactId definition =
+			definition_by_binding_[source_function.binding.value];
+		if (!definition.valid() ||
+			definition.value >= function_nodes_.size() ||
+			!function_nodes_[definition.value].valid())
+			throw std::runtime_error(
+				"PA12 retained return owner has no canonical definition");
+		add_edge(ResultNodeId(result.value),
+			function_nodes_[definition.value]);
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::build_edges()
+{
+	for (std::size_t i = 0; i < semantic_count_; ++i)
+	{
+		if (model_.semantic_facts_[i].contains_member_value)
+			seed(ResultNodeId(i));
+	}
+	for (std::size_t i = 0; i < semantic_count_; ++i)
+	{
+		const SemanticFact& owner = model_.semantic_facts_[i];
+		build_binding_edges(owner, i);
+		build_call_edge(owner, i);
+		build_child_edges(owner, i);
+	}
+	build_return_owner_edges();
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::propagate()
+{
+	for (std::size_t cursor = 0; cursor < worklist_.size(); ++cursor)
+	{
+		const ResultNodeId source = worklist_[cursor];
+		if (!source.valid() || source.value >= node_count_)
+			throw std::runtime_error(
+				"PA12 canonical truth worklist endpoint is out of range");
+		for (ResultNodeId edge = heads_[source.value];
+			edge.valid(); edge = edges_[edge.value].next)
+		{
+			if (edge.value >= edges_.size())
+				throw std::runtime_error(
+					"PA12 canonical truth edge index is out of range");
+			const ResultNodeId target = edges_[edge.value].target;
+			if (!target.valid() || target.value >= node_count_)
+				throw std::runtime_error(
+					"PA12 canonical truth edge endpoint is out of range");
+			if (true_nodes_[target.value] != 0)
+				continue;
+			true_nodes_[target.value] = 1;
+			if (queued_[target.value] == 0)
+			{
+				queued_[target.value] = 1;
+				worklist_.push_back(target);
+			}
+		}
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::publish_functions()
+{
+	for (std::size_t i = 0; i < defined_functions_.size(); ++i)
+	{
+		const FunctionFactId function = defined_functions_[i];
+		const ResultNodeId node = function_nodes_[function.value];
+		if (!node.valid())
+			throw std::runtime_error(
+				"PA12 canonical truth function node is invalid");
+		model_.function_facts_[function.value].
+			return_result_contains_member_value =
+			true_nodes_[node.value] != 0;
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::publish_semantic()
+{
+	for (std::size_t i = 0; i < semantic_count_; ++i)
+	{
+		if (true_nodes_[i] == 0)
+			continue;
+		SemanticFact& fact = model_.semantic_facts_[i];
+		fact.contains_member_value = true;
+		if (fact.kind != SemanticFactKind::CastExpression ||
+			fact.child_count == 0)
+			continue;
+		if (fact.child_begin == invalid_.value ||
+			fact.child_begin >= model_.semantic_children_.size())
+			throw std::runtime_error(
+				"PA12 canonical truth cast child endpoint is out of range");
+		const SemanticFactId source =
+			model_.semantic_children_[fact.child_begin];
+		if (source.valid() && source.value >= semantic_count_)
+			throw std::runtime_error(
+				"PA12 canonical truth semantic edge endpoint is out of range");
+		if (source.valid() &&
+			model_.semantic_facts_[source.value].canonical_truth &&
+			model_.semantic_facts_[source.value].contains_member_value)
+		{
+			fact.canonical_truth = true;
+			fact.direct_bool_boundary = true;
+		}
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::publish_conversions()
+{
+	for (std::size_t i = 0; i < semantic_count_; ++i)
+	{
+		if (true_nodes_[i] == 0)
+			continue;
+		SemanticFact& fact = model_.semantic_facts_[i];
+		if (!fact.canonical_truth)
+			continue;
+		fact.direct_bool_boundary = true;
+		if (fact.conversion_count == 0)
+			continue;
+		if (fact.conversion_begin == invalid_.value ||
+			fact.conversion_begin > model_.conversion_facts_.size() ||
+			fact.conversion_count > model_.conversion_facts_.size() -
+				fact.conversion_begin)
+			throw std::runtime_error(
+				"PA12 canonical truth conversion range is invalid");
+		for (std::size_t conversion = 0;
+			conversion < fact.conversion_count; ++conversion)
+		{
+			ConversionFact& owned = model_.conversion_facts_[
+				fact.conversion_begin + conversion];
+			if (model_.bool_id(owned.source))
+				owned.canonical_truth_policy =
+					CanonicalTruthPolicy::Preserve;
+		}
+	}
+}
+
+void PA11SemanticModel::CanonicalTruthFinalizer::publish()
+{
+	publish_functions();
+	publish_semantic();
+	publish_conversions();
+}
+
+void PA11SemanticModel::finalize_canonical_truth()
+{
+	CanonicalTruthFinalizer finalizer(*this);
+	finalizer.build_edges();
+	finalizer.propagate();
+	finalizer.publish();
+}
+
 void PA11SemanticModel::analyze_pa12()
 {
 	if (ast_.root.kind != PA10NodeKind::TranslationUnit)
@@ -1512,6 +1943,7 @@ void PA11SemanticModel::analyze_pa12()
 	destructor_runtime_invalid_.assign(named_.size(), 0);
 	for (std::size_t i = 0; i < ast_.root.children.size(); ++i)
 		analyze_pa12_node(ast_.root.children[i], global_);
+	finalize_canonical_truth();
 }
 } // namespace pa11_semantic_internal
 

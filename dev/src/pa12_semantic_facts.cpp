@@ -63,11 +63,6 @@ ConversionFactId PA11SemanticModel::add_conversion(TypeId source, TypeId target,
 void PA11SemanticModel::set_fact_conversion(SemanticFactId fact, ConversionFactId conversion)
 {
 	SemanticFact& owner = semantic_facts_[fact.value];
-	ConversionFact& owned_conversion = conversion_facts_[conversion.value];
-	if (owner.canonical_truth && owner.direct_bool_boundary &&
-		bool_id(owned_conversion.source))
-		owned_conversion.canonical_truth_policy =
-			CanonicalTruthPolicy::Preserve;
 	if (owner.conversion_begin == InvalidIdentityValue)
 		owner.conversion_begin = conversion.value;
 	else if (owner.conversion_begin + owner.conversion_count != conversion.value)

@@ -2,206 +2,255 @@
 
 ## Current Checkpoint Review
 
-This review covers the landed span c507120c..e9d92812: main commit
-ceb09013ad5c462df4b0fbf2f267bdf0150f0711, PA16: type qualified special-member
-identities, and correction e9d928125399aaad099b48d59e977e80771007af, PA16:
-restrict class-value constructor slice. It also records the bounded repair and
-final audit result. The parent authority was c507120c; the turn-start tree was
-clean at e9d92812.
+This review covers landed c39d45634bb029a02c938c190f8ac703bd275050,
+PA16: preserve typed canonical truth boundaries, plus the bounded
+checkpoint-audit correction and its behavior-preserving structural extraction.
+The clean turn-start authority was c39d4563:
+199/243 PA16 identities passed, exactly 44 failed, and all 243/243
+identities were covered. The final result is compared against that exact
+authority below; this review does not treat the older e92 194/49 result as
+current.
 
-The bounded audit was checked against pa16/README.md, spec.md, pa16/plan.md,
-the affected handout identities, and the preserved PA11--PA15 typed contracts.
-No test, fixture, reference output, sidecar, harness, comparator, source-set,
-or handout contract changed. The current implementation changes are limited
-to these allowed source files and the two allowed documents:
+The audit follows pa16/README.md, the relevant spec.md sections 2-5 and 7,
+pa16/plan.md, and the preserved PA11-PA15 typed contracts. The only tracked
+changes in this checkpoint are these six source owners and the two checkpoint
+documents:
 
-- dev/src/pa11_semantic_core.cpp
 - dev/src/pa11_semantic_model.h
 - dev/src/pa12_semantic.cpp
-- dev/src/pa12_semantic_calls.cpp
 - dev/src/pa12_semantic_construction.cpp
 - dev/src/pa12_semantic_facts.cpp
-- dev/src/pa12_semantic_member.cpp
+- dev/src/pa12_semantic_resolution.cpp
 - dev/src/pa15_lowering.cpp
-- dev/src/pa15_lowering.h
-- dev/src/pa15_lowering_calls.cpp
-- dev/src/pa15_lowering_construction.cpp
-- dev/src/pa15_lowering_flow.cpp
-- pa16/plan.md
 - pa16/audit.md
+- pa16/plan.md
+
+No test, fixture, .ref, status sidecar, harness, comparator, source-set, or
+unrelated stage surface changed.
 
 ### Contract and ownership trace
 
-The four representative ownership paths are:
+The canonical-truth path is one typed PA12-to-PA15 pipeline:
 
 ```text
-PA11 NamePath/declaration_scope
-  -> canonical class ScopeId, NamedRecordId, BindingId, typed signature
-  -> qualified special-member declaration/definition and base-entry identity
-PA12 object expression
-  -> one child SemanticFact plus typed DestructorCall and selected path
-  -> cv-insensitive class lookup, scalar exact-type check, access, conversion
-PA15 typed demand/signature/entry mapping
-  -> direct hidden-object destructor call or scalar no-callee lowering
-  -> exactly-once operand evaluation
-PA12 ClassValue boundary
-  -> exact whole-signature/canonical-declaration constructor conversion
-  -> PA15 materialization/store decision with no general value semantics
+PA12 retained SemanticFact / ConversionFact / BindingId / FunctionFact
+  -> one post-construction finalizer with local semantic, binding-summary,
+     and defined-function-summary ordinal ranges
+  -> explicit result edges and one monotonic dense worklist
+  -> publish contains_member_value, direct_bool_boundary, and conversion policy
+  -> PA15 resets LoweredValue policy from each current ConversionFact
+  -> typed LowIR chooses Preserve or Materialize for that conversion
 ```
 
-SemanticTailGuard checkpoints the semantic base-path arena as part of the
-same typed tail state as facts, children, conversions, aggregate ranges,
-literals, and names. A discarded speculative member-call probe cannot leave a
-path record for a later retained fact to mistake for its own projection.
+PA12 first completes ordinary retained construction in deterministic source
+order. set_semantic_children only publishes the child range; it neither
+demands a body nor publishes provenance. analyze_pa12 then invokes exactly
+one finalize_canonical_truth pass after all retained function bodies exist.
+Direct PA12 member/object-derived facts and the justified implicit-this result
+facts are the only initial semantic seeds. The finalizer records a typed
+(SemanticFactId, FunctionFactId) return-owner pair for each retained return
+statement and maps selected call bindings to the canonical defined
+FunctionFact. A declaration-only or
+external call has no definition edge and therefore fails closed to the normal
+Materialize policy; a malformed retained return owner raises a runtime_error.
 
-PA11 destructor names retain a semantic NamePath component. A qualified
-special-member definition resolves its declaration scope to the canonical
-class scope and reuses the declaration's destructor BindingId; the typed
-destructor/base-entry sidecars preserve the same owner and function
-signature. PA12 does all destructor name resolution and access checking. The
-explicit expression evaluates its object before lookup and publishes exactly
-one child. Class lookup is cv-insensitive; a scalar pseudo-destructor is
-accepted only when the stripped scalar TypeId is exactly the object TypeId.
-For a derived object and qualified base destructor, PA12 records the direct
-NamedRecordId chain selected by the typed conversion.
+The local graph is ephemeral. Its dense local ResultNodeId ranges cover
+semantic facts, BindingId conservative may-summaries, and defined FunctionFact
+summaries; these IDs do not persist after publication. Its append-only edge
+records use dense source heads and next links. Result edges are explicit:
+variable and return
+initializer, unary except address-of, postfix/cast, non-comma binary operands,
+comma RHS only, assignment result operands, conditional result arms, and
+subscript object. Calls use only the selected function summary. Call
+arguments and indirect callees, comma-left, conditions, constructor
+arguments, member-object/control/statement edges, and other non-value edges
+do not propagate. Variable/assignment definitions point to a BindingId
+summary, and every typed variable IdExpression use reads that summary.
+ReturnStatement results point to their owning defined-function summary; that
+summary points to calls. The single queue reaches a fixed point through
+recursion without demand retries, body rescans, or whole-program retry.
 
-PA15 demand validates the DestructorCall owner, raw signature, callable
-hidden-object signature, function fact, and indexed path range. Lowering
-consumes the selected BindingId and published path, validates only the typed
-record/layout/zero-offset metadata needed for emission, and never calls
-member_object_convertible or performs name lookup. A scalar pseudo-destructor
-has no callee and lowers its sole child exactly once. The same published-path
-boundary is used for ordinary inherited member calls so the repair does not
-leave a second PA15 object-adjustment resolver behind.
+The BindingId summary is intentionally conservative may-provenance. Every
+committed possible variable/assignment definition contributes, so branches,
+loops, and reassignment remain safe over-approximations; reassignment is not
+claimed to clear earlier possible provenance. Shadowing uses distinct typed
+BindingIds. No BindingSidecar provenance, latest-fact scan, deferred ambient
+call owner, dynamic relation key, or second production model remains.
+Because finalization runs after speculative tails are gone, discarded
+type-only facts never enter this graph and no graph/head/summary rollback is
+needed.
 
-The README excludes general class pass-by-value and out-of-class constructor
-definitions. The checked-in nested constructor identity requires a narrow
-compatibility extension: an exact same-class lvalue source of an empty,
-complete, non-union, non-virtual, base-free, member-free, one-byte record with
-no requested alignment, default-member initializer, user-declared
-constructor, or user-declared destructor, passed as the sole value parameter
-to a direct out-of-class constructor definition. A declaration-only
-class-valued constructor must satisfy the same exact nonvariadic one-parameter
-shape; it is retained solely to pair that fixture-required definition with its
-canonical declaration. The definition must resolve that exact pre-existing
-class-owned constructor BindingId/signature and owner before marking it
-defined. PA11 and PA12 otherwise preserve prior typed non-constructor
-class-valued declarations, definitions, results, and calls for the PA12
-semantic dump; ordinary calls do not receive the narrow `ClassValue`
-conversion. PA15 owns
-the unsupported ABI boundary and rejects class-value result/parameter shapes
-when a function, declaration, or call is demanded or lowered, using canonical
-TypeId/FunctionFact/BindingId facts. The semantic owner admits the exception
-only for the precise normal declaration-only pairing point or normal
-out-of-class definition; an unused in-class body, defaulted/deleted
-definition, or other definition location rejects during
-`process_special_member`. The canonical proof also requires a defined
-binding, raw `void` result, and clean constructor-entry metadata. Wider
-nonempty/member/base/union/virtual/incomplete/stateful-lifetime,
-default-member-initializer, non-lvalue, additional-argument, copy, move, and
-return forms never receive the exception. The constructor owner may differ
-from the parameter class because the required fixture is
-Outer::Buffer::Buffer(Token); the source and parameter types themselves must
-match exactly.
+Each true node is queued at most once, each generated edge is linked once,
+and each reachable edge record is visited once. Function summaries converge
+through the same graph: the adversarial A-to-B-to-A cycle reaches A's later
+direct member-derived return seed without source-order retry. PA12 publishes
+Preserve on every owned conversion whose semantic source is bool, including
+bool-to-int/zext canonical-truth conversions. PA15 copies the current
+conversion policy into LoweredValue before applying that conversion, so a
+Preserve record cannot stick to a later Materialize record on the same fact.
 
 ### Findings and disposition
 
-- The landed explicit-destructor path validated a derived-to-base relation in
-  PA12 but passed no path to PA15. PA15 then recomputed the relation during
-  lowering. The repair adds a typed semantic base-path arena and fields on
-  SemanticFact, publishes the path for the selected destructor/member call,
-  checks its range during demand, and consumes it directly during lowering.
-  The follow-up adds that arena's tail to SemanticTailGuard rollback state.
-  A `__builtin_constant_p` type-only operand probe now exercises the guarded
-  publish/discard path, while a later retained inherited call proves that its
-  path is valid and deterministic.
-- The landed class-value correction and the first bounded repair over-applied
-  ordinary class-value rejection to PA11/PA12. That would break the earlier
-  typed PA12 contract for `S g(float); const S s = g(x);`. The final staging
-  correction removes those generic process/declaration and direct, indirect,
-  member, operator, result, and parameter bans: PA11/PA12 preserve ordinary
-  typed non-constructor class-valued semantics, and PA12 publishes `ClassValue` only for the
-  narrowly validated constructor conversion. `select_typed_function` keeps
-  the constructor-only whole-signature proof needed for that conversion.
-  PA15's canonical ABI predicate rejects unsupported class-value result or
-  parameter shapes at function collection/demand/materialization and at
-  direct or indirect call lowering, before any per-parameter store suppression.
-  The exact constructor declaration/signature/owner is found and checked
-  before mutation, and the same proof requires a defined binding, raw void
-  result, and clean entry metadata.
-- Qualified destructor, access, scalar mismatch, projection, and child-range
-  facts now have explicit typed ownership/range checks. No textual fallback,
-  parallel model, broad retry, or test-specific answer was added.
+- Generic child taint was removed. Only the typed result-edge switch and
+  selected function-summary edge can propagate result provenance; plain unary
+  results, call arguments, comma-left, conditions, constructor arguments,
+  and unrelated body members are excluded.
+- Function provenance is source-order independent at ownership time. All
+  retained bodies are built first, declaration-to-definition mapping is
+  indexed once by BindingId, and only retained ReturnStatement results feed
+  the definition summary. No body is demand-analyzed by a setter or call.
+- BindingSidecar mutation and deferred ambient-function recovery were
+  removed. The conservative may-summary is dense BindingId-keyed local graph
+  state, published only after construction, with no speculative update.
+- CanonicalTruthPolicy remains conversion-owned. Preserve is restored for
+  bool semantic sources even when the target is int; PA15 resets from each
+  ConversionFact. The two-conversion probe recorded Preserve followed by
+  Materialize and the typed output retained the required per-conversion
+  shapes.
+- Ownership is direct and typed: a direct member/object result or implicit
+  this can seed; an unrelated member read in a body cannot. Calls inherit
+  only their selected defined function result, and aggregate/member
+  comparisons and procedural comparisons retain their separate boundaries.
+- Finalizer hardening checks size_t domain addition before allocation, rejects
+  out-of-range edge endpoints, and rejects malformed or non-definition-owned
+  retained return owners. Declaration-only/external calls remain the sole
+  intentional no-definition case.
+- The ephemeral graph now lives in a private CanonicalTruthFinalizer with
+  separate domain/edge construction, propagation, and publication methods;
+  finalize_canonical_truth is a small orchestration method. The refactor
+  restores one declaration or statement per changed source line without
+  changing the typed owners, edge rules, or observable LowIR.
 
 ### Focused evidence
 
-The allowed build and focused controls pass:
+The clean rebuild was `make clean` followed by `make -j2`; both exited 0. The protected
+command
+`make -C pa16 check TEST='tests/general/100-global-aggregate-nested-array-initializer.t tests/general/200-defaulted-constructor-still-aggregate.t tests/general/200-deleted-constructor-still-aggregate.t tests/general/200-qualified-friend-function-member-access.t tests/general/300-unary-address-of-builtin-fallback.t'`
+exited 0 with `pa16 check: PASS (5/5)`.
 
-- make -C dev -j2 cppgm++ exits 0.
-- The PA12 class-result regression
-  `tests/general/300-elaborated-local-struct-copy-init.t` passes 1/1, as does
-  the most-vexing-function negative control. The five protected handout
-  identities each pass with make -C pa16 check, for 5/5: nested out-of-class
-  constructor, enclosing-namespace destructor, const-pointer destructor,
-  scalar pseudo-destructor, and pointer-subscript class-reference return.
-- Course controls 401, 402, 403, 405, 408, 409, and 418 pass.
-- Ephemeral `/tmp` rejection probes exit 1 for wrong lexical destructor type,
-  inaccessible destructor, scalar mismatch, nonempty class value, ordinary
-  free class-value call, class-value return, two empty class-value constructor
-  parameters, class-value plus scalar constructor parameters, mismatched
-  out-of-class constructor definition, and the no-call in-class constructor
-  body. The latter rejects directly at the semantic owner rather than through
-  later call nonviability.
-- A qualified derived-object Base destructor probe exits 0 and emits one
-  Base destructor call. The next()->~X() probe emits one next call and one X
-  destructor call, demonstrating one evaluation root.
-- A temporary `__builtin_constant_p(p->get())` type-only operand probe is
-  accepted and exercises `semantic_builtin_call`'s guarded inherited member
-  analysis. Its operand is discarded as the builtin's typed literal result;
-  the retained `p->get()` has exactly one `projection=base_subobject` and one
-  `call i32 @Base__get`, with no lowered builtin call. Two LowIR runs are
-  byte-identical with SHA-256
-  `9af1ec7acae62eefa838b112e3d77c04985d63f98991a581bd7c16a20f51e068`.
-- The nested constructor LowIR has an object-valued 1x1 parameter, stores
-  only hidden this in the constructor entry, and emits one constructor call
-  with the typed object slot.
+These ephemeral probes were rerun against the clean binary and each exited
+0: call-after, call-forward, call-before, cycle-observable, result-edges,
+call-argument, binding-observable, type-only, conversion-sequence,
+two-conversion, nested-calls, and nested-calls-reversed. The after/forward
+LowIR files compare byte-for-byte (`cmp` 0), proving declaration-to-definition
+and call-before-definition equivalence. The reversed nested pair has the
+expected source-order function presentation difference only; both contain
+the same nested call/result path and exit 0.
 
-### Baseline, gate, and disposition
+The cycle probe emits the A/B calls and a typed main comparison with zext.
+Result-edge LowIR shows member_cmp using direct zext while plain comparison,
+call-argument, and comma-left results retain trunc; a member-only condition
+does not taint its literal result arms. The binding probe shows branch and
+reassigned uses preserve the conservative may result, while the outer
+shadowed binding remains procedural (trunc) and the inner shadowed binding
+uses the member-derived shape (zext).
 
-The turn-start log is
-/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log. Its
-authoritative result is 194/243 passed, 49 failures, and 243/243 identities
-covered. The authorized final `make test-pa16` log has the same 194/243, 49,
-and 243/243 result with exit 2. Exact sorted comparisons against the
-turn-start log and the 49-entry map in `pa16/plan.md` are all empty for
-final-only, baseline-only, and plan-only deltas; coverage has zero missing and
-zero unexpected identities. The five protected identities remain outside the
-failure map.
+The fresh outputs for all twelve probes compare byte-for-byte with the
+pre-refactor outputs; call-after and call-forward also compare byte-for-byte
+with each other. The type-only probe emits exactly one base-subobject projection and one
+Base::get call for the retained expression, with no builtin call; the
+discarded operand is absent from the final output. The conversion-sequence
+probe's typed LowIR shows the member-derived ref_int path as cmp plus zext
+and a plain procedural comparison as cmp plus trunc then zext. Temporary
+policy tracing on the same fact recorded `[14->28:Preserve]` followed by
+`[28->29:Materialize]`; the instrumentation and all counters were removed
+before this clean build. No DBG/CONV output or temporary iostream include is
+present in the changed files.
 
-The exact required n=16 through-PA15 command exits 0 with
-`1167 / 1167`. The required Perl file audit exits 0 with five known
-`bad-division` warnings. `git diff --check` and the post-commit diff check are
-clean. The final source/document scope is the fourteen authorized files
-listed above, one coherent checkpoint-audit commit was created, and
-`git status --short` is empty. The unchanged 49-failure PA16 residual means
-this is not a claim of full PA16 completion.
+### Broad baseline, exact delta, and residual map
 
-### Performance and next checkpoint
+The preserved turn-start log is
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log.
+`make test-pa16` exited 2 only because the expected residual comparisons
+remain, and reported 199/243 passed, 44 failed, and 243/243 identities
+covered. Exact sorted ERROR identity comparison against that log gives
+baseline-only 0, final-only 0, missing coverage 0, and unexpected coverage 0.
+The final failure count is 44 (not above the authorized 44), so no extra pass
+offsets a new failure. The preserved final log is
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-test-pa16-20260829.log.
+The exact set comparison is preserved at
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-identity-compare-20260829.log.
+The exact final residual set is:
 
-The added work is structurally bounded: qualified lookup is indexed and
-bounded by path length; selected single-inheritance paths are bounded by
-direct-base depth and are published once; the type-only probe exercises
-SemanticTailGuard rollback from one saved path tail; PA15 demand visits each
-reachable fact once per reachability mode; lowering walks only the stored
-path; and the whole-signature class-value proof is indexed record/layout/
-sidecar work plus one parameter-list pass. No timing, RSS, allocation, or
-speedup claim is made.
+- pa16/tests/general/100-function-pointer-nested-param-name-shadow.t
+- pa16/tests/general/200-aliased-base-mem-initializer-match.t
+- pa16/tests/general/200-const-subobject-member-call.t
+- pa16/tests/general/200-destructor-body-local-before-base-destruction.t
+- pa16/tests/general/200-elaborated-member-forward-type.t
+- pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
+- pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t
+- pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+- pa16/tests/general/200-local-default-class-array-lifecycle.t
+- pa16/tests/general/200-member-object-lifetime.t
+- pa16/tests/general/200-mutable-member-const-method.t
+- pa16/tests/general/200-nested-braced-member-aggregate-init.t
+- pa16/tests/general/200-nonliteral-field-condition-not-folded.t
+- pa16/tests/general/200-placement-new-expression-aggregate-brace.t
+- pa16/tests/general/200-placement-new-expression-constructor-call.t
+- pa16/tests/general/200-reference-indexed-pointer-member-access.t
+- pa16/tests/general/200-reference-member-class-init.t
+- pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
+- pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+- pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t
+- pa16/tests/general/300-adl-using-declaration-source-point.t
+- pa16/tests/general/300-callable-field-hides-private-base-method.t
+- pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t
+- pa16/tests/general/300-enum-class-nonmember-operator-bitand.t
+- pa16/tests/general/300-friend-function-definition-skip.t
+- pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t
+- pa16/tests/general/300-mixed-member-free-shift-stress-chain.t
+- pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+- pa16/tests/general/300-operator-nullptr-t-from-zero.t
+- pa16/tests/general/300-operator-shift-stress-chain.t
+- pa16/tests/general/300-overloaded-deref-user-assignment.t
+- pa16/tests/general/300-packed-class-layout.t
+- pa16/tests/general/300-pragma-pack-followed-by-endif.t
+- pa16/tests/general/300-prvalue-derived-base-friend-operator.t
+- pa16/tests/general/300-synthesized-array-member-lifecycle.t
+- pa16/tests/general/300-user-defined-string-literal-operator.t
+- pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+- pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t
+- pa16/tests/general/400-bit-field-constructor-member-init.t
+- pa16/tests/general/400-bit-field-member-access-bad.t
+- pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+- pa16/tests/general/400-bitfield-aggregate-init.t
+- pa16/tests/general/400-signed-bit-field-read.t
+- pa16/tests/general/400-signed-enum-bit-field-read.t
 
-The next checkpoint should select from the unchanged 49-identity PA16
-residual, preserving this typed destructor/base-path and exact constructor
-boundary. No timing, RSS, allocation, or speedup claim is made; the focused
-rollback replay and indexed worklist/path bounds are structural evidence only.
+### Structural bounds and next checkpoint
 
+Representative structural samples from the finalizer are:
+
+- conversion-sequence: 71 semantic nodes, 21 BindingId summary nodes, 6
+  defined-function summary nodes, 58 append-only edge records, 43 reachable
+  edge visits, 44 queue pushes, and 44 true nodes;
+- cycle-observable: 30 semantic nodes, 7 BindingId summary nodes, 3
+  defined-function summary nodes, 22 append-only edge records, 17 reachable
+  edge visits, 17 queue pushes, and 17 true nodes.
+
+These are structural samples, not timing/RSS/speedup claims. The extracted
+finalizer methods remain below the 240-line function limit; the file audit
+also passes with the header at its existing 2400-line limit and no changed
+source line needlessly packs multiple statements. The graph build
+is linear in retained nodes plus generated result edges; the worklist is
+deduplicated by dense queued/true state and visits each reachable linked edge
+once. The local vectors are discarded after owner publication. PA15 consumes
+the published conversion policy and typed fact fields without a second
+provenance model.
+
+The exact prior-PA15 command was run as requested and exited 0 with
+`1167 / 1167`:
+`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`.
+The required file audit exited 0 with five known warnings (the existing
+header bad-division warnings for abi_mangle.h, cpp_semantic_core.h,
+lowir_model.h, pa11_semantic_model.h, and pa15_lowering.h). Its log is
+/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-structural-refactor-file-audit-final-20260829.log.
+`git diff --check` exits 0 after the document edits.
+
+PA16 remains incomplete only by the unchanged 44-identity residual map. The
+next checkpoint should select one of those residuals; it must preserve this
+single finalizer, conservative may-provenance policy, typed function mapping,
+and PA15 per-conversion reset.
 ## Historical Prior Namespace-Object Review
 
 This review covers landed commit `b3bbf052cc218ab5a66f42b785f1606f7c5e7040`
@@ -1997,7 +2046,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
-| c507120c..e9d92812 typed qualified special-member checkpoint audit | Final checkpoint audit of ceb09013ad5c462df4b0fbf2f267bdf0150f0711 plus e9d928125399aaad099b48d59e977e80771007af relative to c507120c, with the bounded typed-path repair. SemanticTailGuard rolls back `semantic_base_paths_`; the accepted `__builtin_constant_p(p->get())` type-only probe publishes and discards an inherited Base::get path before a retained call, which emits one projection and one call with byte-identical repeated LowIR. PA11/PA12 preserve ordinary non-constructor typed class-value declarations/results/calls for the earlier semantic contract; PA12 publishes `ClassValue` only for the exact constructor conversion, while PA15 rejects unsupported ABI from canonical whole-signature facts. The semantic owner rejects in-class/defaulted/deleted/wider constructor forms; qualified definitions require the exact pre-existing class-owned BindingId/signature/owner, defined canonical binding, raw void result, and clean entry metadata before mutation. The five protected identities pass 5/5, the PA12 class-result regression passes 1/1, focused controls pass, and the temporary negative probes reject as required. Final PA16 is 194/243 with the exact unchanged 49-failure map and 243/243 coverage: final-only, baseline-only, plan-only, missing-coverage, and unexpected-coverage sets are all empty. The exact through-PA15 gate is 1167/1167; the file audit passes with five known `bad-division` warnings; diff checks pass; one coherent checkpoint-audit commit leaves a clean tree. No handout, fixture, reference, harness, comparator, coverage, source-set, or unrelated file changed. |
+| c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed the bounded audit of c39d45634bb029a02c938c190f8ac703bd275050 plus finalizer hardening and the behavior-preserving structural extraction: PA12 builds all retained facts/bodies once, then one ephemeral dense ResultNodeId graph applies explicit result edges, conservative BindingId may-provenance, canonical declaration-to-definition call mapping, and a convergent recursion worklist. PA12 publishes bool-source Preserve per ConversionFact, including bool-to-int; PA15 resets LoweredValue from each conversion so policy is non-sticky. Generic child propagation, BindingSidecar taint, deferred ambient call state, latest-fact scans, dynamic dependency layers, and diagnostics are absent. The private CanonicalTruthFinalizer separates checked domain/edge construction, propagation, and publication; the finalizer methods are below the 240-line limit and changed source lines are unpacked. Clean build and protected five are 5/5; fresh focused outputs match the pre-extraction outputs; final PA16 is 199/243 with the exact unchanged 44-failure set and 243/243 coverage; through-PA15 is 1167/1167; file audit passes with five known warnings; no new failure or coverage delta. |
 | `b3bbf052` typed non-owning namespace object checkpointAudit | Completed bounded audit and repair of the landed increment relative to `68b549f2`: PA11 canonical owner/type/definition facts flow through PA12 typed references, conversions, and address targets into PA15 pointer-vs-owned LowIR and demand-rooted global emission. Incomplete class references/glvalues remain non-owning pointers; namespace declaration-only objects require typed demand; definitions, class-static objects, address targets, nested/internal/TLS cases, and fail-closed owner/range checks remain covered. Post-repair `make test-pa16` is `189/243` with `54` failures and `243/243` coverage; comparison with the landed 54-failure authority is baseline-only `0` and final-only `0`. The 16-test handout matrix is `16/16`, the required through-PA15 command is `1167/1167`, the required file audit exits `0` with five known header-division warnings, and determinism probes are byte-identical. The direct incomplete namespace-object address case is out of contract because PA16 scopes namespace object declarations to complete class types; the unrelated course-400 DMI mismatch remains outside this increment. No handout, fixture, reference, harness, comparator, coverage, source-set, or unrelated file changed. |
 | `a5b496e8` typed ordinary-value-over-tag/member-enumerator/member-call checkpointAudit | Completed bounded audit of the landed increment relative to `1093c2b7`: PA11 preserves independent typed identities, but cross-space using coexistence is limited to a canonical real class/enum tag (`BindingKind::Type` backed by `NamedKind::Class`/`Enum`), while typedef/alias value conflicts remain rejected; PA12 member ambiguity and ordinary calls share the complete typed member selector; enumerator facts retain canonical binding/owner/type/value and one object-evaluation child through PA15. The approved follow-up is a readable, line-neutral `process_using_declaration` refactor at exactly `3000` lines, merging redundant value validation/classification/dedup staging work and using `base_path_accessible` as the single canonical relation/access walk; no newly added follow-up line exceeds `118` characters. Final PA16 is `187/243` with `56` failures and `243/243` coverage; v4 sorted comparison with the turn-start `last-test.log` has baseline-only `0` and final-only `0`, preserving stage progress. Focused handout matrix is `8/8`; course 421 has four legal status-0 cases and four exact status-1 alias conflicts. Through-PA15 is `1167/1167`; file audit passes with five warnings; diff-check passes. Course 406 reproduces the same first qualified-static-call failure on current and clean `a5b496e8` (status 1) before the shared selector and remains outside the bounded ownership path. Final v4 logs and exact-set derivation are recorded in the current review. No handout, fixture, harness, comparator, coverage, source-set, or unrelated source changed. |
 | `a1a2cf83` typed non-automatic lifetime checkpointAudit | Completed bounded audit of the landed typed lifetime path relative to `c2247924`: canonical BindingId/TypeId and declaration-owned initializer/lifetime continuity, PA11 exact per-declarator definition flags, namespace/static-member storage, TLS mode separation and collision-free helpers, aggregate/local recursive actions, source-order initialization, and reverse-order destruction are traced. The audit repairs typed PA11-to-PA12 definition continuity and PA15 definition-owner retention, preventing bodyless-extern duplicate lifetime publication and redeclaration source-order drift. The five fixed identities pass `5/5`; course controls 404, 407, 409, 410, 415, and the new 420 regression pass; the relevant handout matrix is `9/12` with the same three LowIR-shape residuals. Final PA16 is `184/243` with `59` failures and `243/243` coverage; the exact sorted comparison has baseline-only `0` and final-only `0`. Through-PA15 is `1167/1167`; file audit passes with five known header-division warnings; diff-check passes; final logs and N=8/N=32 hashes are recorded above. No handout, fixture, reference, harness, comparator, or unrelated stage surface changed. |

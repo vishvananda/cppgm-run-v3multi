@@ -2314,11 +2314,13 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			// physical i64.  PA12 owns whether this conversion crosses the
 			// semantic bool representation; preserve that disposition through
 			// LoweredValue instead of inferring it from the current block.
+			// A conversion record owns one disposition.  Reset the carried
+			// policy for every record, including a later non-bool structural
+			// conversion, so an earlier Preserve cannot leak across the range.
+			if (result.canonical_truth)
+				result.canonical_truth_policy = conversion.canonical_truth_policy;
 			if (result.canonical_truth && source_is_bool &&
-				conversion.canonical_truth_policy == CanonicalTruthPolicy::Preserve)
-				result.canonical_truth_policy = CanonicalTruthPolicy::Preserve;
-			if (result.canonical_truth && source_is_bool &&
-				result.canonical_truth_policy == CanonicalTruthPolicy::Materialize &&
+				conversion.canonical_truth_policy == CanonicalTruthPolicy::Materialize &&
 				conversion.kind != ConversionKind::Identity)
 			{
 				if (!result.physical_type.is_integer() ||
