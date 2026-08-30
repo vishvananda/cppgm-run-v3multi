@@ -1132,6 +1132,26 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	const TypeId source = expression_object_type(operand.type);
 	const TypeKind target_kind = type_kind(target);
 	const ExplicitCastKind cast_kind = explicit_cast_kind(node);
+	if (cast_kind == ExplicitCastKind::CStyle && pointer_id(target) &&
+		type_kind(strip_cv_type(source)) == TypeKind::Array)
+	{
+		const TypeId array = strip_cv_type(source);
+		const TypeId decayed = make_pointer(types_[array.value].child);
+		const ConversionChoice decay = conversion_for(operand, decayed,
+			semantic_facts_[operand.fact.value].source, scope);
+		const ConversionChoice to_void = conversion_for(decayed,
+			SemanticValueCategory::Prvalue, target, &node, false, scope);
+		if (!decay.valid || decay.kind != ConversionKind::ArrayToPointer ||
+			!to_void.valid || to_void.kind != ConversionKind::PointerToVoid)
+			throw std::runtime_error("PA12 invalid array pointer cast");
+		const SemanticFactId result = make_expression_fact(
+			SemanticFactKind::CastExpression, target,
+			SemanticValueCategory::Prvalue, node,
+			std::vector<SemanticFactId>(1, operand.fact));
+		set_fact_conversion(result, add_conversion(operand.type, decayed, decay));
+		set_fact_conversion(result, add_conversion(decayed, target, to_void));
+		return ExprInfo(result, target, SemanticValueCategory::Prvalue, false);
+	}
 	if (target_kind == TypeKind::LvalueReference ||
 		target_kind == TypeKind::RvalueReference)
 	{

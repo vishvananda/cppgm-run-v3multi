@@ -1150,6 +1150,9 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 		case SemanticFactKind::CallExpression:
 			result = lower_call(id);
 			break;
+		case SemanticFactKind::NewExpression:
+			result = lower_new_expression(id);
+			break;
 		case SemanticFactKind::DestructorCall:
 			result = lower_destructor_call(id);
 			break;

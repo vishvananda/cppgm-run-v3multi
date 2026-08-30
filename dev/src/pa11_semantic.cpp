@@ -2549,6 +2549,13 @@ void PA11SemanticModel::dump_pa12_fact(std::ostream& output, SemanticFactId id,
 				dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
 					depth + 1);
 		return;
+	case SemanticFactKind::NewExpression:
+		output << "new-expression " << semantic_category_name(fact.category) <<
+			' ' << type << '\n';
+		for (std::size_t i = 0; i < fact.child_count; ++i)
+			dump_pa12_fact(output, semantic_children_[fact.child_begin + i],
+				depth + 1);
+		return;
 	case SemanticFactKind::DestructorCall:
 		output << "destructor-call " << semantic_category_name(fact.category) <<
 			' ' << type;

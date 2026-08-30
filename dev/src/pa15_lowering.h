@@ -843,6 +843,7 @@ private:
 	void emit_destructor_body_handler_end();
 	void emit_destructor_body_unwind_cleanup();
 	LoweredValue lower_constructor_expression(SemanticFactId id);
+	LoweredValue lower_new_expression(SemanticFactId id);
 	void activate_lifetime(BindingId object);
 	void emit_lifetime_destructors(std::size_t depth);
 	void restore_lifetime_depth(std::size_t depth);

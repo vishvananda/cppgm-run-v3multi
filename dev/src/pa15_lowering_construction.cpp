@@ -2426,4 +2426,33 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 	return lower_expression(action_facts.front());
 }
 
+LoweredValue Pa15Lowerer::lower_new_expression(SemanticFactId id)
+{
+	const SemanticFact& expression = model_.semantic_facts_[id.value];
+	const std::vector<SemanticFactId> facts = children(id);
+	if (facts.size() != 2 || !expression.type.valid())
+		throw std::runtime_error("PA15 new expression fact is incomplete");
+	const SemanticFact& allocation = model_.semantic_facts_[facts.front().value];
+	const SemanticFact& constructor = model_.semantic_facts_[facts.back().value];
+	if (allocation.kind != SemanticFactKind::CallExpression ||
+		!allocation.has_callee ||
+		constructor.kind != SemanticFactKind::ConstructorAction ||
+		!constructor.has_callee)
+		throw std::runtime_error("PA15 new expression children are invalid");
+	const TypeId result_pointer = model_.strip_cv_type(
+		model_.expression_object_type(expression.type));
+	if (model_.type_kind(result_pointer) != TypeKind::Pointer ||
+		!model_.complete_object_type(model_.types_[result_pointer.value].child))
+		throw std::runtime_error("PA15 new expression result type is invalid");
+	const LoweredValue storage = lower_expression(facts.front());
+	if (!storage.type.is_pointer())
+		throw std::runtime_error("PA15 allocation result is not a pointer");
+	const TypeId target = model_.types_[result_pointer.value].child;
+	const std::vector<ConstructorAddressStep> empty_path;
+	initialize_constructor_value(target, facts.back(), storage, NULL,
+		&empty_path);
+	return LoweredValue(storage.value, low_type(expression.type), false,
+		storage.physical_type);
+}
+
 } // namespace pa11_semantic_internal

@@ -2019,6 +2019,8 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 		return semantic_cast_expression(node, scope);
 	case PA10NodeKind::CallExpression:
 		return semantic_call_expression(node, scope);
+	case PA10NodeKind::NewExpression:
+		return semantic_new_expression(node, scope);
 	case PA10NodeKind::SubscriptExpression:
 	{
 		if (node.children.size() != 2)

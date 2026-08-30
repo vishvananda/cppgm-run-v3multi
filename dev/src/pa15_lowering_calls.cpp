@@ -988,6 +988,10 @@ void Pa15Lowerer::collect_function_declarations(){
 					function_fact->destructor_base_entry);
 			if (base_entry)
 				declaration_name += "__base_entry";
+			const bool has_definition = binding.has_definition;
+			const bool hidden_parameter_uses_arg = member_scope &&
+				!model_.is_static_member(binding_id) &&
+				(base_entry || !has_definition);
 			declaration.name_id = symbol_spelling(declaration_name);
 			declaration.return_type = function_result_low_type(type.result);
 			const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
@@ -1012,8 +1016,11 @@ void Pa15Lowerer::collect_function_declarations(){
 			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				Parameter parameter_record;
-				parameter_record.name_id = intern_spelling(base_entry ? "%arg0" :
-					"%this");
+				// Definitions expose the established hidden `this` spelling, while
+				// an externally declared member has no body-owned frame name and
+				// therefore uses the ordinary declaration parameter convention.
+				parameter_record.name_id = intern_spelling(
+					hidden_parameter_uses_arg ? "%arg0" : "%this");
 				parameter_record.type = low_type(model_.types_[
 					member_callable_type.value].parameters.front());
 				declaration.params.push_back(parameter_record);
@@ -1023,7 +1030,8 @@ void Pa15Lowerer::collect_function_declarations(){
 			{
 				Parameter parameter_record;
 				std::ostringstream parameter_name;
-				parameter_name << "%arg" << parameter + (base_entry ? 1 : 0);
+				parameter_name << "%arg" << parameter +
+					(hidden_parameter_uses_arg ? 1 : 0);
 				parameter_record.name_id = intern_spelling(parameter_name.str());
 				parameter_record.type = low_type(type.parameters[parameter]);
 				const TypeKind parameter_kind = model_.type_kind(
