@@ -748,6 +748,8 @@ private:
 	LoweredValue lower_logical(SemanticFactId id);
 	void initialize_array(BindingId binding, SemanticFactId initializer,
 		const LoweredValue& storage);
+	TypeId checked_constructor_action_target_type(
+		const ConstructorActionFact& action) const;
 	LoweredValue constructor_subobject_address(
 		const ConstructorActionFact& action);
 	LoweredValue constructor_path_address(const ConstructorActionFact& action,
@@ -783,7 +785,9 @@ private:
 	void emit_constructor_call(BindingId constructor,
 		const LoweredValue& destination,
 		const std::vector<SemanticFactId>& arguments);
-	bool constructor_elements_may_throw(TypeId target, BindingId constructor);
+	bool constructor_elements_may_throw(TypeId target, BindingId constructor,
+		std::size_t argument_begin, std::size_t argument_count,
+		const std::vector<SemanticFactId>* semantic_arguments);
 	void emit_constructor_elements(TypeId target, const LoweredValue& destination,
 		BindingId constructor, std::size_t argument_begin,
 		std::size_t argument_count,
@@ -791,7 +795,7 @@ private:
 		std::vector<ConstructedElement>* completed,
 		bool value_initialize, const ArrayAddressRoot& root,
 		const std::vector<ConstructorAddressStep>& path,
-		bool destination_deferred = false);
+		bool destination_deferred, bool constructor_may_throw);
 	void emit_constructor_call_with_cleanup(BindingId constructor,
 		const ConstructedElement& current,
 		std::size_t argument_begin,

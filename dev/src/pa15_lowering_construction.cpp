@@ -331,6 +331,26 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 	return storage;
 }
 
+TypeId Pa15Lowerer::checked_constructor_action_target_type(
+	const ConstructorActionFact& action) const
+{
+	if (action.target == ConstructorActionTarget::Base)
+	{
+		if (!action.base_record.valid() || action.base_record.value >=
+			model_.named_.size() || action.member.valid())
+			throw std::runtime_error("PA15 constructor base identity is invalid");
+		return model_.named_type(action.base_record);
+	}
+	if (action.target != ConstructorActionTarget::Member ||
+		!action.member.valid() || action.member.value >= model_.bindings_.size() ||
+		action.base_record.valid() || action.member.value >=
+			model_.binding_owners_.size() ||
+		model_.binding(action.member).kind != BindingKind::Variable ||
+		model_.is_static_member(action.member))
+		throw std::runtime_error("PA15 constructor member identity is invalid");
+	return model_.binding(action.member).type;
+}
+
 LoweredValue Pa15Lowerer::constructor_subobject_address(
 	const ConstructorActionFact& action)
 {
@@ -1010,14 +1030,23 @@ LoweredValue Pa15Lowerer::recompute_constructed_element_address(
 		if (!element.root.owner.valid() ||
 			element.root.owner != active_constructor_record_)
 			throw std::runtime_error("PA15 completed element constructor owner is invalid");
+		const TypeId expected_root_type =
+			checked_constructor_action_target_type(element.root.action);
+		if (!element.root.action.object_type.valid() ||
+			element.root.action.object_type != expected_root_type ||
+			element.root.type != expected_root_type)
+			throw std::runtime_error("PA15 completed element action root type is invalid");
 		result = constructor_subobject_address(element.root.action);
 	}
 	else
 	{
 		if (!element.root.storage.valid() ||
 			element.root.storage.value >= model_.bindings_.size() ||
+			element.root.storage.value >= model_.binding_owners_.size() ||
 			model_.binding(element.root.storage).kind != BindingKind::Variable)
 			throw std::runtime_error("PA15 completed element storage root is invalid");
+		if (element.root.type != model_.binding(element.root.storage).type)
+			throw std::runtime_error("PA15 completed element storage root type is invalid");
 		result = address_of_storage(storage_for(element.root.storage));
 	}
 	for (std::size_t i = 0; i < element.path.size(); ++i)
@@ -1330,7 +1359,9 @@ void Pa15Lowerer::emit_destructor_elements(TypeId target,
 }
 
 bool Pa15Lowerer::constructor_elements_may_throw(TypeId target,
-	BindingId constructor)
+	BindingId constructor, std::size_t argument_begin,
+	std::size_t argument_count,
+	const std::vector<SemanticFactId>* semantic_arguments)
 {
 	TypeId object = model_.strip_cv_type(
 		model_.expression_object_type(target));
@@ -1350,6 +1381,65 @@ bool Pa15Lowerer::constructor_elements_may_throw(TypeId target,
 			"PA15 array constructor throw query element is not a class");
 	const FunctionFact& constructor_function =
 		checked_constructor_function(constructor, record);
+	const TypeKey& signature = model_.types_[
+		model_.binding(constructor).type.value];
+	const std::size_t actual_argument_count = semantic_arguments != NULL ?
+		semantic_arguments->size() : argument_count;
+	// A bare noexcept only covers entry into the selected constructor.  The
+	// typed argument facts are evaluated before that boundary, so a later array
+	// element must retain its completed-prefix handler when any argument fact is
+	// not proven nonthrowing by PA15's memoized semantic walk.
+	if ((!signature.variadic && actual_argument_count !=
+		signature.parameters.size()) ||
+		(signature.variadic && actual_argument_count <
+			signature.parameters.size()))
+		throw std::runtime_error("PA15 array constructor call arity mismatch");
+	if (semantic_arguments == NULL)
+	{
+		if (argument_count != 0 &&
+			(argument_begin == InvalidIdentityValue ||
+				argument_begin > model_.constructor_arguments_.size() ||
+				argument_count > model_.constructor_arguments_.size() -
+					argument_begin))
+			throw std::runtime_error(
+				"PA15 array constructor argument range is invalid");
+		if (argument_count == 0 && argument_begin != InvalidIdentityValue &&
+			argument_begin > model_.constructor_arguments_.size())
+			throw std::runtime_error(
+				"PA15 array constructor argument range is invalid");
+	}
+	else if (argument_begin != InvalidIdentityValue || argument_count != 0)
+		throw std::runtime_error(
+			"PA15 array constructor argument representation is invalid");
+	bool arguments_may_throw = false;
+	for (std::size_t argument = 0; argument < actual_argument_count;
+		++argument)
+	{
+		const SemanticFactId argument_id = semantic_arguments != NULL ?
+			(*semantic_arguments)[argument] : model_.constructor_arguments_[
+				argument_begin + argument];
+		if (!argument_id.valid() || argument_id.value >=
+			model_.semantic_facts_.size())
+			throw std::runtime_error(
+				"PA15 array constructor argument identity is invalid");
+		const SemanticFact& argument_fact = model_.semantic_facts_[
+			argument_id.value];
+		if (argument_fact.child_count != 0 &&
+			(argument_fact.child_begin == InvalidIdentityValue ||
+				argument_fact.child_begin > model_.semantic_children_.size() ||
+				argument_fact.child_count > model_.semantic_children_.size() -
+					argument_fact.child_begin))
+			throw std::runtime_error(
+				"PA15 array constructor argument children are invalid");
+		if (!constructor_initializer_is_nothrow(argument_id))
+		{
+			if (argument_id.value < semantic_nothrow_invalid_.size() &&
+				semantic_nothrow_invalid_[argument_id.value] != 0)
+				throw std::runtime_error(
+					"PA15 array constructor argument nothrow fact is invalid");
+			arguments_may_throw = true;
+		}
+	}
 	if (constructor_function.synthetic &&
 		constructor_function.constructor_action_count == 0)
 		return false;
@@ -1362,7 +1452,7 @@ bool Pa15Lowerer::constructor_elements_may_throw(TypeId target,
 	if (constructor_function.synthetic && constructor_id != NULL &&
 		constructor_is_nothrow(*constructor_id))
 		throwing = false;
-	return throwing;
+	return throwing || arguments_may_throw;
 }
 
 void Pa15Lowerer::emit_constructor_call_with_cleanup(BindingId constructor,
@@ -1684,7 +1774,7 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 	bool value_initialize,
 	const ArrayAddressRoot& root,
 	const std::vector<ConstructorAddressStep>& path,
-	bool destination_deferred)
+	bool destination_deferred, bool constructor_may_throw)
 {
 	if (!destination_deferred && !destination.type.is_pointer())
 		throw std::runtime_error("PA15 array constructor target is not addressable");
@@ -1713,7 +1803,7 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 			std::vector<ConstructorAddressStep> element_path = path;
 			element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
 			const bool defer_element = !completed->empty() &&
-				constructor_elements_may_throw(child, constructor);
+				constructor_may_throw;
 			LoweredValue element;
 			if (defer_element)
 			{
@@ -1738,7 +1828,8 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 			emit_constructor_elements(child, element, constructor,
 				argument_begin, argument_count, semantic_arguments,
 				completed,
-				value_initialize, root, element_path, defer_element);
+				value_initialize, root, element_path, defer_element,
+				constructor_may_throw);
 		}
 		return;
 	}
@@ -1759,7 +1850,7 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 		zero_initialize_value_initialized_object(object, call_destination);
 	const bool no_op = constructor_function.synthetic &&
 		constructor_function.constructor_action_count == 0;
-	const bool throwing = constructor_elements_may_throw(object, constructor);
+	const bool throwing = constructor_may_throw;
 	bool emitted = false;
 	if (!no_op && throwing && !completed->empty())
 	{
@@ -2082,14 +2173,26 @@ void Pa15Lowerer::lower_constructor_action(
 		throw std::runtime_error("PA15 constructor action operation is invalid");
 	if (action.value_initialize && !action.constructor.valid())
 		throw std::runtime_error("PA15 value-initialization action is invalid");
+	const TypeId expected_target = checked_constructor_action_target_type(action);
+	if (!action.object_type.valid() || action.object_type != expected_target)
+		throw std::runtime_error("PA15 constructor action target type is invalid");
+	if (action.argument_count != 0 &&
+		(action.argument_begin == InvalidIdentityValue ||
+			action.argument_begin > model_.constructor_arguments_.size() ||
+			action.argument_count > model_.constructor_arguments_.size() -
+			action.argument_begin))
+		throw std::runtime_error("PA15 constructor argument range is invalid");
+	if (action.argument_count == 0 && action.argument_begin != InvalidIdentityValue &&
+		action.argument_begin > model_.constructor_arguments_.size())
+		throw std::runtime_error("PA15 constructor argument range is invalid");
+	if (action.initializer.valid() &&
+		(action.argument_begin != InvalidIdentityValue ||
+			action.argument_count != 0))
+		throw std::runtime_error("PA15 initializer argument range is invalid");
 	if (action.constructor.valid())
 	{
 		const LoweredValue destination_value = constructor_subobject_address(action);
-		const TypeId target = action.target == ConstructorActionTarget::Base ?
-			(action.object_type.valid() ? action.object_type :
-				model_.named_type(action.base_record)) :
-			(action.object_type.valid() ? action.object_type :
-				model_.binding(action.member).type);
+		const TypeId target = action.object_type;
 		const TypeId object = model_.strip_cv_type(
 			model_.expression_object_type(target));
 		const NamedRecordId record = model_.class_record_for_object_type(object);
@@ -2098,6 +2201,9 @@ void Pa15Lowerer::lower_constructor_action(
 			throw std::runtime_error("PA15 constructor action record is invalid");
 		if (model_.type_kind(object) == TypeKind::Array)
 		{
+			const bool constructor_may_throw = constructor_elements_may_throw(
+				target, action.constructor, action.argument_begin,
+				action.argument_count, NULL);
 			ArrayAddressRoot root;
 			root.type = target;
 			root.owner = active_constructor_record_;
@@ -2106,7 +2212,8 @@ void Pa15Lowerer::lower_constructor_action(
 			const std::vector<ConstructorAddressStep> empty_path;
 			emit_constructor_elements(target, destination_value,
 				action.constructor, action.argument_begin, action.argument_count,
-				NULL, NULL, action.value_initialize, root, empty_path);
+				NULL, NULL, action.value_initialize, root, empty_path, false,
+				constructor_may_throw);
 			return;
 		}
 		const NamedRecord& named = model_.named_[record.value];
@@ -2296,6 +2403,10 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 							std::vector<SemanticFactId> arguments;
 							for (std::size_t i = 1; i < call_children.size(); ++i)
 								arguments.push_back(call_children[i]);
+							const bool constructor_may_throw =
+								constructor_elements_may_throw(target,
+									call.selected_binding, InvalidIdentityValue, 0,
+									&arguments);
 							ArrayAddressRoot root;
 							root.type = target;
 							root.storage = storage_fact.binding;
@@ -2303,7 +2414,8 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 							emit_constructor_elements(target,
 								address_of_storage(storage_for(storage_fact.binding)),
 								call.selected_binding, InvalidIdentityValue, 0,
-								&arguments, NULL, false, root, empty_path);
+								&arguments, NULL, false, root, empty_path, false,
+								constructor_may_throw);
 							return storage_for(storage_fact.binding);
 						}
 					}

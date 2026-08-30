@@ -2,6 +2,209 @@
 
 ## Current Checkpoint Review
 
+This completed checkpoint audit covers landed commit
+`ee8f44d5b0e9d4910679c12b443533d787d1cd4c` (`PA16: emit per-throw typed
+array cleanup`) relative to `3b2b4882`, plus one bounded fail-closed repair in
+the same PA15 lowering owner. The landed source increment is limited to
+`dev/src/pa15_lowering.h` and `dev/src/pa15_lowering_construction.cpp`; this
+audit updates those allowed source files, `pa16/plan.md`, and this record.
+No tests, fixtures, reference outputs, sidecars, harnesses, comparators,
+coverage rules, source-set lists, or generated outputs are in the tracked
+diff; ignored harness outputs were removed after validation.
+
+The supplied current-stage authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+`209/243` identities pass, exactly `34` fail, and all `243/243` identities
+are covered. The preserved `3b2b4882` ledger baseline is `208/243` with
+`35` failures. The recorded landed delta is baseline-only
+`pa16/tests/general/300-synthesized-array-member-lifecycle.t`, with no
+fresh-only identity; the complete current residual set is retained in the
+Failure Map in `pa16/plan.md`. The completed full-stage comparison below
+confirms that the repair adds no failure and removes no coverage identity.
+
+### Contract and ownership trace
+
+The affected typed path is:
+
+```text
+PA12 FunctionFact.constructor_action_begin/count
+  -> ordered ConstructorActionFact range
+  -> lower_constructor_action or placement-array lowering
+  -> ArrayAddressRoot
+  -> recursive emit_constructor_elements
+  -> transient ConstructedElement completed prefix
+  -> constructor_elements_may_throw / emit_constructor_call_with_cleanup
+  -> fresh typed root/path address replay
+  -> model_.destructor_binding(record) cleanup calls
+```
+
+PA12 remains the semantic owner. Its constructor fact publishes one contiguous
+typed action range; each action records the Base/Member target, exact
+`object_type`, selected constructor or initializer, typed argument range, and
+value-initialization state. `checked_constructor_function` then verifies the
+selected function, owning class, hidden object parameter, function scope, and
+action range before PA15 emits a call. The lowerer does not reconstruct source
+text, reselect an overload, or create a second semantic action owner.
+
+For a constructor member or base, `ArrayAddressRoot` retains the active
+constructor record and the immutable action. For placement construction it
+retains the typed storage binding and array type. `emit_constructor_elements`
+walks every fixed array dimension in forward lifetime order. At each class
+terminal it records only the typed root, array-index path, terminal record,
+and canonical `model_.destructor_binding(record)` in a lowering-only
+`ConstructedElement` vector. Nested arrays therefore replay all indices from
+the same root; no rendered address or cross-block SSA value is retained.
+
+`constructor_elements_may_throw` strips only typed expression/cv wrappers,
+checks the terminal class record and constructor identity, validates the
+selected signature/range, and treats a synthetic zero-action constructor as a
+demand-elided no-op. It now combines the constructor boundary
+(`BindingSidecar::nonthrowing` and the synthetic constructor nothrow cache)
+with every actual typed argument, whether the fact comes from the ordered
+constructor-argument arena or the semantic argument vector. Each argument is
+checked through the existing memoized `constructor_initializer_is_nothrow`
+walk: a valid but unproven expression is conservatively potentially throwing,
+while an invalid nothrow fact fails closed. The combined predicate is computed
+once at the array root and threaded through recursive lowering, so a bare
+constructor `noexcept` cannot suppress a handler needed for pre-entry
+argument evaluation.
+
+A known nonthrowing constructor with known-nothrow arguments remains on the
+direct path; a potentially throwing constructor or argument after a nonempty
+completed prefix enters `emit_constructor_call_with_cleanup`. That routine
+creates a fresh `eh_try`/cleanup/continuation boundary, recomputes the
+destination inside the protected block, evaluates the typed call and its
+arguments, closes the normal edge with `eh_end`, and replays the completed
+prefix in reverse from freshly recomputed addresses before `resume`.
+
+This matches the PA13 handler discipline: normal paths pop the current handler
+with `eh_end`; cleanup paths terminate with `resume`; every generated block is
+terminated. The first terminal can use its normal destination; later throwing
+terminals never import a normal-path address producer into their handler. The
+normal destructor suffix remains a separate reverse lifetime path and was not
+changed by this checkpoint.
+
+### Audit findings and bounded repair
+
+The landed per-throw design is architecturally sound for the owned path. A
+shared `ArrayCleanupChain` would not provide an independent already-constructed
+prefix for each possible throw point, while the new transient prefix and
+fresh root/path replay do. The primary checked synthesized-member array
+fixture exercises the intended two handler prefixes and passes in the focused
+matrix.
+
+The audit did find a genuine fail-closed gap at the typed fact boundary. The
+old constructor-action lowering accepted a missing or mismatched
+`object_type` by falling back to the member/base binding type, and replay did
+not compare an action/storage root type with its recorded semantic source. A
+malformed fact could consequently select a different array shape or storage
+root before a later check rejected it. The bounded repair adds:
+
+- one common `checked_constructor_action_target_type` proof for mutually
+  exclusive Base/Member identity, valid direct member ownership, and the
+  member/base-derived type;
+- exact `action.object_type` equality and constructor argument-range checks in
+  `lower_constructor_action`, including zero-argument malformed ranges; and
+- action-root and placement-root replay checks for exact type identity,
+  binding-table ownership metadata, and storage-binding type equality.
+
+The same audit found the in-scope exception-classification gap: the old query
+could return nonthrowing from a bare user constructor `noexcept` without
+examining argument evaluation. The repair passes the actual argument
+representation to the query, uses the existing bounded semantic nothrow
+memo/worklist, and retains the completed-prefix handler for every valid
+argument that is not proven nonthrowing. Malformed argument IDs, child ranges,
+signature arity, and arena ranges fail closed. The argument query is performed
+once per array construction and its result is threaded through the recursive
+terminal walk; it is not a per-terminal retry or a reconstructed source scan.
+
+These checks are bounded indexed work over existing typed arenas. They do not
+add a retry, whole-program cache, source-text reconstruction, alternate
+semantic owner, or valid-input emission shortcut. They are confined to the two
+permitted PA15 source files. The previously noted argument-classification
+uncertainty is resolved; no in-scope correctness uncertainty remains.
+
+### Bounds, evidence, and boundaries
+
+For `N` flattened class terminals and maximum array-path depth `D`, collecting
+terminal records is `O(ND)` because each terminal copies its typed path. The
+argument query scans `A` actual typed facts once per array construction and
+uses the existing memoized semantic-fact walk, `O(A + F_A + E_A)` for the
+reachable argument facts and child edges, rather than `O(NA)`. Each of the
+`N-1` later potentially throwing terminals with a live destructor prefix gets
+an independent cleanup body, and each body replays its prefix in reverse, so
+explicit cleanup/address-projection output is intentionally `O(N^2D)`. With
+fixed `D`, the destructor-call portion is the required triangular
+`N(N-1)/2`. This superlinear emitted-IR bound is required by the LowIR EH
+contract: there is no shared remaining-prefix cursor, and a cleanup body
+cannot borrow an SSA address from another block. Nothrow, no-op, and
+empty-prefix cases avoid those handlers. No timing, RSS, allocation,
+whole-program retry, textual fallback, or unbounded-cache claim is made.
+
+The representative structural evidence at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-focused-20260830.log`
+records build exit `0`, flat N=1 as 1 block/0 handlers/1 constructor/7
+instructions, nested N=6 and D=2 as 11 blocks/5 handlers/5 resumes/6
+constructors/15 cleanup destructors/190 instructions, and a three-element
+noexcept case as 1 block/0 handlers/3 constructors/17 instructions. It also
+records demand-elision for the synthetic no-op case. The post-repair
+constructor-argument probe at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-throw-focused-20260830.log`
+distinguishes the required cases: typed `E(int) noexcept` with `1+2` has
+zero handlers; the same constructor with potentially throwing `value()` has
+one handler, one resume, and one cleanup destructor; and ordinary potentially
+throwing `E(int)` with `1` retains that same one/one/one shape. The typed
+no-argument control also has zero handlers and two constructor calls.
+
+Both argument representations were checked. The ordered typed constructor
+argument arena is reachable through synthesized constructor actions and is
+covered by the three typed cases above. The semantic argument vector remains
+hardened for the storage-backed placement path, but current PA16 grammar does
+not legally form an array terminal through it: direct `E arr[2](1)` is
+rejected by PA12 as an invalid conversion, and placement `new` array forms
+are rejected as unsupported expression forms before PA15 lowering. This is a
+reachability conclusion from the checked probes, not invented coverage. The
+five focused residual identities remain the already-mapped local-array
+presentation, two placement-new, value-init aggregate, and friend-access
+cases; no unrelated residual family was re-audited.
+
+### Final validation
+
+`make -C dev cppgm++ CXX=g++` exits `0`; the post-repair focused 35-test
+constructor/array/lifetime matrix is `30/35`, with the primary passing and
+the five selected residuals already in the authority. The matrix is durably
+recorded in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-focused-matrix-20260830.log`.
+
+`make test-pa16` exits `2` at `209/243`, with exactly `34` failures and
+`243/243` identities covered. The exact sorted comparison with the supplied
+authority is in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-identity-coverage-20260830.log`:
+authority `34`, fresh `34`, authority-only `0`, fresh-only `0`, inventory
+`243`, covered `243`, missing `0`, and unexpected `0`.
+
+The required command
+
+```text
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+```
+
+exits `0` at `1167/1167`; its durable output is in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-through-pa15-20260830.log`.
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
+with the five pre-existing header-division warnings, recorded in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-file-audit-20260830.log`.
+The final changed-file audit is recorded in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-changed-file-audit-20260830.log`;
+it is restricted to the two permitted PA15 source files and these two PA16
+records. `git diff --check` exits `0`, with the durable result in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-argument-diff-check-20260830.log`.
+
+The PA16 stage remains incomplete because the recorded 34 residual
+identities remain; this checkpoint makes no full-stage completion claim.
+
+## Historical Typed Destructor-Suffix Review (70327e4d)
+
 This final checkpoint audit covers landed commit
 `70327e4d72ad5d223018565ec78d290ea4ac6f0a` (`PA16 typed destructor suffix
 cleanup`) relative to `a3de5c21`, plus one narrowly bounded repair in the same
@@ -147,7 +350,7 @@ audit of one unchanged residual family; it must preserve the typed action
 range, active owner/`this`, explicit EH structure, and `243/243` coverage
 authority.
 
-## Final Validation and Inherited Evidence
+### Historical Validation and Inherited Evidence
 
 Inherited landed evidence is kept separate from the fresh post-repair run:
 the landed full-stage log is
@@ -2553,6 +2756,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `ee8f44d5` per-throw typed array cleanup checkpointAudit | Completed bounded audit of `ee8f44d5b0e9d4910679c12b443533d787d1cd4c` relative to `3b2b4882`: PA12's typed constructor-action range is traced through action/placement `ArrayAddressRoot`, forward recursive terminal collection, combined constructor-boundary plus typed-argument throw classification, independent per-throw LowIR handlers, fresh root/path replay, reverse cleanup, and canonical `model_.destructor_binding(record)` calls. The approved repair in `dev/src/pa15_lowering.h` and `dev/src/pa15_lowering_construction.cpp` adds exact action target/type/range validation, action/storage root replay identity checks, and existing cached semantic nothrow classification for every actual argument; valid unproven arguments remain potentially throwing and malformed facts fail closed. Supplied authority is `209/243`, `34` failures, `243/243` covered; exact fresh comparison is authority `34` -> fresh `34`, authority-only `0`, fresh-only `0`, inventory `243`, covered `243`, missing `0`, unexpected `0`. Focused matrix is `30/35`; typed argument probes distinguish zero-handler known-nothrow/no-argument cases from one-handler potentially throwing arguments and constructors. Semantic argument-vector array reachability is rejected by PA12 before lowering for current grammar. Representative nested N=6 evidence is 11 blocks, 5 handlers, 5 resumes, and 15 cleanup destructors; through-PA15 is `1167/1167`; file audit and diff-check pass. The exact four-file audit/repair is complete; PA16 remains incomplete only because the same 34 residual identities remain. |
 | `70327e4d` typed destructor suffix cleanup checkpointAudit | Completed final bounded audit of `70327e4d72ad5d223018565ec78d290ea4ac6f0a` relative to `a3de5c21`, including the approved repair in `dev/src/pa15_lowering_construction.cpp`: PA12's canonical `FunctionFact.destructor_action_begin/count` and `DestructorActionFact` ownership are traced through PA15 demand, active destructor record/`this`, scalar and reverse-array address replay, normal suffix prefixes, body-unwind cleanup, and return/local-lifetime ordering. The repair adds fail-closed target/type/canonical-destructor checks and rejects non-void destructor call signatures in the declared construction path. Fresh post-repair `make test-pa16` is exit `2` at `208/243`, with exactly `35` failures and `243/243` coverage; exact sorted comparison with the turn-start authority is `35 -> 35`, fresh-only `0`, authority-only `0`, and unrecognized `0`. The preserved pre-landed baseline is `206/243` with `37` failures; its exact two baseline-only destructor/lifetime identities remain fixed and no current-only identity appeared. The exact prior gate is exit `0` at `1167/1167`; the file audit is exit `0` with five known header-division warnings; diff-check and the bounded changed-file audit exit `0`. Focused post-repair evidence is `5/7`, with only the two known array-presentation mismatches. Durable fresh logs are listed in the Current Checkpoint Review above. No tests, fixtures, references, sidecars, harnesses, comparators, coverage rules, source sets, or generated oracle files changed; the checkpoint record and approved source repair are complete. |
 | `d83e927f` typed local-class materialization checkpointAudit | Completed the bounded audit of `d83e927fd18429d37c3818a80e295f0a7c521905` relative to `d95a6fe7`: PA11/PA12 typed `DeclarationFact`/`ConstructorAction` ownership reaches both PA15 declaration consumers, which materialize one automatic-local class address; the narrow class-value path suppresses only the redundant automatic-local pre-copy address and retains later source addressing. The audit repaired the missing automatic-storage guard by centralizing the keyed declaration-owner predicate; namespace/static owners remain nonautomatic. Supplied authority and fresh result are both `206/243`, `37` failures, `243/243` covered, with exact sorted comparison baseline-only `0`, final-only `0`, and failure set exactly unchanged. Focused PA16 is `13/13`, focused PA15 controls are `2/2`, the valid automatic class-value probe is accepted by current/reference observers, and structural counts are `76/25`, `412/129`, `19/2`, and `14/2`. Fresh `make test-pa16` exits `2`; the exact `n=16` prior-stage gate exits `0` at `1167/1167`; `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0` with five known header-division warnings and no fatals. Durable final logs are listed in the Current Checkpoint Review above: test, prior gate, file audit, exact identity comparison, changed-file audit, and diff-check. No tests, fixtures, references, or harness surfaces changed. Audit/repair commit at current HEAD; handoff hash in final report. |
 | `7e060b28` typed packed bit-field projection checkpointAudit | Final bounded audit of the five landed PA15 lowering owners: canonical `BindingId`/`BitFieldFact` continuity, one contiguous `ProjectionId` arena, direct/pointer/evaluated-root/constructor-this replay, typed load/encode/RMW preservation, signed reads, and single-evaluation aggregate/constructor order are traced. No implementation defect was found and no source repair was made. Fresh `make test-pa16` is `202/243` with `41` failures and `243/243` coverage; exact comparison with supplied `last-test.log` is `41 -> 41`, baseline-only `0`, final-only `0`. Through-PA15 is `1167/1167`; file audit and diff-check exit `0`; focused audit is `2/6` and fresh non-equivalent exploratory selection is `6/11`. Landed source `7e060b28`; audit commit at current HEAD (handoff hash). Next checkpoint selects a separate residual and preserves the typed owner invariants. |
