@@ -2,59 +2,44 @@
 
 ## Stage Design
 
-This checkpoint closes the typed exception-safe suffix boundary for generated
-destructors. PA12 is the sole semantic owner of ordered member/base teardown:
-`FunctionFact.destructor_action_begin/count` names the contiguous typed
-`DestructorActionFact` range. PA15 resolves the active owner through
-`active_destructor_record_` and `active_destructor_this_`, validates the
-destructor binding and exact range, and lowers that range without source-text
-recovery or unrelated-model scans. The bounded audit repair adds only fail-closed
-typed checks that each action's target/type/destructor remains canonical and
-that every emitted destructor call has a void signature.
+This checkpoint owns the constructor-time class-array exception boundary.
+PA12 remains the sole semantic owner: a synthesized constructor's
+`FunctionFact.constructor_action_begin/count` selects its ordered typed
+`ConstructorActionFact` range, including the constructor binding, object type,
+arguments, and value-initialization bit. PA15 lowers that fact range and does
+not reconstruct source text or create a second semantic owner.
 
-For a nonempty typed suffix, `lower_function` allocates one lowering-only
-cleanup block and emits `eh_cleanup` immediately after storing `this`, before
-the user body or synthetic empty body. A normal fallthrough emits `eh_end`,
-emits the ordered normal suffix plus explicit remaining-suffix cleanup
-prefixes, and joins at a return block. The cleanup block replays the same
-typed sequence, emits `eh_end`, and `resume`s. A reachable return path lowers
-active local lifetimes while the body handler is active, emits `eh_end` to
-close it, then lowers the normal typed suffix before terminating that path.
-Leaf destructors with an empty range retain their existing shape.
+For an array construction, `ArrayAddressRoot` identifies either the active
+constructor subobject (`ConstructorActionFact` plus its owner) or the placement
+storage binding. `emit_constructor_elements` walks array dimensions in forward
+lifetime order and appends each completed class terminal to a transient
+`vector<ConstructedElement>`. Each terminal retains only the typed root, array
+index path, canonical record, and `model_.destructor_binding(record)`.
 
-The complete ordered action range is flattened into a local typed
-`DestructedElement` replay list. A non-array action contributes one terminal;
-an array action contributes reverse element terminals. Each entry retains the
-original action, typed array-index path, and terminal record. Normal emission
-protects every remaining terminal suffix with typed cleanup blocks; body-unwind
-cleanup replays the complete sequence. Addresses are recomputed from the
-active typed owner and path, so no SSA value or textual spelling crosses a
-cleanup edge.
+The first terminal can use its normal destination SSA. Once a completed prefix
+exists, a potentially throwing later terminal carries only its typed root/path:
+PA15 emits a fresh `eh_try`, recomputes the destination inside that protected
+block, evaluates the typed constructor call, and closes the edge with
+`eh_end`. Its fresh cleanup block replays the completed vector in reverse and
+`resume`s. Thus every throw point owns exactly its already-constructed prefix;
+no normal-path address SSA crosses an exception edge. Nested arrays replay all
+indices from the same root. Nothrow and no-op constructors retain the direct
+path, and synthetic value-initialization still emits its required zeroing.
 
-This follows spec sections 2, 3, and 5: facts have one canonical typed owner,
-the `(begin, count)` range is preserved, and source-to-LowIR lowering stays in
-the typed in-memory model. It follows section 4 by accounting for work in
-consumed facts and emitted IR, and section 7 by recording structural evidence
-without timing claims. Explicit destructor calls, local automatic lifetime
-ordering, constructor cleanup, label/return lowering, demand-driven helper
-emission, and the closed typed bit-field/local-class boundaries remain
-unchanged. The audit found no justified repair to local-EH chaining: a full
-repair for a throwing local destructor would require a separate path-sensitive
-lifetime owner, outside this suffix boundary.
+The persistent `ArrayCleanupChain` is removed because shared cleanup nodes do
+not satisfy the checked per-throw-point LowIR contract. Normal destructor
+suffix lowering, automatic-lifetime ordering, aggregate initialization, and
+semantic resolution remain outside this increment. The checked local default
+array fixture still presents destruction in forward order; C++ lifetime rules
+require reverse destruction, so it is documented as a residual rather than
+used to drive a semantic reversal.
 
 ## Failure Map
 
-The supplied turn-start/landed stage authority is
+The authoritative turn-start log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
 `208/243` passed, `35` failed, and all `243/243` identities were covered.
-Fresh post-repair `make test-pa16` reproduces that result with exit `2`; its
-durable log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-test-20260830.log`.
-The exact sorted comparison is at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-identity-delta-20260830.log`:
-fresh-only `0`, authority-only `0`, unrecognized `0`, and `243/243` coverage
-against the 243-file inventory.
-The exact final failure set is:
+The complete turn-start failure map is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
 - `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
@@ -92,136 +77,102 @@ The exact final failure set is:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Compared with the preserved pre-landed baseline recorded in the inherited
-identity evidence
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-identity-delta-rerun-20260830.log`
-(`206/243`, 37 failures, `243/243` covered), baseline-only is exactly:
+The focused post-change matrix below covers 35 constructor/array/lifetime
+neighbors. It passes `30/35`: the primary
+`300-synthesized-array-member-lifecycle.t` failure is cleared; the five
+remaining selected failures are the already-mapped local-array presentation,
+value-init aggregate, friend-access, and two placement-new identities. The
+fresh full-stage residual is exactly the 34 entries above except for the
+primary. The fresh identity comparison reports baseline-only exactly the
+primary, fresh-only `0`, unrecognized `0`, and `243/243` coverage; its durable
+log also records the sorted full residual set. The exact selected residuals
+are:
 
-- `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
-- `pa16/tests/general/200-member-object-lifetime.t`
-
-Final-only is empty. The failure count therefore decreases by two without a
-coverage change; the PA16 stage still has unrelated residual failures. The
-bounded source repair is fail-closed for malformed model facts and the fresh
-broad run confirms that it introduces no failure-identity or coverage delta.
+- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`
+- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+- `pa16/tests/general/200-placement-new-expression-aggregate-brace.t`
+- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
+- `pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`
 
 ## Active Checkpoint
 
-The reviewed implementation is limited to these four PA15 lowering files:
+The implementation is limited to:
 
-- `dev/src/pa15_lowering_flow.cpp` installs and closes the destructor-body
-  handler, keeps it active through return-owned local destruction, and emits
-  normal/unwind suffix paths.
-- `dev/src/pa15_lowering_construction.cpp` validates each exact action,
-  flattens scalar and array terminals in action order, recomputes typed
-  addresses, and emits normal remaining-suffix cleanup prefixes.
-- `dev/src/pa15_lowering.h` carries the lowering-only cleanup block and
-  transient terminal declarations.
-- `dev/src/pa15_lowering.cpp` initializes the new lowering state.
+- `dev/src/pa15_lowering_construction.cpp`: typed array-terminal collection,
+  throw classification, destination recomputation, and per-throw cleanup.
+- `dev/src/pa15_lowering.h`: the transient terminal declaration and lowering
+  helper interfaces; the persistent `ArrayCleanupChain` is gone.
 
 The exact owner/data flow is
-`FunctionFact.destructor_action_begin/count` ->
-`checked_destructor_function` -> `model_.destructor_actions_` ->
-`lower_destructor_action` (one exact action flattened into typed terminals) ->
-one ordered terminal sequence -> `destructor_subobject_address` plus typed
-array-path replay -> emitted destructor calls. `active_destructor_cleanup_` is
-only a block identity; `DestructedElement` is transient lowering data, not
-duplicate semantic ownership. The same sequence serves normal emission with
-explicit remaining-suffix prefixes and body-unwind emission without borrowing
-normal-path SSA values. The audit repair proves exact member/base `TypeId`
-ownership, canonical destructor binding, valid target enum, and void call ABI
-at the point where the action enters this sequence.
+`FunctionFact.constructor_action_begin/count` -> ordered
+`ConstructorActionFact` -> `lower_constructor_action` or placement-array
+lowering -> `ArrayAddressRoot` -> recursive `emit_constructor_elements` ->
+transient `ConstructedElement` prefix -> `constructor_elements_may_throw` and
+`emit_constructor_call_with_cleanup` -> fresh typed root/path replay -> the
+canonical `model_.destructor_binding(record)` calls. Constructor actions use
+the active constructor record and action as the root; placement construction
+uses the semantic storage binding. The vector is lowering-only data, not
+duplicate semantic ownership, and no address SSA is retained across blocks.
 
-Exclusions are the remaining 35 identities, tests and fixtures, reference
-execution, source-text reconstruction, semantic-fact redesign, broad
-whole-program passes/caches, and unrelated constructor/local-lifetime changes.
-No source sets or generated oracle data were changed.
-
-The lowerer orders a reachable destructor-body return as local lifetime
-destruction under the body handler, `eh_end`, then the typed suffix. Ordinary
-compound fallthrough removes scope-owned lifetimes before the same suffix.
-An end-to-end early-return destructor probe remains unvalidated because the
-existing PA12 semantic check rejects it before lowering with
-`PA12 retained return owner is not definition-owned`. A further bounded
-uncertainty is exception propagation from a local lifetime destructor: the
-landed body handler owns the class member/base suffix, while full cleanup of
-other live locals is a separate lifetime-path design.
+Scope exclusions are the other 34 turn-start failures, the local-array fixture
+whose checked presentation conflicts with reverse C++ destruction, aggregate
+and placement-new semantic gaps, destructor-suffix/local-lifetime changes,
+tests and `.ref` files, source-text recovery, host/reference execution, and
+whole-program retries or caches. No new source file or source-set entry was
+needed. The exact runtime throwing behavior of user constructors is represented
+by LowIR EH edges here; the focused fixtures validate the emitted contract,
+not a host exception implementation.
 
 ## Performance Evidence
 
-Each emission mode reads the exact semantic range once to build its transient
-terminal sequence, then intentionally revisits terminals while emitting
-normal and body-unwind paths. For `N` flattened terminals and maximum
-array-path depth `D`, collection is `O(ND)` per mode and normal
-cleanup-prefix emission is intentionally `O(N^2D)`: the public LowIR contract
-has no shared cleanup cursor or implicit remaining-suffix state, so every
-potential throw point must carry an explicit, independently recomputed typed
-remaining suffix. Body-unwind replay is `O(ND)`. With fixed type-path depth,
-the broader output bound is the observed triangular `O(N^2)`; `D` accounts for
-required address projections. The audit repair adds constant-time
-indexed/sidecar checks per action and does not change these bounds. No
-whole-program retry, textual fallback, or unbounded cache/shortcut was added.
+For `N` flattened terminals and maximum array-path depth `D`, completion
+collection is `O(N)` for a flat array and `O(ND)` for nested paths. Each of
+the `N-1` later potentially-throwing terminals gets an independent handler
+and reverse prefix, so explicit cleanup output is intentionally `O(N^2D)`;
+with fixed `D`, the destructor-call count is the triangular
+`N(N-1)/2`. This is required by the per-throw-point LowIR contract. No
+persistent graph, whole-program retry, textual fallback, or unbounded cache
+was added.
 
-Structural evidence from the durable probe log
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-structure-20260830.log`:
+Measured structural evidence: the checked primary `Holder__Holder` (N=3)
+has 5 blocks, 2 `eh_try` handlers, 2 resumes, 3 constructor calls, 3 cleanup
+destructor calls, and 46 instructions. A direct nested `Element elements[2][3]`
+probe (N=6, D=2) has 11 blocks, 5 handlers, 5 resumes, 6 constructor calls,
+15 cleanup destructor calls, and 190 instructions. A flat N=1 probe has 1
+block, 0 handlers, 1 constructor call, 0 cleanup destructor calls, and 7
+instructions. A three-element noexcept probe has 1 block, 0 handlers, 3
+constructor calls, 0 cleanup destructor calls, and 17 instructions. An
+implicit-default no-op probe is demand-elided while its nontrivial destructor
+lifetime remains represented. These probes show forward construction, reverse
+cleanup, and fresh root/path address projections.
 
-- `Derived___Derived`: 3 blocks, 1 body cleanup handler, and 3 calls
-  (one local `Guard` call plus the typed `Base` call on each normal/unwind
-  path).
-- `YB___YB`: 3 blocks, 1 body cleanup handler, and the typed `YA` call on
-  each normal/unwind path.
-- `Holder___Holder`: 7 blocks, 3 cleanup handlers, 3 resumes, and 9 element
-  destructor calls. Its canonical diff has no destructor-function hunk; only
-  the pre-existing constructor array shape differs.
-- Scaling probes: N=1 has 3 blocks, 1 handler, 2 destructor calls, and 13
-  instructions; N=3 has 7, 3, 9, and 44; N=8 has 17, 8, 44, and 174.
-  The counts expose the triangular normal prefixes plus the linear unwind
-  copy.
+## Validation
 
-## Final Validation and Inherited Evidence
-
-Inherited evidence for landed `70327e4d` remains distinct from the fresh
-post-repair gates: full PA16 is at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-test-rerun-20260830.log`,
-the inherited identity/coverage delta at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-identity-delta-rerun-20260830.log`,
-the inherited through-PA15 gate at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-through-pa15-rerun-20260830.log`,
-the inherited file-audit log at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-file-audit-rerun-20260830.log`,
-the inherited diff-check log at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-diff-check-final-20260830.log`,
-and the inherited changed-file log at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-changed-file-audit-20260830.log`.
-Those artifacts describe the landed source before the bounded repair.
-
-Fresh post-repair validation is exact and durable:
-
-- `make test-pa16` exits `2` at `208/243`, with exactly `35` failures and
-  `243/243` coverage. The complete output is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-test-20260830.log`.
-- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
-  exits `0` at `1167/1167`. The exact command output is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-through-pa15-20260830.log`.
+- `make -C dev cppgm++ CXX=g++`: exit `0`, and the focused 35-test
+  constructor/array/lifetime matrix is `30/35`; the primary fixture passes and
+  all five selected residuals are already in the turn-start map. The exact
+  focused command, probes (nested N=6, N=1, noexcept, and no-op), and output
+  are in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-focused-20260830.log`.
+- Fresh `make test-pa16` exits `2` at `209/243`, with `34` residual failures;
+  the exact output is in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-final-test-20260830.log`.
+  The sorted identity and coverage comparison is in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-final-identity-coverage-20260830.log`:
+  authority `35`, fresh `34`, baseline-only the primary, fresh-only `0`,
+  inventory `243`, covered `243`, missing `0`, and unexpected `0`.
+- The exact required through-PA15 gate exits `0` at `1167/1167`; its durable
+  output is in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-final-through-pa15-20260830.log`.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
-  with five known header-division warnings and no fatals. Its output is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-file-audit-20260830.log`.
-- The exact sorted identity comparison is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-identity-delta-20260830.log`:
-  fresh `35` versus authority `35`, fresh-only `0`, authority-only `0`,
-  unrecognized `0`, and `243/243` coverage against the `243`-identity
-  inventory.
-- Fresh post-repair `git diff --check` and bounded changed-file audit each
-  exit `0` in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-diff-check-20260830.log`
-  and
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-changed-file-audit-20260830.log`.
-
-The earlier focused post-repair evidence remains useful for behavior
-localization: `make -C dev cppgm++ CXX=g++` exits `0`, and the seven-test
-matrix is `5/7` with only the two known array-presentation mismatches. The
-inherited landed nine-test result is `7/9` at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-focused-20260830.log`.
+  with five pre-existing header-division warnings; its output is in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-final-file-audit-20260830.log`.
+  `git diff --check` exits `0`; its exact output is in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-constructor-array-final-diff-check-20260830.log`.
+- The per-throw-point body shape is the checked canonical LowIR
+  presentation/fixture contract; each body still replays the already-built
+  prefix in reverse, which is the C++ lifetime requirement. Stale generated
+  `*.lowir.compare` files were not used as evidence.
 
 ## Checkpoint Ledger
 
@@ -231,9 +182,11 @@ inherited landed nine-test result is `7/9` at
 | `7e060b28` typed packed bit-field boundary | `202/243`, 41 failures, `243/243` covered | prior focused bit-field evidence retained | prior landed |
 | `d95a6fe7` local-class checkpoint start | `202/243`, 41 failures, `243/243` covered | prior local-class selection | prior checkpoint |
 | `d83e927f` typed local-class materialization | `206/243`, 37 failures, `243/243` covered | prior focused matrix, through-PA15, and audit passed | prior landed |
-| `70327e4d` typed exception-safe destructor suffix | `208/243`, 35 failures, `243/243` covered | fresh post-repair stage exactly matches the turn-start authority: fresh-only `0`, authority-only `0`, unrecognized `0`; preserved pre-landed baseline `206/243` has exactly the two fixed destructor/lifetime identities; N=1/3/8 structural evidence; bounded repair adds canonical action/type/void-signature checks; focused matrix `5/7` with only two known array-shape residuals; fresh through-PA15 `1167/1167` | final audit complete; checkpoint record and approved repair committed in this checkpoint |
+| `70327e4d` typed exception-safe destructor suffix | `208/243`, 35 failures, `243/243` covered | typed destructor-body suffix and cleanup work | prior landed |
+| `3b2b4882` checkpoint audit baseline | `208/243`, 35 failures, `243/243` covered | clean turn-start tree and authoritative stage log | turn start |
+| current PA16 increment | `209/243`, 34 failures, `243/243` covered | exact delta is baseline-only `300-synthesized-array-member-lifecycle.t`, fresh-only `0`; focused `30/35`; nested N=6 gives 11 blocks, 5 handlers, 15 cleanup calls; full/prior/audit/diff logs recorded above | finalized in the checkpoint commit |
 
-The remaining 35 identities are outside this checkpoint boundary. The next
-checkpoint should select one unchanged residual family separately. Future
+The other 34 turn-start identities are outside this checkpoint boundary. Future
 work must preserve the canonical typed action range, active owner flow,
-explicit cleanup semantics, and the recorded output-complexity rationale.
+forward construction, reverse destruction, explicit per-throw cleanup, and the
+recorded output-complexity rationale.

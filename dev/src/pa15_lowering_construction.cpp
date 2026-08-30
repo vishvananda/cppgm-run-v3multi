@@ -1026,16 +1026,26 @@ LoweredValue Pa15Lowerer::recompute_constructed_element_address(
 			throw std::runtime_error("PA15 completed element path is not an array path");
 		const TypeId object = model_.strip_cv_type(
 			model_.expression_object_type(current_type));
-			if (!object.valid() || object.value >= model_.types_.size() ||
+		if (!object.valid() || object.value >= model_.types_.size() ||
 			model_.type_kind(object) != TypeKind::Array)
 			throw std::runtime_error("PA15 completed element array path is invalid");
 		const TypeId child = model_.types_[object.value].child;
+		const LoweredValue sequence = emit_decay(result);
 		const LoweredValue array_offset = emit_array_element_offset(object,
 			element.path[i].index);
-		result = emit_index(emit_decay(result), array_offset,
+		result = emit_index(sequence, array_offset,
 			array_element_instruction_type(child),
 			lowir_model::IPK_ARRAY_ELEMENT);
 		current_type = child;
+	}
+	if (element.record.valid())
+	{
+		const NamedRecordId record = model_.class_record_for_object_type(
+			model_.strip_cv_type(model_.expression_object_type(current_type)));
+		if (record != element.record ||
+			model_.destructor_binding(element.record) != element.destructor)
+			throw std::runtime_error(
+				"PA15 completed element terminal identity changed");
 	}
 	return result;
 }
@@ -1319,42 +1329,97 @@ void Pa15Lowerer::emit_destructor_elements(TypeId target,
 	emit_destructor_call(destructor, destination);
 }
 
-void Pa15Lowerer::append_constructor_cleanup(ArrayCleanupChain* cleanup,
-	const ConstructedElement& element)
+bool Pa15Lowerer::constructor_elements_may_throw(TypeId target,
+	BindingId constructor)
 {
-	if (cleanup == NULL)
-		throw std::runtime_error("PA15 constructor cleanup chain is missing");
-	if (!element.destructor.valid()) return;
-	const BlockId saved_current = current_block_id();
-	if (!cleanup->base.valid())
+	TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	while (object.valid() && object.value < model_.types_.size() &&
+		model_.type_kind(object) == TypeKind::Array)
 	{
-		cleanup->base = block_id(new_block("array_ctor_cleanup_base"));
-		set_current(cleanup->base);
-		Instruction resume;
-		resume.kind = Instruction::IK_RESUME;
-		block().instructions.push_back(resume);
+		object = model_.strip_cv_type(model_.expression_object_type(
+			model_.types_[object.value].child));
 	}
-	const BlockId prior = cleanup->head.valid() ? cleanup->head : cleanup->base;
-	const BlockId node = block_id(new_block("array_ctor_cleanup"));
-	set_current(node);
-	emit_destructor_call(element.destructor,
-		recompute_constructed_element_address(element));
-	emit_jump(prior);
-	cleanup->head = node;
-	if (saved_current.valid()) set_current(saved_current);
-	else current_block_ = InvalidIdentityValue;
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error(
+			"PA15 array constructor throw query target is invalid");
+	const NamedRecordId record = model_.class_record_for_object_type(object);
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error(
+			"PA15 array constructor throw query element is not a class");
+	const FunctionFact& constructor_function =
+		checked_constructor_function(constructor, record);
+	if (constructor_function.synthetic &&
+		constructor_function.constructor_action_count == 0)
+		return false;
+	const BindingSidecar* constructor_sidecar =
+		model_.binding_sidecar(constructor);
+	bool throwing = constructor_sidecar == NULL ||
+		!constructor_sidecar->nonthrowing;
+	const FunctionFactId* constructor_id =
+		model_.function_binding_fact_index_.find(constructor);
+	if (constructor_function.synthetic && constructor_id != NULL &&
+		constructor_is_nothrow(*constructor_id))
+		throwing = false;
+	return throwing;
 }
 
-void Pa15Lowerer::materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
+void Pa15Lowerer::emit_constructor_call_with_cleanup(BindingId constructor,
+	const ConstructedElement& current,
+	std::size_t argument_begin, std::size_t argument_count,
+	const std::vector<SemanticFactId>* semantic_arguments,
 	const std::vector<ConstructedElement>& completed)
 {
-	if (cleanup == NULL || cleanup->materialized > completed.size())
-		throw std::runtime_error("PA15 constructor cleanup prefix is invalid");
-	for (std::size_t i = cleanup->materialized; i < completed.size(); ++i)
+	if (completed.empty())
+		throw std::runtime_error("PA15 constructor cleanup prefix is empty");
+	bool has_destructor = false;
+	for (std::size_t i = 0; i < completed.size(); ++i)
+		if (completed[i].destructor.valid())
+		{
+			has_destructor = true;
+			break;
+		}
+	if (!has_destructor)
 	{
-		append_constructor_cleanup(cleanup, completed[i]);
-		++cleanup->materialized;
+		const LoweredValue destination =
+			recompute_constructed_element_address(current);
+		if (semantic_arguments != NULL)
+			emit_constructor_call(constructor, destination, *semantic_arguments);
+		else
+			emit_constructor_call(constructor, destination, argument_begin,
+				argument_count);
+		return;
 	}
+	const BlockId cleanup = block_id(new_block("call_unwind_dispatch"));
+	const BlockId continuation = block_id(new_block("call_unwind_end"));
+	Instruction eh;
+	eh.kind = Instruction::IK_EH_TRY;
+	eh.first = block_operand(cleanup);
+	block().instructions.push_back(eh);
+	const LoweredValue destination =
+		recompute_constructed_element_address(current);
+	if (semantic_arguments != NULL)
+		emit_constructor_call(constructor, destination, *semantic_arguments);
+	else
+		emit_constructor_call(constructor, destination, argument_begin,
+			argument_count);
+	Instruction end;
+	end.kind = Instruction::IK_EH_END;
+	block().instructions.push_back(end);
+	emit_jump(continuation);
+	set_current(cleanup);
+	for (std::size_t i = completed.size(); i != 0; --i)
+	{
+		const ConstructedElement& element = completed[i - 1];
+		if (!element.destructor.valid()) continue;
+		emit_destructor_call(element.destructor,
+			recompute_constructed_element_address(element));
+	}
+	Instruction resume;
+	resume.kind = Instruction::IK_RESUME;
+	block().instructions.push_back(resume);
+	set_current(continuation);
 }
 
 void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action,
@@ -1615,15 +1680,14 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 	const LoweredValue& destination, BindingId constructor,
 	std::size_t argument_begin, std::size_t argument_count,
 	const std::vector<SemanticFactId>* semantic_arguments,
-	ArrayCleanupChain* cleanup, std::vector<ConstructedElement>* completed,
+	std::vector<ConstructedElement>* completed,
 	bool value_initialize,
 	const ArrayAddressRoot& root,
-	const std::vector<ConstructorAddressStep>& path)
+	const std::vector<ConstructorAddressStep>& path,
+	bool destination_deferred)
 {
-	if (!destination.type.is_pointer())
+	if (!destination_deferred && !destination.type.is_pointer())
 		throw std::runtime_error("PA15 array constructor target is not addressable");
-	if (cleanup == NULL)
-		throw std::runtime_error("PA15 array constructor cleanup chain is missing");
 	std::vector<ConstructedElement> local_completed;
 	if (completed == NULL)
 	{
@@ -1640,20 +1704,41 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
 			throw std::runtime_error("PA15 array constructor bound is invalid");
-		const LoweredValue sequence = emit_decay(destination);
+		LoweredValue sequence;
+		if (!destination_deferred)
+			sequence = emit_decay(destination);
 		for (std::size_t i = 0; i < array.bound.value; ++i)
 		{
 			const TypeId child = array.child;
-			const LoweredValue element = emit_index(sequence,
-				emit_array_element_offset(object, i),
-				array_element_instruction_type(child),
-				lowir_model::IPK_ARRAY_ELEMENT);
 			std::vector<ConstructorAddressStep> element_path = path;
 			element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
+			const bool defer_element = !completed->empty() &&
+				constructor_elements_may_throw(child, constructor);
+			LoweredValue element;
+			if (defer_element)
+			{
+				// The terminal constructor emits its own address after installing
+				// the matching handler.  Do not let an address producer from this
+				// normal block become an exception-edge input.
+			}
+			else if (destination_deferred)
+			{
+				const ConstructedElement address_root(root, element_path);
+				element = recompute_constructed_element_address(address_root);
+			}
+			else if (i != 0)
+			{
+				const ConstructedElement address_root(root, element_path);
+				element = recompute_constructed_element_address(address_root);
+			}
+			else
+				element = emit_index(sequence, emit_array_element_offset(object, i),
+					array_element_instruction_type(child),
+					lowir_model::IPK_ARRAY_ELEMENT);
 			emit_constructor_elements(child, element, constructor,
-				argument_begin, argument_count, semantic_arguments, cleanup,
+				argument_begin, argument_count, semantic_arguments,
 				completed,
-				value_initialize, root, element_path);
+				value_initialize, root, element_path, defer_element);
 		}
 		return;
 	}
@@ -1663,54 +1748,37 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 		throw std::runtime_error("PA15 array constructor element is not a class");
 	const FunctionFact& constructor_function =
 		checked_constructor_function(constructor, record);
+	const ConstructedElement completed_element(root, path,
+		model_.destructor_binding(record), record);
+	LoweredValue call_destination = destination;
+	if (destination_deferred && value_initialize &&
+		constructor_function.synthetic)
+		call_destination = recompute_constructed_element_address(
+			completed_element);
 	if (value_initialize && constructor_function.synthetic)
-		zero_initialize_value_initialized_object(object, destination);
+		zero_initialize_value_initialized_object(object, call_destination);
 	const bool no_op = constructor_function.synthetic &&
 		constructor_function.constructor_action_count == 0;
-	const BindingSidecar* constructor_sidecar =
-		model_.binding_sidecar(constructor);
-	const FunctionFactId* constructor_id =
-		model_.function_binding_fact_index_.find(constructor);
-	bool throwing = constructor_sidecar == NULL ||
-		!constructor_sidecar->nonthrowing;
-	if (constructor_function.synthetic && constructor_id != NULL &&
-		constructor_is_nothrow(*constructor_id))
-		throwing = false;
+	const bool throwing = constructor_elements_may_throw(object, constructor);
 	bool emitted = false;
 	if (!no_op && throwing && !completed->empty())
 	{
-		materialize_constructor_cleanup(cleanup, *completed);
-	}
-	if (!no_op && throwing && cleanup->head.valid())
-	{
-		const BlockId dispatch = cleanup->head;
-		const BlockId continuation = block_id(new_block("array_ctor_continue"));
-		Instruction eh;
-		eh.kind = Instruction::IK_EH_TRY;
-		eh.first = block_operand(dispatch);
-		block().instructions.push_back(eh);
-		if (semantic_arguments != NULL)
-			emit_constructor_call(constructor, destination, *semantic_arguments);
-		else
-			emit_constructor_call(constructor, destination, argument_begin,
-				argument_count);
+		emit_constructor_call_with_cleanup(constructor, completed_element,
+			argument_begin, argument_count, semantic_arguments, *completed);
 		emitted = true;
-		Instruction end;
-		end.kind = Instruction::IK_EH_END;
-		block().instructions.push_back(end);
-		emit_jump(continuation);
-		set_current(continuation);
 	}
 	if (!no_op && !emitted)
 	{
+		if (destination_deferred && !call_destination.type.is_pointer())
+			call_destination = recompute_constructed_element_address(
+				completed_element);
 		if (semantic_arguments != NULL)
-			emit_constructor_call(constructor, destination, *semantic_arguments);
+			emit_constructor_call(constructor, call_destination,
+				*semantic_arguments);
 		else
-			emit_constructor_call(constructor, destination, argument_begin,
-				argument_count);
+			emit_constructor_call(constructor, call_destination,
+				argument_begin, argument_count);
 	}
-	const ConstructedElement completed_element(root, path,
-		model_.destructor_binding(record), record);
 	completed->push_back(completed_element);
 }
 
@@ -2036,10 +2104,9 @@ void Pa15Lowerer::lower_constructor_action(
 			root.action = action;
 			root.action_based = true;
 			const std::vector<ConstructorAddressStep> empty_path;
-			ArrayCleanupChain cleanup;
 			emit_constructor_elements(target, destination_value,
 				action.constructor, action.argument_begin, action.argument_count,
-				NULL, &cleanup, NULL, action.value_initialize, root, empty_path);
+				NULL, NULL, action.value_initialize, root, empty_path);
 			return;
 		}
 		const NamedRecord& named = model_.named_[record.value];
@@ -2223,21 +2290,20 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 							storage_fact.binding).type;
 						const TypeId object = model_.strip_cv_type(
 							model_.expression_object_type(target));
-			if (object.valid() && object.value < model_.types_.size() &&
-				model_.type_kind(object) == TypeKind::Array)
-			{
+						if (object.valid() && object.value < model_.types_.size() &&
+							model_.type_kind(object) == TypeKind::Array)
+						{
 							std::vector<SemanticFactId> arguments;
 							for (std::size_t i = 1; i < call_children.size(); ++i)
 								arguments.push_back(call_children[i]);
-				ArrayAddressRoot root;
-				root.type = target;
-				root.storage = storage_fact.binding;
-				const std::vector<ConstructorAddressStep> empty_path;
-				ArrayCleanupChain cleanup;
-				emit_constructor_elements(target,
-					address_of_storage(storage_for(storage_fact.binding)),
-				call.selected_binding, InvalidIdentityValue, 0,
-					&arguments, &cleanup, NULL, false, root, empty_path);
+							ArrayAddressRoot root;
+							root.type = target;
+							root.storage = storage_fact.binding;
+							const std::vector<ConstructorAddressStep> empty_path;
+							emit_constructor_elements(target,
+								address_of_storage(storage_for(storage_fact.binding)),
+								call.selected_binding, InvalidIdentityValue, 0,
+								&arguments, NULL, false, root, empty_path);
 							return storage_for(storage_fact.binding);
 						}
 					}

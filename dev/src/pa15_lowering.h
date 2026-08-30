@@ -311,19 +311,6 @@ struct DestructedElement
 		: action(action), path(path), record(record) {}
 };
 
-// A constructor's exceptional prefix cleanup is a persistent typed chain.
-// Each node destroys exactly one already-completed element and transfers to
-// the preceding node; no completed-element address or LowIR temporary is
-// retained between blocks.
-struct ArrayCleanupChain
-{
-	BlockId head;
-	BlockId base;
-	std::size_t materialized;
-
-	ArrayCleanupChain() : head(), base(), materialized(0) {}
-};
-
 typedef FlowArenaIndex<LoopFlowIndexTag> LoopFlowIndex;
 typedef FlowArenaIndex<IfFlowIndexTag> IfFlowIndex;
 typedef FlowArenaIndex<SwitchFlowIndexTag> SwitchFlowIndex;
@@ -796,14 +783,21 @@ private:
 	void emit_constructor_call(BindingId constructor,
 		const LoweredValue& destination,
 		const std::vector<SemanticFactId>& arguments);
+	bool constructor_elements_may_throw(TypeId target, BindingId constructor);
 	void emit_constructor_elements(TypeId target, const LoweredValue& destination,
 		BindingId constructor, std::size_t argument_begin,
 		std::size_t argument_count,
 		const std::vector<SemanticFactId>* semantic_arguments,
-		ArrayCleanupChain* cleanup,
 		std::vector<ConstructedElement>* completed,
 		bool value_initialize, const ArrayAddressRoot& root,
-		const std::vector<ConstructorAddressStep>& path);
+		const std::vector<ConstructorAddressStep>& path,
+		bool destination_deferred = false);
+	void emit_constructor_call_with_cleanup(BindingId constructor,
+		const ConstructedElement& current,
+		std::size_t argument_begin,
+		std::size_t argument_count,
+		const std::vector<SemanticFactId>* semantic_arguments,
+		const std::vector<ConstructedElement>& completed);
 	const FunctionFact& checked_constructor_function(BindingId constructor,
 		NamedRecordId record) const;
 	const FunctionFact& checked_destructor_function(BindingId destructor,
@@ -813,10 +807,6 @@ private:
 		const LoweredValue& destination);
 	void emit_destructor_elements(TypeId target, const LoweredValue& destination,
 		BindingId destructor);
-	void append_constructor_cleanup(ArrayCleanupChain* cleanup,
-		const ConstructedElement& element);
-	void materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
-		const std::vector<ConstructedElement>& completed);
 	void initialize_constructor_value(TypeId target, SemanticFactId initializer,
 		const LoweredValue& destination,
 		const ConstructorActionFact* root_action = NULL,
