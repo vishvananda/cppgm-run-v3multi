@@ -15,7 +15,7 @@ that an explicit conversion owns the destination type.
 
 Turn-start authority is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`211/243` passed, exactly `32` failed, and `243/243` identities were covered.
+`214/243` passed, exactly `29` failed, and `243/243` identities are covered.
 The complete turn-start failure map is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
@@ -27,8 +27,6 @@ The complete turn-start failure map is:
 - `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
 - `pa16/tests/general/200-local-default-class-array-lifecycle.t`
 - `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
-- `pa16/tests/general/200-nonliteral-field-condition-not-folded.t`
-- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
 - `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
 - `pa16/tests/general/200-reference-member-class-init.t`
 - `pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`
@@ -41,7 +39,6 @@ The complete turn-start failure map is:
 - `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
 - `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
 - `pa16/tests/general/300-overloaded-deref-user-assignment.t`
-- `pa16/tests/general/300-pragma-pack-followed-by-endif.t`
 - `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
 - `pa16/tests/general/300-user-defined-string-literal-operator.t`
 - `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
@@ -51,113 +48,89 @@ The complete turn-start failure map is:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-The final fresh PA16 map has `29` failures and `214/243` passes.  It is the
-turn-start map minus exactly these three authority-only identities:
-
-- `pa16/tests/general/200-nonliteral-field-condition-not-folded.t`
-- `pa16/tests/general/200-placement-new-expression-constructor-call.t`
-- `pa16/tests/general/300-pragma-pack-followed-by-endif.t`
-
-The comparison has `fresh_only=0`, `authority_only=3`, inventory `243`, and
-`243/243` coverage; no fresh failure or coverage identity was introduced.
+The three identities recovered by the landed increment and therefore absent
+from this authority are `200-nonliteral-field-condition-not-folded.t`,
+`200-placement-new-expression-constructor-call.t`, and
+`300-pragma-pack-followed-by-endif.t`.  Fresh comparison is exact: authority
+and fresh failures are both `29`, baseline-only and fresh-only are both `0`,
+the independent inventory and run total are both `243`, and coverage is
+`243/243`.
 
 ## Active Checkpoint
 
-This increment repairs the typed truth/comparison physical-width continuity
-boundary for the three named residuals:
-
-- `200-placement-new-expression-constructor-call.t`
-- `300-pragma-pack-followed-by-endif.t`
-- `200-nonliteral-field-condition-not-folded.t`
+The landed increment repairs the typed truth/comparison physical-width
+continuity boundary for the three recovered identities:
+`200-placement-new-expression-constructor-call.t`,
+`300-pragma-pack-followed-by-endif.t`, and
+`200-nonliteral-field-condition-not-folded.t`.  This bounded audit found and
+repairs one over-broad class-pointer classifier: the object-layout helper
+unwraps arrays, so it cannot be used directly to classify a pointer's
+pointee.  The finalizer now strips cv qualification only, requires an exact
+`Named` pointee, and then validates the class record.  Thus `Class*` retains
+the typed truth policy while `Class (*)[N]`, scalar pointers, invalid ranges,
+and non-pointer operations remain materialized.
 
 The shared owner/data flow is:
 
 1. `semantic_binary_expression` publishes comparisons as semantic `bool`
    facts with `canonical_truth=true` and records their owned conversions.
-2. `CanonicalTruthFinalizer::publish_conversions` now preserves a bool-origin
-   canonical truth value at the typed PA16 boundaries represented by the fact:
-   member-derived truth, `sizeof`-derived truth, and comparisons whose typed
-   operation is a class-object pointer.  Plain procedural comparisons retain
-   `Materialize`, and a bool target remains a materialization/storage boundary
-   (`u8`); the existing member-derived direct-boundary behavior is unchanged.
-3. `finish_member_call` now publishes the same bool-result
+2. `CanonicalTruthFinalizer::publish_conversions` preserves a bool-origin
+   canonical truth value only at typed boundaries represented by the fact:
+   member-derived truth, `sizeof`/size-type-derived truth, and exact
+   class-object-pointer comparisons.  Plain procedural comparisons retain
+   `Materialize`, and bool storage/ABI destinations remain u8.
+3. `finish_member_call` publishes the same bool-result
    `bool_context_operand` and `direct_bool_boundary` metadata already emitted
-   by the other call owners.
-4. PA15 consequently keeps canonical truth's internal physical LowIR carrier
-   at `i64` while its semantic result remains `bool`/`u8`.  The `cmp` operand
-   spelling remains the typed consumer/operation width (`ptr`, `i64`, `u8`,
-   and so on); this fix does not make every comparison operand `i64`.  The
-   non-bool return/condition conversion at those typed boundaries can emit the
-   direct `zext i32 u8` shape without a redundant `trunc u8 i64`.  Logical
-   lowering also sees a bool-valued member call and chooses an `i64` comparison
-   consumer, as the existing typed condition path requires.
+   by all other relevant call owners, for both static and non-static results.
+4. PA15 keeps canonical truth's internal physical carrier at i64 while the
+   semantic result remains bool/u8 at storage boundaries.  `cmp` retains the
+   actual typed operation operand, and conversion policy is consumed once
+   without redundant truncation at the explicitly typed boundary.
 
-The placement-new and pragma-pack/parser/layout machinery in the first two
-fixtures is not changed; it is only the shared truth conversion boundary that
-is in scope.  The remaining 29 authority identities, general ABI redesign,
-unrelated condition semantics, tests, fixtures, harnesses, comparators, and
-reference/host execution are excluded.  No focused regression is added because
-the three existing public boundary fixtures exercise the owner directly.
+The placement-new and pragma-pack/parser/layout machinery named by the
+recovered fixtures is not changed; only their shared truth-conversion
+boundary is in scope.  No focused regression, test, fixture, harness,
+comparator, or reference/host execution is added or changed.
 
 ## Performance Evidence
 
-The fix performs O(1) work per canonical-truth conversion and per member-call
-fact, including constant typed-operation classification, with the
-existing finalizer remaining linear in semantic facts, owned conversions, and
-result edges.  PA15 still emits each expression fact/instruction once; there
-is no rescan, cache, whole-program retry, or duplicate lowering.  Focused
-before/after evidence is structural: each of the first two named cases changes
-the result tail from two conversions (`trunc u8 i64` then `zext i32 u8`) to one
-(`zext i32 u8`), while the field-condition case keeps the same call/compare/
-store sequence count and changes only `cmp ne u8` to `cmp ne i64`.  The final
-PA16 run confirms no additional identity delta after the scoped correction;
-the six initially affected PA15 shape controls all return to their original
-materialized form and pass.
+The finalizer remains linear in semantic facts, owned conversions, and result
+edges; the new exact-pointee classifier is O(1) per canonical-truth fact with
+bounded range checks.  PA15 still emits each expression fact/instruction once;
+there is no rescan, cache, whole-program retry, or duplicate lowering.
+Focused structural probes show `Class*` uses the typed direct boundary while
+`Class (*)[2]` and scalar pointers use ordinary materialization.  No timing,
+RSS, or code-size measurement was taken, so no measured performance claim is
+made.
 
 ## Validation
 
-The mandatory first-stop checks passed.  The first broad trial exposed a
-same-owner overreach; the final scoped correction and all required gates are
-recorded here:
+The focused and broad checks passed with the expected incomplete-stage result:
 
 - `make cppgm++ CXX=g++` from `dev/`: status `0`.
-- `make check TEST='tests/general/200-placement-new-expression-constructor-call.t tests/general/300-pragma-pack-followed-by-endif.t tests/general/200-nonliteral-field-condition-not-folded.t tests/general/200-placement-new-expression-aggregate-brace.t'` from `pa16/`: status `0`, `PASS (4/4)`.
-- `git diff --check`: status `0`; `git status --short` shows only the two
-  PA12 source files and this plan.
+- PA16 focused target/control set: status `0`, `PASS (7/7)`.
+- PA15 condition, call, sizeof, and conversion controls: status `0`,
+  `PASS (5/5)`.
+- Direct probes exit `0`: `Class*` is direct `zext i32 u8`, while
+  `Class (*)[2]`, `int*`, and `int (*)[2]` retain ordinary truncation followed
+  by zext.
+- `make test-pa16`: status `2`, `214/243`, exactly the authority's 29
+  failures, no baseline-only or fresh-only identity, and `243/243` coverage.
+- The exact `n=16` through-PA15 command: status `0`, `1167/1167`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
+  with five pre-existing header-division warnings and no fatal finding.
+- Final changed-path audit: status `0`, limited to the three scoped files.
+- `git diff --check` after all source and record edits: status `0`.
 
-- Post-correction `make cppgm++ CXX=g++`: status `0`.
-- Post-correction PA16 target/control check: status `0`, `PASS (6/6)`.
-- Post-correction PA15 regression-control check: status `0`, `PASS (6/6)`.
-- Final `make test-pa16`: status `2` because the expected residuals remain;
-  `214/243` passed, `29` failed, and `243/243` identities were covered.  Raw
-  output/status: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-20260830/final-make-test-pa16.log` and
-  `final-make-test-pa16.status`.
-- Final identity/coverage comparison against the supplied 32-failure
-  authority: `authority_failures=32`, `fresh_failures=29`,
-  `authority_only=3`, `fresh_only=0`, `inventory=243`,
-  `fresh_passes_plus_failures=243`, and zero missing/unexpected coverage.
-  Raw comparison: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-20260830/identity-coverage-comparison.log`.
-- The exact required `n=16` through-PA15 command: status `0`,
-  `1167 / 1167`; raw output/status are in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-20260830/final-through-pa15.log` and
-  `final-through-pa15.status`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`,
-  with five existing `bad-division` warnings in `abi_mangle.h`,
-  `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
-  `pa15_lowering.h`; raw output/status are in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-20260830/final-file-audit.log` and
-  `final-file-audit.status`.
-- Final `git diff --check`: status `0`; raw output/status are in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-20260830/final-git-diff-check.log` and
-  `final-git-diff-check.status`.
+Raw logs and statuses for these results are in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-audit-final-20260830/`.
 
 ## Next Checkpoint
 
-PA16 remains incomplete with 29 residual identities.  The next checkpoint
-should select the largest coherent typed owner from the remaining map while
-preserving the finalizer’s distinction between typed PA16 truth boundaries and
-plain procedural materialization.  Do not pivot into placement-new semantics
-or pragma-pack layout based only on the fixture names.
+PA16 remains incomplete with the exact 29 residual identities above.  The next
+checkpoint should select the largest coherent remaining typed owner while
+preserving the distinction between typed truth boundaries and plain procedural
+materialization.
 
 ## Checkpoint Ledger
 
@@ -173,5 +146,6 @@ or pragma-pack layout based only on the fixture names.
 | `08472cce` typed pragma-pack layout | prior landed pack-layout checkpoint | prior landed |
 | `9f7101ac` pack-layout audit | `210/243`, 33 failures, `243/243` covered | prior landed |
 | `fb4f46ed` placement-new semantic/lowering | `211/243`, 32 failures, `243/243` covered | prior landed; historical |
-| `85b819b7` turn-start authority | `211/243`, 32 failures, `243/243` covered | current baseline |
+| `85b819b7` pre-increment authority | `211/243`, 32 failures, `243/243` covered | prior baseline |
 | `typed truth-width continuity (parent 85b819b7)` | final `214/243`, 29 failures, `243/243` covered; authority-only 3 named identities; fresh-only 0; through-PA15 `1167/1167`; audit 0 with five known warnings; diff-check 0 | landed in this checkpoint commit |
+| `96e80152` truth-width checkpointAudit | Focused build `0`, PA16 `7/7`, PA15 `5/5`; fresh PA16 status `2` at `214/243` with authority/fresh `29/29` failures, baseline-only/fresh-only `0/0`, and `243/243` coverage; through-PA15 `1167/1167`; file audit `0` with five pre-existing warnings; final diff/path audits `0`; exact-pointee class-pointer guard repaired | completed audit |

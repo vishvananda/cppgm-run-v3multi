@@ -1890,12 +1890,20 @@ void PA11SemanticModel::CanonicalTruthFinalizer::publish_conversions()
 		if (!fact.canonical_truth)
 			continue;
 		const bool member_truth = true_nodes_[i] != 0;
-		const bool class_pointer_truth = fact.kind ==
+		const bool class_pointer_operation = fact.kind ==
 			SemanticFactKind::BinaryExpression && fact.operation_type.valid() &&
 			fact.operation_type.value < model_.types_.size() &&
-			model_.types_[fact.operation_type.value].kind == TypeKind::Pointer &&
-			model_.class_record_for_object_type(
-				model_.types_[fact.operation_type.value].child).valid();
+			model_.types_[fact.operation_type.value].kind == TypeKind::Pointer;
+		// class_record_for_object_type intentionally unwraps arrays for object
+		// layout queries.  A pointer-to-array is not a pointer to a class object,
+		// so keep this truth boundary exact to the pointer's cv-stripped pointee.
+		const TypeId pointer_pointee = class_pointer_operation ?
+			model_.strip_cv_type(
+				model_.types_[fact.operation_type.value].child) : TypeId();
+		const bool class_pointer_truth = class_pointer_operation &&
+			pointer_pointee.valid() && pointer_pointee.value < model_.types_.size() &&
+			model_.type_kind(pointer_pointee) == TypeKind::Named &&
+			model_.class_record_for_object_type(pointer_pointee).valid();
 		const bool typed_truth = member_truth || fact.size_type_derived ||
 			class_pointer_truth;
 		if (member_truth)

@@ -2,169 +2,126 @@
 
 ## Current Checkpoint Review
 
-This bounded PA16 placement-new checkpoint audit covers landed implementation
-commit `fb4f46ed64ea8c5743fd4395fe1a8c43112836c3` relative to parent
-`9f7101ac`, with the current tree authority finalized at
-`00c15d6269c65d03b92418fdb2158c9e6a97de8a`.  The implementation increment
-touches the typed PA10 NewExpression/NewPlacement boundary, PA12 semantic
-publication and resolution, PA15 call/construction flow, the frontend source
-set, and the plan.  This audit repairs only
-`dev/src/pa12_semantic_new.cpp`, `dev/src/pa12_semantic_resolution.cpp`,
-`dev/src/pa15_lowering_construction.cpp`, this record, and one narrow course
-regression.  No handout test, `.ref` fixture, exit-status sidecar, harness,
-comparator, or reference output is changed.
+This bounded PA16 checkpoint audit reviews landed commit
+`96e80152eee9e1b0e192e17ff21d6a82da141510` relative to parent `85b819b7`.
+That increment publishes typed canonical-truth conversion policy in
+`dev/src/pa12_semantic_construction.cpp`, completes bool-result metadata in
+`dev/src/pa12_semantic_member.cpp`, and records the checkpoint in the plan.
+This audit adds one fail-closed source repair in the finalizer and updates
+only these records.  No handout test, `.ref` fixture, exit-status sidecar,
+harness, comparator, reference output, or source-set file is changed.
 
 The supplied turn-start authority in
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
-`211/243` passing, exactly `32` failures, and `243/243` covered.  The fresh
-`make test-pa16` run returned status `2` at `211/243`, with exactly the same
-32 identities and `243/243` coverage.  The exact sorted comparison is recorded
-in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-placement-new-final-20260830/identity-coverage-comparison.log`:
-`authority_failures=32`, `fresh_failures=32`, `fresh_only=0`,
-`authority_only=0`, `inventory=243`, `fresh_covered=243/243`, and
-`authority_covered=243/243`.  No fresh-only identity or coverage reduction
-was found.
+`214/243` passing, exactly `29` failures, and `243/243` identities covered.
+Fresh `make test-pa16` returned status `2` at `214/243`.  The sorted direct
+comparison and independent inventory in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-audit-final-20260830/identity-coverage-comparison.log`
+report `authority_failures=29`, `fresh_failures=29`, `baseline_only=0`,
+`fresh_only=0`, `inventory=243`, `run_total=243`, `covered=243/243`, and no
+failure identity missing from the inventory.  The complete residual map is
+retained in `pa16/plan.md`.
 
 ### Contract and ownership trace
 
-The representative production path is:
+The representative affected path is:
 
 ```text
-PA10 NewExpression/NewPlacement AST
-  -> PA12 semantic_new_expression
-  -> typed allocation CallExpression + ConstructorAction
-  -> PA15 lower_call
-  -> initialize_constructor_value(returned allocation pointer)
-  -> the same typed pointer result
+PA10 expression AST
+  -> PA12 semantic_binary_expression / sizeof / typed call owner
+  -> SemanticFact + ConversionFact + canonical-truth finalizer
+  -> PA15 lower_binary_expression / lower_logical / apply_conversions
+  -> typed cmp operand and canonical i64 truth
+  -> explicit destination or ABI/storage representation
 ```
 
-PA10 owns the parsed global qualifier, placement argument list, type-id, and
-initializer children.  PA12 requires the supported non-array shape, a direct
-complete named non-union non-polymorphic class, and the existing constructor
-selection owner.  It synthesizes one typed size literal (`int` or target
-`unsigned long`), performs explicit-global `operator new` lookup through the
-existing typed lookup/selector, and publishes the selected binding, owner,
-callable type, and converted child facts.  The allocation boundary now also
-requires a first `size_t` (`unsigned long` on this target) parameter and an
-exact `void*` result.  The constructor fact retains the allocated object type,
-selected constructor identity, hidden callable boundary, and typed
-initializer children.
+`semantic_binary_expression` owns the semantic `bool`, actual comparison
+`operation_type`, child conversions, and propagation of `size_type_derived`.
+PA13 requires `cmp` to carry that actual operand type while its result is
+canonical i64 `0/1`.  `sizeof`/`alignof` and type traits publish the target
+size type, and only the owning binary fact propagates that typed provenance.
+The finalizer preserves a bool-origin i64 carrier only for member-derived
+truth, size-type-derived truth, and an exact class-object-pointer comparison.
+Plain procedural comparisons remain materialized, and bool storage/ABI
+destinations remain u8 except for the established member-result boundary.
 
-The constructor-call target's `(void*)buf` argument is owned by the existing
-cast resolver: it records array-to-pointer decay followed by
-pointer-to-void conversion.  That special path is now restricted to a
-pointer-to-void target, so supported same-element non-void array casts remain
-on the ordinary typed conversion path.  Array-new is outside this checkpoint
-and is rejected before allocation/constructor facts are published.
-
-PA15 validates the NewExpression fact kind/category and two-child shape,
-typed child ranges, complete target record, allocation binding owner and
-callable/result relation, allocation signature, constructor binding sidecar
-and owner, raw-versus-hidden constructor callable parameters, and the
-constructor target type before emitting anything.  It lowers the allocation
-call once; `lower_call` demands its typed declaration and returns the pointer;
-`initialize_constructor_value` constructs at that destination; and the
-returned value retains the allocation operand and physical pointer type.
-The declaration planner's existing external-member convention is preserved:
-the declaration-only constructor uses `%arg0`, `%arg1`, while retained
-definitions use `%this`.  No source rendering, reparsing, second semantic or
-LowIR owner, overload re-selection, or host/reference shortcut is present.
-
-### Construction failure and cleanup boundary
-
-For both supported target shapes, `200-placement-new-expression-aggregate-
-brace.t` and `200-placement-new-expression-constructor-call.t`, PA15 emits
-the allocation call exactly once before the aggregate or user-constructor
-call.  If the selected constructor throws, that exception propagates through
-the existing typed call boundary; this checkpoint adds no placement-specific
-rollback or general throwing-constructor cleanup support.  Neither target
-selects or declares a matching placement deallocation function.  Delete and
-placement-delete lookup, deallocation, and cleanup remain explicitly outside
-this checkpoint.
+All relevant bool call owners publish both `bool_context_operand` and
+`direct_bool_boundary`: ordinary direct/indirect calls, overloaded operators,
+typed builtins, template calls, and the single-argument call path already did
+so; `finish_member_call` now does the same for static and non-static results.
+It retains the selected binding, callable type, implicit object, scope, and
+cv metadata.  Void constructor/abort paths have no bool result to publish.
+PA15 consumes each per-record conversion policy, resets it after application,
+keeps the comparison operand type, emits canonical i64 truth, and avoids a
+redundant truncation only where the typed owner explicitly permits it.
+No source text, retry, second lowerer, or reference/host shortcut is involved.
 
 ### Findings and bounded repair
 
-Three concrete boundary defects were found in the landed path:
+The landed class-pointer classifier called
+`class_record_for_object_type` directly on the comparison pointee.  That
+helper intentionally unwraps fixed arrays for object-layout queries, so a
+`Class (*)[N]` operation was incorrectly treated as a class-object pointer.
+The bounded repair keeps the check fail-closed: it strips cv qualification
+only, requires the exact pointee kind to be `Named`, and then asks the helper
+to validate the named class record.  `Class*` remains a typed truth boundary;
+`Class (*)[2]`, scalar pointers, invalid ranges, and non-pointer operations
+remain ordinary materialized comparisons.
 
-1. The array-to-pointer C-style special case intercepted every pointer target
-   and rejected a supported `(char*)array` cast.  Restricting it to
-   pointer-to-void preserves the required placement conversion without
-   changing generic conversion behavior.
-2. `semantic_new_expression` could identify an array through the generic class
-   record helper and only fail later in scalar constructor selection.  The
-   supported direct named-class requirement now rejects arrays at the semantic
-   entry boundary, before allocation work is retained.
-3. Selection previously accepted malformed placement allocation declarations
-   such as `int* operator new(unsigned long, void*)`, `const void*` results, or
-   an `int` first parameter.  PA12 and the PA15 NewExpression owner now check
-   the exact typed allocation contract and selected binding ownership.  PA15
-   additionally checks the constructor's raw function type against its
-   hidden-destination callable type, so a forged fact cannot redirect or
-   mis-type construction.
-
-These repairs are local typed checks and one existing-path condition; they do
-not widen array-new, delete, heap lifetime, polymorphism, copy/move,
-by-value-class, parser, or unrelated conversion scope.
+The classification is semantically owned rather than fixture-shaped.  Member
+provenance comes from the dense result graph, size provenance comes from
+`sizeof`/type-trait facts and the owning binary fact, and class-pointer
+provenance comes from the actual comparison operand type.  It does not taint
+variables or calls, retroactively widen commonized `void*` operations, or
+cross a bool storage/ABI boundary.  `finish_member_call` now matches every
+other relevant bool call publisher, including static and non-static member
+results, while void-result owners correctly publish no bool metadata.
 
 ### Bounds, evidence, and boundaries
 
-For `P` placement arguments, `F` selected allocation parameters, `K` selected
-constructor parameters, and `C` allocation candidates, the added work is
-`O(P + F + K + Select(C, P))`, where `Select` is the existing typed selector
-and ranking work.  PA15 walks the NewExpression's two children and each
-selected signature once.  No whole-program retry, source-text scan,
-per-node owning cache, or unbounded search was added.  The target fixtures
-provide structural evidence of one synthesized size, one placement argument,
-one allocation call, and one constructor action; the constructor-call output
-places allocation before construction and reuses its pointer for the later
-store/compare.  No timing or RSS measurement was taken, so no measured
-performance claim is made.
+The finalizer remains linear in semantic facts, owned conversions, and result
+edges; the new classifier is O(1) per canonical-truth fact and has bounded
+type-range checks.  PA15 consumes each fact and conversion once.  No
+source-text scan, retry, second lowering, per-node owning cache, or unbounded
+search was added.  No timing/RSS/code-size measurement was taken, so the
+performance evidence is structural rather than measured.
 
 ### Focused validation and residual boundary
 
-Focused validation and final gates:
+Fresh focused and broad evidence is retained in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-audit-final-20260830/`:
 
-- `make -C dev cppgm++ CXX=g++`: status `0`; log and status are in
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-placement-new-final-20260830/focused-build.log` and
-  `focused-build.status`.
-- Aggregate placement target: `make -C pa16 check
-  TEST='tests/general/200-placement-new-expression-aggregate-brace.t'`:
-  status `0`, `PASS (1/1)`; see `focused-aggregate.log` and
-  `focused-aggregate.status` in the durable log directory above.
-- Constructor-call target: typed compilation and allocation-before-construction
-  output succeed; the focused `make -C pa16 check` returned status `2` for its
-  one-test comparison, with only the known unrelated `trunc u8 i64` before
-  `zext i32 u8` truth-width mismatch.  See `focused-constructor.log` and
-  `focused-constructor.status`.
-- `200-out-of-class-getter-only.t`: `PASS (1/1)`, preserving the declaration
-  owner regression control, status `0`; see `focused-getter.log` and
-  `focused-getter.status`.
-- Course `423-typed-placement-new-boundary-regression.sh`: `PASS`, covering a
-  valid same-element array cast, valid `(void*)` placement, and rejection of
-  non-`void*` allocation results and non-`size_t` first parameters, and the
-  repaired array-new rejection; `sh -n` and the script both returned status
-  `0` (see `course-423-shn.status` and `course-423.status`).
-- The required `make test-pa16` command returned status `2`; its full output is
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-placement-new-final-20260830/make-test-pa16.log`
-  and its status is `make-test-pa16.status` in that directory.  The exact
-  failure/coverage comparison above is the acceptance result; the 32 residuals
-  are unchanged from the supplied authority.
-- The required `n=16` through-stage command returned status `0` with
-  `1167 / 1167`; see `through-pa15.log` and `through-pa15.status`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` returned
-  status `0` with the five known header-division warnings and no fatal finding;
-  see `file-audit.log` and `file-audit.status`.
-- `git diff --check` and the final tracked/untracked path audit are recorded in
-  `git-diff-check-final.log`, `git-diff-check-final.status`, and
-  `changed-paths-final.log` in the durable log directory.  Only the three
-  placement-new source repairs, this record, the compact plan, and course 423
-  are changed; no handout test, fixture, `.ref` file, exit-status sidecar,
-  harness, comparator, generated oracle, or unrelated file is changed.
+- `make cppgm++ CXX=g++` from `dev/`: status `0`; raw log/status are
+  `focused-build.log` and `focused-build.status`.
+- PA16 target/control check for the three recovered identities plus four
+  nearby typed-boundary controls: status `0`, `PASS (7/7)`; raw log/status are
+  `focused-pa16.log` and `focused-pa16.status`.
+- PA15 condition, call, sizeof, and conversion controls: status `0`,
+  `PASS (5/5)`; raw log/status are `focused-pa15.log` and
+  `focused-pa15.status`.
+- Direct compiler probes exit `0`: `Class*` keeps the direct `zext i32 u8`
+  boundary, `Class (*)[2]` gets ordinary `trunc u8 i64` then `zext i32 u8`,
+  and `int*`/`int (*)[2]` remain ordinary materialized comparisons.
+- `make test-pa16`: status `2`, `214/243`; raw log/status are
+  `final-make-test-pa16.log` and `final-make-test-pa16.status`.  Its exact
+  identity/coverage comparison is recorded above and has no failure-set or
+  coverage delta.
+- The exact `n=16` through-PA15 command: status `0`, `1167/1167`; raw
+  log/status are `final-through-pa15.log` and `final-through-pa15.status`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`,
+  with five pre-existing `bad-division` warnings in `abi_mangle.h`,
+  `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
+  `pa15_lowering.h`, and no fatal finding; raw log/status are
+  `final-file-audit.log` and `final-file-audit.status`.
+- Final `git diff --check` and changed-path audit are recorded as
+  `final-git-diff-check.log`/`.status` and
+  `final-changed-paths.log`/`.status`; both are status `0` with only the
+  three bounded files changed.
 
-PA16 remains incomplete.  Future checkpoints must select a separate residual
-from the unchanged 32-entry map.  This audit does not treat any extra pass as
-compensation for a fresh failure or reduced coverage, and it does not claim
-general throwing placement-new cleanup or delete/placement-delete support.
+PA16 remains incomplete with the exact unchanged 29-failure residual set.
+Extra passes did not compensate for a fresh failure, and no unrelated
+residual, test, fixture, harness, comparator, or reference output is in this
+audit's scope.
 
 ## Historical Pack Layout Review (08472cce)
 
@@ -3102,3 +3059,4 @@ conversion slices.
 | `9718b987` member-function-definition declarator audit/follow-up | Final audit/follow-up: the out-of-contract special-member widening is reverted to the parent class-scope-only behavior, while explicit auto-placeholder state and typed/fail-closed ordinary declarator validation are complete. Final `make test-pa16` is `132/243` with `111` failures and `243/243` identities; the exact baseline/final failure sets are identical with baseline-only `∅` and final-only `∅`. Through-PA15 is `1167/1167`; course 413 passes, the focused matrix is `5/7`, the constructor-member-init control is `1/1`, file audit passes with five pre-existing warnings, and diff-check passes. The excluded nested out-of-class constructor fails closed and is not PA16 coverage; next is a later residual audit, not completion. |
 | `4efddaae` typed single-inheritance standard-conversion checkpointAudit | Complete: typed endpoint, access-scope, and path ownership is retained from PA12 publication into PA15; the typed comparator enforces standard > `UserDefined` > `Ellipsis`, leaves user-defined/user-defined first-standard ranks incomparable, and preserves standard legacy plus derived distance/cv ordering. Member-object cv subset ordering, malformed-record bounds checks, final-fact scope-range validation, and the strengthened course-414 operator regression are repaired. Comparator bodies are owned by `pa12_semantic_calls.cpp` while declarations remain in `pa12_semantic_selection.h`, restoring the prior file-audit warning set. Final PA16 is `144/243` with `99` failures and `243/243` identities covered; exact comparison with the turn-start map has baseline-only `∅` and final-only `∅`. Focused conversion is `8/10`, access/rank/parser controls `7/9`, and PA15 conditional controls `2/2`; the residual identities are documented above. Through-PA15 is `1167/1167`; file audit exits `0` with five header-division warnings; diff-check exits `0`. Final-v3 immutable replay is 9 cases x 2 with 18 expected-hash matches and zero pair mismatches; frozen compiler SHA-256 is `5347a2abb876d9492501f70e6fa8fa9f6d3c27f2da0c35283f702d4a2652ab81`, current compiler SHA-256 is `d1352cd1c16bcd58587ee9ad201a56665819e671933db979c8df1aea6124c41b`. |
 | `fb4f46ed` placement-new checkpointAudit completed | Completed bounded audit of landed `fb4f46ed64ea8c5743fd4395fe1a8c43112836c3` relative to `9f7101ac`: PA10 placement facts flow through PA12's typed allocation `CallExpression` and `ConstructorAction` into one PA15 allocation call, destination construction, and the same pointer result. The audit repairs the over-broad array-pointer cast special case, rejects array and non-named placement targets before publication, checks exact `size_t`/`void*` allocation signatures, and hardens PA15 owner/range/type/callable/hidden-destination/physical-pointer invariants. For both supported target shapes, allocation is emitted once before construction and a throwing constructor propagates through the existing call boundary; neither target selects or declares matching placement deallocation, while delete/placement-delete lookup and cleanup remain outside this checkpoint. Course 423, aggregate placement `PASS (1/1)`, getter-owner `PASS (1/1)`, valid/invalid direct probes, and the required build pass; the constructor target retains only the known unrelated truth-width LowIR mismatch. Supplied authority and fresh result are both `211/243`, with `32` failures and `243/243` coverage; exact comparison is `fresh_only=0`, `authority_only=0`, and inventory `243`. The through-PA15 gate returned `0` at `1167/1167`; file audit returned `0` with five known warnings; final diff-check and clean commit gates passed. No handout, fixture, reference, harness, comparator, or source-set file changed. PA16 remains incomplete. |
+| `96e80152` truth-width checkpointAudit | Bounded review of the landed PA12/PA15 typed-truth continuity increment: all relevant bool call owners agree on result metadata; cmp keeps actual operand type; typed member/size/class-object-pointer truth preserves the i64 carrier while plain procedural and bool storage boundaries materialize. The audit repairs the class-pointer classifier to require an exact cv-stripped `Named` pointee, preventing `Class (*)[N]` overclassification. Focused build is `0`, PA16 controls `7/7`, PA15 controls `5/5`, and direct Class*/Class(*)[2]/scalar-pointer probes pass. Fresh PA16 status is `2` at `214/243`; authority/fresh failures are `29/29`, baseline-only/fresh-only are `0/0`, and coverage is `243/243`. Through-PA15 is `1167/1167`; file audit is `0` with five pre-existing warnings and no fatal finding; final diff/path audits are `0`. No handout, fixture, reference, harness, comparator, or source-set file changed; audit completed. |
