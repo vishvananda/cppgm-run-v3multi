@@ -2,34 +2,28 @@
 
 ## Stage Design
 
-PA16 keeps one production pipeline: PA10 declaration-specifier tokens and
-PA11 layout become PA12 typed semantic facts and conversion facts, and PA15
-lowers those facts into LowIR.  PA12 owns the `BitFieldFact` and its
-`BindingId`; PA15 owns the `BitFieldAddressProjection` and `ProjectionId` used
-by its typed `LoweredValue`.  The packed-field path carries declared type,
-storage type, operation type, width, mask, and signedness through those owners.
-Member reads, conversions, encodes, stores, inc/dec, and aggregate
-initialization consume that same identity.  The selected implementation-defined
-plain-`int` policy is unsigned storage/value signedness; a narrow field still
-promotes to `int` when `int` represents its range, while a full-width field
-promotes to `unsigned int`.  Explicit signed integral fields and
-signed-underlying enum fields remain signed.  This checkpoint adds no text
-transport, parallel analyzer, rescan/cache, retry, or second lowerer.
+PA16 keeps one production pipeline: PA10 and PA11 typed syntax, lookup, and
+layout become PA12 semantic facts and PA15 LowIR.  Earlier bit-field
+checkpoints retain one typed `BitFieldFact`/`BindingId` path into PA15
+projections; this audit does not alter that owner chain.
 
-Constructor initialization follows the same typed continuity: PA12 resolves a
-mem-initializer to the canonical direct-base/member identity before publishing
-declaration-ordered `ConstructorActionFact` and argument ranges, and PA15
-consumes those facts without recovering targets from spelling or lookup.
+For the landed constructor increment, PA12 resolves an unqualified
+mem-initializer in class/member lookup and the constructor definition-point
+context, publishes canonical `NamedRecordId`/`BindingId` targets, typed
+`ConstructorActionFact` ranges, and declaration order.  PA15 consumes those
+facts through owner/type/layout validation without spelling recovery.  This
+follows `spec.md` §§1--5 and 7, the PA16 constructor/base/member boundary, and
+N3485 §12.6.2 p2--p5.  No textual transport, parallel analyzer, retry, second
+lowerer, or host/reference shortcut is involved.
 
 ## Failure Map
 
-Turn-start authority is
+The supplied current authority is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`215/243` passed, exactly `28` failed, and `243/243` identities are covered.
-The complete turn-start failure map is:
+`216/243` passed, exactly `27` failed, and `243/243` identities are covered.
+The complete current failure map is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
-- `pa16/tests/general/200-aliased-base-mem-initializer-match.t`
 - `pa16/tests/general/200-const-subobject-member-call.t`
 - `pa16/tests/general/200-elaborated-member-forward-type.t`
 - `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
@@ -57,83 +51,80 @@ The complete turn-start failure map is:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Relative to the previous `214/243` / `29`-failure checkpoint, the landed
-`a5c8e1664e5059e2453e3252021f3843d0ab23b6` increment had exactly one
-baseline-only recovery, `400-bitfield-aggregate-init.t`, and no fresh-only
-identity.  That is the turn-start authority for this checkpoint: `215/243`,
-exactly `28` failures, and `243/243` coverage, with authority/fresh `28/28`
-and no identity delta at that earlier run.
-
-The final run after this repair is `216/243`, exactly `27` failures, and
-`243/243` coverage.  Its exact comparison to the preserved map above is
-authority `28`, fresh `27`, authority-only exactly
-`200-aliased-base-mem-initializer-match.t`, fresh-only `0`; the current
-residual map is every listed turn-start identity except that alias test.
+This supplied map is also the final map after the repair.  `make test-pa16`
+returned status `2` with `216/243` passing and `243/243` covered.  Exact
+comparison is authority `27` -> final `27`, authority-only `0`, fresh-only
+`0`, and missing artifacts `0`; course 425 covers an invariant outside the
+243 handout identities.
 
 ## Active Checkpoint
 
-This checkpoint records one coherent repair in
-`dev/src/pa12_semantic_construction.cpp` for
-`200-aliased-base-mem-initializer-match.t`.  PA12 previously classified a
-direct-base mem-initializer only when its spelling matched the base record
-name, so `Alias(...)` fell through to direct-member lookup.  The repair
-resolves the single-component name at the constructor source point, maps it
-through `class_record_for_object_type`, and compares the canonical
-`NamedRecordId`; the existing spelling path remains for the injected
-class-name case.  Resolution starts at the constructor function scope, uses
-the constructor definition source point, and evaluates access in that same
-constructor context.  Constructor action/argument arenas and declaration
-order are unchanged, and PA15 receives the same typed base action once
-classification is correct.  This keeps the fix at the semantic owner boundary
-rather than reconstructing a target during lowering.
+The landed comparison fixed ordinary `typedef Base Alias` selection but
+performed type resolution before class-member hiding.  The audit found that a
+direct member named like the base or its alias could therefore publish a base
+action, and that array unwrapping was too broad for base identity.  The repair
+in `dev/src/pa12_semantic_construction.cpp` first applies typed member lookup,
+claims direct or inherited non-constructor values as hiding, then resolves a
+single unqualified type with the constructor source point and function access
+scope.  It uses exact `named_record_for_type` identity: cv aliases remain
+valid, while array/pointer/reference/fundamental aliases do not become bases.
+The spelling fallback is allowed only when both typed type and declaration
+lookup are unresolved, preserving the injected-name case without bypassing a
+hidden or inaccessible declaration.  The final steering also makes the
+constructor-name scan validate BindingId validity/bounds before sidecar access
+and keeps blocked-value lookup single-read.
 
-The other focused identities have distinct roots and remain intentionally
-outside this diff: external-ctor currently reaches PA15 string-literal address
-lowering, nested-braced initialization stops in PA10 parsing, reference-member
-initialization fails typed overload selection, and the value-init case differs
-only in zero-store shape.  The local class-array case has a checked reference
-that orders destruction forward, while the current reverse order follows C++
-destruction semantics; it remains an oracle tension, not a reason to change
-lifetime lowering.
+Duplicate detection, malformed/missing lookup failure, typed argument ranges,
+base-first publication, and declaration-ordered member actions remain at the
+PA12 owner.  PA15 continues to consume canonical owner/type/layout facts and
+does not recover a target from spelling.  Qualified-name handling remains the
+existing checkpoint boundary.  Course 425 is the smallest added regression
+for direct base-name/alias-name hiding, duplicate detection, array-alias
+rejection, and nested-type hiding.
 
 ## Performance Evidence
 
-The repair performs one existing typed lookup per mem-initializer.  Each
-visited scope/candidate bucket uses its O(1) index; total lookup work is bounded
-by the language-relevant scope/base graph visited.  Existing action publication
-remains O(member count) and declaration-ordered.  No retry, new arena, lowerer
-path, or fixture-dependent branch was added.  The representative post-build
-semantic run measured `elapsed=0.00` seconds and `rss_kb=5188` for the small
-alias test; this is non-scaling smoke evidence, not a benchmark.
+Each mem-initializer performs the existing typed member lookup and, when no
+member value claims the name, one existing typed type lookup.  Work is bounded
+by the relevant class/base lookup graph and candidate bucket; the constructor
+bucket check is bounded by that already-selected value list.  Action and
+argument publication remains linear in the declaration-ordered actions.  No
+whole-program scan, retry, cache, text round-trip, parallel analyzer, or
+second lowerer was added.
+
+Representative startup-sized smoke evidence is the final checked-in
+aliased-base run: `elapsed=0.00`, `user=0.00`, `sys=0.00`, `rss_kb=6040`, exit
+`0`.  This is not a scaling benchmark or a material timing claim.
 
 ## Validation
 
 Final validation is complete:
 
-- Ordinary alias/base/member constructor checks: status `0`, `PASS (4/4)`.
-- `make test-pa16`: status `2`, `216/243` passed, `27` failures, inventory/run
-  `243/243`, and full `243/243` coverage.  Exact comparison with the turn-start
-  map gives authority/fresh `28/27`, authority-only exactly
-  `200-aliased-base-mem-initializer-match.t`, fresh-only `0`.
-- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`:
-  status `0`, `1167/1167`.
+- `make -C dev cppgm++ CXX=g++`: status `0`.
+- The six-test handout matrix of alias, ordinary base/member, default, and
+  in-class initializer controls: status `0`, `PASS (6/6)`.
+- `sh -n` for course 425: status `0`; courses 408, 409, 418, and 425: status
+  `0` each; direct reductions cover private cv-qualified aliases (success) and
+  an inherited data-member collision (status `1`).
+- `make test-pa16`: status `2`, `216/243` passed, exactly `27` failures, and
+  `243/243` identities covered; exact authority/final comparison is `27/27`
+  with authority-only/fresh-only `0/0`.
+- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: status `0`, `1167/1167`.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`,
-  with the five known header-division warnings.
-- `git diff --check`: status `0`; changed-path audit contains only
-  `dev/src/pa12_semantic_construction.cpp` and `pa16/plan.md`.
+  with five known header-division warnings.
+- Final smoke and `git diff --check`: status `0`; the bounded changed-path
+  audit found exactly the four approved paths and no staged path before commit.
 
-No test, handout, reference, harness, comparator, or coverage surface was
-changed.  The final commit hash and clean-status result are recorded in the
-ledger as this landed checkpoint and in the final handoff.
+No handout, fixture, reference, harness, comparator, coverage surface,
+generated output, or source-set file was changed.
 
 ## Next Checkpoint
 
-PA16 now stands at `216/243`, with `27` residual failures and `243/243`
-coverage.  The exact delta from the turn-start `215/243` / `28`-failure map is
-the baseline-only recovery of
-`200-aliased-base-mem-initializer-match.t`, with no final-only identity.  The
-next checkpoint must choose a distinct constructor/lifetime boundary; retain
-the array destruction-order oracle tension unless the contract is corrected.
+PA16 closes this bounded alias direct-base checkpoint at `216/243`, with `27`
+unchanged residual failures and `243/243` coverage.  The next checkpoint is a
+distinct residual constructor/lifetime boundary; preserve the qualified-name
+boundary and the unrelated residual identities rather than widening this
+owner path.
 
 ## Checkpoint Ledger
 
@@ -153,4 +144,4 @@ the array destruction-order oracle tension unless the contract is corrected.
 | `typed truth-width continuity (parent 85b819b7)` | final `214/243`, 29 failures, `243/243` covered; authority-only 3 named identities; fresh-only 0; through-PA15 `1167/1167`; audit 0 with five known warnings; diff-check 0 | landed in this checkpoint commit |
 | `96e80152` truth-width checkpointAudit | Focused build `0`, PA16 `7/7`, PA15 `5/5`; fresh PA16 status `2` at `214/243` with authority/fresh `29/29` failures, baseline-only/fresh-only `0/0`, and `243/243` coverage; through-PA15 `1167/1167`; file audit `0` with five pre-existing warnings; final diff/path audits `0`; exact-pointee class-pointer guard repaired | completed audit |
 | `a5c8e166` typed packed-bit-field value/update checkpointAudit | Final PA16 status `2` at `215/243`, exactly `28` failures and `243/243` covered; independent comparison authority/fresh `28/28`, authority-only/fresh-only `0/0`, inventory/run total `243/243`; landed delta is exactly baseline-only `400-bitfield-aggregate-init.t`; through-PA15 `0` at `1167/1167`; file audit `0` with five known warnings; focused 412/422/424, probes, diff-check, and path audit pass. Durable evidence is under `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`; no forbidden surface changed | completed audit |
-| `PA16 alias direct-base checkpoint (parent 727417db; final commit hash in handoff)` | final `216/243`, `27` failures, `243/243` covered; exact delta is baseline-only `200-aliased-base-mem-initializer-match.t`, fresh-only `0`; through-PA15 `1167/1167`; file audit `0` with five known warnings; diff/path audit `0` | landed |
+| `1d7e6860` alias direct-base mem-initializer checkpoint | final `216/243`, `27` failures, `243/243` covered; exact authority/final failure comparison `27/27`, authority-only/fresh-only `0/0`; focused `6/6`, courses `408/409/418/425`, through-PA15 `1167/1167`, file audit `0` with five known warnings, smoke, and diff/path checks pass; four approved paths ready for commit | completed |

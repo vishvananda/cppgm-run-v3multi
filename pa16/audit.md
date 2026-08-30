@@ -3,160 +3,143 @@
 ## Current Checkpoint Review
 
 This bounded PA16 checkpoint audit reviews landed commit
-`a5c8e1664e5059e2453e3252021f3843d0ab23b6` relative to parent `7f4fe2d4`.
-The increment changes the packed-field ownership path in
-`dev/src/pa12_semantic_facts.cpp`, `dev/src/pa15_lowering.cpp`,
-`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering_construction.cpp`,
-`dev/src/pa15_lowering_flow.cpp`, and `dev/src/pa15_lowering_member.cpp`, and
-records the checkpoint in `pa16/plan.md`.  This audit adds the one focused
-repair in `pa12_semantic_facts.cpp`, the permitted course regression
-`cppgm.tests/course/pa16/424-typed-plain-int-bitfield-promotion-regression.sh`,
-and these record updates.  No handout test, `.ref` fixture, exit-status
-sidecar, harness, comparator, reference output, coverage surface, or
+`1d7e68605aec65b6976772ff117a433cbc232749` (`PA16: resolve aliased
+direct-base mem-initializers`) relative to parent `727417db`.  The landed
+source increment is limited to `dev/src/pa12_semantic_construction.cpp`; this
+audit traces its directly relevant PA11 lookup/type helpers,
+`ConstructorActionFact` publication, and PA15 typed base-action consumption.
+The final follow-up remains limited to that semantic owner, the permitted
+course regression
+`cppgm.tests/course/pa16/425-typed-mem-initializer-hiding-regression.sh`, and
+these records.  No handout test, `.ref` fixture, exit-status sidecar,
+harness, comparator, reference material, generated output, coverage rule, or
 source-set file is changed.
 
-The supplied turn-start authority in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
-`215/243` passing, exactly `28` failures, and `243/243` identities covered.
-The prior checkpoint baseline was `214/243` with `29` failures.  The landed
-increment's exact delta is one baseline-only recovery,
-`400-bitfield-aggregate-init.t`, with no fresh-only failure and no coverage
-change.  The complete 28-entry authority map is retained in `pa16/plan.md`.
-Fresh final validation confirms the same `215/243` result, with authority-only
-and fresh-only sets both empty and independent inventory/run total `243/243`.
+The supplied authority in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` and
+the final PA16 run are both `216/243` passing, exactly `27` failures, with
+`243/243` identities covered.  Exact comparison reports authority-only `0`,
+fresh-only `0`, and no missing status artifacts.  The alias fixture is outside
+the residual set; the remaining failures are unchanged and unrelated to this
+bounded constructor increment.
 
 ### Contract and ownership trace
 
-The representative affected path is:
+The relevant path is:
 
 ```text
-PA10 declaration-specifier tokens + member AST
-  -> PA12 BitFieldFact (declared/storage/operation/width/mask/signedness)
-  -> PA11 RecordLayout (offset/storage ownership)
-  -> PA12 BindingId/BitFieldFact semantic ownership
-  -> PA15 BitFieldAddressProjection/ProjectionId replay and address lowering
-  -> extraction/conversion or encode + packed-unit RMW store
-  -> initializer, assignment, or prefix/postfix result
+PA10 mem-initializer syntax
+  -> PA12 class/member lookup at the constructor definition point
+  -> canonical NamedRecordId / BindingId target
+  -> declaration-ordered ConstructorActionFact and argument arena
+  -> PA15 typed owner/type/layout checks and base/member lowering
 ```
 
-PA10's direct declaration-specifier tokens distinguish unqualified plain
-`int` from explicit `signed`/`unsigned`.  PA12 owns one `BitFieldFact`: its
-declared type and physical storage type remain truthful, its selected
-implementation-defined plain-`int` `is_signed` policy is preserved, its
-width/mask come from layout, and its `operation_type` is the promotion
-carrier.  PA11 owns the packed offset and storage unit.  PA15 consumes the
-fact through typed binding/projection identities rather than re-parsing
-spelling or manufacturing a second semantic owner.
+N3485 §12.6.2 paragraphs 2--3 require an initial unqualified identifier to be
+looked up in the constructor class before its definition scope; a member with
+the same name as a direct or virtual base hides that base, while a
+class-or-decltype that denotes the base may still select it.  PA12 now asks
+the existing typed `member_lookup` first.  Direct members, inherited fields or
+functions, and ambiguous value sets claim the name; the only inherited value
+ignored for this purpose is the base class's own constructor-name set, which
+the existing member lookup exposes as a value but which is not a member
+initializer target.  A direct non-static field is recorded by its `BindingId`;
+all other claimed values fail closed.
 
-For direct aggregate access, the first bit-field projection replays from the
-canonical object storage address with `ROOT_STORAGE_ADDRESS`.  A nested
-aggregate/array path first replays its ordinary pointer/array steps and uses
-`ROOT_POINTER_VALUE` for the bit-field projection.  Constructor subobjects
-load the active typed `this` storage and use `ROOT_POINTER_LOAD`.  These roots
-keep a transient field address from becoming a replay root.  Aggregate
-initializers evaluate each source once; after the first field in a packed unit,
-PA15 loads the existing unit, clears only the field mask, ORs the encoded
-value, and stores it, preserving neighboring fields.
+If no value claims the name, PA12 resolves the single component with
+`lookup_type_path(name, function_scope, constructor_point, &declaration,
+function_scope)`.  The constructor AST source point preserves declaration-time
+visibility and the function scope supplies the member access context.  The
+resolved base is obtained with `named_record_for_type`, so top-level cv aliases
+remain valid but arrays, pointers, references, fundamentals, and other
+non-named aliases cannot become bases through the object-type array unwrapping
+helper.  The existing spelling fallback is retained only for an actually
+unresolved, undeclared injected-class-name case; a resolved hidden type or an
+inaccessible declaration cannot be bypassed by spelling.
 
-Reads load the storage unit, shift and mask with the PA12 width/offset, and
-sign-extend only facts selected as signed.  Conversion facts then carry the
-field's operation type into comparisons and assignments.  Stores encode from
-that same typed value and replay the saved projection for the packed RMW.
-Each prefix/postfix update extracts the old field value once; its preserving RMW
-store then reloads the packed unit once before clear/OR/store.  Prefix returns
-the updated lvalue category, postfix returns the old prvalue, and the operation
-type and projection remain continuous through the update.
+Qualified/global mem-initializer boundaries remain the existing checkpoint
+boundary and are not widened by this audit.  Missing names, malformed
+arguments, ambiguous lookup, duplicate base/member targets, and invalid direct
+member targets fail before action publication.
+
+After classification, `append_constructor_class_action` publishes the
+canonical direct-base `NamedRecordId`, exact `object_type`, selected
+constructor, and typed argument range.  PA15 does not recover a target from
+the spelling: `checked_constructor_action_target_type` and
+`constructor_subobject_address` validate the base identity, active owner,
+complete layout, direct-base relation, and zero offset before emitting the
+typed `base_subobject` projection.  Member actions retain declaration order;
+the base action remains first and the arena offset adjustment remains bounded.
 
 ### Findings and bounded repair
 
-The landed plain-`int` choice (`is_signed=false` when the direct specifier has
-neither `signed` nor `unsigned`) is a legitimate implementation-defined
-choice only when it is carried consistently.  The audit found that the landed
-code selected that fact but still derived `operation_type` from the canonical
-declared `int`, making a full-width field compare as signed.  The bounded
-repair makes the promotion test use the canonical fact: a narrow unsigned
-selected field promotes to `int` when `int` represents every field value, but
-a full-width one promotes to `unsigned int`.  Physical layout, extraction,
-assignment, aggregate initialization, and packed updates continue to use the
-same width/mask/signedness fact.  Explicit `signed int` and signed-underlying
-enum fields remain signed and sign-extending.  The new 424 regression proves
-both widths, explicit signedness, neighbors, assignment, and updates; it is
-not keyed to a reference byte sequence.
+The landed alias comparison fixed the ordinary `typedef Base Alias` fixture,
+but it resolved the type before applying class-member hiding.  A direct field
+named `Base` or `Alias` was therefore treated as a base when the outer type
+lookup found the same-spelled class.  The same ordering could also let an
+inherited non-constructor value be recovered as a base.  The follow-up moves
+typed member-claim handling ahead of type resolution and filters only the
+inherited constructor-name set that the model exposes as an implementation
+detail of base lookup.
 
-The landed `suppress_bit_field_copy` API is narrow in effect even though its
-parameter is a boolean.  `lower_binary_expression` is its only enabling
-caller in this path and passes it while converting the two operands.
-`materialize_lvalue_value` checks the flag only in the bit-field branch, where
-the extraction still occurs and only the redundant publication `IK_COPY` is
-omitted.  The non-bit-field branch always emits its load.  Focused probes
-retain ordinary integer/floating loads and conversions, floating-to-bool
-materialization, pointer loads/comparisons, reference loads, and lvalue/value
-boundaries.  Thus no required materialization is suppressed for non-bit-fields,
-floating conversions, bool contexts, pointer paths, references, or category
-boundaries.  A source-level API rewrite is unnecessary after this call-site
-and branch audit; the default remains false for other callers.
+The audit also found that `class_record_for_object_type` unwraps complete
+arrays for object construction.  That helper is correct for storage/lifetime
+objects but too broad for the §12.6.2 question “does this type denote the base
+class?”  The follow-up uses exact `named_record_for_type` identity and guards
+the spelling fallback with the absence of both a resolved type and a resolved
+declaration.  Thus `const Base` remains a valid alias, while an array alias or
+a nested type that hides the base name is rejected.
 
-The root selection is also semantically bounded: only the first direct
-aggregate projection gets `ROOT_STORAGE_ADDRESS`; nested paths and constructor
-subobjects use their pointer-value/load roots.  Initialization's declaration-
-ordered cursor and packed-unit preservation prevent a neighboring write from
-clobbering an earlier field, and replay reconstructs the address from typed
-storage rather than retaining a stale transient pointer.
-
-The update path matches the README contract: PA12 rejects bool decrement,
-selects the operation type, and records prefix as an lvalue result and postfix
-as a prvalue result.  PA15 loads the old field, computes the typed add/sub,
-encodes the new bits, performs a packed-unit RMW store, and returns the
-appropriate old/new value.  The signed-read references omit the required sign
-extension, while the prefix reference requests an unsigned comparison even
-though narrow fields' PA12 promotion carrier is `int`.  Those checked-in
-LowIR shapes are oracle tensions; changing the implementation to reproduce
-them would violate the README/standard contract, so no fixture-specific
-branch was added.
+The repair stays at the PA12 semantic owner.  It does not add spelling
+transport, a second lookup owner, a PA15 recovery path, or fixture-dependent
+handling.  Duplicate detection still keys on the canonical member binding or
+the one canonical direct-base record before any action or argument is
+published.
 
 ### Bounds, evidence, and boundaries
 
-Fact and projection lookup is O(1) per typed bit-field operation; width/mask
-work is bounded and path replay is O(depth).  Focused LowIR shows the expected
-field projections and packed-unit RMW operations, with no redundant bit-field
-publication copies in binary operands.  The 412 regression exercises
-neighbor preservation and single evaluation.  No source scan, retry, second
-lowerer, unbounded search, or per-node owning cache was added.  No timing, RSS,
-allocation, or code-size measurement was taken; these are structural bounds,
-not measured performance claims.
+Each mem-initializer performs the existing typed member lookup and, when no
+member value claims the name, one existing typed type lookup.  Work is bounded
+by the relevant class/base lookup graph and candidate bucket; the constructor
+bucket check is bounded by that already-selected value list.  Action and
+argument publication remains linear in the declaration-ordered actions.  No
+whole-program scan, retry, cache, text round-trip, parallel analyzer, or
+second lowerer was added.
+
+Representative final startup-sized smoke evidence is one run of the checked-in
+aliased-base test: `elapsed=0.00`, `user=0.00`, `sys=0.00`, `rss_kb=6040`,
+exit `0`.  This is not a scaling benchmark or a material timing claim.
 
 ### Final validation and residual boundary
 
-Focused raw logs and status sidecars are in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`:
+The focused and final evidence is:
 
 - `make -C dev cppgm++ CXX=g++`: status `0`.
-- The focused 10-test PA16 matrix: status `2`, `PASS (7/10)`; aggregate
-  initialization and six controls pass, while prefix and the two signed-read
-  references remain mismatches.
-- Course regressions 412, 422, and the new 424: status `0` each.
-- Non-bit-field, floating, bool-boundary, pointer/reference, and publication
-  probes: status `0`.
-- `make test-pa16`: status `2`, `215/243` passed, exactly `28` failures, and
-  `243/243` identities covered; raw log/status are
-  `final-make-test-pa16.log` and `.status`.
-- The exact `n=16` through-PA15 command: status `0`, `1167/1167`; raw
-  log/status are `final-through-pa15.log` and `.status`.
+- The six-test handout matrix of alias, ordinary base/member, default, and
+  in-class initializer controls: status `0`, `PASS (6/6)`.
+- `sh -n` for course 425: status `0`; courses 408, 409, 418, and 425: status
+  `0` each.  Course 425 covers direct base-name and alias-name member hiding,
+  the inherited non-constructor collision, duplicate detection, array-alias
+  rejection, and nested-type hiding.
+- Direct reductions cover private cv-qualified aliases (success) and an
+  inherited data-member collision (status `1`).
+- `make test-pa16`: status `2`, `216/243` passed, exactly `27` failures, and
+  `243/243` identities covered.
+- Exact authority comparison: authority failures `27`, final failures `27`,
+  discovered/covered `243/243`, missing artifacts `0`, authority-only `0`, and
+  fresh-only `0`; the exact final set is the current map in `pa16/plan.md`.
+- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: status `0`, `1167/1167`.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
-  with five known `bad-division` header warnings; raw log/status are
-  `final-file-audit.log` and `.status`.
-- The independent inventory/failure comparison: status `0`; raw summary and
-  status are `final-identity-comparison.log` and `.status`, with inventory/run
-  total `243/243`, coverage `243/243`, authority/fresh failures `28/28`,
-  authority-only/fresh-only `0/0`, and unexpected failures `0`.
-- Final `git diff --check` and the bounded changed-path/forbidden-surface
-  audit both exit `0`; their durable records are
-  `final-git-diff-check.*` and `final-changed-paths.*`, respectively.  The
-  path audit finds exactly the four approved paths and no staged path.
+  with five known `bad-division` header warnings.
+- Final startup-sized smoke: status `0`, `elapsed=0.00`, `user=0.00`,
+  `sys=0.00`, `rss_kb=6040`; this is not a scaling benchmark.
+- Final `git diff --check` and bounded changed-path audit: status `0`, with
+  exactly the four approved paths and no staged path before commit.
 
-The exact final failure set is the supplied 28-entry authority map in
-`pa16/plan.md`, with no new or missing identity and no coverage reduction.  No
-unrelated residual was re-audited.
+The final failure set has no new identity, no coverage reduction, and no
+unrelated residual was re-audited.  Qualified/global mem-initializer handling
+remains the existing checkpoint boundary; the remaining 27 failures are
+outside this increment.
 
 ## Historical Pack Layout Review (08472cce)
 
@@ -3096,3 +3079,4 @@ conversion slices.
 | `fb4f46ed` placement-new checkpointAudit completed | Completed bounded audit of landed `fb4f46ed64ea8c5743fd4395fe1a8c43112836c3` relative to `9f7101ac`: PA10 placement facts flow through PA12's typed allocation `CallExpression` and `ConstructorAction` into one PA15 allocation call, destination construction, and the same pointer result. The audit repairs the over-broad array-pointer cast special case, rejects array and non-named placement targets before publication, checks exact `size_t`/`void*` allocation signatures, and hardens PA15 owner/range/type/callable/hidden-destination/physical-pointer invariants. For both supported target shapes, allocation is emitted once before construction and a throwing constructor propagates through the existing call boundary; neither target selects or declares matching placement deallocation, while delete/placement-delete lookup and cleanup remain outside this checkpoint. Course 423, aggregate placement `PASS (1/1)`, getter-owner `PASS (1/1)`, valid/invalid direct probes, and the required build pass; the constructor target retains only the known unrelated truth-width LowIR mismatch. Supplied authority and fresh result are both `211/243`, with `32` failures and `243/243` coverage; exact comparison is `fresh_only=0`, `authority_only=0`, and inventory `243`. The through-PA15 gate returned `0` at `1167/1167`; file audit returned `0` with five known warnings; final diff-check and clean commit gates passed. No handout, fixture, reference, harness, comparator, or source-set file changed. PA16 remains incomplete. |
 | `96e80152` truth-width checkpointAudit | Bounded review of the landed PA12/PA15 typed-truth continuity increment: all relevant bool call owners agree on result metadata; cmp keeps actual operand type; typed member/size/class-object-pointer truth preserves the i64 carrier while plain procedural and bool storage boundaries materialize. The audit repairs the class-pointer classifier to require an exact cv-stripped `Named` pointee, preventing `Class (*)[N]` overclassification. Focused build is `0`, PA16 controls `7/7`, PA15 controls `5/5`, and direct Class*/Class(*)[2]/scalar-pointer probes pass. Fresh PA16 status is `2` at `214/243`; authority/fresh failures are `29/29`, baseline-only/fresh-only are `0/0`, and coverage is `243/243`. Through-PA15 is `1167/1167`; file audit is `0` with five pre-existing warnings and no fatal finding; final diff/path audits are `0`. No handout, fixture, reference, harness, comparator, or source-set file changed; audit completed. |
 | `a5c8e166` typed packed-bit-field value/update checkpointAudit | Final bounded review of `a5c8e1664e5059e2453e3252021f3843d0ab23b6` relative to `7f4fe2d4`: PA10 declaration-specifier tokens, PA12 `BitFieldFact` declared/storage/operation/width/mask/signedness, PA11 layout, and PA15 typed projection/replay, extraction/conversion, encode/RMW store, aggregate initialization, and prefix/postfix ownership are traced. The audit repairs full-width plain-`int` promotion to follow the selected unsigned fact while preserving narrow `int` promotion and explicit signed/signed-enum behavior. The copy-suppression flag is proven to omit only redundant bit-field publication; non-bit-field, floating, bool, pointer, reference, and value-category materialization remains. Direct aggregate, nested, and constructor roots are bounded to storage-address, pointer-value, and pointer-load replay respectively; initializers are single-evaluated and packed neighbors are preserved. Focused build, course 412/422/424, probes, and diff-check pass; the 10-test matrix is `7/10` with only the known prefix and two signed-read oracle tensions. Final PA16 is status `2` at `215/243`, exactly `28` failures and `243/243` covered; independent authority/fresh failures are `28/28`, authority-only/fresh-only `0/0`, inventory/run total `243/243`, and unexpected failures `0`. Through-PA15 is status `0` at `1167/1167`; file audit is status `0` with five known warnings; durable evidence is under `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`. No handout, fixture, reference, harness, comparator, coverage surface, or source-set file changed; the sole added regression is course 424. |
+| `1d7e6860` alias direct-base mem-initializer checkpointAudit | Final bounded audit of landed `1d7e68605aec65b6976772ff117a433cbc232749` relative to `727417db`: N3485 unqualified lookup/member-hiding, canonical alias resolution, injected-name fallback, source-point/access context, duplicate/malformed handling, typed action ranges/order, and PA15 owner/type/layout consumption are traced. The repair applies member-before-type classification and exact named-type matching; steering additionally hardens BindingId bounds before sidecar access and keeps blocked-value lookup single-read. Course 425 covers direct base-name/alias-name hiding, the inherited non-constructor collision, duplicate detection, array-alias rejection, and nested-type hiding. Final PA16 is `216/243` with `27` failures and `243/243` covered; exact authority/final comparison is `27/27`, authority-only/fresh-only `0/0`, and missing artifacts `0`. Focused handout `6/6`, courses 408/409/418/425, build, syntax, reductions, smoke evidence, through-PA15 `1167/1167`, file audit `0` with five known warnings, diff-check, and bounded path audit pass. No handout, fixture, reference, harness, comparator, generated output, coverage rule, or source-set file changed. |

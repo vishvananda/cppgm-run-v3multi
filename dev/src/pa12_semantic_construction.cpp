@@ -1083,11 +1083,69 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			if (argument->kind != PA10NodeKind::ParenArgumentList &&
 				argument->kind != PA10NodeKind::BracedInitList)
 				throw std::runtime_error("PA12 invalid mem-initializer arguments");
+			const MemberLookup selection = member_lookup(named_type(
+				function_record), name.last());
+			bool inherited_constructor_name = selection.kind ==
+				MemberLookupKind::Value && selection.owner.valid() &&
+				selection.owner != record.scope && selection.owner.value < scopes_.size() &&
+				scopes_[selection.owner.value].kind == ScopeKind::Class &&
+				scopes_[selection.owner.value].record.valid();
+			if (inherited_constructor_name)
+			{
+				const ValueList* values = scopes_[selection.owner.value].values.find(
+					name.last());
+				const NamedRecordId owner_record =
+					scopes_[selection.owner.value].record;
+				inherited_constructor_name = values != NULL &&
+					!values->entries.empty();
+				for (std::size_t value = 0;
+					inherited_constructor_name && value < values->entries.size(); ++value)
+				{
+					const BindingId binding_id = values->entries[value].binding;
+					inherited_constructor_name = binding_id.valid() &&
+						binding_id.value < bindings_.size();
+					if (inherited_constructor_name)
+					{
+						const BindingSidecar* sidecar = binding_sidecar(binding_id);
+						inherited_constructor_name =
+							binding(binding_id).kind == BindingKind::Function &&
+							sidecar != NULL &&
+							sidecar->constructor_record == owner_record;
+					}
+				}
+			}
+			const ValueList* blocked_values = NULL;
+			if (selection.kind == MemberLookupKind::Blocked &&
+				selection.owner.valid() && selection.owner.value < scopes_.size())
+				blocked_values = scopes_[selection.owner.value].values.find(name.last());
+			const bool member_value_claimed =
+				(selection.kind == MemberLookupKind::Value &&
+					!inherited_constructor_name) ||
+				(selection.kind == MemberLookupKind::Blocked &&
+					blocked_values != NULL && !blocked_values->entries.empty());
+			if (member_value_claimed)
+			{
+				// Class member lookup wins over a type alias for a single
+				// unqualified mem-initializer-id.  A base member or an
+				// ambiguous value set therefore cannot be recovered as a base.
+				if (selection.kind != MemberLookupKind::Value ||
+					selection.owner != record.scope ||
+					!selection.binding.valid() ||
+					binding(selection.binding).kind != BindingKind::Variable ||
+					is_static_member(selection.binding))
+					throw std::runtime_error("PA12 mem-initializer is not a direct field");
+				if (member_initializers.find(selection.binding) != NULL)
+					throw std::runtime_error("PA12 duplicate member mem-initializer");
+				member_initializers.set(selection.binding, argument);
+				continue;
+			}
 			// A mem-initializer names a base by its resolved type, not by the
 			// spelling of the direct base declaration.  Preserve the spelling
 			// fallback for the ordinary injected class-name case, but let the
 			// canonical PA11 type identity recognize aliases as well.
 			NamedRecordId resolved_base;
+			TypeId resolved_type;
+			BindingId resolved_declaration;
 			if (record.has_base && record.direct_base.valid())
 			{
 				// The constructor definition point preserves declaration-time
@@ -1096,13 +1154,16 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 				const SourcePoint point = function_node != NULL ?
 					SourcePoint(function_node->source_begin) :
 					lookup_source_point(function_scope);
-				const TypeId resolved_type = lookup_type_path(name, function_scope,
-					point, NULL, function_scope);
-				resolved_base = class_record_for_object_type(resolved_type);
+				resolved_type = lookup_type_path(name, function_scope, point,
+					&resolved_declaration, function_scope);
+				// A base mem-initializer needs the exact named class type;
+				// object-type lookup must not turn an array alias into a base.
+				resolved_base = named_record_for_type(resolved_type);
 			}
 			if (record.has_base && record.direct_base.valid() &&
 				record.direct_base.value < named_.size() &&
-				(named_[record.direct_base.value].name == name.last() ||
+				((!resolved_type.valid() && !resolved_declaration.valid() &&
+					named_[record.direct_base.value].name == name.last()) ||
 					resolved_base == record.direct_base))
 			{
 				if (base_initializer != NULL)
@@ -1110,8 +1171,6 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 				base_initializer = argument;
 				continue;
 			}
-			const MemberLookup selection = member_lookup(named_type(
-				function_record), name.last());
 			if (selection.kind != MemberLookupKind::Value ||
 				!selection.binding.valid() || selection.owner != record.scope ||
 				binding(selection.binding).kind != BindingKind::Variable ||
