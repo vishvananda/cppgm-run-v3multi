@@ -105,9 +105,14 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 					ConversionKind::ReferenceBinding);
 		}
 		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
-			cv_qualifiers(target_referred) != 0 &&
-			reference_object_convertible(source_value, target_referred))
-			return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
+			cv_qualifiers(target_referred) != 0)
+		{
+			ConversionChoice base_choice;
+			if (derived_base_choice(source_value, target_referred, &base_choice))
+				return base_choice;
+			if (reference_object_convertible(source_value, target_referred))
+				return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
+		}
 		if (cv_qualifiers(target_referred) != 0)
 		{
 			const ConversionChoice temporary = conversion_for(source, category,
