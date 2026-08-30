@@ -331,50 +331,100 @@ void PA11SemanticModel::collect_associated_adl_records(
 	associated_records->clear();
 
 	// Form the associated class/enum set from the operand types.  The walk is
-	// bounded by the already-formed direct-base chains and enclosing class
-	// scopes; it never scans unrelated program declarations.
+	// bounded by the typed argument wrappers, already-formed direct-base chains,
+	// and enclosing class scopes; it never scans unrelated program declarations.
+	std::vector<TypeId> seen_types;
+	const auto enqueue_type = [this, &seen_types](TypeId type,
+		std::vector<TypeId>* pending) {
+		if (pending == NULL || !type.valid() || type.value >= types_.size())
+			return;
+		for (std::size_t i = 0; i < seen_types.size(); ++i)
+			if (seen_types[i] == type)
+				return;
+		seen_types.push_back(type);
+		pending->push_back(type);
+	};
 	for (std::size_t object_index = 0; object_index < associated_objects.size();
 		++object_index)
 	{
-		TypeId object = strip_cv_type(expression_object_type(
-			associated_objects[object_index]));
-		if (!object.valid() || type_kind(object) != TypeKind::Named)
-			continue;
-		std::vector<NamedRecordId> pending;
-		const NamedRecordId initial = named_record_for_type(object);
-		if (initial.valid())
-			pending.push_back(initial);
-		while (!pending.empty())
+		std::vector<TypeId> pending_types;
+		enqueue_type(associated_objects[object_index], &pending_types);
+		while (!pending_types.empty())
 		{
-			const NamedRecordId record_id = pending.back();
-			pending.pop_back();
-			if (!record_id.valid() || record_id.value >= named_.size())
-				continue;
-			bool seen = false;
-			for (std::size_t i = 0; i < associated_records->size(); ++i)
-				if ((*associated_records)[i] == record_id)
-				{
-					seen = true;
-					break;
-				}
-			if (seen)
-				continue;
-			const NamedRecord& record = named_[record_id.value];
-			if (record.kind != NamedKind::Class && record.kind != NamedKind::Enum)
-				continue;
-			associated_records->push_back(record_id);
-			if (record.kind == NamedKind::Class)
+			const TypeId object = pending_types.back();
+			pending_types.pop_back();
+			const TypeKey& object_key = types_[object.value];
+			switch (object_key.kind)
 			{
-				std::vector<NamedRecordId> bases;
-				if (!direct_base_chain(named_type(record_id), &bases))
-					throw std::runtime_error("PA12 associated ADL base relation is invalid");
-				for (std::size_t i = 0; i < bases.size(); ++i)
-					pending.push_back(bases[i]);
+			case TypeKind::Cv:
+			case TypeKind::LvalueReference:
+			case TypeKind::RvalueReference:
+			case TypeKind::Pointer:
+			case TypeKind::Array:
+				enqueue_type(object_key.child, &pending_types);
+				continue;
+			case TypeKind::Function:
+				// Push in reverse so the typed function result is visited first,
+				// followed by parameters in declaration order.
+				for (std::size_t i = object_key.parameters.size(); i != 0; --i)
+					enqueue_type(object_key.parameters[i - 1], &pending_types);
+				enqueue_type(object_key.result, &pending_types);
+				continue;
+			case TypeKind::Named:
+			case TypeKind::Fundamental:
+			case TypeKind::MemberPointer:
+				break;
 			}
-			if (record.owner.valid() && record.owner.value < scopes_.size() &&
-				scopes_[record.owner.value].kind == ScopeKind::Class &&
-				scopes_[record.owner.value].record.valid())
-				pending.push_back(scopes_[record.owner.value].record);
+			if (object_key.kind != TypeKind::Named)
+				continue;
+			const NamedRecordId initial = named_record_for_type(object);
+			if (!initial.valid())
+				continue;
+			std::vector<NamedRecordId> pending_records;
+			pending_records.push_back(initial);
+			while (!pending_records.empty())
+			{
+				const NamedRecordId record_id = pending_records.back();
+				pending_records.pop_back();
+				if (!record_id.valid() || record_id.value >= named_.size())
+					continue;
+				bool seen = false;
+				for (std::size_t i = 0; i < associated_records->size(); ++i)
+					if ((*associated_records)[i] == record_id)
+					{
+						seen = true;
+						break;
+					}
+				if (seen)
+					continue;
+				const NamedRecord& record = named_[record_id.value];
+				if (record.kind != NamedKind::Class && record.kind != NamedKind::Enum)
+					continue;
+				associated_records->push_back(record_id);
+				if (record.kind == NamedKind::Class)
+				{
+					// A forward-declared class has no class scope yet, but its
+					// enclosing namespace is still an ADL-associated namespace.
+					// Complete classes retain the validated base walk; malformed
+					// incomplete metadata does not silently acquire a base relation.
+					if (record.defined)
+					{
+						std::vector<NamedRecordId> bases;
+						if (!direct_base_chain(named_type(record_id), &bases))
+							throw std::runtime_error("PA12 associated ADL base relation is invalid");
+						for (std::size_t i = 0; i < bases.size(); ++i)
+							pending_records.push_back(bases[i]);
+					}
+					else if (record.has_base || record.direct_base.valid() ||
+						record.direct_base_virtual)
+						throw std::runtime_error(
+							"PA12 incomplete associated ADL base metadata is invalid");
+				}
+				if (record.owner.valid() && record.owner.value < scopes_.size() &&
+					scopes_[record.owner.value].kind == ScopeKind::Class &&
+					scopes_[record.owner.value].record.valid())
+					pending_records.push_back(scopes_[record.owner.value].record);
+			}
 		}
 	}
 }

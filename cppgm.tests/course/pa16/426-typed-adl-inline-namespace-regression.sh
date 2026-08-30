@@ -93,6 +93,53 @@ expect_run enclosing-type-inline-function \
   '  return invoke() ? 0 : 1;' \
   '}'
 
+expect_run pointer-associated-class \
+  'namespace adl_pointer {' \
+  'struct tag {};' \
+  'int inspect(tag* value) {' \
+  '  return value != 0 ? 17 : 0;' \
+  '}' \
+  '}' \
+  'bool invoke() {' \
+  '  adl_pointer::tag value;' \
+  '  return inspect(&value) == 17;' \
+  '}' \
+  'int main() {' \
+  '  return invoke() ? 0 : 1;' \
+  '}'
+
+expect_run array-associated-element \
+  'namespace adl_array {' \
+  'struct tag {};' \
+  'int inspect(const tag* value) {' \
+  '  return value != 0 ? 23 : 0;' \
+  '}' \
+  '}' \
+  'bool invoke() {' \
+  '  adl_array::tag values[1];' \
+  '  return inspect(values) == 23;' \
+  '}' \
+  'int main() {' \
+  '  return invoke() ? 0 : 1;' \
+  '}'
+
+expect_run function-pointer-associated-parameter \
+  'namespace adl_function {' \
+  'struct tag {};' \
+  'int callback(const tag& value) {' \
+  '  return 31;' \
+  '}' \
+  'int inspect(int (*value)(const tag&)) {' \
+  '  return value != 0 ? 31 : 0;' \
+  '}' \
+  '}' \
+  'bool invoke() {' \
+  '  return inspect(&adl_function::callback) == 31;' \
+  '}' \
+  'int main() {' \
+  '  return invoke() ? 0 : 1;' \
+  '}'
+
 expect_failure ordinary-parent-not-associated \
   'namespace outer {' \
   'namespace inner {' \

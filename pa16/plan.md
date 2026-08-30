@@ -4,9 +4,12 @@
 
 This checkpoint audits landed commit
 `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` (`pa16 add source-point-aware
-associated ADL`) relative to `a9728454`.  PA16 keeps one typed PA10/PA11 ->
-PA12 -> PA15 pipeline.  The increment adds source-point-aware ordinary
-unqualified-call ADL to the existing operator-associated-record machinery.
+associated ADL`) relative to `a9728454`, including the approved bounded
+follow-up to its typed associated-record collector.  PA16 keeps one typed
+PA10/PA11 -> PA12 -> PA15 pipeline.  The increment adds source-point-aware
+ordinary unqualified-call ADL to the existing operator-associated-record
+machinery; the follow-up completes the standard typed wrapper association
+that the supported pointer, array, and function-pointer argument forms need.
 
 The implementation follows `spec.md` §§1--5 and 7: ordinary lookup is first,
 ADL is only for an unqualified single name, associated records and scopes are
@@ -75,14 +78,23 @@ The existing lookup graph's source visibility and declaration points remain in
 force.
 
 Allowed calls analyze their arguments once into typed `ExprInfo` facts.  The
-associated-record walk strips cv/reference wrappers, adds the named class or
-enum, follows the validated direct-base chain, and adds enclosing class
-records.  `NamedRecordId` and `ScopeId` vectors deduplicate in stable
-visitation order.  Each record maps to its first enclosing namespace, without
-climbing ordinary namespace parents.  The bounded repair applies the standard
-inline-namespace closure through typed namespace parent/child relations:
-inline parents and directly contained inline children are enqueued
-transitively.  It does not traverse using-directives.
+associated-record collector walks the typed `TypeId` graph, not source
+spelling: cv/lvalue-reference/rvalue-reference, pointer, and array nodes
+enqueue their typed child, while a function node enqueues its typed result and
+parameters in deterministic order.  This preserves the array element before
+the later array-to-pointer call conversion and reaches class types nested in a
+function pointer.  Named class/enum records are then added, complete classes
+follow the validated direct-base chain, and enclosing class records are added.
+`TypeId` and `NamedRecordId` vectors provide bounds-checked deterministic
+deduplication.  A member-pointer node is terminal, and no template expansion
+or general class-value semantics is opened.  An incomplete named class still
+associates its namespace but does not expand a base chain without complete
+scope metadata; malformed incomplete base metadata fails closed.  Each record
+maps to its first enclosing namespace, without climbing ordinary namespace
+parents.  The bounded repair applies the standard inline-namespace closure
+through typed namespace parent/child relations: inline parents and directly
+contained inline children are enqueued transitively.  It does not traverse
+using-directives.
 
 For each associated namespace, the existing
 `lookup_value_graph(..., include_using=false, point)` supplies direct values,
@@ -96,13 +108,18 @@ binding/scope, callable type, result category, and typed children.  The token
 operator collector uses the same record/namespace and source-point machinery
 with operator-token filtering.
 
-The repair was required because the existing namespace value graph returns
-after finding visible direct values and may not descend into an inline child.
-Thus a direct but nonviable overload in an associated outer namespace could
-hide a viable inline overload.  Explicit closure preserves normal graph
-behavior while making both the inline-enclosing and enclosing-inline cases
-available to ADL.  Course regression 426 exercises two successful inline
-cases and rejects ordinary-parent and using-directive association.
+The repair was required for two bounded omissions.  The existing namespace
+value graph returns after finding visible direct values and may not descend
+into an inline child, so a direct but nonviable overload in an associated outer
+namespace could hide a viable inline overload.  In addition, the original
+collector stopped at a top-level typed `Named` argument and therefore missed
+class association through supported pointer, array, and function-type nodes.
+The typed closure and wrapper walk preserve normal graph behavior while making
+the standard supported forms queryable.  Function-type traversal is only
+associated-type discovery; it introduces no class-by-value execution.  Course
+regression 426 now exercises five successful runtime cases (two inline cases,
+pointer, array, and function-pointer association) and rejects ordinary-parent
+and using-directive association.
 
 The published call enters PA15 through normal reachable-function demand,
 declaration materialization, and `lower_call`.  The narrow empty-class bridge
@@ -115,14 +132,16 @@ alternate lowering path exists in this ownership path.
 
 ## Structural and performance evidence
 
-The added closure is bounded by associated records, validated direct bases and
-enclosing classes, and the directly reached namespace child lists.  Each
-associated namespace is enqueued once; lookup-generation marks bound and
-cycle-protect each individual graph traversal, not separate queries started
-with a new generation.  Candidate deduplication examines only the collected
-identity vectors.  No unrelated declaration scan or cache was added.  This is
-structural evidence only: no timing, RSS, or unsupported performance claim is
-made.
+The typed wrapper walk is bounded by the visited `TypeId` nodes and each
+function node's existing parameter/result vectors.  Record work is bounded by
+the visited `NamedRecordId` values, validated direct bases, and enclosing
+class scopes; namespace queue dedup means each associated namespace is
+enqueued once.  Lookup-generation marks bound and cycle-protect each
+individual graph traversal, but does not prevent traversal across separate
+`begin_lookup` queries.  Candidate deduplication examines only the collected
+canonical identity vectors.  No unrelated declaration scan, cache, retry, or
+second lowering path was added.  This is structural evidence only: no timing,
+RSS, or unsupported performance claim is made.
 
 ## Focused evidence and final gates
 
@@ -131,9 +150,14 @@ Post-repair focused evidence:
 - `sh -n cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`: status `0`.
 
 - `make -C dev cppgm++ CXX=g++`: status `0`.
+- Temporary typed wrapper probes outside tracked surfaces (`pointer.cpp`,
+  `array.cpp`, and `functionptr.cpp` under `/tmp/pa16-adl-wrapper-probes.KYl3k0/`):
+  each application compile, LowIR translation, CY86 translation, and program
+  run returned status `0`.  The clean pre-repair binary rejected all three at
+  PA12 expression publication; the repaired collector accepts all three.
 - `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-adl-using-declaration-source-point.t tests/general/200-implicit-member-call-suppresses-adl.t tests/general/300-hidden-friend-definition-adl-call.t tests/general/300-enum-operator-adl-selects-matching-overload.t tests/general/300-basic-operator-overloads.t tests/spec/300-hidden-friend-not-visible-to-unrelated-adl.t tests/spec/300-hidden-friend-not-visible-to-qualified-lookup.t tests/spec/300-operator-lookup-ordinary-adl-union.t tests/spec/300-lazy-class-lookup-ignores-later-using-directive.t tests/general/300-using-declaration-function-hides-tag.t tests/general/200-nested-out-of-class-constructor-enclosing-type.t tests/general/300-nested-enum-hidden-friend-bitmask-adl.t'`: status `2`, `11/12`; only the known nested-enum hidden-friend LowIR residual fails.
 - `make -C pa12 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-inline-namespace-unqualified-call.t tests/general/200-using-directive-call.t'`: status `0`, `PASS (2/2)`.
-- `sh cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`: status `0`; two inline-namespace runtime cases pass and the ordinary-parent/using-directive controls reject as expected.
+- `sh cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`: status `0`; five runtime cases pass (two inline-namespace cases plus pointer, array, and function-pointer association), and the ordinary-parent/using-directive controls reject as expected.
 
 Final broad validation and bounded final checks:
 
@@ -183,4 +207,4 @@ or using-directive traversal.  Do not re-audit unrelated residual identities.
 | `a5c8e166` typed packed-bit-field value/update checkpointAudit | Final PA16 status `2` at `215/243`, exactly `28` failures and `243/243` covered; independent comparison authority/fresh `28/28`, authority-only/fresh-only `0/0`, inventory/run total `243/243`; landed delta is exactly baseline-only `400-bitfield-aggregate-init.t`; through-PA15 `0` at `1167/1167`; file audit `0` with five known warnings; focused 412/422/424, probes, diff-check, and path audit pass. Durable evidence is under `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`; no forbidden surface changed | completed audit |
 | `1d7e6860` alias direct-base mem-initializer checkpoint | final `216/243`, `27` failures, `243/243` covered; exact authority/final failure comparison `27/27`, authority-only/fresh-only `0/0`; focused `6/6`, courses `408/409/418/425`, through-PA15 `1167/1167`, file audit `0` with five known warnings, smoke, and diff/path checks pass; four approved paths ready for commit | completed |
 | `31a938ac` typed aggregate value-initialization compact zero-store checkpointAudit | Fresh final `217/243`, `26` failures, `243/243` covered; current-authority comparison `26` vs `26`, fresh-only `0`, authority-only `0`; focused matrix `6/6`; through-PA15 `1167/1167`; file audit `0` with five known header warnings; no source repair | completed audit |
-| `ab1b2a8c` source-point-aware associated ADL checkpointAudit | Final bounded audit of landed `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` relative to `a9728454`: source-point ordinary lookup, ADL suppression/union, typed associated records and first-namespace boundary, inline closure, direct using-declarations without using-directives, hidden-friend visibility, canonical candidate identity/order, typed call publication, PA15 demand/declaration/lowering, and the narrow empty-class opaque ABI bridge are traced. The typed inline-namespace closure repair is in `dev/src/pa12_semantic_calls.cpp`; course 426 covers two runtime inline cases and two rejection controls. Final `make test-pa16` is exit `2` at `218/243` with exactly `25` failures and `243/243` identities covered; exact authority/fresh comparison is `25/25`, fresh-only `0`, authority-only `0`, and inventories are `243/243/243` with missing `0/0`. Focused matrix is `11/12` with only the known nested-enum LowIR residual; PA12 controls are `2/2`; course 426 and `sh -n` pass; through-PA15 is `1167/1167`; file audit is `0` with five existing warnings; diff-check and bounded path/coverage audit are `0`; the approved commit leaves a clean worktree. PA16 remains incomplete only because those same 25 residual identities remain. | completed audit |
+| `ab1b2a8c` source-point-aware associated ADL checkpointAudit | Final bounded audit of landed `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` relative to `a9728454` plus its approved follow-up: source-point ordinary lookup, ADL suppression/union, typed associated class/enum/direct-base/enclosing records, recursive cv/ref/pointer/array/function result-and-parameter association, first-namespace and inline closure, direct using-declarations without using-directives, hidden-friend visibility, canonical candidate identity/order, typed call publication, PA15 demand/declaration/call lowering, and the narrow empty-class opaque ABI bridge are traced. The follow-up repairs only `dev/src/pa12_semantic_calls.cpp`; course 426 now covers five positive runtime cases and two rejection controls. Final `make test-pa16` is exit `2` at `218/243` with exactly `25` failures and `243/243` identities covered; exact authority/fresh comparison is `25/25`, fresh-only `0`, authority-only `0`, and inventories are `243/243/243` with missing `0/0`. Focused matrix is `11/12` with only the known nested-enum LowIR residual; PA12 controls are `2/2`; all three temporary wrapper probes compile, lower, translate, and run with status `0`; course 426 and `sh -n` pass; through-PA15 is `1167/1167`; file audit is `0` with five existing warnings; diff-check and bounded path/coverage audit are `0`; the follow-up preserves the exact 25-failure authority and PA16 remains incomplete only because those same residual identities remain. | completed audit |
