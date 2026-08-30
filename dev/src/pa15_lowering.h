@@ -689,6 +689,7 @@ private:
 		const LowType& element, lowir_model::IndexProjectionKind projection);
 	LoweredValue emit_decay(const LoweredValue& address);
 	LoweredValue storage_for(BindingId binding) const;
+	bool automatic_local_declaration(BindingId binding) const;
 	std::vector<SemanticFactId> children(SemanticFactId id) const;
 	bool validate_typed_base_path(TypeId actual, TypeId required,
 		ScopeId target, std::size_t begin, std::size_t count) const;

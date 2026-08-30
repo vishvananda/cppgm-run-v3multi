@@ -2198,7 +2198,8 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 							facts.front(), address_of_storage(storage));
 					else if (!constructor_action_is_noop(initializer))
 						(void)lower_expression(facts.front());
-					else if (storage.type.is_object() && class_object_type(
+					else if (automatic_local_declaration(fact.binding) &&
+						storage.type.is_object() && class_object_type(
 						model_.binding(fact.binding).type))
 						(void)address_of_storage(storage);
 				}

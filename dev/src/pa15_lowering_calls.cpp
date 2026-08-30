@@ -1207,17 +1207,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				if (class_value_argument.kind == SemanticFactKind::IdExpression &&
 					class_value_argument.binding.valid())
 				{
-					const std::map<std::size_t, const DeclarationFact*>::const_iterator
-						declaration = declaration_by_binding_.find(
-							class_value_argument.binding.value);
-					const bool automatic_local_declaration =
-						declaration != declaration_by_binding_.end() &&
-						declaration->second != NULL &&
-						declaration->second->automatic_storage &&
-						declaration->second->scope.valid() &&
-						declaration->second->scope.value < model_.scopes_.size() &&
-						model_.scopes_[declaration->second->scope.value].kind ==
-							ScopeKind::Block;
 					const std::map<std::size_t, SemanticFactId>::const_iterator
 						variable = variable_facts_.find(
 							class_value_argument.binding.value);
@@ -1230,7 +1219,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 							const SemanticFact& declaration_initializer =
 								model_.semantic_facts_[declaration_initializers.front().value];
 							class_value_source_has_declaration_address =
-								automatic_local_declaration &&
+								automatic_local_declaration(
+									class_value_argument.binding) &&
 								declaration_initializer.kind ==
 									SemanticFactKind::ConstructorAction &&
 								storage_for(class_value_argument.binding).type.is_object() &&

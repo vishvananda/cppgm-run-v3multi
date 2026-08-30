@@ -1824,6 +1824,15 @@ LoweredValue Pa15Lowerer::storage_for(BindingId binding) const{
 		}
 		throw std::runtime_error("PA15 binding has no storage");
 	}
+bool Pa15Lowerer::automatic_local_declaration(BindingId binding) const{
+		const std::map<std::size_t, const DeclarationFact*>::const_iterator found =
+			declaration_by_binding_.find(binding.value);
+		return binding.valid() && found != declaration_by_binding_.end() &&
+			found->second != NULL && found->second->automatic_storage &&
+			found->second->scope.valid() &&
+			found->second->scope.value < model_.scopes_.size() &&
+			model_.scopes_[found->second->scope.value].kind == ScopeKind::Block;
+}
 
 std::vector<SemanticFactId> Pa15Lowerer::children(SemanticFactId id) const{
 		if (!id.valid() || id.value >= model_.semantic_facts_.size())

@@ -17,8 +17,10 @@ synthetic default constructor has no actions. The exact invariant is: an
 automatic class-object declaration materializes its storage/address exactly
 once, whether its declaration fact has a childless class path or a no-op
 `ConstructorAction`; non-no-op, value-initializing, braced, and scalar paths
-retain their existing owners and action order. `activate_lifetime` remains a
-separate typed lifetime operation.
+retain their existing owners and action order. The shared
+`automatic_local_declaration` predicate uses the keyed `DeclarationFact`
+owner, so block-scope static declarations do not enter this automatic-only
+branch. `activate_lifetime` remains a separate typed lifetime operation.
 
 The narrow class-value overlap check is also owner-typed: its canonical
 `variable_facts_` entry must pair with the keyed `declaration_by_binding_`
@@ -138,17 +140,18 @@ external `stageProgress` run is claimed.
 
 ## Active Checkpoint
 
-Implement only the typed PA15 materialization repair in
-`dev/src/pa15_lowering_construction.cpp` and `dev/src/pa15_lowering_flow.cpp`:
-the no-op `ConstructorAction` branch emits one address for a typed class object
-in each declaration consumer. The existing childless class-declaration branch
-is the public LowIR shape to match. The existing narrow class-value constructor
-path in `dev/src/pa15_lowering_calls.cpp` consumes the canonical variable fact
-and the keyed typed declaration owner to omit only its redundant pre-copy source
-address when that automatic-local declaration-owned address is present; its
-later source address and class-value boundary remain unchanged. This preserves
-one semantic owner and adds O(1) work per affected declaration, with no
-scan/cache/text recovery or eager constructor/destructor helper emission.
+The landed d83 increment and its ownership path are audited. The no-op
+`ConstructorAction` branch emits one address for an automatic typed class
+object in each PA15 declaration consumer. The existing childless
+class-declaration branch is the public LowIR shape to match. The narrow
+class-value constructor path in `dev/src/pa15_lowering_calls.cpp` consumes the
+canonical variable fact and the keyed typed declaration owner to omit only its
+redundant pre-copy source address when that automatic-local declaration-owned
+address is present; its later source address and class-value boundary remain
+unchanged. The audit repaired the missing automatic-storage guard by sharing
+`automatic_local_declaration` across these consumers. This preserves one
+semantic owner with no scan/cache/text recovery or eager
+constructor/destructor helper emission.
 
 The stable boundary is the selected `ConstructorAction` fact plus
 `constructor_action_is_noop`, `storage_for`, `class_object_type`, and
@@ -158,37 +161,36 @@ fixture or reference edits, and any change to nontrivial constructor, lifetime,
 or helper-demand behavior.
 
 This aligns with the PA16 implicit-default-constructor/local-lifetime contract,
-spec sections 3 and 5 (selected actions and typed lowering facts flow from
-their semantic owners), section 4 (ordinary work remains O(n)), and section 7
-(record structural evidence without unsupported timing claims).
+spec sections 2, 3, and 5 (selected actions and typed lowering facts flow from
+their semantic owners), section 4 (ordinary work remains O(n log n) with two
+bounded map lookups in the ABI overlap check), and section 7 (record structural
+evidence without unsupported timing claims).
 
 ## Performance Evidence
 
-The repair adds one typed predicate branch and at most one `IK_ADDR` per
+The shared predicate adds one typed map lookup and at most one `IK_ADDR` per
 affected declaration. The class-value overlap check uses the `std::map`-
-backed `variable_facts_` lookup in O(log V), the keyed declaration owner
-lookup in O(log V), and bounded typed checks after those lookups; it is not
-O(1) call-side work, but remains within the spec's O(n log n) ordinary-work
-ceiling. It performs no scan, cache, text recovery, or per-operator work, so
-the two shift chains retain linear instruction growth in
-their source operations and gain only one bounded declaration action each.
-The focused local check passed `11/11`, including the four chosen identities,
-the requested unary-address-of and overloaded-comma controls, the fixed nested
-class-value regression, and five additional constructor/class controls. Fresh
-`.check` LowIR main-function
-counts match their references: the 24-link chain is `76` instructions with
-`25` `Token` addresses; the 256-link mixed chain is `412` with `129`; the
-compound/ADL case is `19` with `2` `s` addresses; and the cv-ranking case is
-`14` with `2` `period` addresses. Each count includes one bounded
-declaration-time address plus the source-operation addresses; there is no
-per-link declaration work. Closest PA15 controls
-`100-condition-declaration-variable-rvalue` and `100-local-arith` also passed
-`2/2`. A temporary namespace/static class-value probe was accepted by the
-narrow ABI and emitted both `addr @token` and `addr @static_token` source
-operations in `main`, confirming that neither non-automatic owner qualified
-for suppression; it was not checked in. The typed-demand course script exited
-`0`. The structural count command used only `.check` main-block lines and
-named `addr` lines; it reports no timing, RSS, allocation, or speedup claim.
+backed `variable_facts_` lookup and keyed declaration-owner lookup in O(log V)
+each, followed by bounded typed checks; it is not O(1) call-side work but
+remains within the spec's O(n log n) ordinary-work ceiling. It performs no
+scan, cache, text recovery, or per-operator work, so the two shift chains
+retain linear instruction growth in their source operations and gain only one
+bounded declaration action each.
+
+The current focused wrapper run passed `13/13`: the four chosen identities,
+unary-address-of, overloaded comma, three local constructor calls, value
+initialization, pointer-member initialization, and namespace/class-static
+initialization. The generated LowIR main-function counts are `76` with `25`
+`Token` addresses for the 24-link chain, `412` with `129` for the 256-link
+mixed chain, `19` with `2` `s` addresses for compound ADL assignment, and `14`
+with `2` `period` addresses for cv ranking. A direct static-local boundary
+probe has no d83-added `addr $e`; the broader reference static-local guard
+model is outside this checkpoint. A valid out-of-class narrow class-value
+probe was accepted by both current and reference observers (exit `0` each) and
+showed the automatic local's declaration address plus its later source
+address; a namespace-static probe retained both source addresses in current
+output. These are structural observations only; no timing, RSS, allocation, or
+speedup claim is made.
 
 ## Checkpoint Ledger
 
@@ -197,7 +199,7 @@ named `addr` lines; it reports no timing, RSS, allocation, or speedup claim.
 | `1694bc3e` baseline | `200/243`, `43` failures, `243/243` covered | baseline | six bit-field identities `0/6` | inherited through-PA15 `1167/1167`; prior audit passed with five known header warnings | existing HEAD |
 | `7e060b28` typed packed bit-field boundary | fresh `202/243`, `41` failures, `243/243` covered | `+2` identities from the retained `43`-failure landed baseline; baseline-only exactly constructor-member-init and member-access; final-only empty | landed focused evidence is six-test `2/6` plus a non-equivalent `7/11`; fresh audit selection is explicitly separate at `6/11`; course regression exit 0 | fresh through-PA15 `1167/1167`, file audit exit 0 with five known warnings, exact current-authority comparison `41 -> 41` with no set delta, diff-check exit 0 | landed source `7e060b28`; audit commit at current HEAD (handoff hash) |
 | `d95a6fe7` checkpoint start | `202/243`, `41` failures, `243/243` covered | current authority | chosen four `0/4` | prior through-PA15 and file-audit evidence retained below | current HEAD |
-| typed local-class materialization checkpoint | `206/243`, `37` failures, `243/243` covered | `+4` passed identities; baseline-only exactly the four chosen identities; final-only empty | focused PA16 `11/11`; nested class-value regression included; four chosen `4/4`; PA15 controls `2/2`; global/static probe accepted; course script exit 0; 24-link `76/25`, mixed `412/129`, short cases `19/2` and `14/2` | `make test-report-through-pa15` `1167/1167`; file audit exit 0 with five known header warnings; `git diff --check` exit 0; exact `41 -> 37` comparison covered `243/243` with no final-only identity | amended commit; final hash in post-commit handoff |
+| `d83e927f` typed local-class materialization checkpointAudit | fresh `make test-pa16` exit `2`, `206/243`, `37` failures, `243/243` covered; exact prior gate `1167/1167`; file audit exit `0` with five known warnings | `+4` from d95; baseline-only exactly the four chosen identities; final-only `0`; failure set exactly unchanged | focused PA16 `13/13`; focused PA15 `2/2`; valid automatic class-value probe accepted by current/reference observers; static-local boundary probe retains no d83-added address; 24-link `76/25`, mixed `412/129`, short cases `19/2` and `14/2` | exact identity comparison PASS: baseline-only `0`, final-only `0`, supplied/fresh coverage `243/243`; final `git diff --check` and changed-file audit pass; logs recorded below | landed source `d83e927f`; audit/repair commit at current HEAD; handoff hash in final report |
 
 Durable landed evidence retained from the source checkpoint:
 
@@ -219,15 +221,27 @@ Earlier bounded audit evidence retained from the pre-owner-guard review:
 - Fresh diff check: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-final-diff-check-20260829.log` (exit `0`).
 - Structural size and append-site observations: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-audit-preauth-structure-20260829.log` (`LoweredValue` 336 bytes, handle 8 bytes, descriptor 352 bytes, one append site). It does not contain constructor/evaluated-root traces.
 
-Current owner-audit validation: `make test-pa16` exited `2` with `206/243`
-passed, `37` failures, and `243/243` covered. The exact sorted comparison
-against the 41-entry checkpoint-start map is baseline-only precisely the four
-chosen identities and final-only empty. The requested focused PA16 controls
-passed `11/11`, PA15 controls passed `2/2`, the typed-demand course script
-exited `0`, and the namespace/static temporary probe compiled with both
-non-automatic source addresses retained. The exact through-PA15 command passed
-`1167/1167`; the file audit exited `0` with five known header warnings; and
-`git diff --check` exited `0`.
+Current checkpoint final evidence: supplied and fresh PA16 results are both
+`206/243` passed with `37` failures and `243/243` covered. The exact sorted
+comparison is baseline-only `0`, final-only `0`, and failure set unchanged.
+The fresh commands were `make test-pa16`, the exact `n=16` prior-stage shell
+gate, `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`, the
+exact sorted stage-progress identity/coverage comparison against the supplied
+`last-test.log`, `git diff --check`, and the bounded changed-file audit.
+The focused wrapper run passed `13/13` after the automatic-local guard repair;
+the exact prior gate passed `1167/1167`; the file audit passed with five known
+header-division warnings; and the changed-file audit and `git diff --check`
+passed. Durable final logs are:
+
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-test-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-through-pa15-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-file-audit-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-identity-comparison-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-changed-file-audit-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-diff-check-20260830.log`
+
+The final disposition is the single PA16 audit/repair commit at current HEAD;
+the handoff hash is reported separately.
 
 The authoritative current-stage log is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` and

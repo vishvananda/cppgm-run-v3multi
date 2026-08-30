@@ -2,6 +2,172 @@
 
 ## Current Checkpoint Review
 
+This bounded review covers landed source checkpoint
+`d83e927fd18429d37c3818a80e295f0a7c521905` (`PA16: materialize typed local
+class defaults`) relative to `d95a6fe7`, plus one narrowly scoped ownership
+repair found during the audit. The landed increment touched
+`pa15_lowering_construction.cpp`, `pa15_lowering_flow.cpp`, and
+`pa15_lowering_calls.cpp`; the repair adds one typed automatic-local predicate
+in `pa15_lowering.cpp`/`.h` and uses it at those three consumers. The only
+PA16 record changes in this checkpoint are this file and `pa16/plan.md`.
+
+The supplied turn-start authority in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
+`206/243` identities passed, `37` failed, and `243/243` covered. The d95
+checkpoint authority was `202/243` with `41` failures and full coverage; the
+exact identity delta is the four selected baseline-only identities below and
+no final-only identity. Fresh final validation preserves that authority. The
+fresh commands and results are `make test-pa16` (exit `2`, `206/243`, exactly
+`37` failures, `243/243` covered), the exact `n=16` prior-stage gate (exit
+`0`, `1167/1167`), and `perl scripts/cppgm_file_audit.pl --stage pa16
+--paths dev/src` (exit `0`, five known header-division warnings in
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+`pa11_semantic_model.h`, and `pa15_lowering.h`, with no fatals). Durable logs
+are:
+
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-test-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-through-pa15-20260830.log`
+- `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-file-audit-20260830.log`
+
+The selected residuals are exactly:
+
+- `pa16/tests/general/300-operator-shift-stress-chain.t`
+- `pa16/tests/general/300-mixed-member-free-shift-stress-chain.t`
+- `pa16/tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t`
+- `pa16/tests/general/300-member-vs-nonmember-operator-implicit-object-cv-rank.t`
+
+Their typed selected calls already matched; the d83 change supplies the
+declaration-owned address for `Token token`, `boost::Cstring s`, and
+`Period period`, leaving the remaining 37 residual identities unchanged.
+
+### Contract and ownership trace
+
+The affected path is the typed PA11-to-PA12-to-PA15 declaration and call
+path required by `spec.md` sections 2, 3, 4, 5, and 7:
+
+```text
+PA11 DeclarationFact/BindingId
+  -> PA12 semantic_variable_initializer
+  -> selected typed ConstructorAction
+  -> PA15 canonical variable/declaration indexes
+  -> condition or Variable consumer
+  -> storage_for + address_of_storage
+  -> ordered LowIR action/lifetime/use
+```
+
+PA11 publishes `DeclarationFact::automatic_storage` from the typed scope and
+storage-class facts. PA12's `semantic_variable_initializer` recognizes the
+named class object and publishes one `ConstructorAction` with its selected
+constructor binding, selected scope, callable type, and `value_initialize`
+state. `semantic_constructor_action` builds the typed hidden destination and
+selected call facts; it does not recover source text or re-resolve spelling.
+
+Before lowering, `index_binding_facts` validates the declaration ranges and
+builds the canonical `variable_facts_` and keyed `declaration_by_binding_`
+indexes. `lower_variable_expression` consumes the former for a condition
+declaration, and the `Variable` statement path consumes it for an ordinary
+declaration. For a no-op, non-value-initializing class action, both now use
+`storage_for` and call `address_of_storage` once, but only when the keyed
+`DeclarationFact` proves `automatic_storage` and block scope. The predicate is
+centralized; it is a bounded map lookup, not a cache or a text-derived test.
+
+The audit found a real edge defect in the landed d83 branches: their original
+object/type checks did not exclude a block-scope `static` declaration. The
+repair adds the typed owner predicate to both consumers and reuses it in the
+narrow class-value overlap check. A direct non-checking probe of
+`static Empty e;` confirms that the repaired path no longer emits d83's extra
+`addr $e`; the reference's separate local-static guard/global-storage model
+is outside this checkpoint. Namespace-scope and class-static objects remain
+on `collect_globals`/namespace-lifetime paths and cannot satisfy the
+automatic-local predicate.
+
+The class-value ABI overlap path remains narrow and typed. It requires one
+`ClassValue` conversion and one argument, then checks an `IdExpression`'s
+canonical binding, its exactly-one-child variable fact, the no-op
+`ConstructorAction`, and the keyed automatic block declaration. Only the
+redundant pre-copy address is suppressed. The source expression is lowered
+once, and the later `address_of_storage(class_value_source)` remains before
+the temporary copy argument. Namespace, static-local, and other nonautomatic
+owners therefore retain the pre-copy address. No source scan, retry, text
+reconstruction, or alternate semantic owner was introduced.
+
+### Findings and preservation checks
+
+- `value_initialize` still calls the existing value-initialization path;
+  non-no-op actions still lower their typed action; braced initializers and
+  scalar initializers still use their existing consumers.
+- `activate_lifetime` remains separate from declaration address materialization.
+  No eager constructor/destructor helper demand was added, and the no-op path
+  does not fabricate a lifetime fact.
+- Declaration order is preserved: `run` indexes typed facts before function
+  collection/lowering, each declaration consumer emits its address at the
+  declaration point, and the existing action/lifetime ordering is unchanged.
+  The class-value source is not evaluated a second time.
+- `address_of_storage` is the sole address producer for the affected storage
+  path; it emits one `IK_ADDR` for a slot/global and has no address cache.
+  The new predicate adds no whole-program or per-operator scan.
+
+No further implementation defect was found in this bounded ownership path.
+The prior typed bit-field checkpoint and the other 37 residual identities are
+out of scope.
+
+### Focused evidence and structural bounds
+
+`make cppgm++ CXX=g++` in `dev/` rebuilt the changed lowering objects and
+linked successfully. The documented PA16 wrapper was then run separately for
+each of the four selected identities and nine nearby controls, with
+`CPPGM_APP_ARGS='--emit-lowir -O0'` and isolated suffix `audit`; the matching
+`compare_results.pl ref audit` runs passed `13/13`. The controls include
+unary-address-of, overloaded comma, three local constructor calls, value
+initialization, pointer-member initialization, and namespace/class-static
+initialization.
+
+The generated LowIR structural counts for the four selected tests are:
+
+| identity | main instructions | named declaration/source addresses |
+| --- | ---: | --- |
+| operator-shift stress | 76 | `Token 25`, `Stream 5` |
+| mixed member/free shift stress | 412 | `Token 129`, `Stream 5` |
+| compound ADL assignment | 19 | `Cstring 2`, `Holder 3` |
+| member-vs-nonmember cv rank | 14 | `Period 2`, `Date 2` |
+
+The counts show one declaration-time address plus the addresses required by
+the source operations; the two stress chains retain linear growth in their
+operator links. The ownership checks are two `std::map` lookups in the
+class-value overlap path, hence O(log V) each, with bounded typed checks after
+them and no new scan. These are structural observations only; no timing,
+RSS, allocation, or speedup claim is made. `git diff --check` is the final
+focused repository check for this milestone.
+
+A valid out-of-class narrow class-value constructor probe was accepted by both
+the current compiler and its reference observer (exit `0` in each); its
+automatic local `e` has one declaration address and one later source address
+in `main`. A separate namespace-static probe retains both source addresses in
+the current output, as required by the nonautomatic guard. These probes are
+observational only and are not added fixtures.
+
+### Disposition and next checkpoint
+
+The bounded source repair is justified and limited to the affected PA15
+ownership path. No test, fixture, `.ref`, exit sidecar, harness, comparator,
+coverage rule, source set, or unrelated surface changed. Fresh broad
+validation, exact identity comparison, file audit, changed-file audit, and
+diff-check are complete; the durable identity, changed-file, and diff-check
+records are
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-identity-comparison-20260830.log`,
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-changed-file-audit-20260830.log`, and
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-d83-checkpoint-audit-final-diff-check-20260830.log`. The final
+disposition is the single PA16 audit/repair commit at current HEAD; the
+handoff hash is reported separately.
+
+The next checkpoint must choose one of the unchanged 37 residual identities
+separately. It must not reopen this automatic-local materialization boundary
+or the prior bit-field path without new evidence; preserve typed
+`BindingId`/`DeclarationFact` ownership, one-evaluation ordering, and the
+`243/243` coverage authority.
+
+## Historical Typed Packed Bit-field Review (7e060b28)
+
 This final bounded review covers landed source checkpoint
 `7e060b28e76e551cbce68a3254b87fe8f9f72eaa` (`PA16: lower typed packed
 bit-field operations`) relative to `1694bc3eb9e3fd9abb6bfe566e8183acda0bb7b2`.
@@ -2198,6 +2364,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `d83e927f` typed local-class materialization checkpointAudit | Completed the bounded audit of `d83e927fd18429d37c3818a80e295f0a7c521905` relative to `d95a6fe7`: PA11/PA12 typed `DeclarationFact`/`ConstructorAction` ownership reaches both PA15 declaration consumers, which materialize one automatic-local class address; the narrow class-value path suppresses only the redundant automatic-local pre-copy address and retains later source addressing. The audit repaired the missing automatic-storage guard by centralizing the keyed declaration-owner predicate; namespace/static owners remain nonautomatic. Supplied authority and fresh result are both `206/243`, `37` failures, `243/243` covered, with exact sorted comparison baseline-only `0`, final-only `0`, and failure set exactly unchanged. Focused PA16 is `13/13`, focused PA15 controls are `2/2`, the valid automatic class-value probe is accepted by current/reference observers, and structural counts are `76/25`, `412/129`, `19/2`, and `14/2`. Fresh `make test-pa16` exits `2`; the exact `n=16` prior-stage gate exits `0` at `1167/1167`; `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0` with five known header-division warnings and no fatals. Durable final logs are listed in the Current Checkpoint Review above: test, prior gate, file audit, exact identity comparison, changed-file audit, and diff-check. No tests, fixtures, references, or harness surfaces changed. Audit/repair commit at current HEAD; handoff hash in final report. |
 | `7e060b28` typed packed bit-field projection checkpointAudit | Final bounded audit of the five landed PA15 lowering owners: canonical `BindingId`/`BitFieldFact` continuity, one contiguous `ProjectionId` arena, direct/pointer/evaluated-root/constructor-this replay, typed load/encode/RMW preservation, signed reads, and single-evaluation aggregate/constructor order are traced. No implementation defect was found and no source repair was made. Fresh `make test-pa16` is `202/243` with `41` failures and `243/243` coverage; exact comparison with supplied `last-test.log` is `41 -> 41`, baseline-only `0`, final-only `0`. Through-PA15 is `1167/1167`; file audit and diff-check exit `0`; focused audit is `2/6` and fresh non-equivalent exploratory selection is `6/11`. Landed source `7e060b28`; audit commit at current HEAD (handoff hash). Next checkpoint selects a separate residual and preserves the typed owner invariants. |
 | c39d4563 plus typed canonical-truth finalizer checkpointAudit | Completed the bounded audit of c39d45634bb029a02c938c190f8ac703bd275050 plus finalizer hardening and the behavior-preserving structural extraction: PA12 builds all retained facts/bodies once, then one ephemeral dense ResultNodeId graph applies explicit result edges, conservative BindingId may-provenance, canonical declaration-to-definition call mapping, and a convergent recursion worklist. PA12 publishes bool-source Preserve per ConversionFact, including bool-to-int; PA15 resets LoweredValue from each conversion so policy is non-sticky. Generic child propagation, BindingSidecar taint, deferred ambient call state, latest-fact scans, dynamic dependency layers, and diagnostics are absent. The private CanonicalTruthFinalizer separates checked domain/edge construction, propagation, and publication; the finalizer methods are below the 240-line limit and changed source lines are unpacked. Clean build and protected five are 5/5; fresh focused outputs match the pre-extraction outputs; final PA16 is 199/243 with the exact unchanged 44-failure set and 243/243 coverage; through-PA15 is 1167/1167; file audit passes with five known warnings; no new failure or coverage delta. |
 | `b3bbf052` typed non-owning namespace object checkpointAudit | Completed bounded audit and repair of the landed increment relative to `68b549f2`: PA11 canonical owner/type/definition facts flow through PA12 typed references, conversions, and address targets into PA15 pointer-vs-owned LowIR and demand-rooted global emission. Incomplete class references/glvalues remain non-owning pointers; namespace declaration-only objects require typed demand; definitions, class-static objects, address targets, nested/internal/TLS cases, and fail-closed owner/range checks remain covered. Post-repair `make test-pa16` is `189/243` with `54` failures and `243/243` coverage; comparison with the landed 54-failure authority is baseline-only `0` and final-only `0`. The 16-test handout matrix is `16/16`, the required through-PA15 command is `1167/1167`, the required file audit exits `0` with five known header-division warnings, and determinism probes are byte-identical. The direct incomplete namespace-object address case is out of contract because PA16 scopes namespace object declarations to complete class types; the unrelated course-400 DMI mismatch remains outside this increment. No handout, fixture, reference, harness, comparator, coverage, source-set, or unrelated file changed. |
