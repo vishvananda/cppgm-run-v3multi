@@ -283,8 +283,14 @@ void PA11SemanticModel::process_bit_field_declaration(
 			const TypeId unsigned_int_type = fundamental(
 				FundamentalType::UnsignedInt);
 			const std::size_t int_width = type_size(int_type) * 8;
+			// The implementation-defined signedness of a plain-int bit-field is
+			// part of its promoted value range.  A narrow unsigned field still
+			// promotes to int when int represents every field value, but a
+			// full-width plain-int field selected as unsigned must promote to
+			// unsigned int.  Use the canonical fact rather than the declared
+			// FundamentalType, which is intentionally still int for plain int.
 			const bool int_represents = storage_fundamental ==
-				FundamentalType::Bool || !unsigned_type(storage_fundamental) ||
+				FundamentalType::Bool || fact.is_signed ||
 				fact.value_width < int_width;
 			if (int_represents)
 				fact.operation_type = int_type;
