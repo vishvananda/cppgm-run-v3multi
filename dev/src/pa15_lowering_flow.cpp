@@ -400,6 +400,22 @@ bool Pa15Lowerer::class_object_type(TypeId type) const{
 		model_.named_[record.value].kind == NamedKind::Class;
 }
 
+bool Pa15Lowerer::empty_class_value_function_abi(BindingId binding,
+	const FunctionFact* function, TypeId function_type) const
+{
+	if (function == NULL || !binding.valid() || function->binding != binding ||
+		function->is_constructor || !function->owner.valid() ||
+		function->owner.value >= model_.scopes_.size() ||
+		model_.scopes_[function->owner.value].kind != ScopeKind::Namespace ||
+		!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[function_type.value];
+	return !signature.variadic && signature.parameters.size() == 1 &&
+		model_.empty_class_value_type(signature.parameters.front()) &&
+		!model_.class_value_type(signature.result);
+}
+
 bool Pa15Lowerer::function_abi_supported(BindingId binding,
 	const FunctionFact* function, TypeId function_type) const
 {
@@ -413,6 +429,8 @@ bool Pa15Lowerer::function_abi_supported(BindingId binding,
 		if (model_.class_value_type(signature.parameters[parameter]))
 			has_class_value = true;
 	if (!has_class_value)
+		return true;
+	if (empty_class_value_function_abi(binding, function, function_type))
 		return true;
 	if (function == NULL || !binding.valid() || function->binding != binding ||
 		!function->is_constructor ||
@@ -2573,6 +2591,9 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			suppress_class_value_parameter_store = true;
 		}
 	}
+	else if (empty_class_value_function_abi(fact.binding, &fact,
+		model_.binding(fact.binding).type))
+		suppress_class_value_parameter_store = true;
 	const std::size_t value_begin = target.value_begin.index;
 	std::vector<unsigned char> class_value_parameter_stores;
 		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)

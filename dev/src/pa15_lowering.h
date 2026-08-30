@@ -555,6 +555,8 @@ private:
 	LowType low_type(TypeId type) const;
 	LowType function_result_low_type(TypeId type) const;
 	bool class_object_type(TypeId type) const;
+	bool empty_class_value_function_abi(BindingId binding,
+		const FunctionFact* function, TypeId function_type) const;
 	bool function_abi_supported(BindingId binding, const FunctionFact* function,
 		TypeId function_type) const;
 	bool checkpoint_zero_storage_eligible(TypeId type) const;

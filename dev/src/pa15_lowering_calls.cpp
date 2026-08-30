@@ -1119,8 +1119,9 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	const TypeKey* function_type = NULL;
 	std::size_t argument_begin = 0;
 	bool constructor_call = false;
-	bool class_value_constructor_argument = false;
+	bool class_value_argument = false;
 	bool class_value_source_has_declaration_address = false;
+	TypeId class_value_target;
 	LoweredValue class_value_source;
 	LoweredValue class_value_temporary;
 	Instruction instruction;
@@ -1166,7 +1167,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 			// constructor argument sequence.
 			argument_begin = 1;
 			std::size_t class_value_count = 0;
-			TypeId class_value_target;
 			for (std::size_t i = argument_begin; i < facts.size(); ++i)
 			{
 				const SemanticFact& argument = model_.semantic_facts_[
@@ -1210,14 +1210,14 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 					!model_.empty_class_value_type(class_value_target))
 					throw std::runtime_error(
 						"PA15 class-value constructor boundary is invalid");
-				const SemanticFact& class_value_argument =
+				const SemanticFact& class_value_source_fact =
 					model_.semantic_facts_[facts[argument_begin].value];
-				if (class_value_argument.kind == SemanticFactKind::IdExpression &&
-					class_value_argument.binding.valid())
+				if (class_value_source_fact.kind == SemanticFactKind::IdExpression &&
+					class_value_source_fact.binding.valid())
 				{
 					const std::map<std::size_t, SemanticFactId>::const_iterator
 						variable = variable_facts_.find(
-							class_value_argument.binding.value);
+							class_value_source_fact.binding.value);
 					if (variable != variable_facts_.end())
 					{
 						const std::vector<SemanticFactId> declaration_initializers =
@@ -1228,12 +1228,12 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 								model_.semantic_facts_[declaration_initializers.front().value];
 							class_value_source_has_declaration_address =
 								automatic_local_declaration(
-									class_value_argument.binding) &&
+									class_value_source_fact.binding) &&
 								declaration_initializer.kind ==
 									SemanticFactKind::ConstructorAction &&
-								storage_for(class_value_argument.binding).type.is_object() &&
+								storage_for(class_value_source_fact.binding).type.is_object() &&
 								class_object_type(model_.binding(
-									class_value_argument.binding).type) &&
+									class_value_source_fact.binding).type) &&
 								constructor_action_is_noop(declaration_initializer);
 						}
 					}
@@ -1249,15 +1249,69 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				// pre-copy address solely because declaration lowering now owns it.
 				if (!class_value_source_has_declaration_address)
 					(void)address_of_storage(class_value_source);
-				class_value_constructor_argument = true;
+				class_value_argument = true;
 			}
 			instruction.args.push_back(lower_expression(facts.front()).value);
-			if (class_value_constructor_argument)
+			if (class_value_argument)
 			{
 				class_value_temporary = generated_slot(low_type(class_value_target),
 					"argobj");
 				(void)address_of_storage(class_value_temporary);
 				(void)address_of_storage(class_value_source);
+			}
+		}
+		else if (!fact.has_implicit_object)
+		{
+			const bool empty_class_value_signature = !function_type->variadic &&
+				function_type->parameters.size() == 1 &&
+				model_.empty_class_value_type(function_type->parameters.front()) &&
+				!model_.class_value_type(function_type->result);
+			if (empty_class_value_signature)
+			{
+				if (facts.size() != 1)
+					throw std::runtime_error(
+						"PA15 empty class-value call argument shape is invalid");
+				const SemanticFact& argument =
+					model_.semantic_facts_[facts.front().value];
+				if (argument.conversion_count == 0 ||
+					argument.conversion_begin == InvalidIdentityValue ||
+					argument.conversion_begin > model_.conversion_facts_.size() ||
+					argument.conversion_count > model_.conversion_facts_.size() -
+						argument.conversion_begin)
+					throw std::runtime_error(
+						"PA15 empty class-value call conversion range is invalid");
+				bool has_class_value_conversion = false;
+				for (std::size_t conversion = 0;
+					conversion < argument.conversion_count; ++conversion)
+				{
+					const ConversionFact& selected = model_.conversion_facts_[
+						argument.conversion_begin + conversion];
+					if (selected.kind != ConversionKind::ClassValue)
+						continue;
+					if (has_class_value_conversion || selected.target !=
+						function_type->parameters.front())
+						throw std::runtime_error(
+							"PA15 empty class-value call conversion is invalid");
+					has_class_value_conversion = true;
+				}
+				if (!has_class_value_conversion ||
+					!empty_class_value_function_abi(fact.selected_binding,
+						model_.function_fact_for_binding(fact.selected_binding),
+						callee_binding->type) ||
+					argument.category != SemanticValueCategory::Lvalue ||
+					model_.strip_cv_type(model_.expression_object_type(argument.type)) !=
+					model_.strip_cv_type(model_.expression_object_type(
+						function_type->parameters.front())))
+					throw std::runtime_error(
+						"PA15 empty class-value call boundary is invalid");
+				class_value_target = function_type->parameters.front();
+				class_value_source = lower_expression_impl(facts.front(), false,
+					false, false, true);
+				if (!class_value_source.lvalue ||
+					!class_value_source.type.is_object())
+					throw std::runtime_error(
+						"PA15 empty class-value call source is not an object lvalue");
+				class_value_argument = true;
 			}
 		}
 		else if (fact.has_implicit_object)
@@ -1385,10 +1439,17 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	instruction.call_returns_void = instruction.call_return_type.is_void();
 	instruction.call_boundary.arity = function_type->variadic ?
 		lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
+	if (class_value_argument && !constructor_call)
+	{
+		class_value_temporary = generated_slot(low_type(class_value_target),
+			"argobj");
+		(void)address_of_storage(class_value_temporary);
+		(void)address_of_storage(class_value_source);
+	}
 	for (std::size_t i = 0; i < explicit_argument_count; ++i)
 	{
 		const SemanticFactId argument = facts[argument_begin + i];
-		instruction.args.push_back(class_value_constructor_argument && i == 0 ?
+		instruction.args.push_back(class_value_argument && i == 0 ?
 			class_value_temporary.value : lower_expression(argument).value);
 	}
 	if (!fact.has_callee)

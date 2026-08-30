@@ -1986,7 +1986,7 @@ private:
 		const std::vector<const PA10AstNode*>& argument_nodes,
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
 		bool allow_pa16_class_value = false)
-	;
+	; void collect_associated_adl_records(const std::vector<TypeId>& associated_objects, std::vector<NamedRecordId>* associated_records) const; void collect_associated_adl_namespaces(const std::vector<NamedRecordId>& associated_records, std::vector<ScopeId>* associated_namespaces) const; void append_adl_function_candidates(NameId name, const std::vector<TypeId>& associated_objects, SourcePoint point, std::vector<ValueRef>* candidates) const;
 	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
 	ExprInfo semantic_operator_call(const PA10AstNode& node, ScopeId scope, PA10OperatorFunctionKind kind, SimpleTokenType token, const ExprInfo& member_object, const std::vector<TypeId>& associated_objects, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments);

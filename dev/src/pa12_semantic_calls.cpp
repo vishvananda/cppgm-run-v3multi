@@ -109,14 +109,26 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 			return false;
 		const FunctionFact* function = function_fact_for_binding(
 			candidate_ref.binding);
-		if (function == NULL || !narrow_class_value_constructor(*function))
+		if (function == NULL || !function->binding.valid() ||
+			function->binding != candidate_ref.binding)
+			return false;
+		if (function->is_constructor)
+		{
+			if (!narrow_class_value_constructor(*function))
+				return false;
+		}
+		else if (!function->owner.valid() || function->owner.value >= scopes_.size() ||
+			scopes_[function->owner.value].kind != ScopeKind::Namespace)
 			return false;
 		if (parameter != 0 || candidate_ref.binding.value >= bindings_.size())
 			return false;
 		const TypeId function_type = binding(candidate_ref.binding).type;
 		if (!function_type.valid() || function_type.value >= types_.size() ||
 			type_kind(function_type) != TypeKind::Function ||
-			types_[function_type.value].parameters.front() != parameter_type)
+			types_[function_type.value].variadic ||
+			types_[function_type.value].parameters.size() != 1 ||
+			types_[function_type.value].parameters.front() != parameter_type ||
+			class_value_type(types_[function_type.value].result))
 			return false;
 		const TypeId parameter_object = strip_cv_type(
 			expression_object_type(parameter_type));
@@ -310,6 +322,162 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	return result;
 }
 
+void PA11SemanticModel::collect_associated_adl_records(
+	const std::vector<TypeId>& associated_objects,
+	std::vector<NamedRecordId>* associated_records) const
+{
+	if (associated_records == NULL)
+		throw std::runtime_error("PA12 associated ADL record output is missing");
+	associated_records->clear();
+
+	// Form the associated class/enum set from the operand types.  The walk is
+	// bounded by the already-formed direct-base chains and enclosing class
+	// scopes; it never scans unrelated program declarations.
+	for (std::size_t object_index = 0; object_index < associated_objects.size();
+		++object_index)
+	{
+		TypeId object = strip_cv_type(expression_object_type(
+			associated_objects[object_index]));
+		if (!object.valid() || type_kind(object) != TypeKind::Named)
+			continue;
+		std::vector<NamedRecordId> pending;
+		const NamedRecordId initial = named_record_for_type(object);
+		if (initial.valid())
+			pending.push_back(initial);
+		while (!pending.empty())
+		{
+			const NamedRecordId record_id = pending.back();
+			pending.pop_back();
+			if (!record_id.valid() || record_id.value >= named_.size())
+				continue;
+			bool seen = false;
+			for (std::size_t i = 0; i < associated_records->size(); ++i)
+				if ((*associated_records)[i] == record_id)
+				{
+					seen = true;
+					break;
+				}
+			if (seen)
+				continue;
+			const NamedRecord& record = named_[record_id.value];
+			if (record.kind != NamedKind::Class && record.kind != NamedKind::Enum)
+				continue;
+			associated_records->push_back(record_id);
+			if (record.kind == NamedKind::Class)
+			{
+				std::vector<NamedRecordId> bases;
+				if (!direct_base_chain(named_type(record_id), &bases))
+					throw std::runtime_error("PA12 associated ADL base relation is invalid");
+				for (std::size_t i = 0; i < bases.size(); ++i)
+					pending.push_back(bases[i]);
+			}
+			if (record.owner.valid() && record.owner.value < scopes_.size() &&
+				scopes_[record.owner.value].kind == ScopeKind::Class &&
+				scopes_[record.owner.value].record.valid())
+				pending.push_back(scopes_[record.owner.value].record);
+		}
+	}
+}
+
+void PA11SemanticModel::collect_associated_adl_namespaces(
+	const std::vector<NamedRecordId>& associated_records,
+	std::vector<ScopeId>* associated_namespaces) const
+{
+	if (associated_namespaces == NULL)
+		throw std::runtime_error("PA12 associated ADL namespace output is missing");
+	associated_namespaces->clear();
+	for (std::size_t i = 0; i < associated_records.size(); ++i)
+	{
+		if (!associated_records[i].valid() ||
+			associated_records[i].value >= named_.size())
+			throw std::runtime_error("PA12 associated ADL record identity is invalid");
+		ScopeId cursor = named_[associated_records[i].value].owner;
+		// A class record can be nested in another class, but ADL stops at the
+		// first enclosing namespace.  In particular, do not climb namespace
+		// parents after this point.
+		while (cursor.valid() && cursor.value < scopes_.size() &&
+			scopes_[cursor.value].kind != ScopeKind::Namespace)
+			cursor = scopes_[cursor.value].parent;
+		if (!cursor.valid())
+			continue;
+		bool seen = false;
+		for (std::size_t j = 0; j < associated_namespaces->size(); ++j)
+			if ((*associated_namespaces)[j] == cursor)
+			{
+				seen = true;
+				break;
+			}
+		if (!seen)
+			associated_namespaces->push_back(cursor);
+	}
+}
+
+void PA11SemanticModel::append_adl_function_candidates(
+	NameId name, const std::vector<TypeId>& associated_objects,
+	SourcePoint point, std::vector<ValueRef>* candidates) const
+{
+	if (!name.valid() || candidates == NULL)
+		throw std::runtime_error("PA12 ADL candidate inputs are missing");
+	std::vector<NamedRecordId> associated_records;
+	collect_associated_adl_records(associated_objects, &associated_records);
+	if (associated_records.empty())
+		return;
+	std::vector<ScopeId> associated_namespaces;
+	collect_associated_adl_namespaces(associated_records,
+		&associated_namespaces);
+	const auto append_candidate = [this, candidates](const ValueRef& candidate) {
+		if (!candidate.binding.valid() || candidate.binding.value >= bindings_.size() ||
+			candidate.binding.value >= binding_owners_.size() ||
+			!candidate.scope.valid() || candidate.scope.value >= scopes_.size() ||
+			binding_owners_[candidate.binding.value] != candidate.scope)
+			throw std::runtime_error("PA12 ADL candidate identity is invalid");
+		const Binding& value = binding(candidate.binding);
+		const BindingSidecar* sidecar = binding_sidecar(candidate.binding);
+		if (value.kind != BindingKind::Function ||
+			type_kind(value.type) != TypeKind::Function ||
+			(sidecar != NULL && sidecar->template_specialization.valid()))
+			return;
+		for (std::size_t i = 0; i < candidates->size(); ++i)
+			if ((*candidates)[i].binding == candidate.binding &&
+				(*candidates)[i].scope == candidate.scope)
+				return;
+		candidates->push_back(candidate);
+	};
+	for (std::size_t i = 0; i < associated_namespaces.size(); ++i)
+	{
+		begin_lookup();
+		std::vector<ValueRef> found;
+		lookup_value_graph(associated_namespaces[i], name, &found, false, point);
+		for (std::size_t j = 0; j < found.size(); ++j)
+			if (found[j].scope.valid() && found[j].scope.value < scopes_.size() &&
+				scopes_[found[j].scope.value].kind == ScopeKind::Namespace)
+				append_candidate(found[j]);
+	}
+	for (std::size_t i = 0; i < associated_records.size(); ++i)
+	{
+		const NamedRecordSidecar* sidecar = named_record_sidecar(
+			associated_records[i]);
+		if (sidecar == NULL)
+			continue;
+		for (std::size_t j = 0; j < sidecar->hidden_friend_functions.size(); ++j)
+		{
+			const HiddenFriendFunctionRelation& relation =
+				sidecar->hidden_friend_functions[j];
+			if (point.valid() && relation.declaration_point.valid() &&
+				relation.declaration_point.value > point.value)
+				continue;
+			if (!relation.binding.valid() ||
+				relation.binding.value >= binding_owners_.size())
+				throw std::runtime_error("PA12 hidden friend identity is invalid");
+			const ScopeId owner = binding_owners_[relation.binding.value];
+			if (!owner.valid() || owner.value >= scopes_.size() ||
+				scopes_[owner.value].kind != ScopeKind::Namespace)
+				throw std::runtime_error("PA12 hidden friend owner is invalid");
+			append_candidate(ValueRef(owner, relation.binding));
+		}
+	}
+}
+
 void PA11SemanticModel::collect_operator_candidates(
 	PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object,
 	const std::vector<TypeId>& associated_objects, ScopeId scope,
@@ -352,54 +520,8 @@ void PA11SemanticModel::collect_operator_candidates(
 		output->push_back(candidate);
 	};
 
-	// Form the associated class/enum set from the operand types.  The walk is
-	// bounded by the already-formed direct-base chains and enclosing class
-	// scopes; it never scans unrelated program declarations.
 	std::vector<NamedRecordId> associated_records;
-	for (std::size_t object_index = 0; object_index < associated_objects.size();
-		++object_index)
-	{
-		TypeId object = strip_cv_type(expression_object_type(
-			associated_objects[object_index]));
-		if (!object.valid() || type_kind(object) != TypeKind::Named)
-			continue;
-		std::vector<NamedRecordId> pending;
-		const NamedRecordId initial = named_record_for_type(object);
-		if (initial.valid())
-			pending.push_back(initial);
-		while (!pending.empty())
-		{
-			const NamedRecordId record_id = pending.back();
-			pending.pop_back();
-			if (!record_id.valid() || record_id.value >= named_.size())
-				continue;
-			bool seen = false;
-			for (std::size_t i = 0; i < associated_records.size(); ++i)
-				if (associated_records[i] == record_id)
-				{
-					seen = true;
-					break;
-				}
-			if (seen)
-				continue;
-			const NamedRecord& record = named_[record_id.value];
-			if (record.kind != NamedKind::Class && record.kind != NamedKind::Enum)
-				continue;
-			associated_records.push_back(record_id);
-			if (record.kind == NamedKind::Class)
-			{
-				std::vector<NamedRecordId> bases;
-				if (!direct_base_chain(named_type(record_id), &bases))
-					throw std::runtime_error("PA12 operator base relation is invalid");
-				for (std::size_t i = 0; i < bases.size(); ++i)
-					pending.push_back(bases[i]);
-			}
-			if (record.owner.valid() && record.owner.value < scopes_.size() &&
-				scopes_[record.owner.value].kind == ScopeKind::Class &&
-				scopes_[record.owner.value].record.valid())
-				pending.push_back(scopes_[record.owner.value].record);
-		}
-	}
+	collect_associated_adl_records(associated_objects, &associated_records);
 	if (associated_records.empty())
 		return;
 
@@ -438,29 +560,13 @@ void PA11SemanticModel::collect_operator_candidates(
 		}
 
 		std::vector<ScopeId> associated_namespaces;
-		for (std::size_t i = 0; i < associated_records.size(); ++i)
-		{
-			ScopeId cursor = named_[associated_records[i].value].owner;
-			while (cursor.valid() && cursor.value < scopes_.size() &&
-				scopes_[cursor.value].kind != ScopeKind::Namespace)
-				cursor = scopes_[cursor.value].parent;
-			if (!cursor.valid())
-				continue;
-			bool seen = false;
-			for (std::size_t j = 0; j < associated_namespaces.size(); ++j)
-				if (associated_namespaces[j] == cursor)
-				{
-					seen = true;
-					break;
-				}
-			if (!seen)
-				associated_namespaces.push_back(cursor);
-		}
+		collect_associated_adl_namespaces(associated_records,
+			&associated_namespaces);
 		for (std::size_t i = 0; i < associated_namespaces.size(); ++i)
 		{
 			begin_lookup();
 			std::vector<ValueRef> candidates;
-			lookup_value_graph(associated_namespaces[i], name, &candidates, true,
+			lookup_value_graph(associated_namespaces[i], name, &candidates, false,
 				point);
 			for (std::size_t j = 0; j < candidates.size(); ++j)
 				if (candidates[j].scope.valid() &&
@@ -1030,8 +1136,57 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 	}
 	if (qualified_class_member && qualified_static_candidates.empty())
 		throw std::runtime_error("PA12 class-qualified static call has no target");
-	const std::vector<ValueRef> candidates = direct_call_candidates(callee_node,
+	std::vector<ValueRef> candidates = direct_call_candidates(callee_node,
 		scope, qualified_class_member, qualified_static_candidates);
+	std::vector<ExprInfo> arguments;
+	bool arguments_ready = false;
+	bool allow_pa16_class_value = false;
+	// ADL is formed only for an unqualified-id.  Ordinary lookup remains the
+	// first candidate source; an empty ordinary set is also the point at which
+	// an otherwise unknown unqualified name can be recovered through ADL.
+	if (!qualified_class_member && callee_node.kind == PA10NodeKind::IdExpression &&
+		!has_template_id(callee_node))
+	{
+		const NamePath path = name_path(callee_node);
+		const SourcePoint point = lookup_source_point(scope);
+		const std::vector<ValueRef> ordinary = lookup_value_path(path, scope, point);
+		const bool unqualified = !path.global && path.components.size() == 1;
+		bool ordinary_lookup_suppresses_adl = false;
+		for (std::size_t i = 0; i < ordinary.size(); ++i)
+		{
+			if (!ordinary[i].binding.valid() || ordinary[i].binding.value >=
+				bindings_.size() || !ordinary[i].scope.valid() ||
+				ordinary[i].scope.value >= scopes_.size())
+				throw std::runtime_error("PA12 ordinary call candidate identity is invalid");
+			const Binding& value = binding(ordinary[i].binding);
+			if (value.kind != BindingKind::Function ||
+				scopes_[ordinary[i].scope.value].kind != ScopeKind::Namespace)
+				ordinary_lookup_suppresses_adl = true;
+		}
+		const bool allow_adl = unqualified && !ordinary_lookup_suppresses_adl &&
+			(candidates.empty() ? ordinary.empty() : !ordinary.empty());
+		if (allow_adl)
+		{
+			allow_pa16_class_value = true;
+			arguments_ready = true;
+			arguments.reserve(argument_node.children.size());
+			for (std::size_t i = 0; i < argument_node.children.size(); ++i)
+			{
+				if (target_function_id(argument_node.children[i], scope) != NULL)
+					arguments.push_back(ExprInfo());
+				else
+					arguments.push_back(semantic_expression(
+						argument_node.children[i], scope));
+			}
+			std::vector<TypeId> associated_objects;
+			associated_objects.reserve(arguments.size());
+			for (std::size_t i = 0; i < arguments.size(); ++i)
+				if (arguments[i].fact.valid())
+					associated_objects.push_back(arguments[i].type);
+			append_adl_function_candidates(path.last(), associated_objects, point,
+				&candidates);
+		}
+	}
 	const bool direct = !candidates.empty();
 	ExprInfo indirect_callee;
 	TypeId indirect_type;
@@ -1073,12 +1228,12 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 		if ((!function.variadic && argument_node.children.size() !=
 			function.parameters.size()) ||
 			(function.variadic && argument_node.children.size() <
-			function.parameters.size()))
+				function.parameters.size()))
 			throw std::runtime_error("PA12 indirect call arity mismatch");
 	}
-	std::vector<ExprInfo> arguments;
 	if (!direct)
 	{
+		arguments.clear();
 		const TypeKey& function = types_[indirect_type.value];
 		record_builtin_conversion(indirect_callee, make_pointer(indirect_type));
 		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
@@ -1091,7 +1246,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 					scope));
 		}
 	}
-	else
+	else if (!arguments_ready)
 	{
 		// An overloaded function ID has no expression type until a target
 		// function pointer/reference parameter is selected.  Keep it deferred;
@@ -1114,7 +1269,8 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 		for (std::size_t i = 0; i < argument_node.children.size(); ++i)
 			argument_nodes.push_back(&argument_node.children[i]);
 		const TypedFunctionSelection selection = select_typed_function(
-			candidates, argument_nodes, arguments, scope);
+			candidates, argument_nodes, arguments, scope,
+			allow_pa16_class_value);
 		selected = selection.selected;
 		selected_type = selection.type;
 		arguments = selection.arguments;
