@@ -2140,7 +2140,7 @@ LoweredValue Pa15Lowerer::apply_reinterpret_conversion(LoweredValue result,
 }
 bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	const ConversionFact& conversion, const LowType& target,
-	bool omit_boolean_context, bool materialize_lvalue){
+	bool omit_boolean_context, bool materialize_lvalue, bool suppress_bit_field_copy){
 	if (result == NULL)
 		throw std::runtime_error("PA15 missing conversion result");
 	if (conversion.kind == ConversionKind::Identity)
@@ -2186,7 +2186,7 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	}
 	if (conversion.kind == ConversionKind::LvalueToRvalue)
 	{
-		materialize_lvalue_value(result, target, !omit_boolean_context);
+		materialize_lvalue_value(result, target, !omit_boolean_context && !suppress_bit_field_copy);
 		result->type = target;
 		result->physical_type = target;
 		result->lvalue = false;
@@ -2285,8 +2285,8 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 	return false;
 }
 LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue result,
-		bool omit_boolean_context, bool materialize_lvalue,
-		bool force_integral_literal_conversion){
+	bool omit_boolean_context, bool materialize_lvalue,
+	bool force_integral_literal_conversion, bool suppress_bit_field_copy){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		if (fact.conversion_count != 0 && fact.conversion_begin == InvalidIdentityValue)
 			throw std::runtime_error("PA15 invalid semantic conversion range");
@@ -2349,7 +2349,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 					instruction.destination_name_id), source_type, false);
 			}
 			if (apply_structural_conversion(&result, conversion, target,
-				omit_boolean_context, materialize_lvalue))
+				omit_boolean_context, materialize_lvalue, suppress_bit_field_copy))
 				continue;
 			if (!source_is_bool)
 				source_type = low_type(conversion.source);
@@ -2361,8 +2361,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			{
 				// PA13 branches consume integer truth values.  Compare against a
 				// zero operand carrying the source float width, including f80.
-				materialize_lvalue_value(&result, source_type,
-					!omit_boolean_context);
+				materialize_lvalue_value(&result, source_type, !omit_boolean_context && !suppress_bit_field_copy);
 				Operand zero_operand = floating_operand(0.0L, source_type);
 				zero_operand.presentation_id = intern_spelling(
 					source_type.float_kind == LowType::FLOAT_F32 ? "0.0F" :
@@ -2376,7 +2375,8 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			if (source_type.is_float() || target.is_float() ||
 				conversion.kind == ConversionKind::Floating)
 			{
-				materialize_lvalue_value(&result, source_type);
+				materialize_lvalue_value(&result, source_type,
+					!suppress_bit_field_copy);
 				if (source_type == target)
 				{
 					result.type = target;
@@ -2402,7 +2402,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 				source_type.integer_width() == target.integer_width() ?
 				target : source_type;
 			materialize_lvalue_value(&result, materialization_type,
-				!omit_boolean_context);
+				!omit_boolean_context && !suppress_bit_field_copy);
 			if (target_is_bool && result.value.kind != Operand::OP_INTEGER &&
 				result.physical_type.is_integer())
 			{
@@ -2468,7 +2468,7 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 			}
 			else
 				materialize_lvalue_value(&result, result.type,
-					!omit_boolean_context);
+					!omit_boolean_context && !suppress_bit_field_copy);
 		}
 		return result;
 	}

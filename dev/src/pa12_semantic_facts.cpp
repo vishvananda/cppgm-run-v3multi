@@ -104,6 +104,16 @@ const PA10AstNode* default_argument_expression(const PA10AstNode& parameter)
 	return NULL;
 }
 
+bool bit_field_specifier_has_token(const PA10AstNode& specifier,
+	SimpleTokenType token)
+{
+	for (std::size_t i = 0; i < specifier.children.size(); ++i)
+		if (specifier.children[i].has_token &&
+			specifier.children[i].token == token)
+			return true;
+	return false;
+}
+
 const PA10AstNode* function_declarator(const PA10AstNode& declaration,
 	std::size_t declarator_index)
 {
@@ -186,6 +196,15 @@ void PA11SemanticModel::process_bit_field_declaration(
 	if (!fundamental_of(storage_type, &storage_fundamental) ||
 		!integral_type(storage_fundamental))
 		throw std::runtime_error("PA16 bit-field storage is not integral");
+	// Keep the implementation-defined plain-int bit-field choice separate
+	// from an explicitly signed declaration.  The latter must retain negative
+	// values through PA15 extraction; enum storage follows its underlying type.
+	const bool plain_int_bit_field = !enum_type &&
+		storage_fundamental == FundamentalType::Int &&
+		!bit_field_specifier_has_token(node.children.front(),
+			SimpleTokenType::KW_SIGNED) &&
+		!bit_field_specifier_has_token(node.children.front(),
+			SimpleTokenType::KW_UNSIGNED);
 	const std::size_t declared_storage_unit_size = type_size(storage_type);
 	if (declared_storage_unit_size == 0 || declared_storage_unit_size > 8)
 		throw std::runtime_error("PA16 bit-field storage is too wide");
@@ -253,7 +272,7 @@ void PA11SemanticModel::process_bit_field_declaration(
 		fact.named = named;
 		fact.zero_width = width == 0;
 		fact.is_signed = storage_fundamental != FundamentalType::Bool &&
-			!unsigned_integral_type(storage_type);
+			!unsigned_integral_type(storage_type) && !plain_int_bit_field;
 		const bool scoped_enum = enum_type &&
 			named_[declared_record.value].scoped_enum;
 		fact.operation_type = scoped_enum ? declared_type : storage_type;

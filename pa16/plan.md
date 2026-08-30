@@ -4,12 +4,13 @@
 
 PA16 keeps one production pipeline: PA10/PA11 syntax and names become PA12
 typed semantic facts and conversion facts, and PA15 lowers those facts into
-LowIR.  This checkpoint uses the existing `SemanticFact` truth metadata,
-`ConversionFact` source/target and truth policy, and `LoweredValue` semantic
-`type`/physical `physical_type`; it adds no text transport, parallel analyzer,
-rescan/cache, retry, or second lowerer.  The relevant LowIR contract is that a
-comparison carries its operand type and produces canonical integer truth, and
-that an explicit conversion owns the destination type.
+LowIR.  The packed-field path carries one PA12 `BitFieldFact` with declared,
+storage, operation, width, mask, and signedness data into PA15's
+`LoweredValue { BindingId, ProjectionId }`; member reads, encodes, stores,
+inc/dec, and aggregate initialization consume that same typed identity.  This
+checkpoint adds no text transport, parallel analyzer, rescan/cache, retry, or
+second lowerer.  Comparisons retain their PA12 operation type and canonical
+truth; explicit conversions own their destination type.
 
 ## Failure Map
 
@@ -48,89 +49,85 @@ The complete turn-start failure map is:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-The three identities recovered by the landed increment and therefore absent
-from this authority are `200-nonliteral-field-condition-not-folded.t`,
-`200-placement-new-expression-constructor-call.t`, and
-`300-pragma-pack-followed-by-endif.t`.  Fresh comparison is exact: authority
-and fresh failures are both `29`, baseline-only and fresh-only are both `0`,
-the independent inventory and run total are both `243`, and coverage is
-`243/243`.
+The parent checkpoint had already recovered `200-nonliteral-field-condition-
+not-folded.t`, `200-placement-new-expression-constructor-call.t`, and
+`300-pragma-pack-followed-by-endif.t`; they are absent from this turn-start
+authority.  Final validation is an exact strict subset: the final failure set
+is this 29-item set minus `400-bitfield-aggregate-init.t`, with no new
+identity; the independent inventory and run total remain `243`, and coverage
+is `243/243`.
 
 ## Active Checkpoint
 
-The landed increment repairs the typed truth/comparison physical-width
-continuity boundary for the three recovered identities:
-`200-placement-new-expression-constructor-call.t`,
-`300-pragma-pack-followed-by-endif.t`, and
-`200-nonliteral-field-condition-not-folded.t`.  This bounded audit found and
-repairs one over-broad class-pointer classifier: the object-layout helper
-unwraps arrays, so it cannot be used directly to classify a pointer's
-pointee.  The finalizer now strips cv qualification only, requires an exact
-`Named` pointee, and then validates the class record.  Thus `Class*` retains
-the typed truth policy while `Class (*)[N]`, scalar pointers, invalid ranges,
-and non-pointer operations remain materialized.
+This checkpoint repairs the typed packed-bit-field value/update boundary.
+`process_bit_field_declaration` now distinguishes the selected
+implementation-defined plain-`int` bit-field representation from an explicit
+`signed` declaration using PA10 specifier tokens.  Explicitly signed integral
+fields and signed-underlying enum fields remain sign-preserving; the narrow
+plain-`int` convention recovers `400-bitfield-aggregate-init.t` without
+changing the PA12 promoted `operation_type`.
 
-The shared owner/data flow is:
+PA15 keeps the existing single lowering path: direct aggregate paths capture
+the first field projection from the canonical storage root; binary operands
+consume the extracted bit-field temporary without a redundant publication
+copy, while direct scalar value boundaries retain their explicit copy.
+Inc/dec still uses one typed packed-unit encode/RMW-store, the saved
+`BindingId`/`ProjectionId`, and the old-value postfix versus updated-value
+prefix result category.  The aggregate cursor remains declaration-ordered,
+and no source expression is re-evaluated.
 
-1. `semantic_binary_expression` publishes comparisons as semantic `bool`
-   facts with `canonical_truth=true` and records their owned conversions.
-2. `CanonicalTruthFinalizer::publish_conversions` preserves a bool-origin
-   canonical truth value only at typed boundaries represented by the fact:
-   member-derived truth, `sizeof`/size-type-derived truth, and exact
-   class-object-pointer comparisons.  Plain procedural comparisons retain
-   `Materialize`, and bool storage/ABI destinations remain u8.
-3. `finish_member_call` publishes the same bool-result
-   `bool_context_operand` and `direct_bool_boundary` metadata already emitted
-   by all other relevant call owners, for both static and non-static results.
-4. PA15 keeps canonical truth's internal physical carrier at i64 while the
-   semantic result remains bool/u8 at storage boundaries.  `cmp` retains the
-   actual typed operation operand, and conversion policy is consumed once
-   without redundant truncation at the explicitly typed boundary.
-
-The placement-new and pragma-pack/parser/layout machinery named by the
-recovered fixtures is not changed; only their shared truth-conversion
-boundary is in scope.  No focused regression, test, fixture, harness,
-comparator, or reference/host execution is added or changed.
+The two signed-read references omit the required sign extension and remain
+intentionally unresolved.  The prefix reference also requests `cmp eq u32`
+for values whose PA12 [conv.prom] operation type is `int`; using that carrier
+with the emitted `i32` operands is rejected by `lowir2cy86`.  Reproducing
+either sequence would violate the typed/signed contract, so these tensions
+are recorded for supervisor steering rather than hidden with fixture-specific
+branching.
 
 ## Performance Evidence
 
-The finalizer remains linear in semantic facts, owned conversions, and result
-edges; the new exact-pointee classifier is O(1) per canonical-truth fact with
-bounded range checks.  PA15 still emits each expression fact/instruction once;
-there is no rescan, cache, whole-program retry, or duplicate lowering.
-Focused structural probes show `Class*` uses the typed direct boundary while
-`Class (*)[2]` and scalar pointers use ordinary materialization.  No timing,
-RSS, or code-size measurement was taken, so no measured performance claim is
-made.
+The fact/projection lookups remain O(1) per typed bit-field operation, with a
+contiguous projection arena and bounded width/mask work.  The focused prefix
+output has eight field projections, two add operations, two packed-unit update
+stores, and no value-publication copies in its comparison operands; the
+aggregate output has two field projections, one packed store, one packed load,
+and no sign/copy sequence for its plain-`int` convention.  The 412 regression
+exercises neighboring-field preservation and assignment without duplicate
+source evaluation.  There is no rescan, retry, parallel lowerer, or
+fixture-dependent branch.  No timing, RSS, or code-size measurement was taken;
+these are structural observations, not measured performance claims.
 
 ## Validation
 
-The focused and broad checks passed with the expected incomplete-stage result:
+Final validation is complete:
 
 - `make cppgm++ CXX=g++` from `dev/`: status `0`.
-- PA16 focused target/control set: status `0`, `PASS (7/7)`.
-- PA15 condition, call, sizeof, and conversion controls: status `0`,
-  `PASS (5/5)`.
-- Direct probes exit `0`: `Class*` is direct `zext i32 u8`, while
-  `Class (*)[2]`, `int*`, and `int (*)[2]` retain ordinary truncation followed
-  by zext.
-- `make test-pa16`: status `2`, `214/243`, exactly the authority's 29
-  failures, no baseline-only or fresh-only identity, and `243/243` coverage.
-- The exact `n=16` through-PA15 command: status `0`, `1167/1167`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
-  with five pre-existing header-division warnings and no fatal finding.
-- Final changed-path audit: status `0`, limited to the three scoped files.
-- `git diff --check` after all source and record edits: status `0`.
+- `make -C pa16 check TEST='tests/general/400-bit-field-prefix-postfix-increment.t tests/general/400-bitfield-aggregate-init.t tests/general/400-signed-bit-field-read.t tests/general/400-signed-enum-bit-field-read.t tests/general/300-bit-field-layout-sizeof.t tests/general/300-zero-width-bit-field-layout.t tests/general/400-bit-field-constructor-member-init.t tests/general/400-bit-field-sparse-member-init.t tests/general/400-address-of-bit-field-bad.t tests/general/400-bit-field-member-access-bad.t'`:
+  status `2`, `PASS (7/10)`, all 10 identities covered; the aggregate target
+  plus six controls pass, while prefix and the two signed-read targets remain.
+- `sh cppgm.tests/course/pa16/412-typed-bit-field-initialization-root-regression.sh`:
+  status `0`, `PASS`; assignment, packed neighbors, promotions, references,
+  address, and `sizeof` restrictions are exercised.
+- `sh cppgm.tests/course/pa16/422-typed-pack-wide-bitfield-layout-regression.sh`:
+  status `0`, `PASS`.
+- `make test-pa16`: status `2`, `215/243` passed, exactly 28 failures, all
+  `243/243` identities covered; the failure set is the turn-start set minus
+  `400-bitfield-aggregate-init.t`, with no new identity.
+- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`:
+  status `0`, `1167/1167` through PA15.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`,
+  five known header-division warnings and no fatal issue.
+- `git diff --check`: status `0`.
 
-Raw logs and statuses for these results are in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-truth-width-audit-final-20260830/`.
+No test, harness, reference, comparator, or coverage surface changed.
 
 ## Next Checkpoint
 
-PA16 remains incomplete with the exact 29 residual identities above.  The next
-checkpoint should select the largest coherent remaining typed owner while
-preserving the distinction between typed truth boundaries and plain procedural
-materialization.
+PA16 remains incomplete at `215/243`, with 28 residual failures and
+`243/243` identities covered.  The next coherent boundary is the remaining
+typed constructor/member-initialization and lifetime semantic flow; future
+work should extend that PA12 fact-to-PA15 consumer path.  The signed-read and
+prefix oracle tensions remain and require a contract-preserving design.
 
 ## Checkpoint Ledger
 
@@ -149,3 +146,4 @@ materialization.
 | `85b819b7` pre-increment authority | `211/243`, 32 failures, `243/243` covered | prior baseline |
 | `typed truth-width continuity (parent 85b819b7)` | final `214/243`, 29 failures, `243/243` covered; authority-only 3 named identities; fresh-only 0; through-PA15 `1167/1167`; audit 0 with five known warnings; diff-check 0 | landed in this checkpoint commit |
 | `96e80152` truth-width checkpointAudit | Focused build `0`, PA16 `7/7`, PA15 `5/5`; fresh PA16 status `2` at `214/243` with authority/fresh `29/29` failures, baseline-only/fresh-only `0/0`, and `243/243` coverage; through-PA15 `1167/1167`; file audit `0` with five pre-existing warnings; final diff/path audits `0`; exact-pointee class-pointer guard repaired | completed audit |
+| typed packed-bit-field value/update boundary | Final PA16 `215/243`, 28 failures, `243/243` covered; strict subset removes `400-bitfield-aggregate-init.t`; through-PA15 `1167/1167`; audit passed with five known warnings | landed |

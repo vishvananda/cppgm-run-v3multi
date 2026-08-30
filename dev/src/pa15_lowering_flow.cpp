@@ -835,9 +835,9 @@ LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
 		LoweredValue right = lower_expression_impl(operands[1], false, true,
 			force_size_operands, true);
 		left = apply_conversions(operands[0], left, false, true,
-			force_size_operands);
+			force_size_operands, true);
 		right = apply_conversions(operands[1], right, false, true,
-			force_size_operands);
+			force_size_operands, true);
 		if ((fact.token == SimpleTokenType::OP_PLUS ||
 			fact.token == SimpleTokenType::OP_MINUS) && left_pointer &&
 			!right_pointer && left.type.is_pointer())

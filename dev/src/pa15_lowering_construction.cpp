@@ -621,8 +621,18 @@ LoweredValue Pa15Lowerer::aggregate_path_address(const LoweredValue& storage,
 		const LoweredValue member_offset(integer_operand(
 			static_cast<long long>(*offset), offset_type), offset_type, false);
 		if (model_.bit_field_fact(path[i].member) != NULL)
-			result = emit_bit_field_index(result, member_offset, byte,
-				lowir_model::IPK_FIELD, path[i].member);
+		{
+			// Keep direct aggregate roots replayable from their canonical storage
+			// slot.  A later packed-unit store must not reuse a transient pointer
+			// produced only to address the first projection.
+			if (i == 0)
+				result = emit_bit_field_index(result, member_offset, byte,
+					lowir_model::IPK_FIELD, path[i].member,
+					BitFieldAddressProjection::ROOT_STORAGE_ADDRESS, storage);
+			else
+				result = emit_bit_field_index(result, member_offset, byte,
+					lowir_model::IPK_FIELD, path[i].member);
+		}
 		else
 			result = emit_index(result, member_offset, byte,
 				lowir_model::IPK_FIELD);

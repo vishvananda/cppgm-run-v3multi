@@ -274,10 +274,9 @@ void Pa15Lowerer::materialize_lvalue_value(LoweredValue* result,
 	{
 		LoweredValue value = emit_bit_field_load(*result,
 			result->bit_field_binding, type);
-		// A bit-field is not an addressable scalar expression.  When a normal
-		// value boundary is requested, publish its extracted operation value
-		// explicitly; update paths call emit_bit_field_load directly and do not
-		// pay for this extra materialization.
+		// Keep the ordinary value boundary explicit when requested by the
+		// enclosing conversion.  Binary operands can consume the extracted
+		// temporary directly because no lvalue identity remains there.
 		if (publish_bit_field_value)
 		{
 			Instruction copy;
