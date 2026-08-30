@@ -1212,6 +1212,8 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			}
 			else if (model_.void_id(fact.type))
 			{
+				const SemanticFact& operand_fact = model_.semantic_facts_[
+					operands.front().value];
 				if (fact.conversion_count != 1 ||
 					fact.conversion_begin == InvalidIdentityValue ||
 					fact.conversion_begin >= model_.conversion_facts_.size() ||
@@ -1219,6 +1221,18 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 						ConversionKind::ToVoid)
 					throw std::runtime_error(
 						"PA15 void cast is missing its ToVoid conversion");
+				const ConversionFact& conversion = model_.conversion_facts_[
+					fact.conversion_begin];
+				// PA12 owns the source/target pair; a kind-only match could consume
+				// a well-formed-looking record for the wrong typed child.
+				if (!conversion.source.valid() ||
+					conversion.source.value >= model_.types_.size() ||
+					!conversion.target.valid() ||
+					conversion.target.value >= model_.types_.size() ||
+					conversion.source != model_.expression_object_type(
+						operand_fact.type) || conversion.target != fact.type)
+					throw std::runtime_error(
+						"PA15 void cast has an invalid ToVoid conversion");
 				// A discarded conversion to void evaluates the source, but its
 				// scalar result is not needed.  Keep that context all the way
 				// through the source so side-effecting lvalues are not reloaded.
