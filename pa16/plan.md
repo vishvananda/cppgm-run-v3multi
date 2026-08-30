@@ -25,7 +25,7 @@ demand, and LowIR call emission remain owned by their existing machinery.
 
 ## Failure Map
 
-The latest landed-stage authority before this uncommitted checkpoint is
+The latest landed-stage authority before this checkpoint is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
 `210/243` passed, exactly `33` failed, and all `243/243` identities are
 covered.  The complete 33-failure baseline map is:
@@ -155,9 +155,9 @@ Final validation after the size-limit refactor:
 
 ## Next Checkpoint
 
-All landing predicates pass.  Commit this coherent increment with the
-documented constructor truth-width mismatch left as the known unrelated
-residual; this checkpoint does not claim full PA16 completion.
+This checkpoint landed at `fb4f46ed`; PA16 remains incomplete.  Future work
+must select a separate residual from the 32-failure map and must not treat
+extra passes as compensation for a fresh failure.
 
 ## Checkpoint Ledger
 
@@ -171,5 +171,5 @@ residual; this checkpoint does not claim full PA16 completion.
 | `3b2b4882` checkpoint audit baseline | `208/243`, 35 failures, `243/243` covered | clean turn-start tree and authoritative stage log | prior baseline |
 | `ee8f44d5` per-throw typed array cleanup checkpoint audit | `209/243`, 34 failures, `243/243` covered | exact prior authority comparison preserved all identities and coverage; focused constructor/array evidence passed with mapped residuals | prior landed |
 | `08472cce` typed pragma-pack record layout (parent `0ff3fdef`) | prior landed pack-layout checkpoint | typed ordered pack/layout path; superseded as current parent by `9f7101ac` | prior landed |
-| `9f7101ac` typed pack-layout audit | `210/243`, 33 failures, `243/243` covered | current HEAD; hardened typed pack validation/layout path; broad authority is the 33-failure baseline for this increment | landed; PA16 remains incomplete |
-| typed placement-new semantic/lowering checkpoint (parent `9f7101ac`) | `211/243`, 32 failures, `243/243` inventoried; fresh-only `0`; authority-only aggregate placement-new | focused aggregate `PASS (1/1)`; constructor exit and typed LowIR flow pass with only the documented unrelated `trunc u8 i64` residual; declaration-owner regression `PASS (1/1)`; through-PA15 `1167/1167`; audit no fatals; diff-check pass | validated; commit authorized |
+| `9f7101ac` typed pack-layout audit | `210/243`, 33 failures, `243/243` covered | former HEAD and parent baseline; hardened typed pack validation/layout path; broad authority is the 33-failure baseline for this increment | prior landed |
+| `fb4f46ed` typed placement-new semantic/lowering checkpoint (parent `9f7101ac`) | `211/243`, 32 failures, `243/243` inventoried; fresh-only `0`; authority-only aggregate placement-new | focused aggregate `PASS (1/1)`; constructor exit and typed LowIR flow pass with only the documented unrelated `trunc u8 i64` residual; declaration-owner regression `PASS (1/1)`; through-PA15 `1167/1167`; audit no fatals; diff-check pass | landed; PA16 remains incomplete |
