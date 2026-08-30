@@ -750,17 +750,23 @@ void Pa15Lowerer::zero_initialize_value_initialized_object(TypeId target,
 			std::size_t width;
 			LowType zero;
 			zero.kind = LowType::TYPE_INTEGER;
-			if (remaining >= 8 && alignment % 8 == 0 && offset % 8 == 0)
+			// Object alignment is a semantic layout fact, not a restriction on
+			// the scalar width of this byte-covered LowIR clear.  LowIR pointer
+			// stores have no alignment operand, and the x86-64 backend permits
+			// these stores at the already-validated destination address.  Use the
+			// widest exact chunk so a complete aggregate subobject is cleared in
+			// compact form before its constructor actions run.
+			if (remaining >= 8 && offset % 8 == 0)
 			{
 				width = 8;
 				zero.integer_kind = LowType::INTEGER_I64;
 			}
-			else if (remaining >= 4 && alignment % 4 == 0 && offset % 4 == 0)
+			else if (remaining >= 4 && offset % 4 == 0)
 			{
 				width = 4;
 				zero.integer_kind = LowType::INTEGER_I32;
 			}
-			else if (remaining >= 2 && alignment % 2 == 0 && offset % 2 == 0)
+			else if (remaining >= 2 && offset % 2 == 0)
 			{
 				width = 2;
 				zero.integer_kind = LowType::INTEGER_I16;
