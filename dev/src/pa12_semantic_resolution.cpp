@@ -1152,6 +1152,143 @@ SemanticFactId PA11SemanticModel::semantic_return_statement(
 	}
 	return result;
 }
+ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
+	TypeId target, const PA10AstNode* source_node, ScopeId access_scope)
+{
+	// [conv.array] followed by [conv.ptr] is still one standard conversion
+	// sequence.  Keep both typed edges when an array is passed to a const void
+	// pointer; treating the destination as a direct array decay would otherwise
+	// lose the intermediate pointer type.  The same check deliberately rejects
+	// a mutable void pointer when the array element is const-qualified.
+	if (expression.type.valid() && expression.type.value < types_.size() &&
+		target.valid() && target.value < types_.size())
+	{
+		const TypeId source_object = strip_cv_type(
+			expression_object_type(expression.type));
+		const TypeId target_object = strip_cv_type(
+			expression_object_type(target));
+		if (source_object.valid() && source_object.value < types_.size() &&
+			target_object.valid() && target_object.value < types_.size() &&
+			type_kind(source_object) == TypeKind::Array &&
+			type_kind(target_object) == TypeKind::Pointer &&
+			void_id(types_[target_object.value].child))
+		{
+			if (!expression.fact.valid() ||
+				expression.fact.value >= semantic_facts_.size())
+				throw std::runtime_error(
+					"PA12 array-to-void conversion fact is missing");
+			const PA10AstNode* cast_source = source_node != NULL ? source_node :
+				semantic_facts_[expression.fact.value].source;
+			if (cast_source == NULL)
+				throw std::runtime_error(
+					"PA12 array-to-void conversion source is missing");
+			const TypeId decayed = make_pointer(types_[source_object.value].child);
+			const ConversionChoice decay = conversion_for(expression, decayed,
+				cast_source, access_scope);
+			const ConversionChoice to_void = conversion_for(decayed,
+				SemanticValueCategory::Prvalue, target, cast_source, false,
+				access_scope);
+			if (!decay.valid || decay.kind != ConversionKind::ArrayToPointer ||
+				!to_void.valid || to_void.kind != ConversionKind::PointerToVoid)
+				throw std::runtime_error(
+					"PA12 invalid array-to-void conversion");
+			// Keep the literal/array fact as the lowering root.  PA15 must lower
+			// that root to obtain its address before consuming the two typed
+			// standard-conversion edges; a wrapper would hide the address from
+			// the existing literal materialization path.
+			set_fact_conversion(expression.fact, add_conversion(expression.type,
+				decayed, decay));
+			record_constant_address(expression.fact, access_scope);
+			set_fact_conversion(expression.fact, add_conversion(decayed, target,
+				to_void));
+			const TypeKind target_kind = type_kind(target);
+			const SemanticValueCategory category = target_kind ==
+				TypeKind::LvalueReference ? SemanticValueCategory::Lvalue :
+				target_kind == TypeKind::RvalueReference ?
+				SemanticValueCategory::Xvalue :
+				SemanticValueCategory::Prvalue;
+			return ExprInfo(expression.fact, target, category, false);
+		}
+	}
+	const ConversionChoice choice = conversion_for(expression, target, source_node,
+		access_scope);
+	if (!choice.valid)
+		throw std::runtime_error("PA12 invalid conversion");
+	const TypeKind target_kind = type_kind(target);
+	if (expression.type == target &&
+		((target_kind == TypeKind::LvalueReference &&
+			expression.category == SemanticValueCategory::Lvalue) ||
+		 (target_kind == TypeKind::RvalueReference &&
+			expression.category == SemanticValueCategory::Xvalue)))
+	{
+		// An expression-owned typed temporary already carries its complete
+		// conversion range.  Ordinary exact reference roots still need the
+		// established ReferenceBinding fact so PA15 preserves the alias address.
+		const bool has_owned_conversions = expression.fact.valid() &&
+			expression.fact.value < semantic_facts_.size() &&
+			semantic_facts_[expression.fact.value].conversion_count != 0;
+		if (has_owned_conversions)
+			return expression;
+	}
+	bool logical_value = false;
+	if (expression.fact.valid() && expression.fact.value < semantic_facts_.size())
+	{
+		const SemanticFact& fact = semantic_facts_[expression.fact.value];
+		logical_value = fact.kind == SemanticFactKind::BinaryExpression &&
+			(fact.token == SimpleTokenType::OP_LAND ||
+				fact.token == SimpleTokenType::OP_LOR);
+	}
+	// Preserve typed scalar bool boundaries; PA15 materializes built-in logical
+	// truth when it is stored in a bool object.
+	if (choice.kind == ConversionKind::Identity &&
+		expression.category == SemanticValueCategory::Prvalue &&
+		expression.type == target && (!bool_id(target) || !logical_value))
+		return expression;
+	if (choice.kind == ConversionKind::ReferenceBinding &&
+		(type_kind(target) == TypeKind::LvalueReference ||
+			type_kind(target) == TypeKind::RvalueReference))
+	{
+		const TypeId referred = types_[target.value].child;
+		const TypeId source_value = expression_object_type(expression.type);
+		const BitFieldFact* bit_field = bit_field_fact_for_expression(expression);
+		if (cv_qualifiers(referred) != 0 &&
+			(bit_field != NULL || !qualification_convertible(source_value, referred)))
+		{
+			if (bit_field != NULL)
+				return make_bit_field_reference_temporary(expression, target,
+					source_node, access_scope, choice);
+			const ConversionChoice temporary = conversion_for(expression, referred,
+				source_node, access_scope);
+			const PA10AstNode* cast_source = source_node != NULL ? source_node :
+				semantic_facts_[expression.fact.value].source;
+			if (!temporary.valid || cast_source == NULL)
+				throw std::runtime_error("PA12 reference temporary conversion is invalid");
+			const SemanticFactId cast = make_expression_fact(
+				SemanticFactKind::CastExpression, referred,
+				SemanticValueCategory::Prvalue, *cast_source,
+				std::vector<SemanticFactId>(1, expression.fact));
+			set_fact_conversion(cast, add_conversion(expression.type, referred,
+				temporary));
+			set_fact_conversion(cast, add_conversion(referred, target, choice));
+			return ExprInfo(cast, referred, SemanticValueCategory::Prvalue,
+				false);
+		}
+	}
+	const ConversionFactId conversion = add_conversion(expression.type, target,
+		choice);
+	set_fact_conversion(expression.fact, conversion);
+	if (choice.kind == ConversionKind::ArrayToPointer)
+		record_constant_address(expression.fact, access_scope);
+	ExprInfo result = expression;
+	if (choice.kind == ConversionKind::NullIntegerToPointer ||
+		choice.kind == ConversionKind::NullIntegerToNullptr)
+	{
+		semantic_facts_[result.fact.value].type = target;
+		result.type = target;
+	}
+	return result;
+}
+
 ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	const PA10AstNode& node, ScopeId scope, TypeId target,
 	const ExprInfo& operand)

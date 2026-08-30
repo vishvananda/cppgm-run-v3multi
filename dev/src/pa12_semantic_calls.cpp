@@ -1,6 +1,7 @@
 #include "pa11_semantic_model.h"
 
 #include <limits>
+#include <set>
 
 namespace pa11_semantic_internal
 {
@@ -119,6 +120,110 @@ bool PA11SemanticModel::supports_pa16_class_value_parameter(
 	return argument.fact.valid() &&
 		argument.category == SemanticValueCategory::Lvalue &&
 		strip_cv_type(expression_object_type(argument.type)) == parameter_object;
+}
+
+ConversionChoice PA11SemanticModel::implicit_constructor_conversion(
+	const ExprInfo& argument, TypeId target, ScopeId scope) const
+{
+	if (!target.valid() || target.value >= types_.size() ||
+		!argument.fact.valid() || argument.fact.value >= semantic_facts_.size())
+		return ConversionChoice();
+	const TypeKind target_kind = type_kind(target);
+	if ((target_kind != TypeKind::LvalueReference &&
+		target_kind != TypeKind::RvalueReference))
+		return ConversionChoice();
+	const TypeId referred = types_[target.value].child;
+	if (target_kind == TypeKind::LvalueReference &&
+		type_kind(referred) != TypeKind::Cv)
+		return ConversionChoice();
+	const TypeId object = strip_cv_type(expression_object_type(referred));
+	const NamedRecordId record_id = named_record_for_type(object);
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag == ClassTag::Union)
+		return ConversionChoice();
+	const NamedRecord& record = named_[record_id.value];
+	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		!record.name.valid())
+		throw std::runtime_error("PA12 implicit constructor owner is invalid");
+	const ValueList* values = scopes_[record.scope.value].values.find(record.name);
+	if (values == NULL)
+		return ConversionChoice();
+	const SemanticFact& source_fact = semantic_facts_[argument.fact.value];
+	bool found = false;
+	bool ambiguous = false;
+	unsigned int best_rank = std::numeric_limits<unsigned int>::max();
+	ConversionScore best_score;
+	std::set<std::size_t> seen;
+	for (std::size_t i = 0; i < values->entries.size(); ++i)
+	{
+		const ValueEntry& entry = values->entries[i];
+		const BindingId candidate_id = entry.binding;
+		if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+			candidate_id.value >= binding_owners_.size() ||
+			binding_owners_[candidate_id.value] != record.scope ||
+			entry.origin != record.scope)
+			throw std::runtime_error(
+				"PA12 implicit constructor index identity is invalid");
+		if (!seen.insert(candidate_id.value).second)
+			throw std::runtime_error(
+				"PA12 duplicate implicit constructor index entry");
+		const Binding& candidate = binding(candidate_id);
+		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
+			candidate.type.value >= types_.size() ||
+			type_kind(candidate.type) != TypeKind::Function)
+			continue;
+		const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+		if (sidecar == NULL || sidecar->constructor_record != record_id ||
+			sidecar->explicit_constructor ||
+			function_declaration_kind(candidate_id) ==
+				FunctionDeclarationKind::Deleted)
+			continue;
+		const TypeKey function = types_[candidate.type.value];
+		if (function.variadic || function.parameters.empty())
+			continue;
+		std::size_t required = function.parameters.size();
+		while (required > 1 && function_default_argument(candidate_id,
+			required - 1).valid())
+			--required;
+		if (required != 1)
+			continue;
+		const TypeId parameter = function.parameters.front();
+		const NamedRecordId parameter_record = named_record_for_type(
+			strip_cv_type(expression_object_type(parameter)));
+		if (parameter_record.valid() && parameter_record.value < named_.size() &&
+			named_[parameter_record.value].kind == NamedKind::Class &&
+			type_kind(parameter) != TypeKind::LvalueReference &&
+			type_kind(parameter) != TypeKind::RvalueReference)
+			continue;
+		if (!member_accessible(candidate_id, record.scope, scope, object))
+			continue;
+		const ConversionChoice conversion = conversion_for(argument, parameter,
+			source_fact.source, scope);
+		if (!conversion.valid)
+			continue;
+		const ConversionScore score(conversion);
+		const int comparison = found ? compare_conversion_scores(score,
+			best_score) : -1;
+		if (!found || comparison < 0)
+		{
+			found = true;
+			ambiguous = false;
+			best_rank = conversion.rank;
+			best_score = score;
+		}
+		else if (comparison == 0)
+			ambiguous = true;
+	}
+	if (!found || ambiguous)
+		return ConversionChoice();
+	// The constructor is one user-defined conversion sequence.  Keep the
+	// first standard sequence's rank as metadata only; the shared typed
+	// comparator orders the user-defined category independently of it.
+	ConversionChoice result(true, best_rank, ConversionKind::ReferenceBinding);
+	result.rank_category = ConversionRankCategory::UserDefined;
+	return result;
 }
 
 TypedFunctionSelection PA11SemanticModel::select_typed_function(
@@ -243,6 +348,9 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 				}
 			}
 			if (!choice.valid)
+				choice = implicit_constructor_conversion(arguments[argument],
+					function.parameters[argument], scope);
+			if (!choice.valid)
 				break;
 			score.ranks.push_back(ConversionScore(choice));
 		}
@@ -299,27 +407,46 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		selected_function.parameters.size();
 	for (std::size_t argument = 0; argument < fixed_explicit; ++argument)
 	{
+		const TypeId parameter = selected_function.parameters[argument];
+		if (!parameter.valid() || parameter.value >= types_.size())
+			throw std::runtime_error("PA12 selected function parameter is invalid");
 		if (!arguments[argument].fact.valid())
 			arguments[argument] = semantic_expression_for_target(
 				*argument_nodes[argument], scope,
-				selected_function.parameters[argument]);
+				parameter);
+		else
+		{
+			if (arguments[argument].fact.value >= semantic_facts_.size())
+				throw std::runtime_error(
+					"PA12 selected function argument fact is invalid");
+			const TypeKind parameter_kind = type_kind(parameter);
+			const bool class_reference =
+				(parameter_kind == TypeKind::LvalueReference ||
+					parameter_kind == TypeKind::RvalueReference) &&
+				class_scope_for_type(types_[parameter.value].child).valid();
+			if (class_reference && !conversion_for(arguments[argument], parameter,
+				semantic_facts_[arguments[argument].fact.value].source,
+				scope).valid)
+				arguments[argument] = semantic_expression_for_target(
+					*argument_nodes[argument], scope, parameter);
+		}
 		if (!arguments[argument].fact.valid() || arguments[argument].fact.value >=
 			semantic_facts_.size())
 			throw std::runtime_error("PA12 selected function argument is invalid");
 		const bool class_value = supported_class_value_parameter(selected, argument,
-			selected_function.parameters[argument]);
+			parameter);
 		const PA10AstNode* source = semantic_facts_[
 			arguments[argument].fact.value].source;
 		if (class_value)
 		{
 			set_fact_conversion(arguments[argument].fact,
 				add_conversion(arguments[argument].type,
-					selected_function.parameters[argument],
+					parameter,
 					ConversionChoice(true, 0, ConversionKind::ClassValue)));
 		}
 		else
 			arguments[argument] = apply_context_conversion(arguments[argument],
-				selected_function.parameters[argument], source, scope);
+				parameter, source, scope);
 	}
 	apply_call_argument_conversions(arguments, selected_type, scope);
 	TypedFunctionSelection result(selected, selected_type);
@@ -707,110 +834,6 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 	};
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
-	// An implicit conversion to a class reference may use one non-explicit
-	// converting constructor.  Keep this probe at the typed operator boundary:
-	// it checks the canonical constructor index, access, and the constructor's
-	// single parameter conversion without publishing speculative semantic facts.
-	const auto implicit_constructor_conversion = [this, scope] (
-		const ExprInfo& argument, const PA10AstNode* argument_node,
-		TypeId target) -> ConversionChoice
-	{
-		const TypeKind target_kind = type_kind(target);
-		if ((target_kind != TypeKind::LvalueReference &&
-			target_kind != TypeKind::RvalueReference) ||
-			!argument.fact.valid() || argument.fact.value >= semantic_facts_.size())
-			return ConversionChoice();
-		const TypeId referred = types_[target.value].child;
-		if (target_kind == TypeKind::LvalueReference &&
-			type_kind(referred) != TypeKind::Cv)
-			return ConversionChoice();
-		const TypeId object = strip_cv_type(expression_object_type(referred));
-		const NamedRecordId record_id = named_record_for_type(object);
-		if (!record_id.valid() || record_id.value >= named_.size() ||
-			named_[record_id.value].kind != NamedKind::Class ||
-			named_[record_id.value].class_tag == ClassTag::Union)
-			return ConversionChoice();
-		const NamedRecord& record = named_[record_id.value];
-		if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
-			scopes_[record.scope.value].kind != ScopeKind::Class ||
-			!record.name.valid())
-			throw std::runtime_error("PA12 implicit constructor owner is invalid");
-		const ValueList* values = scopes_[record.scope.value].values.find(record.name);
-		if (values == NULL)
-			return ConversionChoice();
-		const SemanticFact& source_fact = semantic_facts_[argument.fact.value];
-		bool found = false;
-		bool ambiguous = false;
-		unsigned int best_rank = std::numeric_limits<unsigned int>::max();
-		ConversionScore best_score;
-		std::vector<BindingId> seen;
-		for (std::size_t i = 0; i < values->entries.size(); ++i)
-		{
-			const ValueEntry& entry = values->entries[i];
-			const BindingId candidate_id = entry.binding;
-			if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
-				candidate_id.value >= binding_owners_.size() ||
-				binding_owners_[candidate_id.value] != record.scope ||
-				entry.origin != record.scope)
-				throw std::runtime_error(
-					"PA12 implicit constructor index identity is invalid");
-			for (std::size_t prior = 0; prior < seen.size(); ++prior)
-				if (seen[prior] == candidate_id)
-					throw std::runtime_error(
-						"PA12 duplicate implicit constructor index entry");
-			seen.push_back(candidate_id);
-			const Binding& candidate = binding(candidate_id);
-			if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
-				candidate.type.value >= types_.size() ||
-				type_kind(candidate.type) != TypeKind::Function)
-				continue;
-			const BindingSidecar* sidecar = binding_sidecar(candidate_id);
-			if (sidecar == NULL || sidecar->constructor_record != record_id ||
-				sidecar->explicit_constructor ||
-				function_declaration_kind(candidate_id) ==
-					FunctionDeclarationKind::Deleted)
-				continue;
-			const TypeKey function = types_[candidate.type.value];
-			if (function.variadic || function.parameters.size() != 1)
-				continue;
-			const TypeId parameter = function.parameters.front();
-			const NamedRecordId parameter_record = named_record_for_type(
-				strip_cv_type(expression_object_type(parameter)));
-			if (parameter_record.valid() && parameter_record.value < named_.size() &&
-				named_[parameter_record.value].kind == NamedKind::Class &&
-				type_kind(parameter) != TypeKind::LvalueReference &&
-				type_kind(parameter) != TypeKind::RvalueReference)
-				continue;
-			if (!member_accessible(candidate_id, record.scope, scope, object))
-				continue;
-			const ConversionChoice conversion = conversion_for(argument, parameter,
-				source_fact.source, scope);
-			if (!conversion.valid)
-				continue;
-			const ConversionScore score(conversion);
-			const int comparison = found ? compare_conversion_scores(score,
-				best_score) : -1;
-			if (!found || comparison < 0)
-			{
-				found = true;
-				ambiguous = false;
-				best_rank = conversion.rank;
-				best_score = score;
-			}
-			else if (comparison == 0)
-				ambiguous = true;
-		}
-		(void)argument_node;
-		if (!found || ambiguous)
-			return ConversionChoice();
-		// The constructor is one user-defined conversion sequence.  Keep the
-		// first standard sequence's rank as metadata only; the shared typed
-		// comparator orders the user-defined category independently of it.
-		ConversionChoice result(true, best_rank,
-			ConversionKind::ReferenceBinding);
-		result.rank_category = ConversionRankCategory::UserDefined;
-		return result;
-	};
 	const auto append_scores = [&](const std::vector<ValueRef>& candidates,
 		bool member, const ExprInfo& object,
 		const std::vector<const PA10AstNode*>& argument_nodes,
@@ -931,7 +954,7 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 				}
 				if (!choice.valid)
 					choice = implicit_constructor_conversion(initial_arguments[argument],
-						argument_nodes[argument], function.parameters[argument]);
+						function.parameters[argument], scope);
 				if (!choice.valid)
 				{
 					arguments_viable = false;

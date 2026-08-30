@@ -2768,7 +2768,7 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 		const char* storage_prefix = constructor_arguments.empty() ?
 			"tmpobj" : "arg";
 		const LoweredValue storage = generated_slot(low_type(action.type),
-			storage_prefix);
+			storage_prefix, action.source);
 		const LoweredValue address = address_of_storage(storage);
 		emit_constructor_call(action.selected_binding, address,
 			constructor_arguments);

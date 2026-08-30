@@ -1,164 +1,166 @@
-# PA16 typed `nullptr_t` carrier checkpoint
+# PA16 typed constructor-overload checkpoint
 
-## Current Spec Alignment
+## Stage Design
 
-The Purpose and §§1, 2, 5, and 7 remain satisfied by one self-contained,
-typed production path: PA11 publishes `FundamentalType::NullptrT`; PA12 owns
-typed zero-to-nullptr conversion and overload selection; PA15 carries that
-semantic type through ABI and LowIR; adapters parse/render only at their real
-boundaries.  `NullptrT` remains distinct semantic and ABI identity while its
-Linux x86_64 physical carrier is `i64`.  The path has no textual downgrade,
-host/reference shortcut, duplicate pipeline, test-name branch, or unbounded
-scan/retry.  New source guards fail closed on malformed nullptr identity,
-target, or carrier facts.  The cohesive ABI owners are now in a dedicated
-PA15 translation unit, named directly in the `cppgm++` source set; this is an
-ownership extraction, not a second pipeline.
+PA11 owns typed AST/model identities.  PA12 owns relevant lookup, direct and
+user-defined conversion choices and scores, constructor selection, and typed
+conversion/action facts.  PA15 consumes those selected declarations and calls
+and lowers the single typed model to LowIR.  The PA16 boundary here is ordinary
+overload resolution, constructors, converting constructors, external
+declarations, and the supported class subset.  Class value semantics,
+copy/move transfer, and pass-by-value class objects remain PA17 scope.
 
-## Active Ownership Path
+The owner path is:
 
-```text
-PA11 FundamentalType::NullptrT (size/alignment 8/8)
-  -> PA12 typed NullIntegerToNullptr ConversionFact and overload ranking
-  -> PA15 pa15_lowering_abi.cpp::abi_type_nested
-     -> ABI_BUILTIN_NULLPTR -> existing Itanium Dn
-  -> PA15 low_type -> TYPE_INTEGER/INTEGER_I64
-  -> typed parameter records, slots/stores, call operands, literals,
-     conversions, returns, and LowIR validator/adapter boundaries
-```
+    AST arguments -> ExprInfo and semantic facts
+      -> PA12 relevant candidate set
+      -> per-argument ConversionChoice and ConversionScore
+      -> selected declaration/constructor and target-aware materialization
+      -> ConstructorAction/CallExpression and typed conversion facts
+      -> PA15 declaration/call/constructor LowIR lowering
 
-`abi_type_nested` preserves the separate `ABI_BUILTIN_NULLPTR` identity and the
-existing encoder produces `_ZneRK3PtrDn`.  `collect_function`, declarations,
-`lower_call`, and `lower_function` all use the existing typed `low_type` owner,
-so pass-by-value `nullptr_t` has an i64 parameter, slot, store, and call
-operand.  `literal()` now gives semantic `NullptrT` keyword literals the same
-i64 carrier; a typed `NullptrToPointer` conversion evaluates that carrier and
-emits a pointer-null operand, while `NullptrToBool` requires a semantic bool
-target with canonical u8 physical width, compares the i64 carrier, preserves
-i64 in condition context, and materializes u8 only outside that context.
-Pointer-typed literal output remains unchanged.  The extracted ABI module
-contains the six existing ABI definitions, with no duplicate or fragment
-include; shared operator ABI helpers remain in `pa15_operator_abi.cpp`.
+## Baseline Authority and Failure Map
 
-## Exact Authority Failure Map
+At checkpoint entry, the supplied authority was 225/243 with exactly 18
+failures.  Discovered/reference/fresh coverage was exactly 243/243/243;
+the supplied authority and fresh failure sets each had 18 identities, all
+retained, with authority-only 0 and fresh-only 0.  Through PA15 was 1167/1167.
+The file audit passed with five known bad-division warnings.
 
-The supplied latest authority
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` reports
-status `2`, `225/243` passed, exactly `18` failures, and full
-`243/243` discovered/reference/fresh identity coverage.  The final
-post-extraction run is also `225/243` with the exact same normalized failure
-set: authority `18`, fresh `18`, retained `18`, authority-only `0`, and
-fresh-only `0`.  Final discovered/reference/fresh coverage is `243/243/243`,
-with zero delta in every pairwise direction.  This is the complete residual
-map:
+The final broad PA16 run is 227/243 (status 2 because the 16 known residuals
+remain).  Its exact identity set is the entry set minus #2 and #8: compared
+with the entry baseline, retained 16, baseline-only/resolved 2, and new 0.
+Within the final authority/fresh comparison, authority-only is 0, fresh-only
+is 0, and retained is 16.  Discovered/reference/fresh coverage remains
+243/243/243.
 
-```text
-pa16/tests/general/200-elaborated-member-forward-type.t
-pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
-pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
-pa16/tests/general/200-local-default-class-array-lifecycle.t
-pa16/tests/general/200-nested-braced-member-aggregate-init.t
-pa16/tests/general/200-reference-indexed-pointer-member-access.t
-pa16/tests/general/200-reference-member-class-init.t
-pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
-pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
-pa16/tests/general/300-callable-field-hides-private-base-method.t
-pa16/tests/general/300-friend-function-definition-skip.t
-pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
-pa16/tests/general/300-overloaded-deref-user-assignment.t
-pa16/tests/general/300-user-defined-string-literal-operator.t
-pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
-pa16/tests/general/400-bit-field-prefix-postfix-increment.t
-pa16/tests/general/400-signed-bit-field-read.t
-pa16/tests/general/400-signed-enum-bit-field-read.t
-```
+| # | test | checkpoint status |
+|---:|---|---|
+| 1 | pa16/tests/general/200-elaborated-member-forward-type.t | authority residual; untouched |
+| 2 | pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t | resolved; absent from final residual set |
+| 3 | pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t | authority residual; untouched |
+| 4 | pa16/tests/general/200-local-default-class-array-lifecycle.t | authority residual; untouched |
+| 5 | pa16/tests/general/200-nested-braced-member-aggregate-init.t | authority residual; untouched |
+| 6 | pa16/tests/general/200-reference-indexed-pointer-member-access.t | authority residual; untouched |
+| 7 | pa16/tests/general/200-reference-member-class-init.t | authority residual; untouched |
+| 8 | pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t | resolved; absent from final residual set |
+| 9 | pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t | authority residual; untouched |
+| 10 | pa16/tests/general/300-callable-field-hides-private-base-method.t | authority residual; untouched |
+| 11 | pa16/tests/general/300-friend-function-definition-skip.t | authority residual; untouched |
+| 12 | pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t | authority residual; untouched |
+| 13 | pa16/tests/general/300-overloaded-deref-user-assignment.t | authority residual; untouched |
+| 14 | pa16/tests/general/300-user-defined-string-literal-operator.t | authority residual; untouched |
+| 15 | pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t | authority residual; untouched |
+| 16 | pa16/tests/general/400-bit-field-prefix-postfix-increment.t | authority residual; untouched |
+| 17 | pa16/tests/general/400-signed-bit-field-read.t | authority residual; untouched |
+| 18 | pa16/tests/general/400-signed-enum-bit-field-read.t | authority residual; untouched |
 
-The 18 residuals are outside this nullptr checkpoint and remain untouched.  The
-signed bit-field references remain a known residual oracle tension; no fixture
-or reference change is warranted here.
+## Active Checkpoint
 
-## Finding and Disposition
+The evidence-backed defect was that shared ordinary-call scoring did not reuse
+the existing typed converting-constructor viability path for a class-reference
+parameter.  A candidate's argument loop is correctly stopped once any
+argument lacks an implicit conversion sequence; the outer loop still considers
+the remaining relevant candidates.  The invariant is that every still-viable
+candidate is checked argument-by-argument, a candidate is rejected once any
+argument lacks an ICS, and all relevant candidates remain considered.
 
-The landed same-line switch cases were reformatted.  The deeper owner defect
-was that `literal()` still emitted keyword `nullptr` as a pointer temporary
-after `NullptrT` acquired an i64 physical carrier.  The repair makes direct
-semantic `NullptrT` literals i64, preserves pointer-typed literal output, and
-makes typed `NullptrToPointer`/`NullptrToBool` consumption validate semantic
-endpoints and canonical carriers before emitting valid LowIR.  The pointer
-consumer allows a typed reference source so its lvalue load and effects remain
-evaluated, but requires a non-reference semantic pointer target; the bool
-consumer requires a non-reference semantic bool and canonical u8 target, while
-retaining i64 condition-context truth.  The narrow `NullIntegerToNullptr`
-consumer check complements PA12's existing typed producer/global invariants
-by requiring an integral typed zero source, exact `NullptrT` target, i64
-carrier, and integer zero.  No generic conversion refactoring, fixture
-change, or reference regeneration is justified.
+The checkpoint adds one shared implicit-constructor conversion owner.  It
+validates the target and source facts, considers only relevant non-explicit
+accessible constructors, honors defaulted trailing parameters, scores the
+constructor's first parameter, and returns a single user-defined
+ConversionChoice only when the best score is unique.  The selected call then
+re-enters target-aware semantic construction when the chosen argument needs a
+converting-constructor temporary.
 
-The file-audit size correction extracts the six existing cohesive ABI method
-definitions into `dev/src/pa15_lowering_abi.cpp` and adds its basename to the
-`cppgm++` source set.  `pa15_lowering.cpp` is `2886` lines and the new module is
-`264` lines; this is a move of definitions with no implementation fragment,
-duplicate pipeline, or behavior change.
+For the external Box case, both three-argument overloads are considered:
+Box(int,const Token&,int) rejects its second argument, while the declared
+Box(int,const char*,int) remains viable and lowers as the selected external
+function declaration/call.  Generic array-to-pointer conversion now also
+publishes the typed constant-address fact needed by PA15 for a string literal
+returned from Source::c_str().
 
-## Focused Evidence
+For the library case, the mutable void* overload remains nonviable because
+discarding the string literal's const qualification is not permitted.  The
+const path& overload obtains one user-defined sequence through path(const
+char*), then binds the temporary to the const reference.  The separate
+const-void-pointer initializer records the two standard edges
+array-to-pointer and pointer-to-void.  No class-value, copy, or move semantics
+were added.  The array fact remains the PA15 lowering root, while the returned
+ExprInfo now has the target pointer type and prvalue category.
 
-Final post-extraction evidence, run serially:
+N3485 13.3.1.3, 13.3.2, 13.3.3, 13.3.3.1/.1.2, and 12.3.1 are the governing
+overload, viability, implicit-conversion-sequence, and converting-constructor
+rules; the implementation follows the typed PA12-to-PA15 boundary described
+above.
 
-```text
-make -C dev cppgm++ CXX=g++                                      status 0
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check \
-  TEST='tests/general/300-operator-nullptr-t-from-zero.t'          PASS (1/1)
-make -C pa12 CPPGM_SKIP_DEV_REBUILD=1 check \
-  TEST='tests/spec/300-nullptr-t-from-zero-overload.t tests/general/300-nullptr-equality.t tests/spec/300-nullptr-pointer-conversion.t tests/general/100-nullptr-static-cast-pointer.t'
-                                                                    PASS (4/4)
-make -C pa13 CPPGM_SKIP_DEV_REBUILD=1 check \
-  TEST='tests/spec/100-nullptr-return-lowir.t'                     PASS (1/1)
-make -C pa15 CPPGM_SKIP_DEV_REBUILD=1 check \
-  TEST='tests/general/200-global-pointer-array-nullptr-init.t'    PASS (1/1)
-```
+## Validation
 
-The final direct `nullptr` endpoint probe, including global-lvalue and
-reference-return sources, compiled with `cppgm++` and passed `dev/lowir2cy86`
-(status `0`).  Pointer paths show `load i64` before `copy ptr nullptr`; bool
-paths show `cmp ne i64` followed by `convert trunc u8 i64`.  The checked-in
-PA12 `300-nullptr-equality.t` emitted direct `cmp ne i64 nullptr, nullptr` and
-`store i64 nullptr`; its final output passed `dev/lowir2cy86` (status `0`).
-Temporary `return nullptr` and `sink(nullptr)` probes also passed the backend
-and emitted the same typed compare/truncation boundary.
+The final relevant compiler rebuild completed with status 0:
 
-Final post-extraction broad evidence is `make test-pa16` status `2` at
-`225/243`, with exactly the 18 identities above.  The exact normalized
-comparison against the supplied authority is `18` authority / `18` fresh,
-authority-only `0`, fresh-only `0`, and retained `18`.  Discovered/reference/
-fresh inventories are `243/243/243`, with zero pairwise deltas.  The exact
-prior-through-PA15 command passes at `1167/1167`.  The exact file audit passes
-with five known `bad-division` warnings in `abi_mangle.h`,
-`cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
-`pa15_lowering.h`.  `git diff --check` passes.
+    make -C dev cppgm++
 
-## Representative Performance Evidence
+The two checkpoint tests passed:
 
-Final post-extraction structural O0 counters from generated LowIR are counts,
-not timing claims:
+    make -C pa16 check TEST='tests/general/200-external-ctor-overload-nonfirst-argument.t tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t'
+    pa16 check: PASS (2/2)
 
-| input | functions | instructions | loads | stores | calls | comparisons | i64 lines |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| nullptr operator target | 2 | 20 | 3 | 5 | 1 | 1 | 3 |
-| PA12 nullptr equality control | 3 | 33 | 6 | 8 | 2 | 4 | 15 |
-| PA15 pointer-null control | 1 | 28 | 5 | 4 | 0 | 3 | 5 |
-| nullptr lvalue endpoint probe | 7 | 58 | 8 | 9 | 6 | 9 | 25 |
+The existing constructor/external-declaration controls passed:
 
-The target has one i64 pass-by-value parameter and one exact `Dn` symbol.  The
-ABI extraction changes translation-unit ownership only; the final target,
-equality, pointer, and endpoint LowIR outputs are byte-identical before and
-after extraction.  The changed boundary adds two constant-time type mappings
-and no per-expression scan, allocation, cache, or whole-program traversal.
-Raw LowIR, structural counters, validator results, and command logs are under
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-nullptr-carrier-checkpoint-20260830/`.
+    make -C pa16 check TEST='tests/general/200-constructor-overload-default-arg-nonfirst-argument.t tests/general/200-copy-init-explicit-ctor-overload-refinement.t tests/general/500-inheriting-external-transitive-constructor.t'
+    pa16 check: PASS (3/3)
+
+The disposable typed qualification probe used semantic emission rather than
+LowIR text.  A function returning const void* from a string literal was
+accepted, and its later call result was consumed as a const void* variable and
+condition.  The paired void* return was rejected with
+PA12 invalid array-to-void conversion.
+
+The final broad gates were run serially from the repository root:
+
+    make test-pa16
+    status 2; 227/243 passed; exact residual set is the 16 identities above
+
+    n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+    status 0; 1167/1167 passed
+
+    perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+    status 0; five known bad-division warnings, no fatal issues
+
+    git diff --check
+    status 0
+
+The PA16 inventory stayed at discovered/reference/fresh 243/243/243.  No
+tests, fixtures, exit-status sidecars, or reference outputs were changed or
+regenerated.
+
+## Performance Evidence
+
+These are structural bounds and representative counts, not timing claims:
+
+- Box evaluates at most 2 relevant constructor candidates across 3 explicit
+  arguments.  The Token overload rejects at its second argument; the outer
+  candidate loop still evaluates the declared const-char overload.  Ordinary
+  candidate scoring is O(C*A) conversion-choice work, stopping each candidate
+  at its first failed argument while retaining all candidate identities.
+- library evaluates 2 relevant outer constructor candidates for 1 argument.
+  The const path& candidate performs one relevant path-constructor probe for
+  1 argument; the mutable void* candidate fails its standard conversion.  The
+  accepted const-void initializer has two typed standard-conversion edges.
+  Each constructor identity probe uses an ordered set, O(I log I) for I
+  relevant constructors, plus bounded typed conversion work.
+- Source::c_str() publishes one ArrayToPointer constant-address fact, which
+  PA15 consumes directly.  Source-to-slot metadata is captured once per owned
+  slot with at most an O(log B) declaration-map lookup.  For each generated
+  source-anchored slot, the captured metadata lookup, source-order scan, and
+  vector shift are O(S + log B), never O(S*B).  SlotId values remain allocated
+  once and stable while the presentation vector is source-anchored.
 
 ## Checkpoint Ledger
 
-| checkpoint | result |
-| --- | --- |
-| `d54e32d1` parent authority | `224/243`, exactly 19 failures, `243/243` identities; clean baseline before `b58ddd2a` |
-| rejected packed-bit-field candidate | reverted completely in all four PA15 source files; no rejected source diff remains |
-| `b58ddd2a` typed nullptr carrier | Completed the bounded carrier audit and structural ABI extraction: PA11/PA12/PA15 typed ownership, exact pointer/bool endpoints, canonical i64/u8 carriers, lvalue source evaluation, and the narrow integer-zero consumer guard are recorded. Final post-extraction build and focused PA16 `1/1`, PA12 `4/4`, PA13 `1/1`, PA15 `1/1` pass; target/equality/pointer/endpoint LowIR is byte-identical across extraction; final PA16 is `225/243` with exactly 18 failures, exact comparison authority-only `0`/fresh-only `0`, and `243/243/243` inventories; prior-through is `1167/1167`; file audit passes with five known warnings; no fixture/reference change. Final changed paths are exactly `dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering_abi.cpp`, `dev/frontend_source_sets.mk`, `pa16/audit.md`, and `pa16/plan.md`. |
+| checkpoint | compact result |
+|---|---|
+| d54e32d1 | Prior PA16 authority was 224/243 with exactly 19 failures and 243/243 identity coverage. |
+| b58ddd2a | Completed the typed nullptr_t carrier path through PA11/PA12/PA15, including ABI and LowIR ownership and the bounded endpoint audit. |
+| e09d8223 | Recorded the completed nullptr carrier audit state: 225/243 authority, exact 18-item residual map, 243/243/243 inventories, through-PA15 1167/1167, and passing file audit with five known warnings. |
+| current checkpoint | Added shared typed constructor viability/materialization, target-typed array-to-void results with an array lowering root, string-literal qualification handling, c_str address publication, ordered constructor identity checks, and source-anchored generated-slot placement. Focused tests pass 2/2, controls pass 3/3, the qualification probe accepts const void* and rejects void*, PA16 is 227/243 with exactly the 16 unchanged residual identities, through-PA15 is 1167/1167, the audit passes with five known warnings, and diff-check passes. |

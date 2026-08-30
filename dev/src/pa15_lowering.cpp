@@ -35,7 +35,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  recovery_control_base_depth_(0), recovery_control_active_(false),
 		  variable_facts_(),
 		  declaration_by_binding_(), slot_by_binding_(), slot_spellings_(),
-		  function_plans_(), pending_global_actions_(),
+		  slot_source_begins_(), function_plans_(), pending_global_actions_(),
 		  bit_field_address_projections_(),
 		  needs_trivial_namespace_object_init_(false),
 		  function_scope_variables_(), next_symbol_(0),
@@ -1119,8 +1119,9 @@ void Pa15Lowerer::collect_local_slots(Function& function, ScopeId scope,
 		}
 	}
 
-void Pa15Lowerer::add_slot(Function& function, BindingId binding, TypeId semantic_type,
-	              SpellingId name_id, const LowType& type){
+void Pa15Lowerer::add_slot(Function& function, BindingId binding,
+	TypeId semantic_type, SpellingId name_id, const LowType& type)
+{
 		(void)semantic_type;
 		if (slot_by_binding_.find(binding.value) != slot_by_binding_.end()) return;
 		Function::Slot slot;
@@ -1131,8 +1132,17 @@ void Pa15Lowerer::add_slot(Function& function, BindingId binding, TypeId semanti
 		if (slot_spellings_.size() <= slot.slot_id.index)
 			slot_spellings_.resize(slot.slot_id.index + 1);
 		slot_spellings_[slot.slot_id.index] = slot.name_id;
+		if (slot_source_begins_.size() <= slot.slot_id.index)
+			slot_source_begins_.resize(slot.slot_id.index + 1,
+				InvalidIdentityValue);
+		const std::map<std::size_t, const DeclarationFact*>::const_iterator
+			declaration = declaration_by_binding_.find(binding.value);
+		if (declaration != declaration_by_binding_.end() &&
+			declaration->second != NULL && declaration->second->node != NULL)
+			slot_source_begins_[slot.slot_id.index] =
+				declaration->second->node->source_begin;
 		slot_by_binding_[binding.value] = slot.slot_id;
-	}
+}
 
 ValueId Pa15Lowerer::allocate_value(){
 		const ValueId id(next_value_++);
@@ -1670,27 +1680,59 @@ bool Pa15Lowerer::reference_binding(BindingId binding) const{
 		return kind == TypeKind::LvalueReference || kind == TypeKind::RvalueReference;
 	}
 
-LoweredValue Pa15Lowerer::generated_slot(const LowType& type, const std::string& prefix){
-		std::ostringstream name;
-		SpellingId name_id;
-		do
+LoweredValue Pa15Lowerer::generated_slot(const LowType& type,
+	const std::string& prefix, const PA10AstNode* source)
+{
+	std::ostringstream name;
+	SpellingId name_id;
+	do
+	{
+		name.str(std::string());
+		name.clear();
+		name << "$" << prefix << "__" << ++generated_slot_ordinal_;
+		name_id = intern_spelling(name.str());
+	} while (used_slot_names_.find(name.str()) != used_slot_names_.end());
+	used_slot_names_.insert(name.str());
+	Function::Slot slot;
+	slot.slot_id = lowir_model::SlotId(next_slot_++);
+	slot.name_id = name_id;
+	slot.type = type;
+	if (slot_spellings_.size() <= slot.slot_id.index)
+		slot_spellings_.resize(slot.slot_id.index + 1);
+	slot_spellings_[slot.slot_id.index] = name_id;
+	if (slot_source_begins_.size() <= slot.slot_id.index)
+		slot_source_begins_.resize(slot.slot_id.index + 1,
+			InvalidIdentityValue);
+	slot_source_begins_[slot.slot_id.index] =
+		source != NULL && source->source_begin != 0 ?
+		source->source_begin : InvalidIdentityValue;
+	function().slots.push_back(slot);
+	if (source != NULL && source->source_begin != 0)
+	{
+		std::size_t insertion = function().slots.size() - 1;
+		for (std::size_t i = 0; i + 1 < function().slots.size(); ++i)
 		{
-			name.str(std::string());
-			name.clear();
-			name << "$" << prefix << "__" << ++generated_slot_ordinal_;
-			name_id = intern_spelling(name.str());
-		} while (used_slot_names_.find(name.str()) != used_slot_names_.end());
-		used_slot_names_.insert(name.str());
-		Function::Slot slot;
-		slot.slot_id = lowir_model::SlotId(next_slot_++);
-		slot.name_id = name_id;
-		slot.type = type;
-		function().slots.push_back(slot);
-		if (slot_spellings_.size() <= slot.slot_id.index)
-			slot_spellings_.resize(slot.slot_id.index + 1);
-		slot_spellings_[slot.slot_id.index] = name_id;
-		return LoweredValue(slot_operand(slot.slot_id), type, true);
+			const Function::Slot& existing = function().slots[i];
+			const std::size_t existing_source =
+				existing.slot_id.index < slot_source_begins_.size() ?
+				slot_source_begins_[existing.slot_id.index] :
+				InvalidIdentityValue;
+			if (existing_source != InvalidIdentityValue &&
+				existing_source > source->source_begin)
+			{
+				insertion = i;
+				break;
+			}
+		}
+		if (insertion != function().slots.size() - 1)
+		{
+			const Function::Slot generated = function().slots.back();
+			function().slots.erase(function().slots.end() - 1);
+			function().slots.insert(function().slots.begin() + insertion, generated);
+		}
 	}
+	return LoweredValue(slot_operand(slot.slot_id), type, true);
+}
 
 LoweredValue Pa15Lowerer::lower_lvalue(SemanticFactId id){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];

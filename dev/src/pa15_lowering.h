@@ -481,6 +481,7 @@ private:
 	std::map<std::size_t, std::pair<std::size_t, LoweredValue> >
 		no_op_local_addresses_;
 	std::vector<SpellingId> slot_spellings_;
+	std::vector<std::size_t> slot_source_begins_;
 	std::vector<FunctionPlan> function_plans_;
 	std::vector<PendingGlobalAction> pending_global_actions_;
 	// Full bit-field replay payloads are sparse: ordinary LoweredValue and
@@ -728,7 +729,8 @@ private:
 		TypeId type) const;
 	LowType lvalue_type(SemanticFactId id) const;
 	bool reference_binding(BindingId binding) const;
-	LoweredValue generated_slot(const LowType& type, const std::string& prefix);
+	LoweredValue generated_slot(const LowType& type, const std::string& prefix,
+		const PA10AstNode* source = NULL);
 	LoweredValue lower_lvalue(SemanticFactId id);
 	LowType size_low_type() const;
 	LoweredValue lower_sizeof(const SemanticFact& fact);
