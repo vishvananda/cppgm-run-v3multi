@@ -2428,26 +2428,158 @@ LoweredValue Pa15Lowerer::lower_constructor_expression(SemanticFactId id)
 
 LoweredValue Pa15Lowerer::lower_new_expression(SemanticFactId id)
 {
+	if (!id.valid() || id.value >= model_.semantic_facts_.size())
+		throw std::runtime_error("PA15 new expression identity is invalid");
 	const SemanticFact& expression = model_.semantic_facts_[id.value];
 	const std::vector<SemanticFactId> facts = children(id);
-	if (facts.size() != 2 || !expression.type.valid())
+	if (facts.size() != 2 || expression.kind != SemanticFactKind::NewExpression ||
+		expression.category != SemanticValueCategory::Prvalue ||
+		!expression.type.valid() || expression.type.value >= model_.types_.size() ||
+		model_.type_kind(expression.type) != TypeKind::Pointer)
 		throw std::runtime_error("PA15 new expression fact is incomplete");
+	for (std::size_t i = 0; i < facts.size(); ++i)
+		if (!facts[i].valid() || facts[i].value >= model_.semantic_facts_.size())
+			throw std::runtime_error("PA15 new expression child identity is invalid");
 	const SemanticFact& allocation = model_.semantic_facts_[facts.front().value];
 	const SemanticFact& constructor = model_.semantic_facts_[facts.back().value];
+	const std::vector<SemanticFactId> allocation_facts = children(facts.front());
+	children(facts.back());
 	if (allocation.kind != SemanticFactKind::CallExpression ||
-		!allocation.has_callee ||
+		allocation.category != SemanticValueCategory::Prvalue ||
+		!allocation.has_callee || allocation.has_implicit_object ||
 		constructor.kind != SemanticFactKind::ConstructorAction ||
-		!constructor.has_callee)
+		constructor.category != SemanticValueCategory::Lvalue ||
+		!constructor.has_callee || constructor.has_implicit_object ||
+		allocation_facts.empty())
 		throw std::runtime_error("PA15 new expression children are invalid");
-	const TypeId result_pointer = model_.strip_cv_type(
-		model_.expression_object_type(expression.type));
-	if (model_.type_kind(result_pointer) != TypeKind::Pointer ||
-		!model_.complete_object_type(model_.types_[result_pointer.value].child))
+	const TypeId result_pointer = expression.type;
+	if (!result_pointer.valid() || result_pointer.value >= model_.types_.size() ||
+		model_.type_kind(result_pointer) != TypeKind::Pointer)
 		throw std::runtime_error("PA15 new expression result type is invalid");
-	const LoweredValue storage = lower_expression(facts.front());
-	if (!storage.type.is_pointer())
-		throw std::runtime_error("PA15 allocation result is not a pointer");
 	const TypeId target = model_.types_[result_pointer.value].child;
+	if (!target.valid() || target.value >= model_.types_.size())
+		throw std::runtime_error("PA15 new expression target type is invalid");
+	const TypeId target_object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!target_object.valid() || target_object.value >= model_.types_.size() ||
+		model_.type_kind(target_object) != TypeKind::Named ||
+		!model_.complete_object_type(target))
+		throw std::runtime_error("PA15 new expression target type is invalid");
+	const NamedRecordId target_record = model_.named_record_for_type(target_object);
+	if (!target_record.valid() || target_record.value >= model_.named_.size() ||
+		model_.named_[target_record.value].kind != NamedKind::Class ||
+		model_.named_[target_record.value].class_tag == ClassTag::Union ||
+		model_.named_[target_record.value].has_virtual_member ||
+		!model_.named_[target_record.value].name.valid() ||
+		!model_.named_[target_record.value].scope.valid() ||
+		model_.named_[target_record.value].scope.value >= model_.scopes_.size() ||
+		model_.scopes_[model_.named_[target_record.value].scope.value].kind !=
+			ScopeKind::Class ||
+		model_.scopes_[model_.named_[target_record.value].scope.value].record !=
+			target_record)
+		throw std::runtime_error("PA15 new expression target owner is invalid");
+	if (!allocation.type.valid() || allocation.type.value >= model_.types_.size() ||
+		!allocation.callable_type.valid() ||
+		allocation.callable_type.value >= model_.types_.size() ||
+		model_.type_kind(allocation.callable_type) != TypeKind::Function ||
+		model_.function_result_type(allocation.callable_type) != allocation.type ||
+		!allocation.selected_binding.valid() ||
+		allocation.selected_binding.value >= model_.bindings_.size() ||
+		allocation.selected_binding.value >= model_.binding_owners_.size() ||
+		!allocation.selected_scope.valid() ||
+		allocation.selected_scope.value >= model_.scopes_.size() ||
+		model_.binding_owners_[allocation.selected_binding.value] !=
+			allocation.selected_scope ||
+		model_.binding(allocation.selected_binding).kind != BindingKind::Function ||
+		model_.binding(allocation.selected_binding).type != allocation.callable_type)
+		throw std::runtime_error("PA15 new allocation callable identity is invalid");
+	const TypeKey& allocation_signature =
+		model_.types_[allocation.callable_type.value];
+	if (allocation_signature.parameters.empty())
+		throw std::runtime_error("PA15 new allocation size parameter is missing");
+	for (std::size_t parameter = 0;
+		parameter < allocation_signature.parameters.size(); ++parameter)
+		if (!allocation_signature.parameters[parameter].valid() ||
+			allocation_signature.parameters[parameter].value >= model_.types_.size())
+			throw std::runtime_error("PA15 new allocation parameter type is invalid");
+	if (model_.strip_cv_type(allocation_signature.parameters.front()) !=
+		model_.fundamental(FundamentalType::UnsignedLongInt))
+		throw std::runtime_error("PA15 new allocation size parameter is invalid");
+	const TypeId allocation_pointer = model_.strip_cv_type(
+		model_.expression_object_type(allocation.type));
+	if (!allocation_pointer.valid() || allocation_pointer.value >=
+		model_.types_.size() || model_.type_kind(allocation_pointer) !=
+		TypeKind::Pointer || model_.types_[allocation_pointer.value].child !=
+		model_.fundamental(FundamentalType::Void))
+		throw std::runtime_error("PA15 new allocation result type is invalid");
+	if (!constructor.type.valid() || constructor.type != target ||
+		!constructor.callable_type.valid() ||
+		constructor.callable_type.value >= model_.types_.size() ||
+		model_.type_kind(constructor.callable_type) != TypeKind::Function ||
+		!constructor.selected_binding.valid() ||
+		constructor.selected_binding.value >= model_.bindings_.size() ||
+		constructor.selected_binding.value >= model_.binding_owners_.size() ||
+		!constructor.selected_scope.valid() ||
+		constructor.selected_scope !=
+			model_.named_[target_record.value].scope ||
+		model_.binding_owners_[constructor.selected_binding.value] !=
+			constructor.selected_scope ||
+		model_.binding(constructor.selected_binding).kind != BindingKind::Function ||
+		!model_.binding(constructor.selected_binding).type.valid() ||
+		model_.binding(constructor.selected_binding).type.value >=
+			model_.types_.size() ||
+		model_.type_kind(model_.binding(constructor.selected_binding).type) !=
+			TypeKind::Function)
+		throw std::runtime_error("PA15 new constructor identity is invalid");
+	const BindingSidecar* constructor_sidecar = model_.binding_sidecar(
+		constructor.selected_binding);
+	if (constructor_sidecar == NULL ||
+		constructor_sidecar->constructor_record != target_record)
+		throw std::runtime_error("PA15 new constructor owner is invalid");
+	const TypeId raw_constructor_type =
+		model_.binding(constructor.selected_binding).type;
+	const TypeKey& raw_constructor = model_.types_[raw_constructor_type.value];
+	const TypeKey& callable_constructor =
+		model_.types_[constructor.callable_type.value];
+	if (!raw_constructor.result.valid() || raw_constructor.result.value >=
+		model_.types_.size() || !callable_constructor.result.valid() ||
+		callable_constructor.result.value >= model_.types_.size() ||
+		!model_.void_id(raw_constructor.result) ||
+		callable_constructor.result != raw_constructor.result ||
+		callable_constructor.variadic != raw_constructor.variadic ||
+		callable_constructor.parameters.size() !=
+			raw_constructor.parameters.size() + 1 ||
+		!callable_constructor.parameters.front().valid() ||
+		callable_constructor.parameters.front().value >= model_.types_.size())
+		throw std::runtime_error("PA15 new constructor callable boundary is invalid");
+	const TypeId hidden_destination = callable_constructor.parameters.front();
+	const TypeId hidden_pointer = model_.strip_cv_type(
+		model_.expression_object_type(hidden_destination));
+	if (!hidden_pointer.valid() || hidden_pointer.value >= model_.types_.size() ||
+		model_.type_kind(hidden_pointer) != TypeKind::Pointer ||
+		model_.types_[hidden_pointer.value].child != model_.named_type(target_record))
+		throw std::runtime_error("PA15 new constructor destination is invalid");
+	for (std::size_t parameter = 0;
+		parameter < raw_constructor.parameters.size(); ++parameter)
+	{
+		const TypeId raw_parameter = raw_constructor.parameters[parameter];
+		const TypeId callable_parameter =
+			callable_constructor.parameters[parameter + 1];
+		if (!raw_parameter.valid() || raw_parameter.value >= model_.types_.size() ||
+			!callable_parameter.valid() ||
+			callable_parameter.value >= model_.types_.size() ||
+			callable_parameter != raw_parameter)
+			throw std::runtime_error(
+				"PA15 new constructor parameter boundary is invalid");
+	}
+	const LoweredValue storage = lower_expression(facts.front());
+	const LowType expected_storage_type = low_type(allocation.type);
+	const LowType expected_result_type = low_type(expression.type);
+	if (!storage.type.is_pointer() || !storage.physical_type.is_pointer() ||
+		storage.type != expected_storage_type ||
+		storage.physical_type != expected_storage_type ||
+		expected_result_type != expected_storage_type)
+		throw std::runtime_error("PA15 allocation result is not a pointer");
 	const std::vector<ConstructorAddressStep> empty_path;
 	initialize_constructor_value(target, facts.back(), storage, NULL,
 		&empty_path);

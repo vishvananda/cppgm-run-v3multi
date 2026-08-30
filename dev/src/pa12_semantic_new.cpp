@@ -27,11 +27,16 @@ ExprInfo PA11SemanticModel::semantic_new_expression(const PA10AstNode& node,
 		throw std::runtime_error("PA12 new expression type-id is missing");
 	const TypeId allocated_type = type_from_type_id(node.children[child++], scope);
 	const TypeId object = strip_top_cv_type(allocated_type);
+	if (!object.valid() || object.value >= types_.size() ||
+		type_kind(object) != TypeKind::Named)
+		throw std::runtime_error(
+			"PA12 placement new requires a non-array class object");
 	const NamedRecordId record = class_record_for_object_type(object);
 	if (!complete_object_type(object) || !record.valid() ||
 		record.value >= named_.size() || named_[record.value].kind != NamedKind::Class ||
 		named_[record.value].class_tag == ClassTag::Union ||
-		named_[record.value].has_virtual_member)
+		named_[record.value].has_virtual_member ||
+		!named_[record.value].name.valid())
 		throw std::runtime_error(
 			"PA12 new expression requires a complete non-polymorphic class");
 
@@ -84,12 +89,42 @@ ExprInfo PA11SemanticModel::semantic_new_expression(const PA10AstNode& node,
 		throw std::runtime_error("PA12 placement allocation function is missing");
 	const TypedFunctionSelection selection = select_typed_function(candidates,
 		allocation_argument_nodes, allocation_arguments, scope);
-	if (!selection.valid())
+	if (!selection.valid() || !selection.selected.scope.valid() ||
+		selection.selected.scope.value >= scopes_.size() ||
+		!selection.selected.binding.valid() ||
+		selection.selected.binding.value >= bindings_.size() ||
+		selection.selected.binding.value >= binding_owners_.size() ||
+		binding_owners_[selection.selected.binding.value] !=
+			selection.selected.scope ||
+		binding(selection.selected.binding).kind != BindingKind::Function ||
+		binding(selection.selected.binding).type != selection.type ||
+		selection.type.value >= types_.size() ||
+		type_kind(selection.type) != TypeKind::Function)
 		throw std::runtime_error("PA12 placement allocation selection is incomplete");
+	const TypeKey& allocation_function = types_[selection.type.value];
+	if (allocation_function.parameters.empty())
+		throw std::runtime_error("PA12 placement allocation size parameter is missing");
+	for (std::size_t parameter = 0;
+		parameter < allocation_function.parameters.size(); ++parameter)
+		if (!allocation_function.parameters[parameter].valid() ||
+			allocation_function.parameters[parameter].value >= types_.size())
+			throw std::runtime_error(
+				"PA12 placement allocation parameter type is invalid");
+	if (strip_cv_type(allocation_function.parameters.front()) !=
+		fundamental(FundamentalType::UnsignedLongInt))
+		throw std::runtime_error(
+			"PA12 placement allocation size parameter is not size_t");
 	const TypeId allocation_result = function_result_type(selection.type);
-	if (type_kind(strip_cv_type(expression_object_type(allocation_result))) !=
-		TypeKind::Pointer)
-		throw std::runtime_error("PA12 allocation function does not return a pointer");
+	if (!allocation_result.valid() || allocation_result.value >= types_.size())
+		throw std::runtime_error("PA12 allocation function result type is invalid");
+	const TypeId allocation_pointer = strip_cv_type(
+		expression_object_type(allocation_result));
+	if (!allocation_pointer.valid() || allocation_pointer.value >= types_.size() ||
+		type_kind(allocation_pointer) != TypeKind::Pointer ||
+		types_[allocation_pointer.value].child !=
+			fundamental(FundamentalType::Void))
+		throw std::runtime_error(
+			"PA12 allocation function does not return void pointer");
 	SemanticFact allocation_call(SemanticFactKind::CallExpression,
 		allocation_result, SemanticValueCategory::Prvalue, &node);
 	allocation_call.has_callee = true;

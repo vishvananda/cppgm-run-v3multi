@@ -1132,7 +1132,12 @@ ExprInfo PA11SemanticModel::semantic_cast_to_target(
 	const TypeId source = expression_object_type(operand.type);
 	const TypeKind target_kind = type_kind(target);
 	const ExplicitCastKind cast_kind = explicit_cast_kind(node);
-	if (cast_kind == ExplicitCastKind::CStyle && pointer_id(target) &&
+	const TypeId target_object = strip_cv_type(expression_object_type(target));
+	const bool target_void_pointer = target_object.valid() &&
+		target_object.value < types_.size() &&
+		type_kind(target_object) == TypeKind::Pointer &&
+		void_id(types_[target_object.value].child);
+	if (cast_kind == ExplicitCastKind::CStyle && target_void_pointer &&
 		type_kind(strip_cv_type(source)) == TypeKind::Array)
 	{
 		const TypeId array = strip_cv_type(source);
