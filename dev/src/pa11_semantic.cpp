@@ -109,11 +109,17 @@ std::size_t PA11SemanticModel::pack_alignment_at(
 	const PA10PackDirective& directive = directives[first - 1];
 	if (directive.operation == PPPackOperation::Push)
 	{
-		if (directive.byte_cap == 0 || directive.active_byte_cap == 0)
+		if (directive.byte_cap == 0 || directive.active_byte_cap == 0 ||
+			directive.active_byte_cap != directive.byte_cap)
 			throw std::runtime_error("invalid PA11 pack push fact");
 	}
-	else if (directive.byte_cap != 0)
-		throw std::runtime_error("invalid PA11 pack pop fact");
+	else if (directive.operation == PPPackOperation::Pop)
+	{
+		if (directive.byte_cap != 0)
+			throw std::runtime_error("invalid PA11 pack pop fact");
+	}
+	else
+		throw std::runtime_error("invalid PA11 pack operation fact");
 	return directive.active_byte_cap;
 }
 

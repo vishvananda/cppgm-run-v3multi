@@ -364,6 +364,47 @@ public:
 	bool invalid;
 };
 
+bool validate_pack_directives(const std::vector<PA10PackDirective>& directives,
+	std::size_t syntax_token_count)
+{
+	std::vector<std::size_t> saved_caps;
+	saved_caps.reserve(directives.size());
+	std::size_t active_cap = 0;
+	std::size_t previous_index = 0;
+	bool have_previous = false;
+	for (std::size_t i = 0; i < directives.size(); ++i)
+	{
+		const PA10PackDirective& fact = directives[i];
+		if ((have_previous && fact.token_index < previous_index) ||
+			fact.token_index > syntax_token_count)
+			return false;
+		previous_index = fact.token_index;
+		have_previous = true;
+
+		switch (fact.operation)
+		{
+		case PPPackOperation::Push:
+			if (fact.byte_cap == 0 || fact.active_byte_cap == 0 ||
+				fact.active_byte_cap != fact.byte_cap)
+				return false;
+			saved_caps.push_back(active_cap);
+			active_cap = fact.byte_cap;
+			break;
+		case PPPackOperation::Pop:
+			if (fact.byte_cap != 0 || saved_caps.empty())
+				return false;
+			active_cap = saved_caps.back();
+			saved_caps.pop_back();
+			if (fact.active_byte_cap != active_cap)
+				return false;
+			break;
+		default:
+			return false;
+		}
+	}
+	return true;
+}
+
 bool is_cv_impl(SimpleTokenType type)
 {
 	return type == SimpleTokenType::KW_CONST ||
@@ -1632,6 +1673,11 @@ bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens,
 	PA10PostTokenCollector collector;
 	posttokenize_cpp_tokens(input, collector);
 	if (collector.invalid)
+		return false;
+	if (collector.tokens.empty() ||
+		collector.tokens.back().kind != PA10TokenKind::End ||
+		!validate_pack_directives(collector.pack_directives,
+			collector.tokens.size() - 1))
 		return false;
 	tokens.swap(collector.tokens);
 	if (pack_directives != NULL)

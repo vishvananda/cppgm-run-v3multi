@@ -2,6 +2,158 @@
 
 ## Current Checkpoint Review
 
+This bounded checkpoint audit covers landed commit
+`08472cce8e96daa585f5f07f4ee9d2233e13ade9` (`PA16 typed pragma pack record
+layout`) relative to parent `0ff3fdef`, plus the narrow source repairs found
+during this audit.  The landed ownership path spans
+`dev/src/IPPTokenStream.h`, `dev/src/preproc_session.cpp`,
+`dev/src/posttoken.h`/`dev/src/posttoken.cpp`, `dev/src/pa10_ast.h`/
+`dev/src/pa10_ast.cpp`, `dev/src/pa10_parser_support.h`/
+`dev/src/pa10_parser_support.cpp`, and
+`dev/src/pa11_semantic_model.h`, `dev/src/pa11_semantic.cpp`, and
+`dev/src/pa11_record_layout.cpp`.
+
+The bounded checkpoint diff repairs only
+`dev/src/posttoken.cpp`, `dev/src/pa10_parser_support.cpp`,
+`dev/src/pa11_semantic.cpp`, and `dev/src/pa11_record_layout.cpp`, and
+refreshes `pa16/plan.md` and this record.  No handout tests, fixtures, `.ref`
+files, sidecars, harnesses, comparators, source-set lists, or generated
+outputs were changed; the sole public-layer addition is course regression 422,
+`cppgm.tests/course/pa16/422-typed-pack-wide-bitfield-layout-regression.sh`.
+
+The latest landed-stage authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+`210/243` identities pass, exactly `33` fail, and all `243/243` identities
+are covered.  The increment's earlier turn-start authority was `209/243`
+with `34` failures; the landed increment cleared
+`pa16/tests/general/300-packed-class-layout.t`.  The exact current 33-entry
+residual map is preserved in `pa16/plan.md` and in the final identity
+comparison log below.  The fresh broad gate preserves this authority exactly.
+
+### Contract and ownership trace
+
+The representative production path is:
+
+```text
+PPPreprocessingSession::Impl active cap/stack and conditional state
+  -> ordered PPPackDirective at the raw phase-3 boundary
+  -> token-transparent PostTokenStream callback handoff
+  -> PA10 whitespace-free PA10PackDirective boundary
+  -> PA11 binary-search pack lookup / NamedRecord::pack_alignment
+  -> canonical member/base/bit-field/final record layout
+```
+
+`run` resets pack state per preprocessing session.  Directive text is flushed
+before each directive and include; include expansion shares the same active
+cap/stack, while `handle_directive` ignores pragmas in inactive conditional
+branches.  Recognized `pack(push, integral)` and `pack(pop)` forms are fully
+validated before a fact is appended.  Push saves the outer cap, pop restores
+it, and an unmatched pop fails closed.  The fact stores both the operation
+and effective cap, with zero denoting natural layout; no text is later
+rendered or reparsed.  The implementation intentionally does not diagnose a
+nonempty push stack at end of translation unit, so the live state remains
+available to later included/source text.
+
+`PPPackDirective::token_index` is an ordered raw-token boundary.  The
+posttoken stream queues facts without flushing pending adjacent strings or
+clearing pending `operator` formation, then flushes strings, forwards all
+facts at the boundary, and emits the next independent token.  The adapter
+now rejects descending/out-of-range boundaries, invalid enum operations,
+inconsistent push/pop state, and facts after an already emitted EOF before
+any output is delivered.  PA10 records the callback after whitespace removal
+and after the existing `>>` split semantics; its boundary validator repeats
+the ordered typed-state proof before publishing the AST side vector.
+
+PA11 finds the last directive at each class node's `source_begin` by binary
+search and stores only the active cap on the canonical `NamedRecord`.  The
+existing record-layout owner applies the cap to ordinary members, direct
+bases, bit-field storage, and final record alignment before size rounding.
+Explicit member and class `alignas` requests remain stronger.  The audit
+verified that pop-restored records and records outside the active interval
+retain natural layout, and that no PA15/LowIR pack inference or second layout
+owner was introduced.
+
+### Findings and bounded repair
+
+The audit found two genuine issues in the landed ownership path.
+
+1.  The wide bit-field allocation branch aligned from the natural storage
+    alignment instead of the already capped `field_alignment`.  Under
+    `pack(1)`, the focused `char; int:33; char` probe consequently emitted
+    size `13`; the repair uses `field_alignment`, and the same probe now
+    emits packed size `10` versus natural size `16`.
+2.  The typed raw-token adapter could queue a fact at an index after an
+    existing EOF, after `emit_eof()` had already flushed pending callbacks,
+    and then return without delivering that fact.  It also accepted malformed
+    operation/state combinations until a later consumer.  Pre-output
+    validation in `posttoken.cpp`, revalidation at the PA10 boundary, and
+    explicit PA11 push/pop operation checks now fail closed.  Valid facts are
+    still delivered in vector order, including multiple facts at one
+    boundary.
+
+The repairs are typed, local, and linear in the fact vector.  They add no
+retry, timeout, whole-program cache, source-text downgrade, host/reference
+shortcut, or alternate layout owner.
+
+### Bounds, evidence, and boundaries
+
+For `T` raw tokens and `D` recognized directives, preprocessing fact handling,
+the two ordered-state validations, and posttoken replay are `O(T + D)`.
+The preprocessing and temporary validation stacks use `O(P)` and `O(D)`
+memory; the persistent typed fact vectors use `O(D)` compact storage.  PA11
+does one `O(log D)` lookup per record and retains the existing `O(M)` layout
+walk for `M` members, giving `O(M + R log D)` for `R` record definitions.
+No per-node strings, node-based pack map, retry, or unbounded cache appears.
+
+Focused structural evidence covers two directives/two records (`B` cap 1
+and size 5; `C` restored natural size 8), conditional active/inactive
+behavior (`X` cap 1 and size 5), same-boundary push/pop (natural size 8),
+explicit `alignas` stronger than pack, and the corrected wide-bit-field
+10/16 pair.  The adjacent-string probe with push/pop between string parts
+remains accepted.  No timing or RSS measurement was taken in this focused
+audit, so no measured performance-regression claim is
+made.
+
+### Focused validation and residual boundary
+
+`make -C dev cppgm++ CXX=g++` passed.  `sh -n` and execution of course 422
+passed, durably checking packed wide-bit-field size 10 against natural size
+16.  Direct compiler probes for packed
+layout, conditional packing, explicit `alignas`, pop restoration, the
+same-boundary case, adjacent strings, and natural/wide controls all exited
+`0` with the expected structural sizes.  A temporary typed-buffer probe
+passed valid same-boundary push/pop delivery and rejected post-EOF, invalid
+operation, and mismatched push-state facts.  `git diff --check` passed.
+
+`make test-pa16` exited `2` at `210/243`; its complete output is retained at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-20260830.log`.
+The independent comparison at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-identity-coverage-20260830.log`
+reports authority failures `33`, fresh failures `33`, fresh-only `0`,
+authority-only `0`, inventory `243`, unexpected `0`, and `243/243` covered.
+The exact fresh set is the 33-entry map in `pa16/plan.md`; it is a subset of
+the supplied latest authority with no compensation-based pass accounting.
+The exact required through-PA15 command exited `0` at `1167 / 1167`; its
+complete output and explicit status are retained at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-through-pa15-20260830.log`.
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exited `0`
+with five known `bad-division` warnings (`abi_mangle.h`,
+`cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
+`pa15_lowering.h`) and no fatal findings; its complete output and explicit
+status are retained at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-file-audit-20260830.log`.
+
+The known pack-adjacent residual is
+`pa16/tests/general/300-pragma-pack-followed-by-endif.t`, whose checked
+LowIR mismatch is the unrelated canonical `trunc`-before-`zext` shape.  The
+other 32 current residual identities, `_Pragma("pack(...)")`, and all later
+PA16 residuals remain outside this bounded audit.  Course 422 is limited to
+the wide-bit-field pack owner and its natural control; it does not broaden
+into unrelated stage surfaces.  This is a checkpoint audit only; PA16 full
+completion is not claimed.
+
+## Historical Constructor-Argument Review (ee8f44d5)
+
 This completed checkpoint audit covers landed commit
 `ee8f44d5b0e9d4910679c12b443533d787d1cd4c` (`PA16: emit per-throw typed
 array cleanup`) relative to `3b2b4882`, plus one bounded fail-closed repair in
@@ -2756,6 +2908,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `08472cce` typed pragma-pack record-layout checkpointAudit | Bounded audit of landed `08472cce8e96daa585f5f07f4ee9d2233e13ade9` relative to `0ff3fdef`: the shared preprocessing cap/stack, include and inactive-conditional behavior, ordered typed `PPPackDirective`, token-transparent posttoken handoff, PA10 whitespace-free boundary, PA11 binary-search lookup, `NamedRecord` cap, and canonical member/base/bit-field/final layout are traced. The audit repairs the wide-bit-field path to use capped storage alignment and makes raw/PA10 typed-fact validation reject invalid operation/state/order/boundary data, including facts after EOF; PA11 also checks the operation domain. Focused build, course 422 (`sh -n` plus execution), packed/natural/conditional/alignas/pop/string probes, and the temporary typed-buffer rejection probe pass. Supplied latest and fresh authority are both `210/243`, `33` failures, `243/243` covered; the durable exact comparison reports fresh-only `0`, authority-only `0`, inventory `243`, and unexpected `0`. The known `300-pragma-pack-followed-by-endif.t` LowIR trunc-before-zext shape remains unrelated. Through-PA15 is `1167/1167`; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-through-pa15-20260830.log`. File audit exits `0` with five known warnings and no fatals; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-file-audit-20260830.log`. Diff-check passes. No handout, fixture, reference, harness, source-set, or generated output changed; course 422 is the sole added public regression. PA16 remains incomplete. |
 | `ee8f44d5` per-throw typed array cleanup checkpointAudit | Completed bounded audit of `ee8f44d5b0e9d4910679c12b443533d787d1cd4c` relative to `3b2b4882`: PA12's typed constructor-action range is traced through action/placement `ArrayAddressRoot`, forward recursive terminal collection, combined constructor-boundary plus typed-argument throw classification, independent per-throw LowIR handlers, fresh root/path replay, reverse cleanup, and canonical `model_.destructor_binding(record)` calls. The approved repair in `dev/src/pa15_lowering.h` and `dev/src/pa15_lowering_construction.cpp` adds exact action target/type/range validation, action/storage root replay identity checks, and existing cached semantic nothrow classification for every actual argument; valid unproven arguments remain potentially throwing and malformed facts fail closed. Supplied authority is `209/243`, `34` failures, `243/243` covered; exact fresh comparison is authority `34` -> fresh `34`, authority-only `0`, fresh-only `0`, inventory `243`, covered `243`, missing `0`, unexpected `0`. Focused matrix is `30/35`; typed argument probes distinguish zero-handler known-nothrow/no-argument cases from one-handler potentially throwing arguments and constructors. Semantic argument-vector array reachability is rejected by PA12 before lowering for current grammar. Representative nested N=6 evidence is 11 blocks, 5 handlers, 5 resumes, and 15 cleanup destructors; through-PA15 is `1167/1167`; file audit and diff-check pass. The exact four-file audit/repair is complete; PA16 remains incomplete only because the same 34 residual identities remain. |
 | `70327e4d` typed destructor suffix cleanup checkpointAudit | Completed final bounded audit of `70327e4d72ad5d223018565ec78d290ea4ac6f0a` relative to `a3de5c21`, including the approved repair in `dev/src/pa15_lowering_construction.cpp`: PA12's canonical `FunctionFact.destructor_action_begin/count` and `DestructorActionFact` ownership are traced through PA15 demand, active destructor record/`this`, scalar and reverse-array address replay, normal suffix prefixes, body-unwind cleanup, and return/local-lifetime ordering. The repair adds fail-closed target/type/canonical-destructor checks and rejects non-void destructor call signatures in the declared construction path. Fresh post-repair `make test-pa16` is exit `2` at `208/243`, with exactly `35` failures and `243/243` coverage; exact sorted comparison with the turn-start authority is `35 -> 35`, fresh-only `0`, authority-only `0`, and unrecognized `0`. The preserved pre-landed baseline is `206/243` with `37` failures; its exact two baseline-only destructor/lifetime identities remain fixed and no current-only identity appeared. The exact prior gate is exit `0` at `1167/1167`; the file audit is exit `0` with five known header-division warnings; diff-check and the bounded changed-file audit exit `0`. Focused post-repair evidence is `5/7`, with only the two known array-presentation mismatches. Durable fresh logs are listed in the Current Checkpoint Review above. No tests, fixtures, references, sidecars, harnesses, comparators, coverage rules, source sets, or generated oracle files changed; the checkpoint record and approved source repair are complete. |
 | `d83e927f` typed local-class materialization checkpointAudit | Completed the bounded audit of `d83e927fd18429d37c3818a80e295f0a7c521905` relative to `d95a6fe7`: PA11/PA12 typed `DeclarationFact`/`ConstructorAction` ownership reaches both PA15 declaration consumers, which materialize one automatic-local class address; the narrow class-value path suppresses only the redundant automatic-local pre-copy address and retains later source addressing. The audit repaired the missing automatic-storage guard by centralizing the keyed declaration-owner predicate; namespace/static owners remain nonautomatic. Supplied authority and fresh result are both `206/243`, `37` failures, `243/243` covered, with exact sorted comparison baseline-only `0`, final-only `0`, and failure set exactly unchanged. Focused PA16 is `13/13`, focused PA15 controls are `2/2`, the valid automatic class-value probe is accepted by current/reference observers, and structural counts are `76/25`, `412/129`, `19/2`, and `14/2`. Fresh `make test-pa16` exits `2`; the exact `n=16` prior-stage gate exits `0` at `1167/1167`; `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0` with five known header-division warnings and no fatals. Durable final logs are listed in the Current Checkpoint Review above: test, prior gate, file audit, exact identity comparison, changed-file audit, and diff-check. No tests, fixtures, references, or harness surfaces changed. Audit/repair commit at current HEAD; handoff hash in final report. |

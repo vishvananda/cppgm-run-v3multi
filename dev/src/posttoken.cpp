@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -1960,6 +1961,62 @@ private:
 	}
 };
 
+void validate_pack_directives(const PPTokenBuffer& buffer)
+{
+	if (buffer.pack_directives.empty())
+		return;
+
+	// Facts at a boundary after the first EOF cannot be delivered: the
+	// posttoken stream has already flushed its pending callbacks.  Reject them
+	// before emitting any output, and validate the producer's state trace while
+	// the compact ordered vector is still the sole input to this boundary.
+	std::size_t eof_index = buffer.tokens.size();
+	for (std::size_t i = 0; i < buffer.tokens.size(); ++i)
+	{
+		if (buffer.tokens[i].kind == PPTokenKind::EndOfFile)
+		{
+			eof_index = i;
+			break;
+		}
+	}
+
+	std::vector<std::size_t> saved_caps;
+	saved_caps.reserve(buffer.pack_directives.size());
+	std::size_t active_cap = 0;
+	std::size_t previous_index = 0;
+	bool have_previous = false;
+	for (std::size_t i = 0; i < buffer.pack_directives.size(); ++i)
+	{
+		const PPPackDirective& fact = buffer.pack_directives[i];
+		if ((have_previous && fact.token_index < previous_index) ||
+			fact.token_index > eof_index)
+			throw std::runtime_error("pack directive boundary is invalid");
+		previous_index = fact.token_index;
+		have_previous = true;
+
+		switch (fact.operation)
+		{
+		case PPPackOperation::Push:
+			if (fact.byte_cap == 0 || fact.active_byte_cap == 0 ||
+				fact.active_byte_cap != fact.byte_cap)
+				throw std::runtime_error("pack push fact is invalid");
+			saved_caps.push_back(active_cap);
+			active_cap = fact.byte_cap;
+			break;
+		case PPPackOperation::Pop:
+			if (fact.byte_cap != 0 || saved_caps.empty())
+				throw std::runtime_error("pack pop fact is invalid");
+			active_cap = saved_caps.back();
+			saved_caps.pop_back();
+			if (fact.active_byte_cap != active_cap)
+				throw std::runtime_error("pack pop state fact is invalid");
+			break;
+		default:
+			throw std::runtime_error("pack operation is invalid");
+		}
+	}
+}
+
 void emit_pp_token(PostTokenStream* stream, const PPSpellingTable& spellings,
 	const PPToken& token)
 {
@@ -2090,6 +2147,7 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 void posttokenize_cpp_tokens(const PPTokenBuffer& buffer,
 	IPostTokenOutput& output)
 {
+	validate_pack_directives(buffer);
 	PostTokenStream stream(output, false);
 	std::size_t directive = 0;
 	bool saw_eof = false;
@@ -2112,17 +2170,24 @@ void posttokenize_cpp_tokens(const PPTokenBuffer& buffer,
 			break;
 		}
 	}
-	while (directive < buffer.pack_directives.size() &&
-		buffer.pack_directives[directive].token_index == buffer.tokens.size())
+	if (saw_eof)
 	{
-		const PPPackDirective& fact = buffer.pack_directives[directive++];
-		stream.emit_pack_directive(fact.operation, fact.byte_cap,
-			fact.active_byte_cap);
+		if (directive != buffer.pack_directives.size())
+			throw std::runtime_error("pack directive follows EOF");
 	}
-	if (directive != buffer.pack_directives.size())
-		throw std::runtime_error("pack directive boundary is invalid");
-	if (!saw_eof)
+	else
+	{
+		while (directive < buffer.pack_directives.size() &&
+			buffer.pack_directives[directive].token_index == buffer.tokens.size())
+		{
+			const PPPackDirective& fact = buffer.pack_directives[directive++];
+			stream.emit_pack_directive(fact.operation, fact.byte_cap,
+				fact.active_byte_cap);
+		}
+		if (directive != buffer.pack_directives.size())
+			throw std::runtime_error("pack directive boundary is invalid");
 		stream.emit_eof();
+	}
 }
 
 void posttokenize_cpp_tokens(const PPSpellingTable& spellings,

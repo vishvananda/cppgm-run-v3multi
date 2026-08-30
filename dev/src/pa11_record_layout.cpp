@@ -329,7 +329,7 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 				// first unit; the remaining bits are padding and cannot be packed
 				// with a following declaration.
 				flush_bit_unit();
-				if (!align_up_checked(offset, field_layout.alignment,
+				if (!align_up_checked(offset, field_alignment,
 					&fact.storage_offset))
 					throw std::runtime_error("record layout size overflow");
 				fact.bit_offset = 0;
