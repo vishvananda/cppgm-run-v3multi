@@ -2485,6 +2485,8 @@ ExprInfo PA11SemanticModel::finish_member_call(const PA10AstNode& node,
 	SemanticFact fact(SemanticFactKind::CallExpression, result_type,
 		result_category, &node);
 	fact.has_callee = true;
+	fact.bool_context_operand = bool_id(result_type);
+	fact.direct_bool_boundary = bool_id(result_type);
 	fact.has_implicit_object = !selected_static;
 	fact.selected_binding = selected.binding;
 	fact.selected_scope = selected.scope;

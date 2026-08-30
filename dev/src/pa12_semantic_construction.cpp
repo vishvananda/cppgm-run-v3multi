@@ -1886,12 +1886,20 @@ void PA11SemanticModel::CanonicalTruthFinalizer::publish_conversions()
 {
 	for (std::size_t i = 0; i < semantic_count_; ++i)
 	{
-		if (true_nodes_[i] == 0)
-			continue;
 		SemanticFact& fact = model_.semantic_facts_[i];
 		if (!fact.canonical_truth)
 			continue;
-		fact.direct_bool_boundary = true;
+		const bool member_truth = true_nodes_[i] != 0;
+		const bool class_pointer_truth = fact.kind ==
+			SemanticFactKind::BinaryExpression && fact.operation_type.valid() &&
+			fact.operation_type.value < model_.types_.size() &&
+			model_.types_[fact.operation_type.value].kind == TypeKind::Pointer &&
+			model_.class_record_for_object_type(
+				model_.types_[fact.operation_type.value].child).valid();
+		const bool typed_truth = member_truth || fact.size_type_derived ||
+			class_pointer_truth;
+		if (member_truth)
+			fact.direct_bool_boundary = true;
 		if (fact.conversion_count == 0)
 			continue;
 		if (fact.conversion_begin == invalid_.value ||
@@ -1905,7 +1913,12 @@ void PA11SemanticModel::CanonicalTruthFinalizer::publish_conversions()
 		{
 			ConversionFact& owned = model_.conversion_facts_[
 				fact.conversion_begin + conversion];
-			if (model_.bool_id(owned.source))
+			// Canonical comparisons already carry an i64 LowIR truth value.
+			// Preserve that physical value across non-bool consumers; a bool
+			// destination remains an ABI/storage boundary and materializes u8.
+			if (model_.bool_id(owned.source) &&
+				((typed_truth && !model_.bool_id(owned.target)) ||
+					(member_truth && model_.bool_id(owned.target))))
 				owned.canonical_truth_policy =
 					CanonicalTruthPolicy::Preserve;
 		}
