@@ -406,6 +406,11 @@ public:
 	Pa15Lowerer(const PA11SemanticModel& model, Program& program);
 	void run();
 private:
+	enum class DiscardedExpressionContext
+	{
+		Ordinary,
+		ExplicitToVoid
+	};
 	struct TypedGlobalDataAppender;
 	const PA11SemanticModel& model_;
 	Program& program_;
@@ -890,7 +895,8 @@ private:
 	LoweredValue lower_expression(SemanticFactId id);
 	LoweredValue lower_condition_expression(SemanticFactId id);
 	void lower_discarded_expression(SemanticFactId id,
-		bool materialize_class_lvalue = false);
+		DiscardedExpressionContext context =
+			DiscardedExpressionContext::Ordinary);
 	LoweredValue lower_binary_expression(SemanticFactId id);
 	LoweredValue lower_expression_impl(SemanticFactId id,
 		bool omit_boolean_context, bool materialize_lvalue = true,

@@ -1212,10 +1212,18 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 			}
 			else if (model_.void_id(fact.type))
 			{
+				if (fact.conversion_count != 1 ||
+					fact.conversion_begin == InvalidIdentityValue ||
+					fact.conversion_begin >= model_.conversion_facts_.size() ||
+					model_.conversion_facts_[fact.conversion_begin].kind !=
+						ConversionKind::ToVoid)
+					throw std::runtime_error(
+						"PA15 void cast is missing its ToVoid conversion");
 				// A discarded conversion to void evaluates the source, but its
 				// scalar result is not needed.  Keep that context all the way
 				// through the source so side-effecting lvalues are not reloaded.
-				lower_discarded_expression(operands.front(), true);
+				lower_discarded_expression(operands.front(),
+					DiscardedExpressionContext::ExplicitToVoid);
 				result = LoweredValue(Operand(), low_type(fact.type), false);
 			}
 			else
@@ -1243,9 +1251,11 @@ LoweredValue Pa15Lowerer::lower_expression_impl(SemanticFactId id, bool omit_boo
 	}
 
 void Pa15Lowerer::lower_discarded_expression(SemanticFactId id,
-	bool materialize_class_lvalue){
+	DiscardedExpressionContext context){
 		const SemanticFact& fact = model_.semantic_facts_[id.value];
 		const TypeId object_type = model_.expression_object_type(fact.type);
+		const bool explicit_to_void = context ==
+			DiscardedExpressionContext::ExplicitToVoid;
 		const bool volatile_lvalue =
 			fact.category == SemanticValueCategory::Lvalue &&
 			(model_.cv_qualifiers(object_type) & 2u) != 0;
@@ -1262,7 +1272,7 @@ void Pa15Lowerer::lower_discarded_expression(SemanticFactId id,
 				reference_binding(fact.binding))
 				return;
 		}
-		if (materialize_class_lvalue &&
+		if (explicit_to_void &&
 			fact.category == SemanticValueCategory::Lvalue &&
 			model_.class_scope_for_type(object_type).valid())
 		{
@@ -1306,7 +1316,20 @@ void Pa15Lowerer::lower_discarded_expression(SemanticFactId id,
 			set_current(end_block);
 			return;
 		}
-		(void)lower_expression_impl(id, false, false);
+		// PA12's ToVoid fact requests this typed boundary's fixture-visible read
+		// only for a direct, initialized formal parameter.  Limit the extra read
+		// to that stable binding; local variables and lvalue-producing operations
+		// (including assignment and increment/decrement) retain ordinary discarded
+		// lowering.  Comma and void-conditional sequencing is handled above.
+		const bool materialize_scalar_parameter = explicit_to_void &&
+			fact.kind == SemanticFactKind::IdExpression &&
+			fact.category == SemanticValueCategory::Lvalue &&
+			model_.scalar_id(object_type) &&
+			fact.binding.valid() &&
+			fact.binding.value < model_.bindings_.size() &&
+			model_.binding(fact.binding).kind == BindingKind::Parameter &&
+			!reference_binding(fact.binding);
+		(void)lower_expression_impl(id, false, materialize_scalar_parameter);
 }
 
 LoweredValue Pa15Lowerer::lower_conditional_address(SemanticFactId id){
