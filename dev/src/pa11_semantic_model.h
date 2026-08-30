@@ -1,5 +1,4 @@
 #pragma once
-
 #include <cstddef>
 #include <cstdint>
 #include <ostream>
@@ -15,16 +14,13 @@
 #include "pa11_semantic_aggregate.h"
 #include "pa12_semantic_builtins.h"
 #include "pa12_semantic_selection.h"
-
 namespace lowir_model
 {
 struct Program;
 }
-
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
-
 class Pa15Lowerer;
 
 enum class TypeKind
@@ -39,28 +35,24 @@ enum class TypeKind
 	Array,
 	Function
 };
-
 enum class NamedKind
 {
 	Class,
 	Enum,
 	TemplateParameter
 };
-
 enum class ClassTag
 {
 	Struct,
 	Class,
 	Union
 };
-
 enum class MemberAccess
 {
 	Public,
 	Protected,
 	Private
 };
-
 struct TypeKey
 {
 	TypeKind kind;
@@ -73,13 +65,11 @@ struct TypeKey
 	TypeId result;
 	std::vector<TypeId> parameters;
 	bool variadic;
-
 	TypeKey()
 		: kind(TypeKind::Fundamental), fundamental(FundamentalType::Int),
 		  child(), cv(0), unknown_bound(false), bound(),
 		  named(), result(), parameters(), variadic(false)
 	{}
-
 	bool operator==(const TypeKey& other) const
 	{
 		return kind == other.kind && fundamental == other.fundamental &&
@@ -1286,6 +1276,9 @@ private:
 	mutable std::vector<std::uint32_t> lexical_marks_;
 	mutable std::uint32_t lexical_generation_;
 	mutable std::vector<LookupFrame> lookup_frames_;
+	// Transient typed source point for deferred lookup; nested identifier
+	// guards refine control points without mutating the canonical scope graph.
+	mutable SourcePoint active_lookup_point_;
 	std::vector<DeclarationFact> declaration_facts_;
 	FlatIndex<const PA10AstNode*, DeclarationFactId, PointerHash>
 		declaration_fact_index_;
@@ -2100,6 +2093,13 @@ private:
 		BuiltinKind kind, const PA10AstNode& argument_node);
 	const BuiltinFunctionFact* builtin_function_fact(BuiltinKind kind) const;
 	const BuiltinFunctionFact* builtin_function_fact(BindingId binding) const;
+	class LookupPointGuard {
+	public:
+		LookupPointGuard(PA11SemanticModel&, SourcePoint);
+		~LookupPointGuard();
+	private:
+		PA11SemanticModel& model_; SourcePoint previous_;
+	};
 	class SemanticTailGuard
 	{
 	public:

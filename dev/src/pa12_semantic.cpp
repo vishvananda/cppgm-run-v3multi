@@ -1,12 +1,9 @@
 #include "pa11_semantic.h"
 #include "pa11_semantic_model.h"
-
 #include <algorithm>
-
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
-
 TypeId PA11SemanticModel::switch_condition_type(TypeId type) const
 {
 	type = strip_cv_type(expression_object_type(type));
@@ -23,7 +20,6 @@ TypeId PA11SemanticModel::switch_condition_type(TypeId type) const
 	}
 	return promote_integral_type(type);
 }
-
 bool PA11SemanticModel::case_label_convertible(TypeId source, TypeId target) const
 {
 	source = strip_cv_type(expression_object_type(source));
@@ -37,7 +33,6 @@ bool PA11SemanticModel::case_label_convertible(TypeId source, TypeId target) con
 		return false;
 	return conversion_for(source, SemanticValueCategory::Prvalue, target, NULL).valid;
 }
-
 ScopeId PA11SemanticModel::create_internal_scope(ScopeId parent)
 {
 	if (!parent.valid() || parent.value >= scopes_.size())
@@ -48,7 +43,6 @@ ScopeId PA11SemanticModel::create_internal_scope(ScopeId parent)
 		NamedRecordId(), false, creation_order_++, depth));
 	return result;
 }
-
 void PA11SemanticModel::process_condition_declaration(
 	const PA10AstNode& node, ScopeId scope)
 {
@@ -91,7 +85,6 @@ void PA11SemanticModel::process_condition_declaration(
 	declaration_facts_.push_back(declaration);
 	declaration_fact_index_.set(&node, declaration_id);
 }
-
 StatementFactId PA11SemanticModel::add_statement_fact(
 	const StatementFact& fact)
 {
@@ -102,7 +95,6 @@ StatementFactId PA11SemanticModel::add_statement_fact(
 	statement_fact_index_.set(fact.node, result);
 	return result;
 }
-
 const StatementFact* PA11SemanticModel::statement_fact(
 	const PA10AstNode& node) const
 {
@@ -112,13 +104,11 @@ const StatementFact* PA11SemanticModel::statement_fact(
 		return NULL;
 	return &statement_facts_[found->value];
 }
-
 ScopeId PA11SemanticModel::substatement_scope(const PA10AstNode& node) const
 {
 	const ScopeId* found = substatement_scope_index_.find(&node);
 	return found == NULL ? ScopeId() : *found;
 }
-
 void PA11SemanticModel::prepare_pa12_condition(const PA10AstNode& node,
 	ScopeId scope)
 {
@@ -128,7 +118,6 @@ void PA11SemanticModel::prepare_pa12_condition(const PA10AstNode& node,
 		node.children.front().kind == PA10NodeKind::ConditionDeclaration)
 		process_condition_declaration(node.children.front(), scope);
 }
-
 void PA11SemanticModel::prepare_pa12_substatement(
 	const PA10AstNode& node, ScopeId parent)
 {
@@ -326,6 +315,13 @@ void PA11SemanticModel::validate_switch_initialization(
 	SwitchInitializationState state;
 	collect_switch_transfer_points(body, scope, &state);
 }
+
+PA11SemanticModel::LookupPointGuard::LookupPointGuard(
+	PA11SemanticModel& model, SourcePoint point)
+	: model_(model), previous_(model.active_lookup_point_)
+{ model_.active_lookup_point_ = point; }
+PA11SemanticModel::LookupPointGuard::~LookupPointGuard()
+{ model_.active_lookup_point_ = previous_; }
 
 PA11SemanticModel::SemanticTailGuard::SemanticTailGuard(PA11SemanticModel& model)
 	: model_(model), semantic_begin_(model.semantic_facts_.size()),
@@ -1256,6 +1252,8 @@ ExprInfo PA11SemanticModel::semantic_enumerator_expression(
 
 ExprInfo PA11SemanticModel::semantic_id_expression(const PA10AstNode& node, ScopeId scope)
 {
+	// Each identifier refines an enclosing control/call source point.
+	LookupPointGuard lookup_point(*this, SourcePoint(node.source_begin));
 	if (has_template_id(node))
 		throw std::runtime_error("PA12 template-id requires a target");
 	const NamePath path = name_path(node);
@@ -2343,6 +2341,7 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 SemanticFactId PA11SemanticModel::semantic_ambiguous_call_statement(
 	const PA10AstNode& node, ScopeId scope)
 {
+	LookupPointGuard lookup_point(*this, SourcePoint(node.source_begin));
 	NamePath function_name;
 	const PA10AstNode* argument_node = NULL;
 	const PA10AstNode* right_node = NULL;
@@ -2685,6 +2684,7 @@ SemanticFactId PA11SemanticModel::semantic_statement(const PA10AstNode& node,
 	ScopeId scope, const FunctionFact& function, unsigned int loop_depth,
 	unsigned int switch_depth, SwitchValidationContext* switch_context)
 {
+	LookupPointGuard lookup_point(*this, SourcePoint(node.source_begin));
 	switch (node.kind)
 	{
 	case PA10NodeKind::EmptyDeclaration:

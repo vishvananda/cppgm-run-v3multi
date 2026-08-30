@@ -1,5 +1,4 @@
 #include "pa11_semantic_model.h"
-
 #include <limits>
 
 namespace pa11_semantic_internal
@@ -205,7 +204,7 @@ PA11SemanticModel::PA11SemanticModel(const PA10Ast& ast)
 	  anonymous_union_count_(0), anonymous_enum_count_(0), creation_order_(0),
 	  lookup_marks_(),
 	lookup_generation_(0), lexical_marks_(), lexical_generation_(0),
-	lookup_frames_(), declaration_facts_(),
+	lookup_frames_(), active_lookup_point_(), declaration_facts_(),
 	declaration_fact_index_(), declaration_bindings_(),
 	declaration_definition_flags_(), function_facts_(),
 	function_fact_index_(), function_binding_fact_index_(),
@@ -645,6 +644,8 @@ ScopeId PA11SemanticModel::lookup_namespace_here(ScopeId scope, NameId name,
 }
 SourcePoint PA11SemanticModel::lookup_source_point(ScopeId start) const
 {
+	if (active_lookup_point_.valid())
+		return active_lookup_point_;
 	for (ScopeId scope = start; scope.valid();
 		scope = scopes_[scope.value].parent)
 	{
@@ -666,11 +667,11 @@ bool PA11SemanticModel::scope_visible_at(ScopeId scope, SourcePoint point) const
 bool PA11SemanticModel::relation_visible_at(ScopeId owner,
 	SourcePoint declaration_point, SourcePoint point) const
 {
-	// Local block using directives retain their existing PA12 formation
-	// behavior.  Namespace relations, including the implicit unnamed-
-	// namespace relation, obey the function declaration point.
+	// Local using directives retain PA12 formation outside typed lookup;
+	// deferred statement, call, and identifier guards check each typed use site.
 	if (!point.valid() || !declaration_point.valid() ||
-		scopes_[owner.value].kind != ScopeKind::Namespace)
+		(scopes_[owner.value].kind != ScopeKind::Namespace &&
+			!active_lookup_point_.valid()))
 		return true;
 	return declaration_point.value <= point.value;
 }

@@ -1174,6 +1174,7 @@ namespace pa11_semantic_internal
 {
 ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, ScopeId scope)
 {
+	LookupPointGuard lookup_point(*this, SourcePoint(node.source_begin));
 	if (node.children.size() != 2)
 		throw std::runtime_error("PA12 invalid call expression");
 	const PA10AstNode& callee_node = node.children.front();
