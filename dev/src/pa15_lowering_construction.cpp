@@ -911,6 +911,8 @@ const FunctionFact& Pa15Lowerer::checked_destructor_function(
 	if (binding.kind != BindingKind::Function ||
 		model_.type_kind(binding.type) != TypeKind::Function)
 		throw std::runtime_error("PA15 destructor fact binding is invalid");
+	if (model_.destructor_binding(record) != destructor)
+		throw std::runtime_error("PA15 destructor fact binding is not canonical");
 	const BindingSidecar* sidecar = model_.binding_sidecar(destructor);
 	if (sidecar == NULL || sidecar->destructor_record != record)
 		throw std::runtime_error("PA15 destructor fact record owner is invalid");
@@ -1163,7 +1165,8 @@ void Pa15Lowerer::emit_destructor_call(BindingId destructor,
 	if (symbol == function_symbols_.end() || name == function_name_ids_.end())
 		throw std::runtime_error("PA15 destructor call target was not emitted");
 	const TypeKey& signature = model_.types_[model_.binding(destructor).type.value];
-	if (signature.variadic || !signature.parameters.empty())
+	if (signature.variadic || !signature.parameters.empty() ||
+		!model_.void_id(signature.result))
 		throw std::runtime_error("PA15 destructor call signature is invalid");
 	Instruction instruction;
 	instruction.kind = Instruction::IK_CALL;
@@ -1359,15 +1362,52 @@ void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action,
 {
 	if (elements == NULL)
 		throw std::runtime_error("PA15 destructor element sequence is missing");
-	if ((action.target == ConstructorActionTarget::Base &&
+	if ((action.target != ConstructorActionTarget::Base &&
+		action.target != ConstructorActionTarget::Member) ||
+		(action.target == ConstructorActionTarget::Base &&
 		(!action.base_record.valid() || action.base_record.value >=
 			model_.named_.size() || action.member.valid())) ||
 		(action.target == ConstructorActionTarget::Member &&
-		(!action.member.valid() || action.base_record.valid())) ||
+		(!action.member.valid() || action.member.value >= model_.bindings_.size() ||
+			action.base_record.valid())) ||
 		!action.destructor.valid() || action.destructor.value >=
 			model_.bindings_.size() || !action.object_type.valid() ||
 			action.object_type.value >= model_.types_.size())
 		throw std::runtime_error("PA15 destructor action identity is invalid");
+	if (!active_destructor_record_.valid() ||
+		active_destructor_record_.value >= model_.named_.size())
+		throw std::runtime_error("PA15 destructor action has no active owner");
+	const NamedRecord& active = model_.named_[active_destructor_record_.value];
+	TypeId expected_type;
+	NamedRecordId expected_record;
+	if (action.target == ConstructorActionTarget::Base)
+	{
+		if (active.kind != NamedKind::Class || !active.has_base ||
+			active.direct_base_virtual || active.direct_base != action.base_record ||
+			model_.named_[action.base_record.value].kind != NamedKind::Class ||
+			model_.named_[action.base_record.value].class_tag == ClassTag::Union)
+			throw std::runtime_error("PA15 destructor base action owner is invalid");
+		expected_type = model_.named_type(action.base_record);
+		expected_record = action.base_record;
+	}
+	else
+	{
+		if (active.kind != NamedKind::Class || !active.scope.valid() ||
+			action.member.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[action.member.value] != active.scope ||
+			model_.binding(action.member).kind != BindingKind::Variable ||
+			model_.is_static_member(action.member))
+			throw std::runtime_error("PA15 destructor member action owner is invalid");
+		expected_type = model_.binding(action.member).type;
+		expected_record = model_.class_record_for_object_type(expected_type);
+	}
+	if (!expected_type.valid() || expected_type.value >= model_.types_.size() ||
+		action.object_type != expected_type || !expected_record.valid() ||
+		expected_record.value >= model_.named_.size() ||
+		model_.named_[expected_record.value].kind != NamedKind::Class ||
+		model_.named_[expected_record.value].class_tag == ClassTag::Union ||
+		model_.destructor_binding(expected_record) != action.destructor)
+		throw std::runtime_error("PA15 destructor action target type is not canonical");
 	std::vector<ConstructorAddressStep> path;
 	collect_destructor_elements(action.object_type, action, &path, elements);
 }

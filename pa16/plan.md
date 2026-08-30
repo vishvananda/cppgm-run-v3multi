@@ -8,7 +8,9 @@ destructors. PA12 is the sole semantic owner of ordered member/base teardown:
 `DestructorActionFact` range. PA15 resolves the active owner through
 `active_destructor_record_` and `active_destructor_this_`, validates the
 destructor binding and exact range, and lowers that range without source-text
-recovery or unrelated-model scans.
+recovery or unrelated-model scans. The bounded audit repair adds only fail-closed
+typed checks that each action's target/type/destructor remains canonical and
+that every emitted destructor call has a void signature.
 
 For a nonempty typed suffix, `lower_function` allocates one lowering-only
 cleanup block and emits `eh_cleanup` immediately after storing `this`, before
@@ -36,13 +38,22 @@ consumed facts and emitted IR, and section 7 by recording structural evidence
 without timing claims. Explicit destructor calls, local automatic lifetime
 ordering, constructor cleanup, label/return lowering, demand-driven helper
 emission, and the closed typed bit-field/local-class boundaries remain
-unchanged.
+unchanged. The audit found no justified repair to local-EH chaining: a full
+repair for a throwing local destructor would require a separate path-sensitive
+lifetime owner, outside this suffix boundary.
 
 ## Failure Map
 
-The final stage authority is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-test-rerun-20260830.log`:
+The supplied turn-start/landed stage authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
 `208/243` passed, `35` failed, and all `243/243` identities were covered.
+Fresh post-repair `make test-pa16` reproduces that result with exit `2`; its
+durable log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-test-20260830.log`.
+The exact sorted comparison is at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-identity-delta-20260830.log`:
+fresh-only `0`, authority-only `0`, unrecognized `0`, and `243/243` coverage
+against the 243-file inventory.
 The exact final failure set is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
@@ -81,15 +92,18 @@ The exact final failure set is:
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Compared with the supplied baseline
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+Compared with the preserved pre-landed baseline recorded in the inherited
+identity evidence
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-identity-delta-rerun-20260830.log`
 (`206/243`, 37 failures, `243/243` covered), baseline-only is exactly:
 
 - `pa16/tests/general/200-destructor-body-local-before-base-destruction.t`
 - `pa16/tests/general/200-member-object-lifetime.t`
 
 Final-only is empty. The failure count therefore decreases by two without a
-coverage change; the PA16 stage still has unrelated residual failures.
+coverage change; the PA16 stage still has unrelated residual failures. The
+bounded source repair is fail-closed for malformed model facts and the fresh
+broad run confirms that it introduces no failure-identity or coverage delta.
 
 ## Active Checkpoint
 
@@ -114,33 +128,39 @@ array-path replay -> emitted destructor calls. `active_destructor_cleanup_` is
 only a block identity; `DestructedElement` is transient lowering data, not
 duplicate semantic ownership. The same sequence serves normal emission with
 explicit remaining-suffix prefixes and body-unwind emission without borrowing
-normal-path SSA values.
+normal-path SSA values. The audit repair proves exact member/base `TypeId`
+ownership, canonical destructor binding, valid target enum, and void call ABI
+at the point where the action enters this sequence.
 
 Exclusions are the remaining 35 identities, tests and fixtures, reference
 execution, source-text reconstruction, semantic-fact redesign, broad
 whole-program passes/caches, and unrelated constructor/local-lifetime changes.
 No source sets or generated oracle data were changed.
 
-The lowerer now orders a reachable destructor-body return as local lifetime
-destruction under the body handler, `eh_end`, then the typed suffix. An
-end-to-end early-return destructor probe remains unvalidated because the
+The lowerer orders a reachable destructor-body return as local lifetime
+destruction under the body handler, `eh_end`, then the typed suffix. Ordinary
+compound fallthrough removes scope-owned lifetimes before the same suffix.
+An end-to-end early-return destructor probe remains unvalidated because the
 existing PA12 semantic check rejects it before lowering with
-`PA12 retained return owner is not definition-owned`; this is the bounded
-control-flow uncertainty for this checkpoint.
+`PA12 retained return owner is not definition-owned`. A further bounded
+uncertainty is exception propagation from a local lifetime destructor: the
+landed body handler owns the class member/base suffix, while full cleanup of
+other live locals is a separate lifetime-path design.
 
 ## Performance Evidence
 
-The exact semantic range is read once to build the transient terminal sequence,
-then emission intentionally revisits terminals. Compiler work is
-O(actions + emitted IR): terminal collection is linear in the consumed typed
-range/elements, and each cleanup-prefix replay costs the address/call IR it
-emits. The public LowIR contract has no shared cleanup cursor or implicit
-remaining-suffix state, so every potential throw point must carry an explicit,
-independently recomputed typed remaining suffix. For N terminals, normal
-cleanup prefixes contain `N(N-1)/2` terminal calls and address instructions,
-and the body-unwind block adds O(N); generated cleanup-prefix IR is therefore
-intentionally O(N^2). This is the semantic/ABI reason for the broader output
-bound. No timing claim is made.
+Each emission mode reads the exact semantic range once to build its transient
+terminal sequence, then intentionally revisits terminals while emitting
+normal and body-unwind paths. For `N` flattened terminals and maximum
+array-path depth `D`, collection is `O(ND)` per mode and normal
+cleanup-prefix emission is intentionally `O(N^2D)`: the public LowIR contract
+has no shared cleanup cursor or implicit remaining-suffix state, so every
+potential throw point must carry an explicit, independently recomputed typed
+remaining suffix. Body-unwind replay is `O(ND)`. With fixed type-path depth,
+the broader output bound is the observed triangular `O(N^2)`; `D` accounts for
+required address projections. The audit repair adds constant-time
+indexed/sidecar checks per action and does not change these bounds. No
+whole-program retry, textual fallback, or unbounded cache/shortcut was added.
 
 Structural evidence from the durable probe log
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-structure-20260830.log`:
@@ -158,29 +178,49 @@ Structural evidence from the durable probe log
   The counts expose the triangular normal prefixes plus the linear unwind
   copy.
 
-## Durable Validation
+## Final Validation and Inherited Evidence
 
-- Full PA16 stage: `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-test-rerun-20260830.log`
-  (`make test-pa16`, exit 2 because residual failures remain; 208/243).
-- Exact 243-identity/coverage delta:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-identity-delta-rerun-20260830.log`.
-- Exact prior gate:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-through-pa15-rerun-20260830.log`
-  (`1167/1167`, exit 0).
-- File audit:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-file-audit-rerun-20260830.log`
-  (exit 0, five known header-division warnings).
-- Diff check:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-diff-check-final-20260830.log`
-  (exit 0).
-- Bounded changed-file audit:
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-changed-file-audit-20260830.log`
-  (exit 0; exactly the four reviewed lowering files plus this plan).
+Inherited evidence for landed `70327e4d` remains distinct from the fresh
+post-repair gates: full PA16 is at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-test-rerun-20260830.log`,
+the inherited identity/coverage delta at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-identity-delta-rerun-20260830.log`,
+the inherited through-PA15 gate at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-through-pa15-rerun-20260830.log`,
+the inherited file-audit log at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-file-audit-rerun-20260830.log`,
+the inherited diff-check log at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-diff-check-final-20260830.log`,
+and the inherited changed-file log at
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-changed-file-audit-20260830.log`.
+Those artifacts describe the landed source before the bounded repair.
 
-The focused 9-test matrix remains `7/9`: the two named destructor-body
-targets pass, explicit destructor-call and constructor regressions pass, and
-the two remaining focused failures are the known array-presentation cases.
-Its durable log is
+Fresh post-repair validation is exact and durable:
+
+- `make test-pa16` exits `2` at `208/243`, with exactly `35` failures and
+  `243/243` coverage. The complete output is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-test-20260830.log`.
+- `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
+  exits `0` at `1167/1167`. The exact command output is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-through-pa15-20260830.log`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
+  with five known header-division warnings and no fatals. Its output is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-file-audit-20260830.log`.
+- The exact sorted identity comparison is
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-identity-delta-20260830.log`:
+  fresh `35` versus authority `35`, fresh-only `0`, authority-only `0`,
+  unrecognized `0`, and `243/243` coverage against the `243`-identity
+  inventory.
+- Fresh post-repair `git diff --check` and bounded changed-file audit each
+  exit `0` in
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-diff-check-20260830.log`
+  and
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-audit-changed-file-audit-20260830.log`.
+
+The earlier focused post-repair evidence remains useful for behavior
+localization: `make -C dev cppgm++ CXX=g++` exits `0`, and the seven-test
+matrix is `5/7` with only the two known array-presentation mismatches. The
+inherited landed nine-test result is `7/9` at
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-destructor-final-focused-20260830.log`.
 
 ## Checkpoint Ledger
@@ -191,8 +231,9 @@ Its durable log is
 | `7e060b28` typed packed bit-field boundary | `202/243`, 41 failures, `243/243` covered | prior focused bit-field evidence retained | prior landed |
 | `d95a6fe7` local-class checkpoint start | `202/243`, 41 failures, `243/243` covered | prior local-class selection | prior checkpoint |
 | `d83e927f` typed local-class materialization | `206/243`, 37 failures, `243/243` covered | prior focused matrix, through-PA15, and audit passed | prior landed |
-| `PA16 typed exception-safe destructor suffix` | `208/243`, 35 failures, `243/243` covered | baseline-only exactly the two fixed destructor targets; final-only empty; prior gate `1167/1167`; audit and diff check pass; N=1/3/8 evidence recorded | validated final; committed in handoff |
+| `70327e4d` typed exception-safe destructor suffix | `208/243`, 35 failures, `243/243` covered | fresh post-repair stage exactly matches the turn-start authority: fresh-only `0`, authority-only `0`, unrecognized `0`; preserved pre-landed baseline `206/243` has exactly the two fixed destructor/lifetime identities; N=1/3/8 structural evidence; bounded repair adds canonical action/type/void-signature checks; focused matrix `5/7` with only two known array-shape residuals; fresh through-PA15 `1167/1167` | final audit complete; checkpoint record and approved repair committed in this checkpoint |
 
-The remaining 35 identities are outside this checkpoint boundary. Future work
-must preserve the canonical typed action range, active owner flow, explicit
-cleanup semantics, and the recorded output-complexity rationale.
+The remaining 35 identities are outside this checkpoint boundary. The next
+checkpoint should select one unchanged residual family separately. Future
+work must preserve the canonical typed action range, active owner flow,
+explicit cleanup semantics, and the recorded output-complexity rationale.
