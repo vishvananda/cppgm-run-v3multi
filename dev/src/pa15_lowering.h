@@ -469,6 +469,12 @@ private:
 	std::map<std::size_t, SemanticFactId> variable_facts_;
 	std::map<std::size_t, const DeclarationFact*> declaration_by_binding_;
 	std::map<std::size_t, lowir_model::SlotId> slot_by_binding_;
+	// A no-op automatic class initialization still materializes one typed root
+	// address for the object's lifetime boundary.  Reuse that address when the
+	// same binding is immediately consumed by a later typed operation instead
+	// of emitting a second address instruction.
+	std::map<std::size_t, std::pair<std::size_t, LoweredValue> >
+		no_op_local_addresses_;
 	std::vector<SpellingId> slot_spellings_;
 	std::vector<FunctionPlan> function_plans_;
 	std::vector<PendingGlobalAction> pending_global_actions_;
@@ -505,6 +511,16 @@ private:
 	std::vector<ConstructorRuntimeCacheState> constructor_nothrow_states_;
 	std::vector<unsigned char> constructor_nothrow_results_;
 	std::vector<unsigned char> constructor_nothrow_invalid_;
+	// PA12 constructor actions are the sole source for this bounded PA15
+	// emission classification.  An in-progress entry is conservatively
+	// effectful, so recursive synthetic-constructor graphs cannot recurse
+	// without a bound or accidentally become pruned through a cycle.
+	mutable std::vector<ConstructorRuntimeCacheState> constructor_noop_states_;
+	mutable std::vector<unsigned char> constructor_noop_results_;
+	mutable std::vector<unsigned char> constructor_noop_invalid_;
+	mutable std::vector<ConstructorRuntimeCacheState> zero_initialization_noop_states_;
+	mutable std::vector<unsigned char> zero_initialization_noop_results_;
+	mutable std::vector<unsigned char> zero_initialization_noop_invalid_;
 	std::vector<ConstructorRuntimeCacheState> semantic_nothrow_states_;
 	std::vector<unsigned char> semantic_nothrow_results_;
 	std::vector<unsigned char> semantic_nothrow_invalid_;
@@ -701,6 +717,10 @@ private:
 		ScopeId target, std::size_t begin, std::size_t count) const;
 	const AggregateElementFact* aggregate_elements(SemanticFactId id,
 		std::size_t* count, std::size_t* total_count) const;
+	bool aggregate_element_is_noop(TypeId type,
+		const AggregateElementFact* element) const;
+	bool aggregate_direct_scalar(const SemanticFact* initializer,
+		TypeId type) const;
 	LowType lvalue_type(SemanticFactId id) const;
 	bool reference_binding(BindingId binding) const;
 	LoweredValue generated_slot(const LowType& type, const std::string& prefix);
@@ -808,6 +828,12 @@ private:
 		const std::vector<ConstructedElement>& completed);
 	const FunctionFact& checked_constructor_function(BindingId constructor,
 		NamedRecordId record) const;
+	void initialize_constructor_noop_caches() const;
+	bool constructor_function_is_noop(FunctionFactId function_id) const;
+	bool constructor_graph_action_is_noop(
+		const ConstructorActionFact& action) const;
+	bool constructor_action_is_noop_for_lowering(
+		const ConstructorActionFact& action) const;
 	const FunctionFact& checked_destructor_function(BindingId destructor,
 		NamedRecordId record) const;
 	LoweredValue destructor_subobject_address(const DestructorActionFact& action);
@@ -837,6 +863,7 @@ private:
 		BitFieldInitializationContext* context = NULL,
 		const LoweredValue* aggregate_root_storage = NULL,
 		TypeId aggregate_root_type = TypeId());
+	bool zero_initialization_is_noop(TypeId type) const;
 	bool constructor_action_is_noop(const SemanticFact& action) const;
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action,

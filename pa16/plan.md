@@ -4,166 +4,146 @@
 
 The maintained pipeline is one typed path:
 
-1. PA10 lexes/parses names, member/operator syntax, expressions, declarations,
-   and source-point information into the AST.
-2. PA11 builds canonical scopes, bindings, types, records, base relations,
-   access facts, using/friend publication, and typed `ValueRef`/semantic-model
-   facts. Lookup and ADL consume those facts, not recovered source text.
-3. PA12 walks the AST once, creates typed expression/declaration facts, computes
-   value category and lifetime, collects typed candidates, ranks conversions,
-   selects one callable, and publishes the selected binding, callable type,
-   argument conversions, base paths, and ownership on the fact graph.
-4. PA15 lowers those published facts to typed LowIR: layout/address paths,
-   constructor/destructor actions, ABI types, references, conversions, and
-   demand-driven function bodies. It must not redo lookup or selection.
-
-PA11 owns canonical declarations, scopes, types, records, base/access facts,
-and lookup/publication. PA12 owns expression typing, value category/lifetime,
-candidate selection, conversion ranking, and publication of the selected
-binding, callable type, argument conversions, and base-subobject paths. PA15
-consumes those facts for typed lowering and representation; PA10 owns syntax.
+1. PA10 owns syntax and AST facts for declarations, expressions, names,
+   operators, and source structure.
+2. PA11 owns canonical types, bindings, records, scopes, layout, access, and
+   lookup/publication facts.
+3. PA12 owns semantic expression/declaration facts, value categories,
+   conversions, lifetime facts, constructor selections, and typed constructor
+   action/function facts.
+4. PA15 consumes those PA12 facts for typed construction, lowering, LowIR
+   address paths, and demand-driven function emission.  It does not recover
+   source text or redo lookup/selection.
 
 ## Failure Map
 
-The audit-turn starting checkpoint is `220/243` with `23` failures and full
-`243/243` identity coverage.  The parent baseline was `219/243` with `24`
-failures; that `24 -> 23` comparison establishes the landed increment only.
-The final audit gate must preserve all `243` identities, introduce no new
-failure identity, and remain at or below this current `23`-failure set.
+Turn-start baseline: `220/243`, `23` failures, and `243/243` identities
+covered, at HEAD `d889058c0d159bd4414ffb6e9f5ac75227ce0192`.
 
-The current residuals below are recorded for boundary control, not re-audited
-by this checkpoint:
+This checkpoint targets two LowIR-only residuals:
 
-- PA10 syntax/name formation: `200-elaborated-member-forward-type.t`,
-  `300-user-defined-string-literal-operator.t`.
-- PA11 typed lookup/publication and layout:
-  `200-friend-derived-private-base-defaulted-constructor.t`,
-  `200-friend-intermediate-derived-protected-base-method.t`,
-  `200-unnamed-namespace-hidden-friend-single-definition.t`,
-  `300-callable-field-hides-private-base-method.t`,
-  `300-using-base-static-same-signature-derived-preferred.t`.
-- PA12 typed construction, conversion, and call/operator selection:
-  `200-external-ctor-overload-nonfirst-argument.t`,
-  `200-nested-braced-member-aggregate-init.t`,
-  `200-reference-member-class-init.t`,
-  `200-string-literal-does-not-convert-to-mutable-void-pointer.t`,
-  `300-operator-nullptr-t-from-zero.t`,
-  `300-overloaded-deref-user-assignment.t`,
-  `300-nested-enum-hidden-friend-bitmask-adl.t`.
-- PA15 typed lowering, emission, and LowIR representation:
-  `100-function-pointer-nested-param-name-shadow.t`,
-  `200-const-subobject-member-call.t`,
-  `200-local-default-class-array-lifecycle.t`,
-  `200-reference-indexed-pointer-member-access.t`,
-  `300-enum-class-nonmember-operator-bitand.t`,
-  `300-friend-function-definition-skip.t`,
-  `400-bit-field-prefix-postfix-increment.t`,
-  `400-signed-bit-field-read.t`,
-  `400-signed-enum-bit-field-read.t`.
+- `pa16/tests/general/200-const-subobject-member-call.t`: retain the
+  automatic `Map` root address and `Map::g`/`Table::f` call path, while
+  removing the unused empty-`Table` subobject projection.
+- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`:
+  retain the automatic `D` root address and reachable `B` base-entry
+  definition, while removing the no-op defaulted `D` wrapper/call.
 
-The selected identity `pa16/tests/general/300-prvalue-derived-base-friend-
-operator.t` is absent because the landed increment fixed it.  The two signed
-bit-field cases remain preservation controls; their checked-in fixture and
-README requirement are intentionally not changed here.
+Preservation controls include
+`cppgm.tests/course/pa16/404-typed-implicit-default-demand-regression.sh`,
+`cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh`, and
+the signed bit-field reads (`400-signed-bit-field-read.t` and
+`400-signed-enum-bit-field-read.t`), whose negative-value behavior is not
+altered.
 
 ## Active Checkpoint
 
-Spec alignment: PA16 supports ordinary non-template calls/operators, single
-inheritance, typed constructor temporaries, and references.  The final audit
-preserves that boundary; it does not open PA17 class-by-value transfer,
-copy/move, general temporary materialization, multiple inheritance, templates,
-or unrelated semantics.
+Spec alignment: implement the PA12-fact to PA15 construction/lowering demand
+boundary described by the PA16 Purpose and sections 1, 2, 5, and 7.  The
+classifier is conservative: incomplete, invalid, unsupported, cyclic, or
+otherwise unknown facts are effectful.
 
-The bounded audit covers landed commit
-`e470e9dfed07ca09a373d227640f3c8042cc2cbf` (`PA16 enable prvalue derived-base
-reference binding`) relative to parent `f3afe9d5`.  Its source change is in
-`dev/src/pa12_semantic_resolution.cpp`; PA12 fact publication and PA15
-lowering consumers are read-only ownership surfaces for this audit.
-
-Two directly caused defects required repair in that source boundary.  First,
-the new non-lvalue `Derived` to cv-qualified `Base&` choice admitted volatile
-lvalue references, so `volatile Base&` and `const volatile Base&` could bind
-to a temporary.  The derived-to-base branch is now limited to exactly
-const/nonvolatile lvalue references, and target-directed constructor fallback
-is disabled for volatile lvalue-reference targets.  Rvalue references and
-ordinary const lvalue-reference binding remain in scope.
-
-Second, the new `Base` candidate could outrank an exact `const Derived&`
-candidate because standard conversion comparison gives the derived-to-base
-choice precedence over a non-derived conversion at the same broad category.
-The exact same-class temporary reference choice now receives exact rank in
-this branch, while genuine base, cv, access, and non-base distinctions retain
-their typed comparison.  This does not open class-by-value conversion.
-
-The existing typed path owns the rest of the operation:
+Typed owner/data flow is:
 
 ```text
-source fact/category/type + target reference cv
-  -> conversion_for viability and typed ranking
-  -> derived_base_choice / derived_base_relation access and path
-  -> selected ConversionChoice
-  -> add_conversion canonical ConversionFact and path arena
-  -> PA15 apply_derived_base_conversion
-  -> validated direct-base address projection and reference call argument
+PA12 FunctionFact + ConstructorActionFact + TypeId/BindingId
+  -> PA15 memoized constructor-graph and zero-initialization summaries
+  -> collect_demanded_member_functions / aggregate lowering
+  -> constructor-action lowering and typed LowIR address paths
 ```
 
-`derived_base_relation` walks canonical single-inheritance records and
-checks the supplied access scope.  `add_conversion` validates the endpoint,
-distance, access metadata, and canonical path; it rejects base metadata on
-other conversion kinds.  PA15 validates the same fact and layout path before
-emitting typed `base_subobject` projection.  Constructor actions already
-produce addressable temporary storage, so no PA15 change or duplicate
-materialization is needed.
+The constructor summary validates canonical function identity, explicit
+parameter arity, function scope/implicit object, defined non-union class
+record, complete layout, sidecars, empty body, and every reachable action.
+Only an empty synthetic wrapper whose reachable constructor graph is no-op is
+omitted.  A user-provided empty constructor is retained as a reachable leaf
+definition when needed by that wrapper chain; a direct user-provided call is
+not pruned.  A separate typed zero-initialization summary recognizes only
+complete, flat, non-union class/array structures with no DMI, destructor, or
+scalar store work.  Value-initialization stores remain explicit even when the
+underlying synthetic constructor call is omitted.
 
-Scope is limited to the landed increment and these two direct correctness
-repairs.  No tests, fixtures, `.ref` files, sidecars, harnesses, comparators,
-generated outputs, coverage/source-set rules, or unrelated stage code changed.
+The root automatic class address is always emitted for the lifetime boundary.
+A function-scoped binding/block cache reuses only that already-emitted typed
+root address, so a later member call cannot create a duplicate address.  The
+non-goals are constructors with arguments or argument evaluation, nonempty
+executable bodies, DMI, scalar zero/store work, effectful base/member
+construction, destructor/lifetime effects, possible required actions, unions,
+unsupported layouts, incomplete/invalid facts, and cycles.
 
 ## Focused Evidence
 
-Sequential focused validation after the repair is:
+Durable command logs are in
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-noop-construction-checkpoint-20260830/`.
+On the final source state:
 
-- `make -C dev cppgm++ CXX=g++`: status `0`.
-- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-prvalue-derived-base-friend-operator.t tests/spec/200-conditional-derived-base-lvalue-reference.t tests/spec/200-const-reference-binds-derived-pointer-prvalue.t tests/general/300-const-method-array-member-binds-const-reference.t tests/general/300-basic-operator-overloads.t tests/general/200-derived-pointer-overload-prefers-base-over-void.t tests/spec/300-inherited-const-method-base-pointer-cv-bad.t tests/spec/200-derived-base-reference-overload-rank.t'`: status `0`, `PASS (8/8)`.
-- Ephemeral typed probes outside the repository: exact-derived overload and
-  nearer-base overload both select correctly (status `0`); xvalue direct
-  derived binding is accepted (status `0`); volatile and const-volatile base
-  lvalue-reference bindings are rejected (status `1`); inaccessible private
-  base is rejected outside its friend and accepted in the friend; class by
-  value, non-const base reference, and non-base reference cases are rejected.
-- The target LowIR shape retains one constructor action per operand, two
-  addressable temporary objects, two canonical base projections, and one
-  hidden-friend operator call.  No fixture or test was added.
-- `git diff --check`: status `0`.
-- Required final gates: the exact prior-through command exits `0` at
-  `1167 / 1167`; the PA16 file audit exits `0` with five known warnings; and
-  `make test-pa16` exits `2` at `220 / 243` with `23` residual failures.
-- Durable final evidence is under
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-e470-checkpoint-audit-20260830/`;
-  its identity check reports authority/fresh failures `23/23`, fresh-only and
-  authority-only `0/0`, and discovered/reference/fresh coverage `243/243/243`
-  with all missing/unexpected counts `0`.
+- `make -C dev cppgm++ CXX=g++`: status `0` (`16-build-after-size-fix.log`).
+- The two authoritative targets pass `2/2` with status `0`
+  (`17-target-check-final.log`).  The 404 and 409 typed course regressions
+  each pass with status `0` (`18-course-404-final.log`,
+  `19-course-409-final.log`).
+- `make test-pa16` reports `222/243` with `21` failures and denominator
+  `243`; its harness exit status is `2` because residual failures remain
+  (`22-make-test-pa16-commit-source.log`).  Identity comparison with
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+  finds starting `23`, fresh `21`, fresh-only `0`, and fixed `2`, with
+  `243/243` identities covered.  The fixed identities are the two targets
+  named in the Failure Map (`23-failure-identity-compare-commit-source.log`).
+- The exact `n=16` prior-through command exits `0` with `1167/1167`
+  (`24-prior-through-pa15-commit-source.log`).
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`.
+  It reports only the five existing header-body warnings for
+  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+  `pa11_semantic_model.h`, and `pa15_lowering.h`
+  (`25-file-audit-pa16-final.log`).
+- The final `git diff --check` after source validation is clean
+  (`20-diff-check-final.log`).
+
+Structural LowIR evidence from the two target sources:
+
+- `main` for the const-`Map` target contains exactly `%t1 = addr $m` and
+  `%t2 = call i32 @Map__g(%t1)`; `Map::g` retains its field projection and
+  `Table::f` call.
+- `main` for the friend target contains `%t1 = addr $d`; there is no `D::D`
+  function/call, and `B__B__base_entry` remains defined.
+- The 404/409 controls retain DMI, stateful base/member construction,
+  value-initialization stores, argumented construction, and required method
+  projections/calls.
+- The final wide-root probe compiles with status `0` and has one `main`,
+  `128` root addresses, `0` derived wrapper definitions, `0` derived calls,
+  and `128` retained `B__B__base_entry` definitions
+  (`21-wide-root-probe-final.log`).
 
 ## Performance Evidence
 
-The new path performs one typed direct-base walk of height `H` for each
-eligible conversion candidate; with `C` typed candidates and `A` arguments,
-the bounded selection work is O(C*A*H).  It adds no global scan, textual
-recovery, retry pipeline, host/reference shortcut, or unbounded allocation.
-Representative structural evidence is the target's two constructor actions,
-two temporary slots, two base-subobject projections, and one operator call;
-there is no timing/RSS claim from this focused milestone.
+Constructor and zero-initialization summaries use dense per-function/type
+state, result, and invalidation arrays; an in-progress state makes recursion
+effectful, and completed results are memoized.  Each reachable constructor
+action/type edge is analyzed once per lowering.  The no-op leaf-preservation
+worklist captures one shared dense visitation state for the entire demand pass;
+state 1 breaks an unexpected cycle and state 2 permanently records a completed
+node, so the whole leaf-preservation pass is O(F+E) time and O(F) memory for F
+functions and E reachable constructor edges, rather than O(R*F) dense setup for
+R pruned roots.  Root-address reuse uses one function-scoped ordered binding
+map.
+
+An ephemeral wide-root probe with 128 independent defaulted-derived locals
+over 128 empty user-provided bases compiled with status `0`.  Its LowIR had
+one `main`, 128 root addresses, zero derived wrapper definitions, zero derived
+constructor calls, and 128 retained `B__B__base_entry` definitions.  This is
+structural evidence only; no timing or RSS claim is made.
 
 ## Checkpoint Ledger
 
-- Parent baseline (provenance only): `219/243`, `24` failures.
-- Audit-turn starting checkpoint: `220/243`, `23` failures, `243/243` identities;
-  the final result may not regress to the parent `24`-failure set.
-- Completed row:
-  `e470e9dfed07ca09a373d227640f3c8042cc2cbf` — bounded source repair and
-  documentation audit complete; focused evidence passes, the required broad
-  gates meet the current `23`-failure limit, no fresh-only failure identity
-  appears, and all `243` identities remain covered.
-- Next checkpoint: later PA16 work may select one of the same 23 residual
-  identities.  This increment remains complete and its source/docs write set
-  contains no test, fixture, reference, harness, or unrelated stage change.
+- Parent/start baseline: HEAD
+  `d889058c0d159bd4414ffb6e9f5ac75227ce0192`, clean worktree,
+  `220/243`, `23` failures, `243/243` identities.
+- Validated checkpoint: typed PA12-fact constructor/zero-initialization
+  classification, shared demand pruning, root-address reuse, focused targets
+  `2/2`, controls `404` and `409`, broad PA16 `222/243` with `21` failures,
+  no fresh-only failure identities, prior-through `1167/1167`, and audit
+  status `0` with five existing warnings.  Durable evidence is recorded at
+  the path above.
+- Changed implementation surfaces are limited to existing PA15 lowering
+  files; no tests, fixtures, references, harnesses, comparators, generated
+  outputs, coverage rules, or source-set files were changed.

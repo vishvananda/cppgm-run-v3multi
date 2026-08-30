@@ -820,6 +820,35 @@ const AggregateElementFact* Pa15Lowerer::aggregate_elements(
 	return range->count == 0 ? NULL : &model_.aggregate_elements_[range->begin];
 }
 
+bool Pa15Lowerer::aggregate_element_is_noop(TypeId type,
+	const AggregateElementFact* element) const
+{
+	if (element == NULL)
+		return zero_initialization_is_noop(type);
+	if (!element->initializer.valid() ||
+		element->initializer.value >= model_.semantic_facts_.size())
+		return false;
+	const SemanticFact& initializer =
+		model_.semantic_facts_[element->initializer.value];
+	return initializer.kind == SemanticFactKind::ConstructorAction &&
+		constructor_action_is_noop(initializer);
+}
+
+bool Pa15Lowerer::aggregate_direct_scalar(const SemanticFact* initializer,
+	TypeId type) const
+{
+	if (initializer == NULL || initializer->kind == SemanticFactKind::BracedInitList ||
+		initializer->kind == SemanticFactKind::ConstructorAction)
+		return false;
+	if (initializer->kind != SemanticFactKind::Literal ||
+		initializer->literal_element_count == 0)
+		return true;
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(type));
+	return object.valid() && object.value < model_.types_.size() &&
+		model_.type_kind(object) != TypeKind::Array;
+}
+
 void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 	SemanticFactId initializer, const LoweredValue& destination_value,
 	const ConstructorActionFact* root_action,
@@ -876,6 +905,8 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 				elements[next_element].index == i ? &elements[next_element++] : NULL;
 			const SemanticFact* initializer_fact = element_fact != NULL ?
 				&model_.semantic_facts_[element_fact->initializer.value] : NULL;
+			if (aggregate_element_is_noop(array.child, element_fact))
+				continue;
 			const bool direct_scalar = initializer_fact != NULL &&
 				initializer_fact->kind != SemanticFactKind::BracedInitList &&
 				initializer_fact->kind != SemanticFactKind::ConstructorAction &&
@@ -983,6 +1014,8 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			(element_fact != NULL && element_fact->type !=
 				model_.binding(member).type))
 			throw std::runtime_error("PA15 aggregate member fact owner is invalid");
+		if (aggregate_element_is_noop(model_.binding(member).type, element_fact))
+			continue;
 		const std::size_t* offset = layout.member_offsets.find(member);
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
@@ -995,14 +1028,8 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 		}
 		const SemanticFact* initializer_fact = element_fact != NULL ?
 			&model_.semantic_facts_[element_fact->initializer.value] : NULL;
-		const bool direct_scalar = initializer_fact != NULL &&
-			initializer_fact->kind != SemanticFactKind::BracedInitList &&
-			initializer_fact->kind != SemanticFactKind::ConstructorAction &&
-			!(initializer_fact->kind == SemanticFactKind::Literal &&
-				initializer_fact->literal_element_count != 0 &&
-				model_.type_kind(model_.strip_cv_type(
-					model_.expression_object_type(model_.binding(member).type))) ==
-					TypeKind::Array);
+		const bool direct_scalar = aggregate_direct_scalar(initializer_fact,
+			model_.binding(member).type);
 		LoweredValue direct_value = direct_scalar ?
 			lower_expression(element_fact->initializer) : LoweredValue();
 		LoweredValue encoded;

@@ -161,6 +161,11 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		model_.semantic_facts_.size(), 0);
 	std::vector<unsigned char> scanned_runtime_facts(
 		model_.semantic_facts_.size(), 0);
+	// Constructor graphs are immutable for this demand pass.  Share visitation
+	// across all pruned roots so common synthetic wrappers are expanded once,
+	// while state 1 still breaks an unexpected cycle conservatively.
+	std::vector<unsigned char> demanded_noop_constructor_states(
+		model_.function_facts_.size(), 0);
 	const auto validate_fact_base_path = [this](const SemanticFact& fact) {
 		if (fact.base_path_count == 0)
 		{
@@ -199,8 +204,71 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			function_work.push_back(*entry_id);
 		}
 	};
+	// A synthetic constructor can be a typed wrapper around a user-provided
+	// empty constructor.  The wrapper itself has no emitted action when its
+	// complete graph is no-op, but the reachable non-synthetic leaf definition
+	// remains part of the LowIR function set.  Walk only that already-published
+	// constructor-action graph; the shared visited state makes the preservation
+	// pass linear and cycle-safe for the whole demand pass.
+	const auto demand_noop_constructor_leaves = [this, demanded,
+		&function_work, &demand_special_member_base_entry,
+		&demanded_noop_constructor_states](FunctionFactId root) {
+		std::vector<FunctionFactId> work;
+		work.push_back(root);
+		while (!work.empty())
+		{
+			const FunctionFactId current_id = work.back();
+			work.pop_back();
+			if (!current_id.valid() || current_id.value >=
+				model_.function_facts_.size())
+				throw std::runtime_error(
+					"PA15 no-op constructor leaf identity is invalid");
+			if (demanded_noop_constructor_states[current_id.value] != 0)
+				continue;
+			demanded_noop_constructor_states[current_id.value] = 1;
+			const FunctionFact& current = model_.function_facts_[current_id.value];
+			if (!current.is_constructor || current.constructor_action_begin ==
+				InvalidIdentityValue || current.constructor_action_begin >
+				model_.constructor_actions_.size() ||
+				current.constructor_action_count > model_.constructor_actions_.size() -
+					current.constructor_action_begin)
+				throw std::runtime_error(
+					"PA15 no-op constructor leaf action range is invalid");
+			for (std::size_t action_index = 0;
+				action_index < current.constructor_action_count; ++action_index)
+			{
+				const ConstructorActionFact& action =
+					model_.constructor_actions_[current.constructor_action_begin +
+						action_index];
+				if (!constructor_graph_action_is_noop(action))
+					throw std::runtime_error(
+						"PA15 no-op constructor graph changed during demand");
+				const FunctionFactId* target_id =
+					model_.function_binding_fact_index_.find(action.constructor);
+				if (target_id == NULL || !target_id->valid() || target_id->value >=
+					model_.function_facts_.size())
+					throw std::runtime_error(
+						"PA15 no-op constructor leaf target is invalid");
+				const FunctionFact& target = model_.function_facts_[target_id->value];
+				if (target.synthetic)
+					work.push_back(*target_id);
+				else
+				{
+					if (!(*demanded)[target_id->value])
+					{
+						(*demanded)[target_id->value] = 1;
+						function_work.push_back(*target_id);
+					}
+					if (!target.constructor_base_entry)
+						demand_special_member_base_entry(target.binding, true);
+				}
+			}
+			demanded_noop_constructor_states[current_id.value] = 2;
+		}
+	};
 	const auto demand_constructor_fact = [this, demanded, declarations,
-		declaration_types, &function_work, &demand_special_member_base_entry](
+		declaration_types, &function_work, &demand_special_member_base_entry,
+		&demand_noop_constructor_leaves](
 		const SemanticFact& fact, bool global_root) {
 		if (!fact.has_callee || !fact.selected_binding.valid() ||
 			fact.selected_binding.value >= model_.bindings_.size())
@@ -239,7 +307,10 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			{
 				const FunctionFact& checked = checked_constructor_function(
 					fact.selected_binding, sidecar->constructor_record);
-				no_op = checked.synthetic && checked.constructor_action_count == 0;
+				const FunctionFactId* checked_id =
+					model_.function_binding_fact_index_.find(fact.selected_binding);
+				no_op = checked.synthetic && checked_id != NULL &&
+					checked_id->valid() && constructor_function_is_noop(*checked_id);
 			}
 		}
 		if (global_root && !no_op &&
@@ -271,6 +342,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			}
 			demand_special_member_base_entry(fact.selected_binding, true);
 		}
+		else
+			demand_noop_constructor_leaves(*target_id);
 	};
 	const auto demand_destructor_fact = [this, demanded, declarations,
 		declaration_types, &function_work,
@@ -564,8 +637,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 						{
 							const FunctionFact& checked =
 								checked_constructor_function(action.constructor, target_record);
-							no_op = checked.synthetic &&
-								checked.constructor_action_count == 0;
+							(void) checked;
+							no_op = constructor_action_is_noop_for_lowering(action);
 						}
 					}
 					if (external_declaration)
@@ -755,13 +828,15 @@ void Pa15Lowerer::collect_demanded_member_functions(
 								const FunctionFact& checked =
 									checked_constructor_function(fact.selected_binding,
 										constructor_sidecar->constructor_record);
+								const FunctionFactId* checked_id =
+									model_.function_binding_fact_index_.find(fact.selected_binding);
 								const RecordLayout& target_layout = model_.record_layout(
 									constructor_sidecar->constructor_record);
 								const bool value_initialized_aggregate = fact.value_initialize &&
 									target_layout.state == RecordLayoutState::Complete &&
 									!target_layout.members.empty();
-								no_op = checked.synthetic &&
-									checked.constructor_action_count == 0 &&
+								no_op = checked.synthetic && checked_id != NULL &&
+									checked_id->valid() && constructor_function_is_noop(*checked_id) &&
 										(!fact.temporary_object || value_initialized_aggregate);
 							}
 						}
@@ -785,6 +860,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					if (!external_declaration && !no_op)
 						demand_special_member_base_entry(
 							fact.selected_binding, true);
+					if (!external_declaration && no_op)
+						demand_noop_constructor_leaves(*target_id);
 				}
 				const bool static_target = target.kind == BindingKind::Function &&
 					model_.type_kind(target.type) == TypeKind::Function &&

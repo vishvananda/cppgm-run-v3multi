@@ -40,6 +40,16 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 				return address_of_storage(LoweredValue(global_operand(found->second,
 					function_name_ids_.find(fact.binding.value)->second), pointer, false));
 			}
+			if (fact.binding.valid() && fact.binding.value < model_.bindings_.size() &&
+				class_object_type(model_.binding(fact.binding).type))
+			{
+				const std::map<std::size_t,
+					std::pair<std::size_t, LoweredValue> >::const_iterator cached =
+					no_op_local_addresses_.find(fact.binding.value);
+				if (cached != no_op_local_addresses_.end() &&
+					cached->second.first == current_block_)
+					return cached->second.second;
+			}
 			return address_of_storage(lower_lvalue(id));
 		case SemanticFactKind::MemberExpression:
 			if (model_.bit_field_fact(fact.selected_binding) != NULL)
@@ -304,7 +314,11 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 			}
 			else if (automatic_local_declaration(fact.binding) &&
 				storage.type.is_object() && class_object_type(declared_type))
-				(void)address_of_storage(storage);
+			{
+				const LoweredValue address = address_of_storage(storage);
+				no_op_local_addresses_[fact.binding.value] =
+					std::make_pair(current_block_, address);
+			}
 		}
 		else if (storage.type.is_object() &&
 			initializer_fact.kind == SemanticFactKind::BracedInitList)
@@ -320,6 +334,11 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 				const std::vector<ConstructorAddressStep> empty_path;
 				initialize_constructor_value(declared_type, initializer.front(),
 					address, NULL, &empty_path, NULL, &storage, declared_type);
+				if (automatic_local_declaration(fact.binding) &&
+					storage.type.is_object() && class_object_type(declared_type) &&
+					zero_initialization_is_noop(declared_type))
+					no_op_local_addresses_[fact.binding.value] =
+						std::make_pair(current_block_, address);
 			}
 		}
 		else
@@ -927,6 +946,334 @@ const FunctionFact& Pa15Lowerer::checked_constructor_function(
 	return function;
 }
 
+void Pa15Lowerer::initialize_constructor_noop_caches() const
+{
+	if (constructor_noop_states_.size() == model_.function_facts_.size() && constructor_noop_results_.size() == model_.function_facts_.size() &&
+		constructor_noop_invalid_.size() == model_.function_facts_.size() && zero_initialization_noop_states_.size() == model_.types_.size() &&
+		zero_initialization_noop_results_.size() == model_.types_.size() && zero_initialization_noop_invalid_.size() == model_.types_.size())
+		return;
+	constructor_noop_states_.assign(model_.function_facts_.size(), ConstructorRuntimeCacheState::Unseen);
+	constructor_noop_results_.assign(model_.function_facts_.size(), 0);
+	constructor_noop_invalid_.assign(model_.function_facts_.size(), 0);
+	zero_initialization_noop_states_.assign(model_.types_.size(), ConstructorRuntimeCacheState::Unseen);
+	zero_initialization_noop_results_.assign(model_.types_.size(), 0);
+	zero_initialization_noop_invalid_.assign(model_.types_.size(), 0);
+}
+
+bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
+{
+	initialize_constructor_noop_caches();
+	if (!function_id.valid() || function_id.value >= model_.function_facts_.size() ||
+		function_id.value >= constructor_noop_states_.size() ||
+		constructor_noop_states_.size() != model_.function_facts_.size() ||
+		constructor_noop_results_.size() != model_.function_facts_.size() ||
+		constructor_noop_invalid_.size() != model_.function_facts_.size())
+		return false;
+	const std::size_t index = function_id.value;
+	if (constructor_noop_states_[index] ==
+		ConstructorRuntimeCacheState::Complete)
+		return constructor_noop_results_[index] != 0 &&
+			constructor_noop_invalid_[index] == 0;
+	if (constructor_noop_states_[index] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		constructor_noop_invalid_[index] = 1;
+		return false;
+	}
+	constructor_noop_states_[index] =
+		ConstructorRuntimeCacheState::InProgress;
+	bool result = false;
+	const FunctionFact& function = model_.function_facts_[index];
+	do
+	{
+		if (!function.is_constructor || function.is_destructor ||
+			!function.binding.valid() || function.binding.value >=
+			model_.bindings_.size() || function.binding.value >=
+			model_.binding_owners_.size())
+			break;
+		const Binding& binding = model_.binding(function.binding);
+		if (binding.kind != BindingKind::Function || !binding.type.valid() ||
+			binding.type.value >= model_.types_.size() ||
+			model_.type_kind(binding.type) != TypeKind::Function)
+			break;
+		const TypeKey& signature = model_.types_[binding.type.value];
+		// The canonical constructor binding type contains only explicit
+		// parameters; PA12 publishes the implicit object in callable_type.  A
+		// no-op constructor has no explicit parameter/default-argument boundary,
+		// which also excludes aggregate and inheriting wrappers.
+		if (signature.variadic || !signature.parameters.empty() ||
+			function.default_argument_count != 0 || !function.function_scope.valid() ||
+			function.function_scope.value >= model_.scopes_.size() ||
+			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
+			model_.scopes_[function.function_scope.value].parent != function.owner)
+			break;
+		const BindingId this_binding = model_.scopes_[
+			function.function_scope.value].implicit_object_binding;
+		if (!this_binding.valid() || this_binding.value >= model_.bindings_.size() ||
+			this_binding.value >= model_.binding_owners_.size() ||
+			model_.binding_owners_[this_binding.value] != function.function_scope ||
+			model_.binding(this_binding).kind != BindingKind::Parameter)
+			break;
+		if (!function.constructor_record.valid() ||
+			function.constructor_record.value >= model_.named_.size())
+			break;
+		const NamedRecord& record = model_.named_[function.constructor_record.value];
+		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+			!record.name.valid() || !record.defined || !record.scope.valid() ||
+			record.scope.value >= model_.scopes_.size() ||
+			model_.scopes_[record.scope.value].kind != ScopeKind::Class ||
+			model_.scopes_[record.scope.value].record != function.constructor_record ||
+			record.direct_base_virtual || record.has_virtual_member ||
+			function.owner != record.scope)
+			break;
+		const BindingSidecar* binding_sidecar =
+			model_.binding_sidecar(function.binding);
+		const NamedRecordSidecar* record_sidecar =
+			model_.named_record_sidecar(function.constructor_record);
+		if (binding_sidecar == NULL ||
+			binding_sidecar->constructor_record != function.constructor_record ||
+			record_sidecar == NULL || record_sidecar->has_destructor_declaration ||
+			record_sidecar->has_default_member_initializer ||
+			record_sidecar->destructor_binding.valid())
+			break;
+		if (function.body_fact.valid())
+		{
+			if (function.body_fact.value >= model_.semantic_facts_.size())
+				break;
+			const SemanticFact& body = model_.semantic_facts_[function.body_fact.value];
+			if (body.kind != SemanticFactKind::CompoundStatement ||
+				body.child_count != 0 || (body.child_begin != InvalidIdentityValue &&
+					body.child_begin > model_.semantic_children_.size()))
+				break;
+		}
+		else if (!function.synthetic)
+			break;
+		if (function.constructor_action_begin == InvalidIdentityValue ||
+			function.constructor_action_begin > model_.constructor_actions_.size() ||
+			function.constructor_action_count > model_.constructor_actions_.size() -
+				function.constructor_action_begin)
+			break;
+		if (!function.synthetic)
+		{
+			// A user-provided empty body is a no-op leaf only while proving that a
+			// synthetic wrapper has no reachable action.  Its direct call remains
+			// effectful and is never removed by the lowering consumer.
+			if (function.constructor_action_count != 0)
+				break;
+			result = true;
+			break;
+		}
+		result = true;
+		for (std::size_t action_index = 0;
+			action_index < function.constructor_action_count; ++action_index)
+		{
+			const ConstructorActionFact& action =
+				model_.constructor_actions_[function.constructor_action_begin +
+					action_index];
+			if (!constructor_graph_action_is_noop(action))
+			{
+				result = false;
+				break;
+			}
+		}
+	}
+	while (false);
+	constructor_noop_states_[index] = ConstructorRuntimeCacheState::Complete;
+	constructor_noop_results_[index] = result ? 1 : 0;
+	return result;
+}
+
+bool Pa15Lowerer::constructor_graph_action_is_noop(
+	const ConstructorActionFact& action) const
+{
+	if (!action.constructor.valid() || action.initializer.valid() ||
+		action.value_initialize || action.argument_count != 0 ||
+		action.argument_begin != InvalidIdentityValue ||
+		action.constructor.value >= model_.bindings_.size())
+		return false;
+	NamedRecordId target_record;
+	if (action.target == ConstructorActionTarget::Base)
+	{
+		if (!action.base_record.valid() || action.base_record.value >=
+			model_.named_.size() || action.member.valid())
+			return false;
+		target_record = action.base_record;
+		if (!action.object_type.valid() || action.object_type.value >=
+			model_.types_.size() || model_.type_kind(action.object_type) !=
+			TypeKind::Named || model_.named_record_for_type(action.object_type) !=
+			target_record)
+			return false;
+	}
+	else if (action.target == ConstructorActionTarget::Member)
+	{
+		if (!action.member.valid() || action.member.value >= model_.bindings_.size() ||
+			action.base_record.valid() || action.member.value >=
+			model_.binding_owners_.size())
+			return false;
+		const Binding& member = model_.binding(action.member);
+		if (member.kind != BindingKind::Variable ||
+			model_.is_static_member(action.member) || !member.type.valid() ||
+			member.type.value >= model_.types_.size() ||
+			!action.object_type.valid() || action.object_type.value >=
+			model_.types_.size() || action.object_type != member.type)
+			return false;
+		target_record = model_.class_record_for_object_type(member.type);
+	}
+	else
+		return false;
+	if (!target_record.valid() || target_record.value >= model_.named_.size() ||
+		model_.named_[target_record.value].kind != NamedKind::Class ||
+		model_.named_[target_record.value].class_tag == ClassTag::Union ||
+		!model_.named_[target_record.value].name.valid() ||
+		!action.callable_type.valid() || action.callable_type.value >=
+		model_.types_.size() || model_.type_kind(action.callable_type) !=
+		TypeKind::Function)
+		return false;
+	const Binding& constructor = model_.binding(action.constructor);
+	if (constructor.kind != BindingKind::Function || !constructor.type.valid() ||
+		constructor.type.value >= model_.types_.size() ||
+		model_.type_kind(constructor.type) != TypeKind::Function)
+		return false;
+	const TypeKey& constructor_signature = model_.types_[constructor.type.value];
+	const TypeKey& callable_signature = model_.types_[action.callable_type.value];
+	if (callable_signature.variadic != constructor_signature.variadic ||
+		callable_signature.parameters.size() !=
+			constructor_signature.parameters.size() + 1)
+		return false;
+	const TypeId implicit_object = callable_signature.parameters.front();
+	if (!implicit_object.valid() || implicit_object.value >= model_.types_.size() ||
+		model_.type_kind(implicit_object) != TypeKind::Pointer ||
+		!model_.types_[implicit_object.value].child.valid() ||
+		model_.types_[implicit_object.value].child.value >= model_.types_.size() ||
+		model_.type_kind(model_.types_[implicit_object.value].child) != TypeKind::Named ||
+		model_.named_record_for_type(model_.types_[implicit_object.value].child) !=
+			target_record)
+		return false;
+	for (std::size_t parameter = 0; parameter < constructor_signature.parameters.size();
+		++parameter)
+		if (callable_signature.parameters[parameter + 1] !=
+			constructor_signature.parameters[parameter])
+			return false;
+	const FunctionFactId* target_id =
+		model_.function_binding_fact_index_.find(action.constructor);
+	if (target_id == NULL || !target_id->valid() || target_id->value >=
+		model_.function_facts_.size())
+		return false;
+	const FunctionFact& target = model_.function_facts_[target_id->value];
+	if (!target.is_constructor || target.binding != action.constructor ||
+		target.constructor_record != target_record)
+		return false;
+	return constructor_function_is_noop(*target_id);
+}
+
+bool Pa15Lowerer::constructor_action_is_noop_for_lowering(
+	const ConstructorActionFact& action) const
+{
+	// Value-initialization is still an observable zeroing action, but a proven
+	// empty synthetic constructor underneath it contributes no call or demand.
+	// Analyze the same typed action with only that separate zeroing bit removed;
+	// callers retain the bit and emit the required value-initialization stores.
+	ConstructorActionFact constructor_only = action;
+	constructor_only.value_initialize = false;
+	if (!constructor_graph_action_is_noop(constructor_only))
+		return false;
+	const FunctionFactId* target_id =
+		model_.function_binding_fact_index_.find(action.constructor);
+	return target_id != NULL && target_id->valid() && target_id->value <
+		model_.function_facts_.size() &&
+		model_.function_facts_[target_id->value].synthetic;
+}
+
+bool Pa15Lowerer::zero_initialization_is_noop(TypeId type) const
+{
+	initialize_constructor_noop_caches();
+	if (!type.valid() || type.value >= model_.types_.size() ||
+		type.value >= zero_initialization_noop_states_.size() ||
+		zero_initialization_noop_states_.size() != model_.types_.size() ||
+		zero_initialization_noop_results_.size() != model_.types_.size() ||
+		zero_initialization_noop_invalid_.size() != model_.types_.size())
+		return false;
+	const std::size_t index = type.value;
+	if (zero_initialization_noop_states_[index] ==
+		ConstructorRuntimeCacheState::Complete)
+		return zero_initialization_noop_results_[index] != 0 &&
+			zero_initialization_noop_invalid_[index] == 0;
+	if (zero_initialization_noop_states_[index] ==
+		ConstructorRuntimeCacheState::InProgress)
+	{
+		zero_initialization_noop_invalid_[index] = 1;
+		return false;
+	}
+	zero_initialization_noop_states_[index] =
+		ConstructorRuntimeCacheState::InProgress;
+	bool result = false;
+	const TypeKey& key = model_.types_[index];
+	switch (key.kind)
+	{
+	case TypeKind::Cv:
+		result = zero_initialization_is_noop(key.child);
+		break;
+	case TypeKind::Array:
+		// An unknown or zero-bound array is not a complete PA16 object fact.
+		result = !key.unknown_bound && key.bound.value != 0 &&
+			zero_initialization_is_noop(key.child);
+		break;
+	case TypeKind::Named:
+	{
+		if (!key.named.valid() || key.named.value >= model_.named_.size() ||
+			key.named.value >= model_.record_layouts_.size())
+			break;
+		const NamedRecord& record = model_.named_[key.named.value];
+		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+			!record.defined || record.has_base || record.direct_base.valid() ||
+			record.direct_base_virtual || record.has_virtual_member ||
+			!record.scope.valid() || record.scope.value >= model_.scopes_.size() ||
+			model_.scopes_[record.scope.value].kind != ScopeKind::Class ||
+			model_.scopes_[record.scope.value].record != key.named)
+			break;
+		const NamedRecordSidecar* sidecar = model_.named_record_sidecar(key.named);
+		const RecordLayout& layout = model_.record_layout(key.named);
+		if ((sidecar != NULL && (sidecar->has_destructor_declaration ||
+			sidecar->has_default_member_initializer ||
+			sidecar->destructor_binding.valid())) ||
+			layout.state != RecordLayoutState::Complete || layout.has_direct_base ||
+			!layout.checkpoint_zero_storage_eligible)
+			break;
+		result = true;
+		for (std::size_t member_index = 0; member_index < layout.members.size();
+			++member_index)
+		{
+			const BindingId member_id = layout.members[member_index].binding;
+			if (!member_id.valid() || member_id.value >= model_.bindings_.size() ||
+				member_id.value >= model_.binding_owners_.size() ||
+				model_.binding_owners_[member_id.value] != record.scope ||
+				model_.binding(member_id).kind != BindingKind::Variable)
+			{
+				result = false;
+				break;
+			}
+			if (model_.is_static_member(member_id))
+				continue;
+			if (!zero_initialization_is_noop(model_.binding(member_id).type))
+			{
+				result = false;
+				break;
+			}
+		}
+		break;
+	}
+	default:
+		// Fundamental, pointer, enum, reference, function, and member-pointer
+		// zero initialization each has a value/store boundary.  They are not
+		// effect-free object initialization.
+		break;
+	}
+	zero_initialization_noop_states_[index] =
+		ConstructorRuntimeCacheState::Complete;
+	zero_initialization_noop_results_[index] = result ? 1 : 0;
+	return result;
+}
+
 const FunctionFact& Pa15Lowerer::checked_destructor_function(
 	BindingId destructor, NamedRecordId record) const
 {
@@ -1456,15 +1803,16 @@ bool Pa15Lowerer::constructor_elements_may_throw(TypeId target,
 			arguments_may_throw = true;
 		}
 	}
-	if (constructor_function.synthetic &&
-		constructor_function.constructor_action_count == 0)
+	const FunctionFactId* constructor_id =
+		model_.function_binding_fact_index_.find(constructor);
+	if (constructor_function.synthetic && constructor_id != NULL &&
+		constructor_id->valid() && constructor_id->value <
+		model_.function_facts_.size() && constructor_function_is_noop(*constructor_id))
 		return false;
 	const BindingSidecar* constructor_sidecar =
 		model_.binding_sidecar(constructor);
 	bool throwing = constructor_sidecar == NULL ||
 		!constructor_sidecar->nonthrowing;
-	const FunctionFactId* constructor_id =
-		model_.function_binding_fact_index_.find(constructor);
 	if (constructor_function.synthetic && constructor_id != NULL &&
 		constructor_is_nothrow(*constructor_id))
 		throwing = false;
@@ -1864,8 +2212,11 @@ void Pa15Lowerer::emit_constructor_elements(TypeId target,
 			completed_element);
 	if (value_initialize && constructor_function.synthetic)
 		zero_initialize_value_initialized_object(object, call_destination);
-	const bool no_op = constructor_function.synthetic &&
-		constructor_function.constructor_action_count == 0;
+	const FunctionFactId* constructor_id =
+		model_.function_binding_fact_index_.find(constructor);
+	const bool no_op = constructor_function.synthetic && constructor_id != NULL &&
+		constructor_id->valid() && constructor_id->value <
+		model_.function_facts_.size() && constructor_function_is_noop(*constructor_id);
 	const bool throwing = constructor_may_throw;
 	bool emitted = false;
 	if (!no_op && throwing && !completed->empty())
@@ -1905,6 +2256,11 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 	if (!object.valid() || object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 zero constructor target is invalid");
 	const TypeKind kind = model_.type_kind(object);
+	// The caller has already established the root storage address.  A complete
+	// typed class graph with no scalar/value work needs no child projection or
+	// recursive walk, but the root address remains the lifetime boundary.
+	if (zero_initialization_is_noop(target))
+		return;
 	if (kind == TypeKind::Array)
 	{
 		const TypeKey& array = model_.types_[object.value];
@@ -1974,6 +2330,8 @@ void Pa15Lowerer::zero_initialize_constructor_value(TypeId target,
 				throw std::runtime_error("PA15 zero constructor member identity is invalid");
 			if (model_.binding(member).kind != BindingKind::Variable ||
 				model_.is_static_member(member))
+				continue;
+			if (zero_initialization_is_noop(model_.binding(member).type))
 				continue;
 			const std::size_t* offset = layout.member_offsets.find(member);
 			if (offset == NULL || *offset > static_cast<std::size_t>(
@@ -2109,9 +2467,15 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 		if (constructor_destination.lvalue &&
 			constructor_destination.type.is_object())
 			constructor_destination = address_of_storage(constructor_destination);
+		const FunctionFactId* constructor_id =
+			model_.function_binding_fact_index_.find(fact.selected_binding);
+		const bool constructor_no_op = constructor.synthetic &&
+			constructor_id != NULL && constructor_id->valid() &&
+			constructor_id->value < model_.function_facts_.size() &&
+			constructor_function_is_noop(*constructor_id);
 		if (fact.value_initialize && constructor.synthetic)
 			zero_initialize_value_initialized_object(target, constructor_destination);
-		if (constructor.synthetic && constructor.constructor_action_count == 0)
+		if (constructor_no_op)
 			return;
 		emit_constructor_call(fact.selected_binding, constructor_destination,
 			children(initializer));
@@ -2207,6 +2571,20 @@ void Pa15Lowerer::lower_constructor_action(
 		throw std::runtime_error("PA15 initializer argument range is invalid");
 	if (action.constructor.valid())
 	{
+		// Prove the complete typed action before publishing this subobject's
+		// address.  This is the child counterpart of the root address retained by
+		// local declaration lowering.
+		if (constructor_action_is_noop_for_lowering(action))
+		{
+			if (action.value_initialize)
+			{
+				const LoweredValue destination_value =
+					constructor_subobject_address(action);
+				zero_initialize_value_initialized_object(action.object_type,
+					destination_value);
+			}
+			return;
+		}
 		const LoweredValue destination_value = constructor_subobject_address(action);
 		const TypeId target = action.object_type;
 		const TypeId object = model_.strip_cv_type(
@@ -2249,9 +2627,15 @@ void Pa15Lowerer::lower_constructor_action(
 		}
 		const FunctionFact& constructor = checked_constructor_function(
 			action.constructor, record);
+		const FunctionFactId* constructor_id =
+			model_.function_binding_fact_index_.find(action.constructor);
+		const bool constructor_no_op = constructor.synthetic &&
+			constructor_id != NULL && constructor_id->valid() &&
+			constructor_id->value < model_.function_facts_.size() &&
+			constructor_function_is_noop(*constructor_id);
 		if (action.value_initialize && constructor.synthetic)
 			zero_initialize_value_initialized_object(target, destination_value);
-		if (constructor.synthetic && constructor.constructor_action_count == 0)
+		if (constructor_no_op)
 			return;
 		emit_constructor_call(action.constructor, destination_value,
 			action.argument_begin, action.argument_count);
@@ -2265,6 +2649,9 @@ void Pa15Lowerer::lower_constructor_action(
 			model_.named_type(action.base_record) : model_.binding(action.member).type;
 		const SemanticFact& initializer = model_.semantic_facts_[
 			action.initializer.value];
+		if (initializer.kind == SemanticFactKind::ConstructorAction &&
+			constructor_action_is_noop(initializer))
+			return;
 		// Evaluate scalar mem-initializers before publishing their destination
 		// address.  This preserves the source-order LowIR boundary for a
 		// constructor expression such as b(a + 3).
@@ -2308,7 +2695,7 @@ void Pa15Lowerer::lower_constructor_action(
 
 bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 {
-	if (!action.selected_binding.valid())
+	if (action.value_initialize || !action.selected_binding.valid())
 		return false;
 	const BindingSidecar* binding_sidecar =
 		model_.binding_sidecar(action.selected_binding);
@@ -2326,8 +2713,14 @@ bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 					"PA15 constructor action selected owner is invalid");
 			const FunctionFact& function = checked_constructor_function(
 				action.selected_binding, binding_sidecar->constructor_record);
-			return !action.value_initialize && function.synthetic &&
-				function.constructor_action_count == 0;
+			const FunctionFactId* function_id =
+				model_.function_binding_fact_index_.find(action.selected_binding);
+			if (!action.callable_type.valid() || action.callable_type.value >=
+				model_.types_.size() || model_.type_kind(action.callable_type) !=
+				TypeKind::Function)
+				return false;
+			return function.synthetic && function_id != NULL &&
+				function_id->valid() && constructor_function_is_noop(*function_id);
 		}
 	}
 	const FunctionFactId* function_id =
@@ -2336,9 +2729,8 @@ bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 		function_id->value < model_.function_facts_.size())
 	{
 		const FunctionFact& function = model_.function_facts_[function_id->value];
-		if (!action.value_initialize && function.is_constructor && function.synthetic &&
-			function.constructor_action_count == 0)
-			return true;
+		if (function.is_constructor && function.synthetic)
+			return constructor_function_is_noop(*function_id);
 	}
 	if (binding_sidecar == NULL || !binding_sidecar->constructor_record.valid() ||
 		binding_sidecar->constructor_record.value >= model_.named_.size())
@@ -2352,6 +2744,8 @@ bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 	return record_sidecar != NULL &&
 		record_sidecar->constructor_binding == action.selected_binding &&
 		!record_sidecar->default_constructor_binding.valid() &&
+		!record_sidecar->has_destructor_declaration &&
+		!record_sidecar->has_default_member_initializer &&
 		record.scope.valid() && record.scope.value < model_.scopes_.size() &&
 		model_.scopes_[record.scope.value].bindings.empty();
 }

@@ -2222,7 +2222,11 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 					else if (automatic_local_declaration(fact.binding) &&
 						storage.type.is_object() && class_object_type(
 						model_.binding(fact.binding).type))
-						(void)address_of_storage(storage);
+					{
+						const LoweredValue address = address_of_storage(storage);
+						no_op_local_addresses_[fact.binding.value] =
+							std::make_pair(current_block_, address);
+					}
 				}
 				else if (storage.type.is_object() &&
 					initializer.kind == SemanticFactKind::BracedInitList)
@@ -2238,6 +2242,11 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 						const std::vector<ConstructorAddressStep> empty_path;
 						initialize_constructor_value(declared_type, facts.front(),
 							address, NULL, &empty_path, NULL, &storage, declared_type);
+						if (automatic_local_declaration(fact.binding) &&
+							storage.type.is_object() && class_object_type(declared_type) &&
+							zero_initialization_is_noop(declared_type))
+							no_op_local_addresses_[fact.binding.value] =
+								std::make_pair(current_block_, address);
 					}
 				}
 				else
@@ -2523,6 +2532,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		lifetime_scope_stack_.clear();
 		lifetime_scope_depths_.clear();
 		active_lifetimes_.clear();
+		no_op_local_addresses_.clear();
 	recovery_control_head_ = RecoveryControlIndex();
 		recovery_control_base_depth_ = 0;
 		recovery_control_active_ = false;
