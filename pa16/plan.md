@@ -1,149 +1,147 @@
 # PA16 implementation plan
 
-## Stage Design
+## Spec alignment and typed ownership
 
-The maintained pipeline is one typed path:
-
-1. PA10 owns syntax and AST facts for declarations, expressions, names,
-   operators, and source structure.
-2. PA11 owns canonical types, bindings, records, scopes, layout, access, and
-   lookup/publication facts.
-3. PA12 owns semantic expression/declaration facts, value categories,
-   conversions, lifetime facts, constructor selections, and typed constructor
-   action/function facts.
-4. PA15 consumes those PA12 facts for typed construction, lowering, LowIR
-   address paths, and demand-driven function emission.  It does not recover
-   source text or redo lookup/selection.
-
-## Failure Map
-
-Turn-start baseline: `220/243`, `23` failures, and `243/243` identities
-covered, at HEAD `d889058c0d159bd4414ffb6e9f5ac75227ce0192`.
-
-This checkpoint targets two LowIR-only residuals:
-
-- `pa16/tests/general/200-const-subobject-member-call.t`: retain the
-  automatic `Map` root address and `Map::g`/`Table::f` call path, while
-  removing the unused empty-`Table` subobject projection.
-- `pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`:
-  retain the automatic `D` root address and reachable `B` base-entry
-  definition, while removing the no-op defaulted `D` wrapper/call.
-
-Preservation controls include
-`cppgm.tests/course/pa16/404-typed-implicit-default-demand-regression.sh`,
-`cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh`, and
-the signed bit-field reads (`400-signed-bit-field-read.t` and
-`400-signed-enum-bit-field-read.t`), whose negative-value behavior is not
-altered.
-
-## Active Checkpoint
-
-Spec alignment: implement the PA12-fact to PA15 construction/lowering demand
-boundary described by the PA16 Purpose and sections 1, 2, 5, and 7.  The
-classifier is conservative: incomplete, invalid, unsupported, cyclic, or
-otherwise unknown facts are effectful.
-
-Typed owner/data flow is:
+This checkpoint is bounded to the PA16 Purpose and `spec.md` sections 1, 2,
+5, and 7.  The maintained path is:
 
 ```text
 PA12 FunctionFact + ConstructorActionFact + TypeId/BindingId
   -> PA15 memoized constructor-graph and zero-initialization summaries
-  -> collect_demanded_member_functions / aggregate lowering
-  -> constructor-action lowering and typed LowIR address paths
+  -> member-function demand + aggregate/construction lowering
+  -> typed LowIR root/subobject address paths
 ```
 
-The constructor summary validates canonical function identity, explicit
-parameter arity, function scope/implicit object, defined non-union class
-record, complete layout, sidecars, empty body, and every reachable action.
-Only an empty synthetic wrapper whose reachable constructor graph is no-op is
-omitted.  A user-provided empty constructor is retained as a reachable leaf
-definition when needed by that wrapper chain; a direct user-provided call is
-not pruned.  A separate typed zero-initialization summary recognizes only
-complete, flat, non-union class/array structures with no DMI, destructor, or
-scalar store work.  Value-initialization stores remain explicit even when the
-underlying synthetic constructor call is omitted.
+PA10 owns syntax.  PA11 owns canonical types, bindings, records, scopes,
+layout, access, and publication.  PA12 owns semantic facts, conversions,
+lifetime facts, constructor selections, and typed constructor actions.  PA15
+consumes those facts directly; it does not recover source text or redo lookup.
 
-The root automatic class address is always emitted for the lifetime boundary.
-A function-scoped binding/block cache reuses only that already-emitted typed
-root address, so a later member call cannot create a duplicate address.  The
-non-goals are constructors with arguments or argument evaluation, nonempty
-executable bodies, DMI, scalar zero/store work, effectful base/member
-construction, destructor/lifetime effects, possible required actions, unions,
-unsupported layouts, incomplete/invalid facts, and cycles.
+The audited proof is conservative.  A constructor wrapper is omitted only when
+its canonical function identity, void/arity boundary, scope/implicit object,
+defined non-union record, complete layout, sidecars, body, enclosing actions,
+and reachable constructor graph all prove no-op.  Semantic constructor actions
+also require the typed aggregate, storage-backed, or temporary call shape; an
+extra child cannot be silently dropped.  Value-initialization retains its zero
+stores.  DMI, destructors/lifetime work, scalar/value stores, argument
+evaluation, explicit calls, throwing/cleanup paths, and incomplete facts stay
+effectful.
 
-## Focused Evidence
+The automatic-local address cache is keyed by `BindingId` and current `BlockId`,
+cleared per lowered function, and stores only an already-emitted root address.
+Constructor and zero-initialization caches are dense by immutable `FunctionFactId`
+or `TypeId`; in-progress recursion is conservative and completed invalid
+results remain non-prunable.
 
-Durable command logs are in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-noop-construction-checkpoint-20260830/`.
-On the final source state:
+## Authority and exact failure map
 
-- `make -C dev cppgm++ CXX=g++`: status `0` (`16-build-after-size-fix.log`).
-- The two authoritative targets pass `2/2` with status `0`
-  (`17-target-check-final.log`).  The 404 and 409 typed course regressions
-  each pass with status `0` (`18-course-404-final.log`,
-  `19-course-409-final.log`).
-- `make test-pa16` reports `222/243` with `21` failures and denominator
-  `243`; its harness exit status is `2` because residual failures remain
-  (`22-make-test-pa16-commit-source.log`).  Identity comparison with
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
-  finds starting `23`, fresh `21`, fresh-only `0`, and fixed `2`, with
-  `243/243` identities covered.  The fixed identities are the two targets
-  named in the Failure Map (`23-failure-identity-compare-commit-source.log`).
-- The exact `n=16` prior-through command exits `0` with `1167/1167`
-  (`24-prior-through-pa15-commit-source.log`).
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`.
-  It reports only the five existing header-body warnings for
-  `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
-  `pa11_semantic_model.h`, and `pa15_lowering.h`
-  (`25-file-audit-pa16-final.log`).
-- The final `git diff --check` after source validation is clean
-  (`20-diff-check-final.log`).
+The authoritative turn-start log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its exact authority at landed HEAD
+`24d555c882a3e15ea3ffe5be42ed5d9953084df6` is `222/243`, with `21` failures
+and `243/243` identities covered.  The final fresh run must not add a failure
+identity or reduce coverage.
 
-Structural LowIR evidence from the two target sources:
+```text
+pa16/tests/general/100-function-pointer-nested-param-name-shadow.t
+pa16/tests/general/200-elaborated-member-forward-type.t
+pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
+pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-callable-field-hides-private-base-method.t
+pa16/tests/general/300-enum-class-nonmember-operator-bitand.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-operator-nullptr-t-from-zero.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-user-defined-string-literal-operator.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
 
-- `main` for the const-`Map` target contains exactly `%t1 = addr $m` and
-  `%t2 = call i32 @Map__g(%t1)`; `Map::g` retains its field projection and
-  `Table::f` call.
-- `main` for the friend target contains `%t1 = addr $d`; there is no `D::D`
-  function/call, and `B__B__base_entry` remains defined.
-- The 404/409 controls retain DMI, stateful base/member construction,
-  value-initialization stores, argumented construction, and required method
-  projections/calls.
-- The final wide-root probe compiles with status `0` and has one `main`,
-  `128` root addresses, `0` derived wrapper definitions, `0` derived calls,
-  and `128` retained `B__B__base_entry` definitions
-  (`21-wide-root-probe-final.log`).
+The landed increment's two selected controls,
+`200-const-subobject-member-call.t` and
+`200-friend-derived-private-base-defaulted-constructor.t`, remain outside
+that residual map.
 
-## Performance Evidence
+## Checkpoint findings
 
-Constructor and zero-initialization summaries use dense per-function/type
-state, result, and invalidation arrays; an in-progress state makes recursion
-effectful, and completed results are memoized.  Each reachable constructor
-action/type edge is analyzed once per lowering.  The no-op leaf-preservation
-worklist captures one shared dense visitation state for the entire demand pass;
-state 1 breaks an unexpected cycle and state 2 permanently records a completed
-node, so the whole leaf-preservation pass is O(F+E) time and O(F) memory for F
-functions and E reachable constructor edges, rather than O(R*F) dense setup for
-R pruned roots.  Root-address reuse uses one function-scoped ordered binding
-map.
+The bounded repair covers three related facts:
 
-An ephemeral wide-root probe with 128 independent defaulted-derived locals
-over 128 empty user-provided bases compiled with status `0`.  Its LowIR had
-one `main`, 128 root addresses, zero derived wrapper definitions, zero derived
-constructor calls, and 128 retained `B__B__base_entry` definitions.  This is
-structural evidence only; no timing or RSS claim is made.
+1. `demand_constructor_fact` now includes
+   `constructor_action_call_shape_is_noop` in the semantic `ConstructorAction`
+   no-op decision while preserving the separate storage-backed `CallExpression`
+   path.  The initializer consumer applies the same proof; valid zero-argument
+   temporary value-initialization remains elidable, while malformed or
+   argumented shapes remain effectful.  `constructor_action_is_noop` rejects
+   temporary objects as a lowering shortcut.
+2. `constructor_function_is_noop` now rejects inconsistent
+   `NamedRecord.has_base`/`direct_base` metadata, incomplete or contradictory
+   complete-layout base metadata, invalid immediate base records, and
+   nonzero direct-base offsets.  Member actions remain tied to the enclosing
+   complete layout and callable return types remain tied to the constructor
+   signature.
+3. No unrelated call lowering, test, fixture, reference, sidecar, harness,
+   comparator, generated output, coverage rule, or source-set file changed.
 
-## Checkpoint Ledger
+## Final evidence
 
-- Parent/start baseline: HEAD
-  `d889058c0d159bd4414ffb6e9f5ac75227ce0192`, clean worktree,
-  `220/243`, `23` failures, `243/243` identities.
-- Validated checkpoint: typed PA12-fact constructor/zero-initialization
-  classification, shared demand pruning, root-address reuse, focused targets
-  `2/2`, controls `404` and `409`, broad PA16 `222/243` with `21` failures,
-  no fresh-only failure identities, prior-through `1167/1167`, and audit
-  status `0` with five existing warnings.  Durable evidence is recorded at
-  the path above.
-- Changed implementation surfaces are limited to existing PA15 lowering
-  files; no tests, fixtures, references, harnesses, comparators, generated
-  outputs, coverage rules, or source-set files were changed.
+Durable command logs are outside the repository under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-24d555c8-checkpoint-audit-20260830/`.
+
+- `make -C dev cppgm++ CXX=g++`: status `0`; log
+  `rebuild-after-demand-fix.log`.
+- The landed two-test target: status `0`, `PASS (2/2)`; log
+  `final-focused-landed-targets.log`.
+- Course 404 and 409 typed regressions: status `0` each; logs
+  `final-focused-course-404.log` and `final-focused-course-409.log`.
+- The ten-test constructor/aggregate/lifetime matrix: status `0`,
+  `PASS (10/10)`; log `final-focused-constructor-matrix.log`.
+- The five known residual controls: status `2`, `0/5`; log
+  `final-focused-authority-controls.log`.  All five identities are in the
+  authority map.
+- Exact prior-through command with `n=16`: status `0`,
+  `ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)`; log
+  `gate-1-prior-through-pa15.log`.
+- `make test-pa16`: status `2`, `222/243` passed; log
+  `gate-2-test-pa16.log`.  Its 21 failure identities exactly match authority.
+- Exact identity comparison against the authority log: authority failures
+  `21`, fresh failures `21`, authority-only `0`, fresh-only `0`; discovered,
+  reference-sidecar, and fresh-sidecar inventories are each `243`, with every
+  missing/unexpected comparison `0`; log `gate-4-identity-comparison.log`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
+  with only the five pre-existing header-division warnings; log
+  `gate-3-file-audit.log`.
+- Final `git diff --check` and clean-tree verification are recorded in
+  `final-diff-check.log` and `final-clean-status.log`.
+
+## Structural and performance evidence
+
+The shared no-op leaf worklist is intended to visit each reachable constructor
+fact/action once, with O(F+E) traversal and O(F) visitation storage for `F`
+function facts and `E` constructor edges.  A 128-independent-derived-local
+probe completed with status `0`, `WALL=0.01`, `RSS_KB=8928`, 128 root
+addresses, 0 derived wrapper definitions, 0 derived calls, and 128 retained
+base-entry definitions.  This is representative structural/spot evidence,
+not a benchmark, timing, or timeout claim; the self-contained command,
+input, process, observation, and counter record is in `final-scale-probe.log`.
+
+## Final checkpoint
+
+This audit is complete for `24d555c8`, while PA16 remains incomplete with its
+unchanged 21 residual failures.  The next separately bounded checkpoint is
+the first residual identity, `100-function-pointer-nested-param-name-shadow.t`;
+this audit does not audit or repair it.
+
+## Checkpoint ledger
+
+| Commit | Status |
+| --- | --- |
+| `24d555c8` | Completed PA16 checkpoint audit; final focused and broad evidence, exact 21-identity comparison, full 243-identity coverage, file audit, and clean-tree verification recorded above. |

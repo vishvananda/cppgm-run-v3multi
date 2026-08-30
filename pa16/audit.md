@@ -2,6 +2,188 @@
 
 ## Current Checkpoint Review
 
+This final bounded review covers landed commit
+`24d555c882a3e15ea3ffe5be42ed5d9953084df6` (`PA16 prune typed no-op
+construction effects`) relative to parent
+`d889058c0d159bd4414ffb6e9f5ac75227ce0192`.  The audited ownership path is
+the PA12 `FunctionFact`/`ConstructorActionFact`/`TypeId`/`BindingId` model
+through PA15 memoized construction summaries, demand traversal, aggregate
+lowering, construction lowering, and typed address paths.  The mandatory
+contract, active plan, this audit, the relevant `spec.md` sections, the
+landed diff, and all five affected PA15 implementation files were read
+before editing.  The turn-start tree was clean.
+
+The audit found a bounded fail-closed gap in the landed no-op consumer.  The
+constructor graph summary validated child actions but did not bind a member
+action to the enclosing constructor's complete layout/record, or require the
+published callable result to match the constructor type.  The semantic-action
+consumer also trusted a selected zero-parameter constructor without validating
+the nested typed call/address shape.  The repair is limited to
+`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering_calls.cpp`, and
+`dev/src/pa15_lowering_construction.cpp`.  No tests, fixtures, `.ref` files,
+exit-status sidecars, harnesses, comparators, generated outputs,
+coverage/source-set rules, or unrelated stage code changed.
+
+### Authority and exact residual boundary
+
+The authoritative primary log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+It records the exact turn-start authority as `222/243`, with `21` failures
+and all `243/243` identities covered.  The final fresh run retains all 243
+identities, adds no failure identity, and remains within this exact 21-failure
+boundary; the complete comparison is recorded below.
+
+The supplied authority failure identities are:
+
+- `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
+- `pa16/tests/general/200-elaborated-member-forward-type.t`
+- `pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t`
+- `pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`
+- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+- `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
+- `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
+- `pa16/tests/general/200-reference-member-class-init.t`
+- `pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t`
+- `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
+- `pa16/tests/general/300-callable-field-hides-private-base-method.t`
+- `pa16/tests/general/300-enum-class-nonmember-operator-bitand.t`
+- `pa16/tests/general/300-friend-function-definition-skip.t`
+- `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
+- `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
+- `pa16/tests/general/300-overloaded-deref-user-assignment.t`
+- `pa16/tests/general/300-user-defined-string-literal-operator.t`
+- `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
+- `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
+- `pa16/tests/general/400-signed-bit-field-read.t`
+- `pa16/tests/general/400-signed-enum-bit-field-read.t`
+
+The two identities fixed by the landed increment,
+`pa16/tests/general/200-const-subobject-member-call.t` and
+`pa16/tests/general/200-friend-derived-private-base-defaulted-constructor.t`,
+are outside this exact residual map and remain the focused target controls.
+
+### Typed ownership trace
+
+```text
+PA12 FunctionFact + ConstructorActionFact + TypeId/BindingId
+  -> PA15 constructor/zero-initialization summaries
+  -> member-function demand + aggregate/construction lowering
+  -> typed root/subobject LowIR address paths
+```
+
+PA12 publishes constructor identity, action and argument ranges, selected
+callable types, class ownership, layout members, and lifetime facts.  PA15
+consumes those facts directly.  `constructor_function_is_noop` now requires
+the complete record layout to agree with the canonical record/base relation;
+each member action must name a direct layout member owned by the enclosing
+class, and each action's callable result must agree with the constructor
+signature.  `constructor_graph_action_is_noop` validates the child
+constructor, hidden object type, explicit parameter sequence, and reachable
+fact identity.  The new semantic-action shape check distinguishes aggregate
+selection facts, storage-backed constructor actions, and valid zero-argument
+temporary shapes; storage-backed actions require exactly one typed
+address-only call child.  An incomplete extra argument therefore cannot be
+silently dropped before lowering, while temporary materialization remains
+guarded by its separate effectful-action predicate.
+
+The automatic-local address map is keyed by typed `BindingId` and current
+`BlockId`, is cleared for every lowered function, and is consulted only after
+class-object validation.  A declaration publishes its already-emitted root
+address; a different control-flow block cannot reuse that entry, while the
+same binding cannot represent a second lexical lifetime.  Constructor and
+zero-initialization caches are dense by immutable `FunctionFactId` and
+`TypeId`; in-progress recursion is effectful, completed invalid results stay
+non-prunable, and PA15 performs no semantic-arena mutation during lowering.
+
+### Findings and disposition
+
+1. The graph proof now rejects a base action not naming the current direct
+   base, a member action not present in the current complete layout, an
+   incomplete record layout, and a callable return type inconsistent with the
+   raw constructor type.  Valid PA12 action graphs retain their existing
+   classification.
+2. Both semantic-action demand and initializer consumers now require the typed
+   action-shape proof before treating a synthetic constructor as a no-op.  The
+   shortcut checks its typed action kind, selected scope/callable, aggregate
+   zero-argument shape, storage-backed call shape, address child, and absence
+   of additional call arguments.  The lower-level ordinary-action predicate
+   retains its temporary-object barrier; incomplete facts return false,
+   preserving argument evaluation and explicit calls.  Value-initialization
+   remains separate and still reaches zeroing.
+3. No further defect was found in the current-block address cache, recursive
+   constructor/zero-init cycle handling, leaf-demand visitation, aggregate
+   omitted-element retention, DMI/destructor/lifetime barriers, or argumented
+   and explicit constructor paths.  Scalar/value stores and throwing/cleanup
+   work remain outside the no-op predicate.
+
+No new regression or fixture was added.  Unions, virtual/multiple
+inheritance, templates, copy/move, broad class-value transfer, and general
+temporary materialization remain out of scope.
+
+### Focused and broad validation
+
+- `make -C dev cppgm++ CXX=g++`: status `0`; log
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-24d555c8-checkpoint-audit-20260830/rebuild-after-demand-fix.log`.
+- The landed two-test target: status `0`, `PASS (2/2)`; course 404 and 409
+  typed regressions: status `0`; and the ten-test constructor/aggregate/
+  lifetime matrix: status `0`, `PASS (10/10)`.  Logs are
+  `final-focused-landed-targets.log`, `final-focused-course-404.log`,
+  `final-focused-course-409.log`, and `final-focused-constructor-matrix.log`
+  in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-24d555c8-checkpoint-audit-20260830/`.
+- The five known residual controls (`200-local-default-class-array-lifecycle`,
+  `200-nested-braced-member-aggregate-init`,
+  `200-reference-member-class-init`, `400-signed-bit-field-read`, and
+  `400-signed-enum-bit-field-read`) remain status `2`, `FAIL (0/5)`; all five
+  are in the authority map above.  Log:
+  `final-focused-authority-controls.log`.
+- The exact `n=16` prior-through command completed with status `0` and
+  `ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)`.  Log:
+  `gate-1-prior-through-pa15.log`.
+- `make test-pa16` completed with status `2`, `222/243` passed, and the exact
+  21 authority failure identities.  Log: `gate-2-test-pa16.log`.
+- The exact identity comparison reports authority/fresh failures `21/21`,
+  authority-only `0`, fresh-only `0`; discovered/reference/fresh inventories
+  `243/243/243`; and zero for every missing/unexpected comparison.  Log:
+  `gate-4-identity-comparison.log`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` completed
+  with status `0` and only the five pre-existing header-body warnings.  Log:
+  `gate-3-file-audit.log`.
+- Final `git diff --check` completed with status `0`, and final
+  `git status --short` is empty.  Logs: `final-diff-check.log` and
+  `final-clean-status.log`.
+
+All logs above are outside the repository under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-24d555c8-checkpoint-audit-20260830/`.  The broad run preserves the
+full authority boundary and coverage; no tests, fixtures, references,
+sidecars, harnesses, comparators, generated outputs, or source-set files
+changed.
+
+### Architecture and performance
+
+The dense memo tables are indexed by canonical fact IDs and sized once after
+PA12 publication.  The shared no-op leaf worklist visits each reachable
+constructor fact/action at most once, giving an intended O(F+E) bound for `F`
+function facts and `E` constructor edges with O(F) visitation storage.  The
+128-independent-derived-local scale probe completed with status `0`, measured
+`WALL=0.01` and `RSS_KB=8928`, and produced 128 root addresses, 0 derived
+wrapper definitions, 0 derived calls, and 128 retained base-entry
+definitions.  This is structural/spot evidence only, not a benchmark, timing,
+or timeout claim; the self-contained command/input/status/observation/counter
+record is `final-scale-probe.log` in the durable directory above.  No textual
+downgrade, host/reference shortcut, whole-program retry, or broad invalidation
+was introduced.
+
+### Final status
+
+The bounded source repair, required evidence, commit, and clean-tree
+verification complete this audit.  PA16 remains incomplete with the exact
+unchanged residual 21-failure map, and all 243 discovered/reference/fresh
+identities remain covered.  The next separately bounded checkpoint is the
+first residual identity, `100-function-pointer-nested-param-name-shadow.t`;
+this audit does not audit or repair it.
+
+## Historical Derived-Base Reference Binding Review (e470e9df)
+
 This bounded review covers landed commit
 `e470e9dfed07ca09a373d227640f3c8042cc2cbf` (`PA16 enable prvalue derived-base
 reference binding`) relative to parent `f3afe9d5`.  The landed source change
@@ -3288,3 +3470,4 @@ conversion slices.
 | `31a938ac` typed aggregate value-initialization compact zero-store checkpointAudit | Final bounded audit of landed `31a938ac01fdc9b5b5f4c625ecf0658d77284504` relative to `d503a9c0`: PA12 value-initialization/synthetic-constructor facts, canonical PA15 `TypeId`/layout, byte-complete 8/4/2/1 scalar clearing, low-alignment x86_64 safety, declaration-ordered nested construction, array paths, and existing cleanup boundaries are traced. The landed alignment-width repair is sufficient; no additional source or regression repair is made. Fresh PA16 is `217/243` with `26` failures and `243/243` covered; exact comparison against the current 26-failure authority is `26` vs `26`, fresh-only `0`, authority-only `0`, and no missing artifacts. Through-PA15 is `1167/1167`; file audit is `0` with five known header warnings; diff-check is `0`; only the two approved documentation paths changed. |
 | `ab1b2a8c` source-point-aware associated ADL checkpointAudit | Final bounded audit of landed `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` relative to `a9728454` plus its approved follow-up: ordinary definition-`SourcePoint` lookup, ADL suppression/union, typed associated class/enum/direct-base/enclosing records, recursive cv/ref/pointer/array/function result-and-parameter association, first-namespace and inline closure, direct using-declarations without using-directives, hidden-friend visibility, canonical candidate identity/order, typed call publication, PA15 demand/declaration/call lowering, and the narrow empty-class opaque ABI bridge are traced. The follow-up repairs only `dev/src/pa12_semantic_calls.cpp`; incomplete named-class records associate their namespace without unvalidated base expansion, while member pointers, template expansion, and general class-value semantics remain closed. Course 426 now validates five positive runtime cases (inline, pointer, array, and function-pointer association) plus ordinary-parent and using-directive rejection controls. Final `make test-pa16` is exit `2` at `218/243`, exactly `25` failures, and `243/243` identities covered; exact sorted comparison with the supplied authority is `25` vs `25`, fresh-only `0`, authority-only `0`, with `243` discovered identities, `243` reference sidecars, `243` fresh sidecars, and missing `0/0`. Focused PA16 is `11/12` with only the known nested-enum LowIR residual; PA12 controls are `2/2`; all three temporary wrapper probes compile, lower, translate, and run with status `0`; course 426 and `sh -n` pass; through-PA15 is `1167/1167`; file audit exits `0` with five existing `bad-division` warnings and no fatals; final `git diff --check` and bounded path/coverage audit both exit `0`. The same 25 residual identities remain, so PA16 remains incomplete; no unrelated residual was re-audited. | completed audit |
 | `e470e9df` prvalue derived-base reference binding checkpointAudit | Final bounded audit of landed `e470e9dfed07ca09a373d227640f3c8042cc2cbf` relative to `f3afe9d5`: the PA12 repair confines prvalue derived-to-base reference binding to const non-volatile lvalue references, restores exact same-class temporary-reference ranking, and retains typed access/path publication into the validated PA15 projection consumer. Focused matrix is `8/8`; required through-PA15 is `1167/1167`; file audit exits `0` with five known warnings; fresh `make test-pa16` exits `2` at `220/243` with `23` failures; exact comparison to the supplied current authority is `23/23`, fresh-only `0`, authority-only `0`, and discovered/reference/fresh coverage `243/243/243` with missing/unexpected `0/0`. No test, fixture, reference, harness, comparator, generated output, coverage rule, source-set file, or unrelated stage code changed; PA16 remains incomplete with the same 23 residual identities. | completed audit |
+| `24d555c8` typed no-op construction effects checkpointAudit | Completed final bounded audit of landed `24d555c882a3e15ea3ffe5be42ed5d9953084df6` relative to `d889058c0d159bd4414ffb6e9f5ac75227ce0192`: PA12 typed constructor facts flow through PA15 memoized constructor/zero-init summaries, demand traversal, aggregate/construction lowering, and typed address paths. The audit repairs the semantic demand/action-shape split, fail-closed enclosing action-graph ownership/layout/result validation, and inconsistent direct-base metadata handling before pruning; current-block address reuse, cache cycle handling, leaf retention, DMI/destructor/lifetime barriers, argumented construction, and scalar/value stores remain guarded. Focused targets, course 404/409, and the constructor matrix pass; the exact prior-through gate is `1167/1167`; fresh PA16 is `222/243` with the exact unchanged 21-failure identity set; authority/fresh failures are `21/21`, authority-only/fresh-only are `0/0`, and discovered/reference/fresh inventories are `243/243/243` with all missing/unexpected comparisons `0`. The file audit exits `0` with five pre-existing warnings, the structural scale probe retains 128 base entries while emitting 0 derived wrappers/calls, and final diff-check and clean-tree verification pass. | completed audit |

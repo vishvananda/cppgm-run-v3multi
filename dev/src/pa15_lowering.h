@@ -830,6 +830,7 @@ private:
 		NamedRecordId record) const;
 	void initialize_constructor_noop_caches() const;
 	bool constructor_function_is_noop(FunctionFactId function_id) const;
+	bool constructor_record_layout_is_consistent(NamedRecordId record) const;
 	bool constructor_graph_action_is_noop(
 		const ConstructorActionFact& action) const;
 	bool constructor_action_is_noop_for_lowering(
@@ -864,6 +865,8 @@ private:
 		const LoweredValue* aggregate_root_storage = NULL,
 		TypeId aggregate_root_type = TypeId());
 	bool zero_initialization_is_noop(TypeId type) const;
+	bool constructor_action_call_shape_is_noop(
+		const SemanticFact& action) const;
 	bool constructor_action_is_noop(const SemanticFact& action) const;
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action,

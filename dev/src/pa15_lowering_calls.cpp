@@ -97,6 +97,123 @@ static lowir_model::ParamAliasMode builtin_alias_mode(
 	throw std::runtime_error("PA15 invalid builtin alias fact");
 }
 
+bool Pa15Lowerer::constructor_action_call_shape_is_noop(
+	const SemanticFact& action) const
+{
+	if (action.kind != SemanticFactKind::ConstructorAction ||
+		!action.selected_binding.valid() || !action.selected_scope.valid() ||
+		action.selected_scope.value >= model_.scopes_.size() ||
+		!action.callable_type.valid() || action.callable_type.value >=
+		model_.types_.size() || model_.type_kind(action.callable_type) !=
+		TypeKind::Function)
+		return false;
+	if (action.has_callee)
+	{
+		if (!action.type.valid() || action.type.value >= model_.types_.size())
+			return false;
+		if (!action.temporary_object)
+			return action.child_count == 0 && action.child_begin != InvalidIdentityValue &&
+				action.child_begin <= model_.semantic_children_.size();
+		if (action.child_count != 1 || action.child_begin == InvalidIdentityValue ||
+			action.child_begin >= model_.semantic_children_.size())
+			return false;
+		const SemanticFactId temporary_call_id =
+			model_.semantic_children_[action.child_begin];
+		if (!temporary_call_id.valid() || temporary_call_id.value >=
+			model_.semantic_facts_.size())
+			return false;
+		const SemanticFact& temporary_call =
+			model_.semantic_facts_[temporary_call_id.value];
+		return temporary_call.kind == SemanticFactKind::CallExpression &&
+			temporary_call.has_callee && temporary_call.temporary_object &&
+			temporary_call.selected_binding == action.selected_binding &&
+			temporary_call.selected_scope == action.selected_scope &&
+			temporary_call.callable_type == action.callable_type &&
+			temporary_call.type == model_.fundamental(FundamentalType::Void) &&
+			temporary_call.child_count == 0 &&
+			temporary_call.child_begin != InvalidIdentityValue &&
+			temporary_call.child_begin <= model_.semantic_children_.size();
+	}
+	if (action.type.valid() || action.temporary_object || action.child_count != 1 ||
+		action.child_begin == InvalidIdentityValue ||
+		action.child_begin >= model_.semantic_children_.size())
+		return false;
+	const SemanticFactId call_id = model_.semantic_children_[action.child_begin];
+	if (!call_id.valid() || call_id.value >= model_.semantic_facts_.size())
+		return false;
+	const SemanticFact& call = model_.semantic_facts_[call_id.value];
+	if (call.kind != SemanticFactKind::CallExpression || !call.has_callee ||
+		call.temporary_object || call.value_initialize ||
+		call.selected_binding != action.selected_binding ||
+		call.selected_scope != action.selected_scope ||
+		call.callable_type != action.callable_type ||
+		call.type != model_.fundamental(FundamentalType::Void) ||
+		call.child_count != 1 || call.child_begin == InvalidIdentityValue ||
+		call.child_begin >= model_.semantic_children_.size())
+		return false;
+	const SemanticFactId address_id = model_.semantic_children_[call.child_begin];
+	if (!address_id.valid() || address_id.value >= model_.semantic_facts_.size())
+		return false;
+	const SemanticFact& address = model_.semantic_facts_[address_id.value];
+	if (address.kind != SemanticFactKind::UnaryExpression ||
+		address.token != SimpleTokenType::OP_AMP || address.child_count != 1 ||
+		address.child_begin == InvalidIdentityValue ||
+		address.child_begin >= model_.semantic_children_.size())
+		return false;
+	const SemanticFactId object_id = model_.semantic_children_[address.child_begin];
+	return object_id.valid() && object_id.value < model_.semantic_facts_.size();
+}
+
+bool Pa15Lowerer::constructor_record_layout_is_consistent(
+	NamedRecordId record_id) const
+{
+	const auto valid_record = [this](NamedRecordId id) -> bool {
+		if (!id.valid() || id.value >= model_.named_.size() ||
+			id.value >= model_.record_layouts_.size())
+			return false;
+		const NamedRecord& record = model_.named_[id.value];
+		return record.kind == NamedKind::Class && record.class_tag != ClassTag::Union &&
+			record.name.valid() && record.defined && record.scope.valid() && record.scope.value <
+			model_.scopes_.size() && model_.scopes_[record.scope.value].kind ==
+			ScopeKind::Class && model_.scopes_[record.scope.value].record == id &&
+			!record.direct_base_virtual && !record.has_virtual_member;
+	};
+	const auto valid_base_metadata = [this, &valid_record](NamedRecordId id) -> bool {
+		if (!valid_record(id))
+			return false;
+		const NamedRecord& record = model_.named_[id.value];
+		if (record.has_base != record.direct_base.valid())
+			return false;
+		return !record.has_base || (record.direct_base != id &&
+			valid_record(record.direct_base));
+	};
+	if (!valid_record(record_id) || !valid_base_metadata(record_id))
+		return false;
+	const NamedRecord& record = model_.named_[record_id.value];
+	const RecordLayout& layout = model_.record_layout(record_id);
+	if (layout.state != RecordLayoutState::Complete || layout.size == 0 ||
+		layout.alignment == 0 || layout.has_direct_base != record.has_base ||
+		(layout.has_direct_base && (layout.direct_base.record != record.direct_base ||
+			layout.direct_base.offset != 0)) ||
+		(!layout.has_direct_base && layout.direct_base.record.valid()))
+		return false;
+	if (!record.has_base)
+		return true;
+	const NamedRecordId base_id = record.direct_base;
+	if (!valid_base_metadata(base_id))
+		return false;
+	const RecordLayout& base_layout = model_.record_layout(base_id);
+	const NamedRecord& base = model_.named_[base_id.value];
+	return base_layout.state == RecordLayoutState::Complete &&
+		base_layout.size != 0 && base_layout.alignment != 0 &&
+		base_layout.has_direct_base == base.has_base &&
+		((base_layout.has_direct_base &&
+			base_layout.direct_base.record == base.direct_base &&
+			base_layout.direct_base.offset == 0) ||
+			(!base_layout.has_direct_base &&
+				!base_layout.direct_base.record.valid()));
+}
+
 void Pa15Lowerer::collect_demanded_member_functions(
 	std::vector<unsigned char>* demanded,
 	std::vector<unsigned char>* declarations,
@@ -309,7 +426,8 @@ void Pa15Lowerer::collect_demanded_member_functions(
 					fact.selected_binding, sidecar->constructor_record);
 				const FunctionFactId* checked_id =
 					model_.function_binding_fact_index_.find(fact.selected_binding);
-				no_op = checked.synthetic && checked_id != NULL &&
+				no_op = (fact.kind != SemanticFactKind::ConstructorAction ||
+					constructor_action_call_shape_is_noop(fact)) && checked.synthetic && checked_id != NULL &&
 					checked_id->valid() && constructor_function_is_noop(*checked_id);
 			}
 		}

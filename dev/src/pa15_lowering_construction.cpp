@@ -89,10 +89,7 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 				SemanticFactKind::Literal && sequence_fact.literal_element_count != 0 &&
 				sequence_object.valid() && model_.type_kind(sequence_object) ==
 				TypeKind::Array;
-			// PA12's literal fact owns the decoded bytes and the constant-address
-			// relation.  Consume that address directly for an array subscript so
-			// the backing global is materialized once; no source-text decoding or
-			// rendered-name reconstruction is needed here.
+			// Consume PA12's typed literal address directly.
 			const LoweredValue sequence = literal_array ?
 				lower_address(facts.front()) : lower_expression(facts.front());
 			const LoweredValue index = lower_expression(facts.back());
@@ -217,9 +214,7 @@ void Pa15Lowerer::initialize_array(BindingId binding, SemanticFactId initializer
 		model_.expression_object_type(element));
 	if (!element_object.valid() || element_object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 array initializer element is invalid");
-	// Aggregate facts own the typed clause edges.  Scalar arrays retain the
-	// established compact store/address sequence while deriving omitted values
-	// from the destination type and sparse range.
+	// Aggregate facts own typed clause edges and omitted-value ranges.
 	if (model_.type_kind(element_object) != TypeKind::Array &&
 		!class_object_type(element))
 	{
@@ -997,11 +992,8 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
 			model_.type_kind(binding.type) != TypeKind::Function)
 			break;
 		const TypeKey& signature = model_.types_[binding.type.value];
-		// The canonical constructor binding type contains only explicit
-		// parameters; PA12 publishes the implicit object in callable_type.  A
-		// no-op constructor has no explicit parameter/default-argument boundary,
-		// which also excludes aggregate and inheriting wrappers.
-		if (signature.variadic || !signature.parameters.empty() ||
+		if (signature.result != model_.fundamental(FundamentalType::Void) ||
+			signature.variadic || !signature.parameters.empty() ||
 			function.default_argument_count != 0 || !function.function_scope.valid() ||
 			function.function_scope.value >= model_.scopes_.size() ||
 			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
@@ -1021,11 +1013,14 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
 		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
 			!record.name.valid() || !record.defined || !record.scope.valid() ||
 			record.scope.value >= model_.scopes_.size() ||
-			model_.scopes_[record.scope.value].kind != ScopeKind::Class ||
-			model_.scopes_[record.scope.value].record != function.constructor_record ||
-			record.direct_base_virtual || record.has_virtual_member ||
-			function.owner != record.scope)
+				model_.scopes_[record.scope.value].kind != ScopeKind::Class ||
+				model_.scopes_[record.scope.value].record != function.constructor_record ||
+				record.direct_base_virtual || record.has_virtual_member ||
+				function.owner != record.scope)
 			break;
+		if (!constructor_record_layout_is_consistent(function.constructor_record))
+			break;
+		const RecordLayout& layout = model_.record_layout(function.constructor_record);
 		const BindingSidecar* binding_sidecar =
 			model_.binding_sidecar(function.binding);
 		const NamedRecordSidecar* record_sidecar =
@@ -1055,9 +1050,7 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
 			break;
 		if (!function.synthetic)
 		{
-			// A user-provided empty body is a no-op leaf only while proving that a
-			// synthetic wrapper has no reachable action.  Its direct call remains
-			// effectful and is never removed by the lowering consumer.
+			// User-provided empty bodies are leaves only for wrapper analysis.
 			if (function.constructor_action_count != 0)
 				break;
 			result = true;
@@ -1070,7 +1063,14 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
 			const ConstructorActionFact& action =
 				model_.constructor_actions_[function.constructor_action_begin +
 					action_index];
-			if (!constructor_graph_action_is_noop(action))
+			if ((action.target == ConstructorActionTarget::Base &&
+				(!record.has_base || action.base_record != record.direct_base)) ||
+				(action.target == ConstructorActionTarget::Member &&
+					(!action.member.valid() || action.member.value >=
+						model_.binding_owners_.size() ||
+						model_.binding_owners_[action.member.value] != record.scope ||
+						layout.member_offsets.find(action.member) == NULL)) ||
+				!constructor_graph_action_is_noop(action))
 			{
 				result = false;
 				break;
@@ -1136,7 +1136,8 @@ bool Pa15Lowerer::constructor_graph_action_is_noop(
 		return false;
 	const TypeKey& constructor_signature = model_.types_[constructor.type.value];
 	const TypeKey& callable_signature = model_.types_[action.callable_type.value];
-	if (callable_signature.variadic != constructor_signature.variadic ||
+	if (callable_signature.result != constructor_signature.result ||
+		callable_signature.variadic != constructor_signature.variadic ||
 		callable_signature.parameters.size() !=
 			constructor_signature.parameters.size() + 1)
 		return false;
@@ -1169,10 +1170,7 @@ bool Pa15Lowerer::constructor_graph_action_is_noop(
 bool Pa15Lowerer::constructor_action_is_noop_for_lowering(
 	const ConstructorActionFact& action) const
 {
-	// Value-initialization is still an observable zeroing action, but a proven
-	// empty synthetic constructor underneath it contributes no call or demand.
-	// Analyze the same typed action with only that separate zeroing bit removed;
-	// callers retain the bit and emit the required value-initialization stores.
+	// Analyze value-initialization separately from an otherwise empty constructor.
 	ConstructorActionFact constructor_only = action;
 	constructor_only.value_initialize = false;
 	if (!constructor_graph_action_is_noop(constructor_only))
@@ -1263,9 +1261,7 @@ bool Pa15Lowerer::zero_initialization_is_noop(TypeId type) const
 		break;
 	}
 	default:
-		// Fundamental, pointer, enum, reference, function, and member-pointer
-		// zero initialization each has a value/store boundary.  They are not
-		// effect-free object initialization.
+		// Scalar and pointer zero-initialization always has a store boundary.
 		break;
 	}
 	zero_initialization_noop_states_[index] =
@@ -2469,7 +2465,8 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			constructor_destination = address_of_storage(constructor_destination);
 		const FunctionFactId* constructor_id =
 			model_.function_binding_fact_index_.find(fact.selected_binding);
-		const bool constructor_no_op = constructor.synthetic &&
+		const bool constructor_no_op = constructor_action_call_shape_is_noop(fact) &&
+			constructor.synthetic &&
 			constructor_id != NULL && constructor_id->valid() &&
 			constructor_id->value < model_.function_facts_.size() &&
 			constructor_function_is_noop(*constructor_id);
@@ -2695,7 +2692,9 @@ void Pa15Lowerer::lower_constructor_action(
 
 bool Pa15Lowerer::constructor_action_is_noop(const SemanticFact& action) const
 {
-	if (action.value_initialize || !action.selected_binding.valid())
+	if (action.value_initialize || action.temporary_object ||
+		!action.selected_binding.valid() ||
+		!constructor_action_call_shape_is_noop(action))
 		return false;
 	const BindingSidecar* binding_sidecar =
 		model_.binding_sidecar(action.selected_binding);
