@@ -513,15 +513,14 @@ struct NamedRecord
 	// silently presenting an inheritance or polymorphic record as flat.
 	bool has_base;
 	NamedRecordId direct_base; MemberAccess direct_base_access;
-	bool direct_base_virtual;
-	bool has_virtual_member;
-	// The effective non-zero alignment for the canonical record.  This is the
-	// strictest value within one declaration; equivalent redeclarations are
-	// checked separately below rather than merged by strength.
+	bool direct_base_virtual; bool has_virtual_member;
+	// The effective non-zero alignment for the canonical record; equivalent
+	// redeclarations are checked separately below rather than merged by strength.
 	bool has_requested_alignment;
+	// Active pack cap at definition; zero denotes natural layout.
 	std::size_t requested_alignment;
-	bool scoped_enum;
-	bool has_underlying;
+	std::size_t pack_alignment;
+	bool scoped_enum; bool has_underlying;
 	TypeId underlying;
 	bool template_template;
 	ScopeId scope;
@@ -534,7 +533,7 @@ struct NamedRecord
 		: kind(kind), name(name), owner(owner), defined(false),
 		  class_tag(ClassTag::Struct), has_base(false),
 		  direct_base(), direct_base_access(MemberAccess::Public), direct_base_virtual(false), has_virtual_member(false),
-		  has_requested_alignment(false), requested_alignment(0),
+		  has_requested_alignment(false), requested_alignment(0), pack_alignment(0),
 		  scoped_enum(false),
 		  has_underlying(false), underlying(), template_template(false), scope(),
 		  has_generated_identity(false), generated_identity(), dump_scope_view()
@@ -1769,6 +1768,7 @@ private:
 	std::size_t alignment_specifier_value(
 		const PA10AlignmentSpecifier& spec, ScopeId scope)
 	;
+	std::size_t pack_alignment_at(std::size_t source_position) const;
 	std::size_t requested_alignment(const PA10AstNode& node, ScopeId scope,
 		bool* has_specifier = NULL)
 	;

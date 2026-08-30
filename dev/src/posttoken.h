@@ -230,6 +230,16 @@ struct IPostTokenOutput
 		(void)spelling;
 		emit_simple_identifier(source, type);
 	}
+	// Recognized preprocessing directives remain typed facts at the
+	// posttoken boundary.  Legacy consumers ignore them; PA10 retains their
+	// ordered positions for PA11 layout.
+	virtual void emit_pack_directive(PPPackOperation operation,
+		std::size_t byte_cap, std::size_t active_byte_cap)
+	{
+		(void)operation;
+		(void)byte_cap;
+		(void)active_byte_cap;
+	}
 	// Existing PA2 consumers ignore line boundaries.  PA3 overrides this
 	// optional event only through the explicit line-aware entry point below.
 	virtual void emit_new_line() {}

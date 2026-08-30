@@ -299,7 +299,7 @@ PA10ContextualIdentifierKind classify_contextual_identifier(
 class PA10PostTokenCollector : public IPostTokenOutput
 {
 public:
-	PA10PostTokenCollector() : tokens(), invalid(false) {}
+	PA10PostTokenCollector() : tokens(), pack_directives(), invalid(false) {}
 	void emit_invalid(const std::string& source)
 	{
 		(void)source;
@@ -348,12 +348,19 @@ public:
 		token.user_defined = value;
 		tokens.push_back(token);
 	}
+	void emit_pack_directive(PPPackOperation operation,
+		std::size_t byte_cap, std::size_t active_byte_cap)
+	{
+		pack_directives.push_back(PA10PackDirective(tokens.size(), operation,
+			byte_cap, active_byte_cap));
+	}
 	void emit_eof()
 	{
 		if (tokens.empty() || tokens.back().kind != PA10TokenKind::End)
 			tokens.push_back(PA10Token(PA10TokenKind::End));
 	}
 	std::vector<PA10Token> tokens;
+	std::vector<PA10PackDirective> pack_directives;
 	bool invalid;
 };
 
@@ -1619,13 +1626,16 @@ bool scan_lambda_introducer_facts(
 	return true;
 }
 
-bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens)
+bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens,
+	std::vector<PA10PackDirective>* pack_directives)
 {
 	PA10PostTokenCollector collector;
 	posttokenize_cpp_tokens(input, collector);
 	if (collector.invalid)
 		return false;
 	tokens.swap(collector.tokens);
+	if (pack_directives != NULL)
+		pack_directives->swap(collector.pack_directives);
 	return true;
 }
 

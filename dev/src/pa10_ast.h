@@ -379,6 +379,24 @@ struct PA10AlignmentSpecifier
 	{}
 };
 
+// PA10 owns the posttoken boundary for recognized pack controls.  The
+// position is in the whitespace-free syntax token stream; the effective cap
+// is already typed by the preprocessing owner and zero means natural layout.
+struct PA10PackDirective
+{
+	std::size_t token_index;
+	PPPackOperation operation;
+	std::size_t byte_cap;
+	std::size_t active_byte_cap;
+
+	PA10PackDirective(std::size_t token_index = 0,
+		PPPackOperation operation = PPPackOperation::Push,
+		std::size_t byte_cap = 0, std::size_t active_byte_cap = 0)
+		: token_index(token_index), operation(operation), byte_cap(byte_cap),
+		  active_byte_cap(active_byte_cap)
+	{}
+};
+
 struct PA10TemplateArgument
 {
 	PA10TemplateArgumentKind kind;
@@ -409,6 +427,9 @@ struct PA10Ast
 	// declaration/class node through its range.  Keeping them out of the
 	// rendered hot tree preserves the PA10 presentation boundary.
 	std::vector<PA10AlignmentSpecifier> alignment_specifiers;
+	// Recognized preprocessing pack controls retain ordered token-boundary
+	// facts without entering the rendered syntax tree.
+	std::vector<PA10PackDirective> pack_directives;
 	// Template arguments are structured syntax owners. Name components refer
 	// to this vector by range instead of retaining a flattened spelling.
 	std::vector<PA10TemplateArgument> template_arguments;
@@ -421,6 +442,7 @@ struct PA10Ast
 		  operator_presentation_spellings(), semantic_child_nodes(),
 		  lambda_captures(),
 		  alignment_specifiers(),
+		  pack_directives(),
 		  template_arguments(),
 		  name_prefix_nodes(),
 		  root(PA10NodeKind::TranslationUnit)

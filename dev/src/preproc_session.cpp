@@ -73,6 +73,31 @@ bool is_punctuator(const PPToken& token, PPTokenFixedIdentity identity)
 		token.fixed_identity == identity;
 }
 
+bool is_integral_literal(FundamentalType type)
+{
+	switch (type)
+	{
+	case FundamentalType::SignedChar:
+	case FundamentalType::ShortInt:
+	case FundamentalType::Int:
+	case FundamentalType::LongInt:
+	case FundamentalType::LongLongInt:
+	case FundamentalType::UnsignedChar:
+	case FundamentalType::UnsignedShortInt:
+	case FundamentalType::UnsignedInt:
+	case FundamentalType::UnsignedLongInt:
+	case FundamentalType::UnsignedLongLongInt:
+	case FundamentalType::WcharT:
+	case FundamentalType::Char:
+	case FundamentalType::Char16T:
+	case FundamentalType::Char32T:
+	case FundamentalType::Bool:
+		return true;
+	default:
+		return false;
+	}
+}
+
 std::size_t skip_whitespace(const std::vector<PPToken>& tokens,
 	std::size_t at, std::size_t end)
 {
@@ -266,7 +291,10 @@ struct PPPreprocessingSession::Impl
 	std::unordered_map<PPSpellingId, DirectiveKind> directives;
 	std::unordered_map<PPSpellingId, BuiltinKind> builtins;
 	PPSpellingId pragma_once_id;
+	PPSpellingId pragma_pack_id;
 	PPSpellingId pragma_operator_id;
+	std::vector<std::size_t> pack_stack;
+	std::size_t active_pack_cap;
 	std::size_t counter;
 	std::size_t include_depth;
 	FileFrame* current;
@@ -274,7 +302,8 @@ struct PPPreprocessingSession::Impl
 	 explicit Impl(const PPPreprocessConfig& config)
 		: config(config), output(), macros(), pragma_once_files(),
 		  conditionals(), directives(), builtins(), pragma_once_id(0),
-		  pragma_operator_id(0), counter(0),
+		  pragma_pack_id(0), pragma_operator_id(0), pack_stack(),
+		  active_pack_cap(0), counter(0),
 		  include_depth(0), current(NULL)
 	{}
 
@@ -287,6 +316,8 @@ struct PPPreprocessingSession::Impl
 		conditionals.clear();
 		directives.clear();
 		builtins.clear();
+		pack_stack.clear();
+		active_pack_cap = 0;
 		counter = 0;
 		include_depth = 0;
 		current = NULL;
@@ -301,6 +332,7 @@ struct PPPreprocessingSession::Impl
 	void initialize_names()
 	{
 		pragma_once_id = output.spellings.intern("once");
+		pragma_pack_id = output.spellings.intern("pack");
 		pragma_operator_id = output.spellings.intern("_Pragma");
 		add_directive("if", DirectiveKind::If);
 		add_directive("ifdef", DirectiveKind::Ifdef);
@@ -766,14 +798,120 @@ struct PPPreprocessingSession::Impl
 		at = skip_whitespace(frame.tokens, at, end);
 		if (at >= end || !is_identifier(frame.tokens[at]))
 			return;
-		if (frame.tokens[at].spelling != pragma_once_id)
+		if (frame.tokens[at].spelling == pragma_once_id)
+		{
+			++at;
+			if (skip_whitespace(frame.tokens, at, end) != end)
+				return;
+			PA5FileId fileid;
+			if (PA5GetFileId(frame.actual_path, fileid))
+				pragma_once_files.insert(fileid);
+			return;
+		}
+		if (frame.tokens[at].spelling != pragma_pack_id)
 			return;
 		++at;
-		if (skip_whitespace(frame.tokens, at, end) != end)
+		handle_pack_pragma(frame.tokens, end, at);
+	}
+
+	void append_pack_directive(PPPackOperation operation,
+		std::size_t byte_cap)
+	{
+		if (operation == PPPackOperation::Push)
+		{
+			if (byte_cap == 0)
+				throw std::runtime_error("pack push has invalid byte cap");
+			pack_stack.push_back(active_pack_cap);
+			active_pack_cap = byte_cap;
+		}
+		else
+		{
+			if (!pack_stack.empty())
+			{
+				active_pack_cap = pack_stack.back();
+				pack_stack.pop_back();
+			}
+			else
+				throw std::runtime_error("pack pop has no matching push");
+		}
+		output.pack_directives.push_back(PPPackDirective(output.tokens.size(),
+			operation, operation == PPPackOperation::Push ? byte_cap : 0,
+			active_pack_cap));
+	}
+
+	std::size_t pack_byte_cap(const std::vector<PPToken>& tokens,
+		std::size_t at)
+	{
+		std::vector<PPToken> operand(1, tokens[at]);
+		LiteralOperandOutput converted;
+		posttokenize_cpp_tokens(output.spellings, operand, converted);
+		if (converted.invalid || converted.other_tokens != 0 ||
+			converted.literals.size() != 1 ||
+			!is_integral_literal(converted.literals.front().type) ||
+			converted.literals.front().element_count != 0)
+			throw std::runtime_error("pack push requires an integral byte cap");
+		const LiteralData& literal = converted.literals.front();
+		if (literal.bytes.empty() || literal.bytes.size() > sizeof(std::size_t))
+			throw std::runtime_error("pack push byte cap is out of range");
+		std::size_t result = 0;
+		for (std::size_t i = 0; i < literal.bytes.size(); ++i)
+		{
+			const std::size_t shift = i * 8;
+			const std::size_t byte = static_cast<std::size_t>(literal.bytes[i]);
+			if (shift >= sizeof(std::size_t) * 8 ||
+				(byte > (std::numeric_limits<std::size_t>::max() >> shift)) ||
+				((byte << shift) > std::numeric_limits<std::size_t>::max() - result))
+				throw std::runtime_error("pack push byte cap is out of range");
+			result |= byte << shift;
+		}
+		if (result == 0)
+			throw std::runtime_error("pack push has invalid byte cap");
+		return result;
+	}
+
+	void handle_pack_pragma(const std::vector<PPToken>& tokens,
+		std::size_t end, std::size_t at)
+	{
+		at = skip_whitespace(tokens, at, end);
+		if (at >= end || !is_punctuator(tokens[at],
+			PPTokenFixedIdentity::LeftParen))
+			throw std::runtime_error("malformed pack pragma");
+		at = skip_whitespace(tokens, at + 1, end);
+		if (at >= end || !is_identifier(tokens[at]))
+			throw std::runtime_error("malformed pack pragma operation");
+		const PPSpellingId operation = tokens[at].spelling;
+		const PPSpellingId push = output.spellings.intern("push");
+		const PPSpellingId pop = output.spellings.intern("pop");
+		++at;
+		if (operation == push)
+		{
+			at = skip_whitespace(tokens, at, end);
+			if (at >= end || !is_punctuator(tokens[at],
+				PPTokenFixedIdentity::Comma))
+				throw std::runtime_error("pack push requires byte cap");
+			at = skip_whitespace(tokens, at + 1, end);
+			if (at >= end || tokens[at].kind != PPTokenKind::PPNumber)
+				throw std::runtime_error("pack push requires integral byte cap");
+			const std::size_t byte_cap = pack_byte_cap(tokens, at);
+			at = skip_whitespace(tokens, at + 1, end);
+			if (at >= end || !is_punctuator(tokens[at],
+				PPTokenFixedIdentity::RightParen) ||
+				skip_whitespace(tokens, at + 1, end) != end)
+				throw std::runtime_error("malformed pack push pragma");
+			append_pack_directive(PPPackOperation::Push, byte_cap);
 			return;
-		PA5FileId fileid;
-		if (PA5GetFileId(frame.actual_path, fileid))
-			pragma_once_files.insert(fileid);
+		}
+		if (operation == pop)
+		{
+			at = skip_whitespace(tokens, at, end);
+			if (at >= end || !is_punctuator(tokens[at],
+				PPTokenFixedIdentity::RightParen) ||
+				skip_whitespace(tokens, at + 1, end) != end)
+				throw std::runtime_error("malformed pack pop pragma");
+			append_pack_directive(PPPackOperation::Pop, 0);
+			return;
+		}
+		throw std::runtime_error("unsupported pack pragma operation");
 	}
 
 	void consume_pragmas(const std::vector<PPToken>& input,

@@ -56,7 +56,8 @@ void record_declarator_name(PA10NameScopes& scopes,
 	const PA10AstNode& node, bool is_type);
 bool is_typedef_specifier(const PA10AstNode& spec);
 
-bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens);
+bool collect_tokens(const PPTokenBuffer& input, std::vector<PA10Token>& tokens,
+	std::vector<PA10PackDirective>* pack_directives = NULL);
 bool is_cv(SimpleTokenType type);
 bool is_type_keyword(SimpleTokenType type);
 bool is_decl_specifier(SimpleTokenType type);

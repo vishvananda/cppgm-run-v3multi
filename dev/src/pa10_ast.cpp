@@ -2991,9 +2991,10 @@ PA10AstNode PA10Parser::parse_template_parameter()
 } // namespace
 PA10Ast parse_pa10_ast(const PPTokenBuffer& input)
 {
-	std::vector<PA10Token> tokens;
-	if (!PA10ParserSupport::collect_tokens(input, tokens))
+	std::vector<PA10Token> tokens; std::vector<PA10PackDirective> pack_directives;
+	if (!PA10ParserSupport::collect_tokens(input, tokens, &pack_directives))
 		throw std::runtime_error("invalid phase-7 token");
 	PA10Parser parser(tokens, input.spellings);
-	return parser.parse();
+	PA10Ast result = parser.parse();
+	result.pack_directives.swap(pack_directives); return result;
 }

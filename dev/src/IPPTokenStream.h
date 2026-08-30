@@ -152,6 +152,32 @@ struct PPSourceLocation
 	{}
 };
 
+// A recognized pack pragma is a typed preprocessing fact, not source text.
+// token_index is the boundary in PPTokenBuffer::tokens at which the fact was
+// produced.  byte_cap is meaningful for Push and active_byte_cap is the
+// effective state after either operation; zero denotes the natural layout
+// state.
+enum class PPPackOperation : unsigned char
+{
+	Push,
+	Pop
+};
+
+struct PPPackDirective
+{
+	std::size_t token_index;
+	PPPackOperation operation;
+	std::size_t byte_cap;
+	std::size_t active_byte_cap;
+
+	PPPackDirective(std::size_t token_index = 0,
+		PPPackOperation operation = PPPackOperation::Push,
+		std::size_t byte_cap = 0, std::size_t active_byte_cap = 0)
+		: token_index(token_index), operation(operation), byte_cap(byte_cap),
+		  active_byte_cap(active_byte_cap)
+	{}
+};
+
 struct PPToken
 {
 	PPTokenKind kind;
@@ -172,11 +198,16 @@ struct PPTokenBuffer
 {
 	PPSpellingTable spellings;
 	std::vector<PPToken> tokens;
+	// Ordered recognized pragma facts are kept beside, rather than encoded
+	// into, the phase-3 token text.  The vector is append-only during one
+	// preprocessing session and follows token output order.
+	std::vector<PPPackDirective> pack_directives;
 
 	void clear()
 	{
 		spellings.clear();
 		tokens.clear();
+		pack_directives.clear();
 	}
 };
 

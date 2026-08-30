@@ -1608,7 +1608,7 @@ class PostTokenStream : public IPPTokenStream
 public:
 	PostTokenStream(IPostTokenOutput& output, bool line_aware)
 		: output_(output), line_aware_(line_aware), pending_strings_(),
-		  operator_pending_(false)
+		  pending_pack_directives_(), operator_pending_(false)
 	{}
 
 	void emit_whitespace_sequence() {}
@@ -1617,14 +1617,14 @@ public:
 	{
 		if (!line_aware_)
 			return;
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		output_.emit_new_line();
 	}
 
 	void emit_header_name(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		output_.emit_invalid(data);
 	}
@@ -1637,7 +1637,7 @@ public:
 	void emit_identifier_token(PPSpellingId spelling,
 		const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		SimpleTokenType type;
 		if (lookup_simple_token_type(data, &type))
@@ -1660,7 +1660,7 @@ public:
 		PPSpellingId spelling, PPTokenFixedIdentity fixed_identity,
 		const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		SimpleTokenType type;
 		if (simple_token_type_for_identifier(fixed_identity, &type))
@@ -1683,7 +1683,7 @@ public:
 
 	void emit_pp_number(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		const NumericResult result = analyze_number(data);
 		if (!result.valid)
@@ -1720,14 +1720,14 @@ public:
 
 	void emit_character_literal(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		emit_character(data);
 	}
 
 	void emit_user_defined_character_literal(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		emit_character(data);
 	}
@@ -1744,7 +1744,7 @@ public:
 
 	void emit_preprocessing_op_or_punc(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		SimpleTokenType type;
 		if (lookup_simple_token_type(data, &type))
@@ -1756,7 +1756,7 @@ public:
 	void emit_punctuator(PPTokenFixedIdentity punctuator,
 		const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		SimpleTokenType type;
 		if (simple_token_type_for_punctuator(punctuator, &type))
@@ -1767,14 +1767,24 @@ public:
 
 	void emit_non_whitespace_char(const std::string& data)
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		output_.emit_invalid(data);
 	}
 
+	void emit_pack_directive(PPPackOperation operation,
+		std::size_t byte_cap, std::size_t active_byte_cap)
+	{
+		// A directive is invisible to phase-6 string concatenation and must not
+		// terminate PA1's pending operator token formation.  Defer its typed
+		// callback until the next independent token boundary.
+		pending_pack_directives_.push_back(PPPackDirective(0, operation,
+			byte_cap, active_byte_cap));
+	}
+
 	void emit_eof()
 	{
-		flush_strings();
+		flush_token_boundary();
 		operator_pending_ = false;
 		output_.emit_eof();
 	}
@@ -1783,7 +1793,20 @@ private:
 	IPostTokenOutput& output_;
 	bool line_aware_;
 	std::vector<StringPart> pending_strings_;
+	std::vector<PPPackDirective> pending_pack_directives_;
 	bool operator_pending_;
+
+	void flush_token_boundary()
+	{
+		flush_strings();
+		for (std::size_t i = 0; i < pending_pack_directives_.size(); ++i)
+		{
+			const PPPackDirective& directive = pending_pack_directives_[i];
+			output_.emit_pack_directive(directive.operation,
+				directive.byte_cap, directive.active_byte_cap);
+		}
+		pending_pack_directives_.clear();
+	}
 
 	void append_string(const std::string& data)
 	{
@@ -2067,7 +2090,39 @@ void posttokenize_cpp_source_by_line(const std::string& source,
 void posttokenize_cpp_tokens(const PPTokenBuffer& buffer,
 	IPostTokenOutput& output)
 {
-	posttokenize_cpp_tokens(buffer.spellings, buffer.tokens, output);
+	PostTokenStream stream(output, false);
+	std::size_t directive = 0;
+	bool saw_eof = false;
+	for (std::size_t i = 0; i < buffer.tokens.size(); ++i)
+	{
+		while (directive < buffer.pack_directives.size() &&
+			buffer.pack_directives[directive].token_index == i)
+		{
+			const PPPackDirective& fact = buffer.pack_directives[directive++];
+			stream.emit_pack_directive(fact.operation, fact.byte_cap,
+				fact.active_byte_cap);
+		}
+		if (directive < buffer.pack_directives.size() &&
+			buffer.pack_directives[directive].token_index < i)
+			throw std::runtime_error("pack directive order is invalid");
+		emit_pp_token(&stream, buffer.spellings, buffer.tokens[i]);
+		if (buffer.tokens[i].kind == PPTokenKind::EndOfFile)
+		{
+			saw_eof = true;
+			break;
+		}
+	}
+	while (directive < buffer.pack_directives.size() &&
+		buffer.pack_directives[directive].token_index == buffer.tokens.size())
+	{
+		const PPPackDirective& fact = buffer.pack_directives[directive++];
+		stream.emit_pack_directive(fact.operation, fact.byte_cap,
+			fact.active_byte_cap);
+	}
+	if (directive != buffer.pack_directives.size())
+		throw std::runtime_error("pack directive boundary is invalid");
+	if (!saw_eof)
+		stream.emit_eof();
 }
 
 void posttokenize_cpp_tokens(const PPSpellingTable& spellings,

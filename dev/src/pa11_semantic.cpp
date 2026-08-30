@@ -90,6 +90,33 @@ std::size_t PA11SemanticModel::alignment_specifier_value(
 	return alignment;
 }
 
+std::size_t PA11SemanticModel::pack_alignment_at(
+	std::size_t source_position) const
+{
+	const std::vector<PA10PackDirective>& directives = ast_.pack_directives;
+	std::size_t first = 0;
+	std::size_t last = directives.size();
+	while (first < last)
+	{
+		const std::size_t middle = first + (last - first) / 2;
+		if (directives[middle].token_index <= source_position)
+			first = middle + 1;
+		else
+			last = middle;
+	}
+	if (first == 0)
+		return 0;
+	const PA10PackDirective& directive = directives[first - 1];
+	if (directive.operation == PPPackOperation::Push)
+	{
+		if (directive.byte_cap == 0 || directive.active_byte_cap == 0)
+			throw std::runtime_error("invalid PA11 pack push fact");
+	}
+	else if (directive.byte_cap != 0)
+		throw std::runtime_error("invalid PA11 pack pop fact");
+	return directive.active_byte_cap;
+}
+
 std::size_t PA11SemanticModel::requested_alignment(const PA10AstNode& node,
 	ScopeId scope, bool* has_specifier)
 {
@@ -334,6 +361,8 @@ void PA11SemanticModel::process_class_body(const PA10AstNode& node, TypeId type,
 	const NamedRecordId record_id = named_record_for_type(type);
 	if (!record_id.valid() || record_id.value >= named_.size())
 		throw std::runtime_error("class has no named record");
+	named_[record_id.value].pack_alignment =
+		pack_alignment_at(node.source_begin);
 	if (!alignment_applied)
 		apply_record_alignment(node, record_id, owner, true);
 	MemberAccess access = named_[record_id.value].class_tag == ClassTag::Class ?

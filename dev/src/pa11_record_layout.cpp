@@ -296,8 +296,14 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 			if (field_layout.size != fact.storage_unit_size ||
 				field_layout.alignment == 0)
 				throw std::runtime_error("bit-field storage layout is invalid");
-			if (field_layout.alignment > record_alignment)
-				record_alignment = field_layout.alignment;
+			const std::size_t field_alignment =
+				record_id.value < named_.size() &&
+				named_[record_id.value].pack_alignment != 0 &&
+				field_layout.alignment >
+					named_[record_id.value].pack_alignment ?
+					named_[record_id.value].pack_alignment : field_layout.alignment;
+			if (field_alignment > record_alignment)
+				record_alignment = field_alignment;
 			if (is_union)
 			{
 				flush_bit_unit();
@@ -310,7 +316,7 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 			else if (fact.zero_width)
 			{
 				flush_bit_unit();
-				if (!align_up_checked(offset, field_layout.alignment,
+				if (!align_up_checked(offset, field_alignment,
 					&fact.storage_offset))
 					throw std::runtime_error("record layout size overflow");
 				fact.bit_offset = 0;
@@ -338,17 +344,17 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 			else
 			{
 				if (!bit_unit_active || bit_unit_size != fact.storage_unit_size ||
-					bit_unit_alignment != field_layout.alignment ||
+					bit_unit_alignment != field_alignment ||
 					bit_cursor > bit_unit_width ||
 					fact.width > bit_unit_width - bit_cursor)
 				{
 					flush_bit_unit();
-					if (!align_up_checked(offset, field_layout.alignment,
+					if (!align_up_checked(offset, field_alignment,
 						&bit_unit_offset))
 						throw std::runtime_error("record layout size overflow");
 					bit_unit_active = true;
 					bit_unit_size = fact.storage_unit_size;
-					bit_unit_alignment = field_layout.alignment;
+					bit_unit_alignment = field_alignment;
 					bit_unit_width = fact.storage_width;
 					bit_cursor = 0;
 				}
@@ -389,13 +395,19 @@ void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 		if (member_layout.size == 0 || member_layout.alignment == 0)
 			throw std::runtime_error("record member has invalid layout");
 		std::size_t member_alignment = member_layout.alignment;
+		bool explicit_member_alignment = false;
 		if (sidecar != NULL && sidecar->has_requested_alignment)
 		{
 			if (sidecar->requested_alignment == 0 ||
 				sidecar->requested_alignment < member_alignment)
 				throw std::runtime_error("member alignment is weaker than natural alignment");
 			member_alignment = sidecar->requested_alignment;
+			explicit_member_alignment = true;
 		}
+		if (!explicit_member_alignment &&
+			named_[record_id.value].pack_alignment != 0 &&
+			member_alignment > named_[record_id.value].pack_alignment)
+			member_alignment = named_[record_id.value].pack_alignment;
 		if (member_alignment > record_alignment)
 			record_alignment = member_alignment;
 		std::size_t member_offset = 0;
@@ -500,6 +512,9 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			layout.direct_base = RecordLayoutBase(record.direct_base, 0);
 			offset = base_layout.size;
 			record_alignment = base_layout.alignment;
+			if (record.pack_alignment != 0 &&
+				record_alignment > record.pack_alignment)
+				record_alignment = record.pack_alignment;
 		}
 		complete_record_members(record_id, scope, layout, is_union,
 			checkpoint_zero_storage_eligible, offset, largest_member,
