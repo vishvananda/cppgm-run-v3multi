@@ -412,7 +412,7 @@ abi_mangle::AbiType Pa15Lowerer::abi_type_nested(TypeId type) const{
 		case FundamentalType::LongLongInt: result.builtin = abi_mangle::ABI_BUILTIN_LONG_LONG; break;
 		case FundamentalType::UnsignedLongLongInt: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_LONG_LONG; break;
 		case FundamentalType::Char16T: result.builtin = abi_mangle::ABI_BUILTIN_CHAR16; break;
-		case FundamentalType::Char32T: result.builtin = abi_mangle::ABI_BUILTIN_CHAR32; break;
+		case FundamentalType::Char32T: result.builtin = abi_mangle::ABI_BUILTIN_CHAR32; break; case FundamentalType::NullptrT: result.builtin = abi_mangle::ABI_BUILTIN_NULLPTR; break;
 		case FundamentalType::Float: result.builtin = abi_mangle::ABI_BUILTIN_FLOAT; break;
 		case FundamentalType::Double: result.builtin = abi_mangle::ABI_BUILTIN_DOUBLE; break;
 		case FundamentalType::LongDouble: result.builtin = abi_mangle::ABI_BUILTIN_LONG_DOUBLE; break;
@@ -644,7 +644,7 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 		case FundamentalType::UnsignedInt:
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_U32; return result;
 		case FundamentalType::LongInt:
-		case FundamentalType::LongLongInt:
+		case FundamentalType::LongLongInt: case FundamentalType::NullptrT:
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I64; return result;
 		case FundamentalType::UnsignedLongInt:
 		case FundamentalType::UnsignedLongLongInt:

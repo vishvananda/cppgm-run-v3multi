@@ -1,63 +1,28 @@
-# PA16 implementation plan
+# PA16 typed `nullptr_t` carrier checkpoint
 
-## 1. Stage Design
+## Stage Design
 
-This checkpoint is bounded to the PA16 purpose and `spec.md` Purpose plus
-sections 1, 2, 5, and 7.  N3485 [expr] p11 and [expr.static.cast] p6 make an
-explicit conversion to `void` a discarded-value expression: the operand is
-evaluated, but ordinary nonvolatile lvalue-to-rvalue conversion is not
-generally implied.  The residual PA16 fixtures require a stable O0 read at
-one typed boundary, so the implementation keeps that exception narrow.
-
-The production data flow remains one typed pipeline:
+The production path remains one typed flow:
 
 ```text
-PA10 syntax
-  -> PA11 canonical types/bindings/scopes
-  -> PA12 semantic_cast_to_target: CastExpression + ToVoid conversion fact
-  -> PA15 CastExpression validation + typed discarded lowering
-  -> typed LowIR
+PA11 FundamentalType::NullptrT
+  -> PA12 NullIntegerToNullptr conversion fact
+  -> PA15 ABI type `ABI_BUILTIN_NULLPTR` / LowIR `i64` carrier
+  -> typed LowIR and the existing backend adapters
 ```
 
-PA12 is the producer and owner of the selected `ConversionKind::ToVoid` fact.
-For a normal explicit cast it publishes one conversion whose source is the
-operand's `expression_object_type`, whose target is the cast target, and
-whose kind is `ToVoid`; `add_conversion` and `set_fact_conversion` keep that
-fact typed and contiguous.  The PA12 array-to-void-pointer special case is a
-different, two-record pointer conversion and does not enter the void-target
-consumer.
+`NullptrT` remains the semantic type and overload-resolution identity.  At the
+Linux x86_64 PA15 boundary its existing physical carrier is `i64`; ABI
+encoding of the semantic type is the existing `Dn` terminal.  No pointer model,
+spelling recovery, test-name check, duplicate path, or fallback is introduced.
+The two PA15 mappings are constant-time switch lookups with O(1) temporary
+storage per type use; they do not scan, cache, retry, or alter PA12 facts.
 
-PA15 first validates the cast child and the single conversion range, kind,
-source, and target before passing an explicit
-`DiscardedExpressionContext::ExplicitToVoid` to the existing discarded-value
-consumer.  The extra scalar read is enabled only for a direct `IdExpression`
-that is an lvalue of scalar object type, has a valid non-reference
-`BindingKind::Parameter` binding, and therefore has initialized formal storage
-at function entry.  Ordinary local variables and other lvalue-producing facts
-remain non-materializing.
+## Failure Map
 
-The existing function/reference early exits, volatile reads, class-lvalue
-address materialization, comma and void-conditional sequencing, and
-assignment/increment/decrement effect paths remain intact.  No source spelling,
-name recovery, lookup retry, or parallel semantic path is introduced.  The
-invariants are typed conversion ranges, direct fact/binding ownership, source
-evaluation order in LowIR, and no redundant assignment or increment result
-load.  The decision reads one fact, binding, and type tuple: O(1) time and
-O(1) additional storage per discarded fact, with no cache or whole-program
-scan.
-
-## 2. Failure Map
-
-The parent/increment provenance is separate from the checkpoint authority:
-parent `14cadc0c135156ed20583e3b5adb07b1260cabe2` was recorded at `222/243`
-passing with `21` failures and `243/243` identities covered.  The supplied
-turn-start authority for landed commit
-`6d2ed09cd4b3daf55ab28282addcf3a878a8adba`, in
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`, is
-`224/243` passing with exactly `19` failures and `243/243` identities
-covered.  The `222/243` result is not the current regression budget.
-
-The authoritative current failure set is:
+Turn-start authority is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+`224/243` passed, exactly 19 failures, and `243/243` discovered/reference/fresh
+identities were covered.  The complete authority map is:
 
 ```text
 pa16/tests/general/200-elaborated-member-forward-type.t
@@ -81,112 +46,86 @@ pa16/tests/general/400-signed-bit-field-read.t
 pa16/tests/general/400-signed-enum-bit-field-read.t
 ```
 
-The landed increment's exact parent-to-checkpoint delta is the two repaired
-identities `100-function-pointer-nested-param-name-shadow.t` and
-`300-enum-class-nonmember-operator-bitand.t`; fresh-only identities are `0`.
-The final primary stage log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/test-pa16.log`:
-status `2`, `224/243` passed, and exactly the 19 identities above.  The exact
-comparison at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/identity-comparison.log`
-reports authority/fresh failures `19/19`, retained `19`, authority-only `0`,
-fresh-only `0`, and discovered/reference/fresh inventories `243/243/243` with
-all missing/unexpected counts `0`.  No residual identity is reclassified.
+The active owner is only `300-operator-nullptr-t-from-zero.t`; the other 18
+authority failures are outside this checkpoint.  The two signed bit-field refs
+remain a residual oracle conflict: the README requires represented negative
+values while their checked-in refs only mask.  This checkpoint changes neither
+that behavior nor those refs.
 
-## 3. Active Checkpoint
+## Active Checkpoint
 
-The checkpoint audit follows the PA12 `semantic_cast_to_target` producer into
-the PA15 `CastExpression` consumer.  The producer-side facts are complete for
-valid input; no PA12 owner change is required.  The genuine consumer defect
-was a missing fail-closed source/target check after the existing kind/range
-check.  The repair is confined to `dev/src/pa15_lowering_flow.cpp`: a void
-cast now requires exactly one in-range `ToVoid` record whose source matches the
-child fact's object type and whose target matches the cast fact's type.
+`dev/src/pa15_lowering.cpp` maps `FundamentalType::NullptrT` to
+`abi_mangle::ABI_BUILTIN_NULLPTR` in `abi_type_nested`, so the existing ABI
+encoder emits `Dn` and the target symbol is `_ZneRK3PtrDn`.  The same semantic
+fundamental maps to `LowType::TYPE_INTEGER`/`INTEGER_I64` in `low_type`, so a
+pass-by-value nullptr parameter and its slot/call operand remain typed as the
+existing physical i64 carrier.  `NullIntegerToNullptr` stays owned by PA12;
+there is no new conversion or overload rule.  The rejected bit-field source
+candidate was reverted completely in all four affected PA15 files.
 
-Discarded lowering then preserves the following typed boundaries:
-
-- direct non-reference scalar formal parameters may receive the narrow O0
-  read required by the checked-in PA16 fixtures;
-- ordinary nonvolatile locals and ordinary scalar/reference lvalues do not
-  receive an implied read;
-- volatile scalar lvalues are loaded, while function ids and reference-bound
-  ids remain evaluation no-ops;
-- explicit class lvalues materialize their address only;
-- comma and void-conditional expressions preserve sequencing and lower their
-  children in ordinary discarded context; assignment and increment/decrement
-  paths retain their side effects without a redundant result load.
-
-Validation and final gates:
+Focused final evidence:
 
 ```text
 make -C dev cppgm++ CXX=g++
-  status 0; log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/reconfirm-rebuild.log
-
-make -C pa16 check TEST="tests/general/100-function-pointer-nested-param-name-shadow.t tests/general/300-enum-class-nonmember-operator-bitand.t tests/general/200-derived-pointer-member-init.t"
-  PASS (3/3); log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/reconfirm-focused-pa16.log
-
-make -C pa15 check TEST="tests/general/200-literal-logical-short-circuit-omits-unreachable-call.t tests/general/200-for-iteration-discards-void-comma-rhs.t tests/general/200-comma-expression-xvalue-reference-return.t tests/general/200-return-void-call-expression.t"
-  PASS (4/4); log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/reconfirm-focused-pa15.log
-
-n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
-  status 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167); log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/prior-through-pa15.log
-
-make test-pa16
-  status 2; TEST SUMMARY: 224 / 243 TESTS PASSED; log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/test-pa16.log
-
-perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
-  status 0; five pre-existing header-body warnings; log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/file-audit.log
-
-exact failure/inventory comparison against last-test.log
-  status 0; failures 19 -> 19, authority-only 0, fresh-only 0;
-  discovered/reference/fresh 243/243/243; all missing/unexpected 0;
-  log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/identity-comparison.log
-
+  status 0
+make -C pa16 check TEST='tests/general/300-operator-nullptr-t-from-zero.t'
+  PASS (1/1)
+make -C pa12 check TEST='tests/spec/300-nullptr-t-from-zero-overload.t tests/general/300-nullptr-equality.t tests/spec/300-nullptr-pointer-conversion.t tests/general/100-nullptr-static-cast-pointer.t'
+  PASS (4/4)
+make -C pa13 check TEST='tests/spec/100-nullptr-return-lowir.t'
+  PASS (1/1)
+make -C pa15 check TEST='tests/general/200-global-pointer-array-nullptr-init.t'
+  PASS (1/1)
 git diff --check
-  status 0; log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/final-diff-check.log
-
-bounded changed-path/file audit
-  status 0; only the three approved paths were changed and the index was empty;
-  log /home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/changed-path-audit.log
+  status 0
 ```
 
-The durable log directory is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpointAudit-6d2ed09c-final-20260830/`.
-The earlier O0 structural probe remains at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/checks/pa16-checkpoint-to-void-probe.log`;
-it covers explicit pointer/enum parameters, an uninitialized local, ordinary
-scalar/reference lvalues, and assignment/increment controls without adding a
-checked-in test.
+Generated target LowIR contains `%__param1 : i64`, `store i64 %__param1`,
+`object=_ZneRK3PtrDn`, and a pass-by-value call with the zero carrier.  The
+PA16 LowIR validator accepts it.  The optional PA13 `lowir2cy86` run rejects
+both this target and its checked-in ref with the same pre-existing `return
+value type mismatch` caused by PA16's `u8` semantic return carrying an i64
+comparison result; it reports no nullptr carrier or ABI mismatch.  PA16
+documents this adapter as optional and targets the later PA29 backend.
 
-## 4. Performance Evidence
+Broad final evidence:
 
-The risk is one extra scalar load and corresponding LowIR growth at the
-explicit typed boundary.  The prior O0 probe compiled eight functions and
-emitted 22 instruction lines; the seven checked functions emitted 21.  Its
-structural counters (instruction lines, `load ptr`, `load i32`) are:
+```text
+make test-pa16
+  status 2; TEST SUMMARY: 225 / 243 TESTS PASSED
+failure/coverage comparison against last-test.log
+  failures 19 -> 18; retained 18; authority-only 1
+  authority-only: pa16/tests/general/300-operator-nullptr-t-from-zero.t
+  fresh-only 0; discovered/reference/fresh 243/243/243
+  all missing/unexpected identity counts 0
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+  status 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+  status 0; five pre-existing header/body warnings only
+git diff --check
+  status 0
+```
 
-| Probe function | Instructions | `load ptr` | `load i32` |
-| --- | ---: | ---: | ---: |
-| `explicit_pointer` | 3 | 1 | 0 |
-| `explicit_enum` | 3 | 0 | 1 |
-| `explicit_uninitialized_local` | 1 | 0 | 0 |
-| `ordinary_scalar` | 2 | 0 | 0 |
-| `ordinary_reference` | 2 | 0 | 0 |
-| `assignment_control` | 4 | 1 | 0 |
-| `increment_control` | 6 | 1 | 1 |
+## Performance Evidence
 
-The selected generated functions have `do_start_op`: 11 instructions and
-four loads (`3` pointer, `1` i32), including exactly one `on_immediate` load;
-the enum operator has 5 instructions and exactly two i32 loads.  These are
-structural IR counters, not a timing claim.  The new invariant checks and the
-discarded decision are bounded constant work per explicit cast/fact, with no
-allocation, cache, whole-program traversal, dependency edge, or repeated
-lowering.  No material timeout or performance risk is indicated by the
-representative evidence; no benchmark conclusion is drawn from one sample.
+Structural O0 counters from generated LowIR are counts, not timing claims:
 
-## 5. Checkpoint Ledger
+| input | functions | instructions | loads | stores | calls | comparisons | i64 lines |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| nullptr operator target | 2 | 20 | 3 | 5 | 1 | 1 | 3 |
+| PA12 nullptr equality control | 3 | 37 | 6 | 8 | 2 | 4 | 15 |
+| PA15 pointer-null control | 1 | 28 | 5 | 4 | 0 | 3 | 5 |
 
-| Commit | Status |
+The target has one i64 pass-by-value parameter and one exact `Dn` symbol.  The
+changed boundary adds two constant-time type mappings and no per-expression
+scan, allocation, cache, or whole-program traversal.  Raw LowIR, structural
+counters, validator results, and command logs are under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-nullptr-carrier-checkpoint-20260830/`.
+
+## Checkpoint Ledger
+
+| checkpoint | result |
 | --- | --- |
-| `24d555c8` | Completed the prior PA16 checkpoint audit; its focused and broad evidence, exact 21-identity comparison, full 243-identity coverage, file audit, and clean-tree verification remain historical record. |
-| `6d2ed09c` | Completed checkpoint audit: PA12 ToVoid ownership is sound, PA15 now fail-closes in-range typed source/target mismatches, and the narrow discarded-value behavior and controls are preserved. Reconfirmation is build `0`, PA16 `3/3`, PA15 `4/4`; prior-through is `1167/1167`; final PA16 is status `2` at `224/243` with exactly the same 19 failures; identity comparison is `19 -> 19`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243`; file audit is status `0` with five pre-existing warnings; diff-check and final path audit pass. Evidence is in the durable final checkpoint directory. |
+| `d54e32d1` turn-start authority | `224/243`, exactly 19 failures, `243/243` identities; clean baseline |
+| rejected packed-bit-field candidate | reverted completely in all four PA15 source files; no rejected source diff remains |
+| typed nullptr carrier replacement | committed replacement above `d54e32d1`; focused controls, PA16 `1/1`, broad `225/243`, exact `19 -> 18` comparison, prior-through `1167/1167`, audit, diff check, and clean-tree verification all pass |
