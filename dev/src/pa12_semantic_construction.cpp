@@ -1083,9 +1083,27 @@ void PA11SemanticModel::build_constructor_actions(FunctionFactId function_id)
 			if (argument->kind != PA10NodeKind::ParenArgumentList &&
 				argument->kind != PA10NodeKind::BracedInitList)
 				throw std::runtime_error("PA12 invalid mem-initializer arguments");
+			// A mem-initializer names a base by its resolved type, not by the
+			// spelling of the direct base declaration.  Preserve the spelling
+			// fallback for the ordinary injected class-name case, but let the
+			// canonical PA11 type identity recognize aliases as well.
+			NamedRecordId resolved_base;
+			if (record.has_base && record.direct_base.valid())
+			{
+				// The constructor definition point preserves declaration-time
+				// visibility, while its function scope is the class-member access
+				// context for both the lexical search and access check.
+				const SourcePoint point = function_node != NULL ?
+					SourcePoint(function_node->source_begin) :
+					lookup_source_point(function_scope);
+				const TypeId resolved_type = lookup_type_path(name, function_scope,
+					point, NULL, function_scope);
+				resolved_base = class_record_for_object_type(resolved_type);
+			}
 			if (record.has_base && record.direct_base.valid() &&
 				record.direct_base.value < named_.size() &&
-				named_[record.direct_base.value].name == name.last())
+				(named_[record.direct_base.value].name == name.last() ||
+					resolved_base == record.direct_base))
 			{
 				if (base_initializer != NULL)
 					throw std::runtime_error("PA12 duplicate base mem-initializer");
