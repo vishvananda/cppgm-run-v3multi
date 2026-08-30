@@ -2,24 +2,27 @@
 
 ## Stage Design
 
-PA16 keeps one production pipeline: PA10 and PA11 typed syntax, lookup, and
-layout become PA12 semantic facts and PA15 LowIR.  Earlier bit-field and
-constructor checkpoints retain their typed `BitFieldFact`/`BindingId`,
-`NamedRecordId`, `RecordLayout`, and `ConstructorActionFact` owner chains.
+PA16 keeps one production pipeline: PA10/PA11 typed syntax, lookup, and
+layout become PA12 semantic facts and PA15 LowIR.  This checkpoint consumes
+PA12's typed value-initialized constructor action and PA15's canonical
+`TypeId`/`RecordLayout`/`LowType` facts to clear the complete object
+representation, then retains the existing declaration/member/array
+constructor order.
 
-This checkpoint consumes PA12's typed value-initialized constructor action and
-PA15's canonical `TypeId`/layout-derived `LowType`.  It clears a complete
-aggregate object representation with compact scalar stores, then preserves the
-existing declaration/member constructor order.  This follows `spec.md`
-§§1--5 and 7 and the PA16 aggregate/value-initialization boundary.  No textual
-transport, parallel analyzer, retry, second lowerer, or host/reference shortcut
-is involved.
+This follows `spec.md` §§1--5 and 7: facts remain typed and single-owned,
+there is no spelling transport, duplicate analyzer, retry, second lowerer, or
+host/reference shortcut, and the bounded evidence is structural rather than
+an unsupported timing claim.  The PA13 `zeroinit` bulk contract remains
+available, but substituting it is not required for this bounded scalar-width
+correctness/representation fix; that substitution would be a distinct public
+LowIR-shape optimization.  The current ordinary-store path is valid on the
+specified LowIR/Linux x86_64 boundary.
 
-## Failure Map
+## Failure Map and Authority
 
-The supplied current authority is
+The supplied turn-start/current authority is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`216/243` passed, exactly `27` failed, and `243/243` identities are covered.
+`217/243` passed, exactly `26` failed, and `243/243` identities are covered.
 The complete current failure map is:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
@@ -45,79 +48,84 @@ The complete current failure map is:
 - `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
 - `pa16/tests/general/300-user-defined-string-literal-operator.t`
 - `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
-- `pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`
 - `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-This is the complete authority map before this checkpoint: `216/243` passed,
-`27` failed, and `243/243` identities were covered.  The final PA16 run is
-`217/243` with `26` failures and `243/243` identities covered.  Exact set
-comparison found one baseline-only failure,
-`pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`, and
-zero fresh failures; the final set is precisely the 27-name baseline minus
-that identity.
+The pre-landed parent baseline `d503a9c0` was `216/243` with exactly `27`
+failures and full coverage.  Its complete 27-name map is exactly the current
+26-name map above plus
+`pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`.  That
+27-name set is retained as baseline context; it is not the turn-start/current
+authority.
+
+StageProgressPreserved compares the fresh final PA16 run against the actual
+turn-start/current 26-failure set: final failures must be at most `26`, all
+`243` identities must be discovered and covered, and fresh-only failure
+identities must be `0`.  Extra passes cannot compensate for a fresh failure.
 
 ## Active Checkpoint
 
-The reviewed production change is confined to
+The landed source change is confined to
 `dev/src/pa15_lowering_construction.cpp`, in
-`zero_initialize_value_initialized_object`.  PA12 already marks the empty
-aggregate construction as `value_initialize` and publishes the selected
-synthetic constructor; PA15 validates that constructor and derives object size
-and alignment from the canonical target `TypeId`/`RecordLayout`.  Alignment is
-still validated as layout metadata, but it no longer prevents an exact-width
-LowIR scalar clear of the object representation.  Thus `obj<8x4>` is cleared by
-one `store i64 0`, followed by the existing nontrivial member constructor call.
+`zero_initialize_value_initialized_object`.  PA12 publishes
+`value_initialize` and the selected synthetic constructor.  Existing PA15
+owners route automatic variables and constructor actions through
+`initialize_constructor_value`, `lower_constructor_action`, and
+`emit_constructor_elements`; the five existing helper call sites preserve
+the typed target, constructor record, destination projection, and
+declaration/array order.
 
-The zeroing remains before constructor actions, and no PA12 owner, constructor
-fact, member order, or aggregate appertainment path changed.  The implementation
-does not recover type/layout facts from spelling or duplicate analysis/lowering.
-The six focused handout controls cover ordinary aggregate initialization,
-default/member initialization, nested class subobjects, array value-init, and
-the trivial functional-cast aggregate boundary.  The complete PA16 run removed
-only the intended target identity.
+For a complete object, `LowType` supplies layout-derived bytes and alignment.
+The helper validates the span, then advances a byte offset with 8/4/2/1
+integer stores selected by remaining bytes and offset only.  Nonzero offsets
+use an `i8` index.  Every width is within the remaining span and the final
+offset is exactly the object size, including scalar tails.  The landed change
+removes only the incorrect object-alignment divisibility gates.  LowIR
+ordinary stores have no alignment operand; the validator and Linux x86_64
+backend permit the resulting unaligned integer stores.  Thus `obj<8x4>` gets
+one `store i64 0` before its nontrivial member constructor, including when the
+actual subobject address is under-aligned by packing.
+
+Recursive array/nested-object addressing and constructor actions are
+unchanged.  Zeroing precedes the constructor's EH region; stores do not
+throw, and existing completed-element cleanup still destructs only
+successfully constructed prior elements in reverse order.  No source repair or
+additional regression is justified.
 
 ## Performance Evidence
 
-For an object of `m` bytes, zero-store selection and emission are O(m/8)
-with constant-width selection state; constructor action traversal remains the
-existing O(members/layout facts) typed walk.  The change adds no scans,
-allocations, retries, caches, or alternate lowering path.  Final code-quality
-evidence is the representative target reduction from two i32 stores plus an
-offset projection to one i64 store before the constructor call.  A bounded
-single-run target compile smoke completed successfully with `elapsed=0.00`,
-`user=0.00`, `sys=0.00`, and `maxrss_kb=6160`; this is smoke evidence, not a
-scaling claim.
+The helper is one bounded pass with O(bytes/8) scalar stores and constant
+selection state.  It adds no scan, allocation, retry, cache, or alternate
+lowerer.  Focused generated LowIR structurally shows the intended reduction
+from two `i32` stores plus an offset projection to one `i64` store, four
+stores for the 32-byte aggregate control, and four ordered stores for the
+array control.  No timing or RSS claim is made.
 
-## Validation
+## Validation Status
 
 Final validation:
 
 - `make -C dev cppgm++ CXX=g++`: status `0`.
 - `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-value-init-aggregate-with-nontrivial-member.t tests/general/300-array-member-empty-paren-value-init.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/general/200-aggregate-class-member-subobject-init-target.t tests/general/200-member-initializer-aggregate-member.t tests/general/100-default-member-initializer-aggregate-member.t'`: status `0`, `PASS (6/6)`.
-- `make test-pa16`: status `2` (residual failures), `217/243` passed,
-  `26` failures, and `243/243` identities covered; exact baseline/final set
-  comparison is baseline-only target, fresh-only `0`.
+- `make test-pa16`: status `2`, `217/243` passed, exactly `26` failures,
+  and `243/243` identities covered.
+- `KEEP_GOING=1 CPPGM_CHECK_MODE=1 CPPGM_CHECK_AUTO_KEEP_GOING=1 scripts/compare_results.pl ref my tests` (from `pa16`): status `1` because the expected residuals remain; exact comparison against the supplied current authority is `26` vs `26`, fresh-only `0`, authority-only `0`.
+- Recursive status-artifact audit: `243` tests discovered, `243` reference
+  statuses, `243` fresh statuses, `243` covered, missing `0`.
 - `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: status `0`, `1167/1167`.
-- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`,
-  with five pre-existing `bad-division` warnings in the known headers.
-- The target artifact has `EXIT_SUCCESS` and an empty canonical comparison
-  diff; the emitted constructor body contains one `store i64 0` and no offset
-  projection for the zero clear.
-- Bounded target compile smoke: status `0`, single-run timing recorded above.
-- `git diff --check`: status `0`; final changed-path and tracked-artifact
-  checks found only the approved production and plan files, with no handout,
-  fixture, reference, harness, comparator, or generated artifact tracked or
-  staged.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
+  with five known `bad-division` warnings in existing headers.
+- `git diff --check`: status `0`.
+
+The fresh final failure set is exactly the current 26-name authority map;
+the pre-landed 27-name parent baseline remains historical context only.
 
 ## Next Checkpoint
 
-This bounded value-initialization checkpoint is landed at `217/243`, with
-`26` residual failures.  The distinct next residual boundary is associated-
-namespace ADL lookup, represented by
-`pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`;
-keep the typed aggregate zero-store semantics closed to this checkpoint.
+Keep this value-initialization/zero-store boundary closed.  The next distinct
+residual boundary is associated-namespace ADL lookup:
+`pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`.
 
 ## Checkpoint Ledger
 
@@ -138,4 +146,4 @@ keep the typed aggregate zero-store semantics closed to this checkpoint.
 | `96e80152` truth-width checkpointAudit | Focused build `0`, PA16 `7/7`, PA15 `5/5`; fresh PA16 status `2` at `214/243` with authority/fresh `29/29` failures, baseline-only/fresh-only `0/0`, and `243/243` coverage; through-PA15 `1167/1167`; file audit `0` with five pre-existing warnings; final diff/path audits `0`; exact-pointee class-pointer guard repaired | completed audit |
 | `a5c8e166` typed packed-bit-field value/update checkpointAudit | Final PA16 status `2` at `215/243`, exactly `28` failures and `243/243` covered; independent comparison authority/fresh `28/28`, authority-only/fresh-only `0/0`, inventory/run total `243/243`; landed delta is exactly baseline-only `400-bitfield-aggregate-init.t`; through-PA15 `0` at `1167/1167`; file audit `0` with five known warnings; focused 412/422/424, probes, diff-check, and path audit pass. Durable evidence is under `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`; no forbidden surface changed | completed audit |
 | `1d7e6860` alias direct-base mem-initializer checkpoint | final `216/243`, `27` failures, `243/243` covered; exact authority/final failure comparison `27/27`, authority-only/fresh-only `0/0`; focused `6/6`, courses `408/409/418/425`, through-PA15 `1167/1167`, file audit `0` with five known warnings, smoke, and diff/path checks pass; four approved paths ready for commit | completed |
-| `typed aggregate value-initialization zero-store checkpoint` | final `217/243`, `26` failures, `243/243` covered; exact delta is baseline-only target and fresh-only `0`; through-PA15 `1167/1167`; file audit `0` with five known warnings; focused `6/6`; bounded compile smoke `0.00s`, `6160 KB` | landed |
+| `31a938ac` typed aggregate value-initialization compact zero-store checkpointAudit | Fresh final `217/243`, `26` failures, `243/243` covered; current-authority comparison `26` vs `26`, fresh-only `0`, authority-only `0`; focused matrix `6/6`; through-PA15 `1167/1167`; file audit `0` with five known header warnings; no source repair | completed audit |
