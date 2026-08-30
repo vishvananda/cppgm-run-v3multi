@@ -25,26 +25,33 @@ consumes those facts for typed lowering and representation; PA10 owns syntax.
 
 ## Failure Map
 
-The turn-start oracle is 219/243 with these 24 failures, grouped by the
-currently suspected owning boundary:
+The audit-turn starting checkpoint is `220/243` with `23` failures and full
+`243/243` identity coverage.  The parent baseline was `219/243` with `24`
+failures; that `24 -> 23` comparison establishes the landed increment only.
+The final audit gate must preserve all `243` identities, introduce no new
+failure identity, and remain at or below this current `23`-failure set.
+
+The current residuals below are recorded for boundary control, not re-audited
+by this checkpoint:
 
 - PA10 syntax/name formation: `200-elaborated-member-forward-type.t`,
   `300-user-defined-string-literal-operator.t`.
-- PA11 typed lookup/publication and layout: `200-friend-derived-private-base-defaulted-constructor.t`,
+- PA11 typed lookup/publication and layout:
+  `200-friend-derived-private-base-defaulted-constructor.t`,
   `200-friend-intermediate-derived-protected-base-method.t`,
   `200-unnamed-namespace-hidden-friend-single-definition.t`,
   `300-callable-field-hides-private-base-method.t`,
   `300-using-base-static-same-signature-derived-preferred.t`.
-- PA12 typed construction, conversion, and call/operator selection (the
-  active family is marked **selected**): `200-external-ctor-overload-nonfirst-argument.t`,
+- PA12 typed construction, conversion, and call/operator selection:
+  `200-external-ctor-overload-nonfirst-argument.t`,
   `200-nested-braced-member-aggregate-init.t`,
   `200-reference-member-class-init.t`,
   `200-string-literal-does-not-convert-to-mutable-void-pointer.t`,
   `300-operator-nullptr-t-from-zero.t`,
   `300-overloaded-deref-user-assignment.t`,
-  **`300-prvalue-derived-base-friend-operator.t`**,
   `300-nested-enum-hidden-friend-bitmask-adl.t`.
-- PA15 typed lowering, emission, and LowIR representation: `100-function-pointer-nested-param-name-shadow.t`,
+- PA15 typed lowering, emission, and LowIR representation:
+  `100-function-pointer-nested-param-name-shadow.t`,
   `200-const-subobject-member-call.t`,
   `200-local-default-class-array-lifecycle.t`,
   `200-reference-indexed-pointer-member-access.t`,
@@ -54,74 +61,109 @@ currently suspected owning boundary:
   `400-signed-bit-field-read.t`,
   `400-signed-enum-bit-field-read.t`.
 
-The two signed bit-field cases remain unchanged preservation controls. The
-README requirement and the observed checked-in fixture output conflict; this
-checkpoint leaves the required sign-extension implementation intact.
+The selected identity `pa16/tests/general/300-prvalue-derived-base-friend-
+operator.t` is absent because the landed increment fixed it.  The two signed
+bit-field cases remain preservation controls; their checked-in fixture and
+README requirement are intentionally not changed here.
 
 ## Active Checkpoint
 
-Contract alignment: PA16 supports ordinary non-template calls/operators,
-single-inheritance base access, typed temporary construction, and references;
-it does not introduce PA17 class value semantics, copy/move operations, or
-general class-by-value transfer.
+Spec alignment: PA16 supports ordinary non-template calls/operators, single
+inheritance, typed constructor temporaries, and references.  The final audit
+preserves that boundary; it does not open PA17 class-by-value transfer,
+copy/move, general temporary materialization, multiple inheritance, templates,
+or unrelated semantics.
 
-Root cause and owner: in `conversion_for`, a non-lvalue `Derived` bound to a
-cv-qualified `Base&` was sent through the by-value class-conversion branch.
-That made the hidden-friend `operator-(const Base&, const Base&)` non-viable
-for `Derived()-Derived()`, despite the existing typed derived-to-base choice
-and the PA15 addressable constructor-temporary representation. The fix adds
-the missing typed derived-to-base reference choice at PA12. The selected
-conversion and base path then continue through the existing semantic fact and
-PA15 projection owners.
+The bounded audit covers landed commit
+`e470e9dfed07ca09a373d227640f3c8042cc2cbf` (`PA16 enable prvalue derived-base
+reference binding`) relative to parent `f3afe9d5`.  Its source change is in
+`dev/src/pa12_semantic_resolution.cpp`; PA12 fact publication and PA15
+lowering consumers are read-only ownership surfaces for this audit.
 
-Exclusions: no class-by-value conversion, temporary copy/materialization,
-copy/move assignment, parser recovery, lookup retry, fixture/test change, or
-changes to the other 23 failures. No lowerer gap was observed, and the PA15
-source remained unchanged; the existing typed temporary/base projection path
-lowered the conversion successfully.
+Two directly caused defects required repair in that source boundary.  First,
+the new non-lvalue `Derived` to cv-qualified `Base&` choice admitted volatile
+lvalue references, so `volatile Base&` and `const volatile Base&` could bind
+to a temporary.  The derived-to-base branch is now limited to exactly
+const/nonvolatile lvalue references, and target-directed constructor fallback
+is disabled for volatile lvalue-reference targets.  Rvalue references and
+ordinary const lvalue-reference binding remain in scope.
 
-Focused validation confirmed that the constructor action remains addressable
-when the new conversion is lowered and that access/path publication is
-unchanged. The broad PA16 and through-stage gates now confirm the same result
-without introducing another failure identity.
+Second, the new `Base` candidate could outrank an exact `const Derived&`
+candidate because standard conversion comparison gives the derived-to-base
+choice precedence over a non-derived conversion at the same broad category.
+The exact same-class temporary reference choice now receives exact rank in
+this branch, while genuine base, cv, access, and non-base distinctions retain
+their typed comparison.  This does not open class-by-value conversion.
+
+The existing typed path owns the rest of the operation:
+
+```text
+source fact/category/type + target reference cv
+  -> conversion_for viability and typed ranking
+  -> derived_base_choice / derived_base_relation access and path
+  -> selected ConversionChoice
+  -> add_conversion canonical ConversionFact and path arena
+  -> PA15 apply_derived_base_conversion
+  -> validated direct-base address projection and reference call argument
+```
+
+`derived_base_relation` walks canonical single-inheritance records and
+checks the supplied access scope.  `add_conversion` validates the endpoint,
+distance, access metadata, and canonical path; it rejects base metadata on
+other conversion kinds.  PA15 validates the same fact and layout path before
+emitting typed `base_subobject` projection.  Constructor actions already
+produce addressable temporary storage, so no PA15 change or duplicate
+materialization is needed.
+
+Scope is limited to the landed increment and these two direct correctness
+repairs.  No tests, fixtures, `.ref` files, sidecars, harnesses, comparators,
+generated outputs, coverage/source-set rules, or unrelated stage code changed.
+
+## Focused Evidence
+
+Sequential focused validation after the repair is:
+
+- `make -C dev cppgm++ CXX=g++`: status `0`.
+- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-prvalue-derived-base-friend-operator.t tests/spec/200-conditional-derived-base-lvalue-reference.t tests/spec/200-const-reference-binds-derived-pointer-prvalue.t tests/general/300-const-method-array-member-binds-const-reference.t tests/general/300-basic-operator-overloads.t tests/general/200-derived-pointer-overload-prefers-base-over-void.t tests/spec/300-inherited-const-method-base-pointer-cv-bad.t tests/spec/200-derived-base-reference-overload-rank.t'`: status `0`, `PASS (8/8)`.
+- Ephemeral typed probes outside the repository: exact-derived overload and
+  nearer-base overload both select correctly (status `0`); xvalue direct
+  derived binding is accepted (status `0`); volatile and const-volatile base
+  lvalue-reference bindings are rejected (status `1`); inaccessible private
+  base is rejected outside its friend and accepted in the friend; class by
+  value, non-const base reference, and non-base reference cases are rejected.
+- The target LowIR shape retains one constructor action per operand, two
+  addressable temporary objects, two canonical base projections, and one
+  hidden-friend operator call.  No fixture or test was added.
+- `git diff --check`: status `0`.
+- Required final gates: the exact prior-through command exits `0` at
+  `1167 / 1167`; the PA16 file audit exits `0` with five known warnings; and
+  `make test-pa16` exits `2` at `220 / 243` with `23` residual failures.
+- Durable final evidence is under
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-e470-checkpoint-audit-20260830/`;
+  its identity check reports authority/fresh failures `23/23`, fresh-only and
+  authority-only `0/0`, and discovered/reference/fresh coverage `243/243/243`
+  with all missing/unexpected counts `0`.
 
 ## Performance Evidence
 
-The new decision is a constant amount of work around the existing typed
-reference branch. Existing base-relation/path construction is proportional to
-the inheritance path height; candidate selection remains O(C*A) for C typed
-candidates and A arguments, with no new global scan, retry engine, or textual
-recovery. The checkpoint adds no unbounded work or allocation-heavy traversal;
-the broad 243-test run and exact identity comparison are representative
-evidence, so a timing sample is not warranted for this bounded branch.
+The new path performs one typed direct-base walk of height `H` for each
+eligible conversion candidate; with `C` typed candidates and `A` arguments,
+the bounded selection work is O(C*A*H).  It adds no global scan, textual
+recovery, retry pipeline, host/reference shortcut, or unbounded allocation.
+Representative structural evidence is the target's two constructor actions,
+two temporary slots, two base-subobject projections, and one operator call;
+there is no timing/RSS claim from this focused milestone.
 
 ## Checkpoint Ledger
 
-- Turn-start baseline: 219/243, 24 failures, full 243/243 coverage.
-- Intended delta: fix the selected prvalue-derived-base operator failure
-  (+1), with no coverage reduction or fixture changes.
-- Focused delta: +1 existing failure, with all 7 selected/control tests
-  passing. The proof set is
-  `300-prvalue-derived-base-friend-operator.t`,
-  `200-conditional-derived-base-lvalue-reference.t`,
-  `200-const-reference-binds-derived-pointer-prvalue.t`,
-  `300-const-method-array-member-binds-const-reference.t`,
-  `300-basic-operator-overloads.t`,
-  `200-derived-pointer-overload-prefers-base-over-void.t`, and the expected
-  rejection `300-inherited-const-method-base-pointer-cv-bad.t`.
-- Broad final result: `make test-pa16` exited `2` as expected with residual
-  failures; `220/243` tests passed. The stage-progress gate is satisfied by
-  `24 -> 23`, with the exact fresh residual set equal to the Failure Map
-  minus `300-prvalue-derived-base-friend-operator.t`: baseline-only `0`,
-  fresh-only `0`, and no new failures.
-- Identity coverage: discovered `243`, reference `243`, fresh `243`; missing
-  and unexpected identities are all `0`.
-- Prior gate: `make test-report-through-pa15` passed `1167/1167`. File audit
-  passed with the five repository-known header-division warnings. Durable
-  evidence is in `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-derived-base-broad-20260830.log`,
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-derived-base-through-pa15-20260830.log`,
-  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-derived-base-file-audit-20260830.log`,
-  and `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-derived-base-identity-comparison-20260830.log`.
-- Disposition: focused, broad, prior-through-PA15, file-audit, and diff checks
-  completed; the checkpoint is committed. Residual 23 remain for later
-  checkpoints.
+- Parent baseline (provenance only): `219/243`, `24` failures.
+- Audit-turn starting checkpoint: `220/243`, `23` failures, `243/243` identities;
+  the final result may not regress to the parent `24`-failure set.
+- Completed row:
+  `e470e9dfed07ca09a373d227640f3c8042cc2cbf` — bounded source repair and
+  documentation audit complete; focused evidence passes, the required broad
+  gates meet the current `23`-failure limit, no fresh-only failure identity
+  appears, and all `243` identities remain covered.
+- Next checkpoint: later PA16 work may select one of the same 23 residual
+  identities.  This increment remains complete and its source/docs write set
+  contains no test, fixture, reference, harness, or unrelated stage change.

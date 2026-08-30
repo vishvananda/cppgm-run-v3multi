@@ -2,29 +2,31 @@
 
 ## Current Checkpoint Review
 
-This bounded checkpoint review covers landed commit
-`15e9897bc038499f724d69cb3cfe70e806b9fb36` (`PA16 fix effective using call
-publication`) relative to its parent.  The landed ownership path is
-`dev/src/pa11_semantic_core.cpp`, `dev/src/pa11_semantic_model.h`,
-`dev/src/pa12_semantic.cpp`, and `dev/src/pa12_semantic_calls.cpp`; PA15
-consumers are read-only validation surfaces.  The audit found and repaired one
-directly caused source-point defect in that same path.  The only documentation
-surfaces changed are this review and `pa16/plan.md`.  No tests, fixtures,
-`.ref` files, sidecars, harnesses, comparators, generated outputs, coverage
-rules, or source-set files changed.
+This bounded review covers landed commit
+`e470e9dfed07ca09a373d227640f3c8042cc2cbf` (`PA16 enable prvalue derived-base
+reference binding`) relative to parent `f3afe9d5`.  The landed source change
+is in `dev/src/pa12_semantic_resolution.cpp`.  The PA12 fact/publication and
+PA15 lowering files listed in the checkpoint brief were read as ownership
+consumers; no consumer repair was required.  This audit record contains that
+source repair and the two documentation updates only.  No
+tests, fixtures, `.ref` files, exit-status sidecars, harnesses, comparators,
+generated outputs, coverage/source-set rules, or unrelated stage code changed.
+The turn-start working tree was clean.
 
 ### Authority and exact residual boundary
 
-The authoritative full-stage log is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`make test-pa16` exit `2`, `219/243` passing, exactly `24` failures, and
-`243/243` identities covered.  The post-repair final transcript is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-test-20260830-v2.log`;
-its exact sorted comparison against this authority is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-failure-comparison-20260830-v3.log`.
-Fresh and authority failures are both `24`, fresh-only and authority-only are
-both `0`, and discovered/reference/fresh inventories are exactly
-`243/243/243`.  The exact failure identities are:
+The authoritative primary log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+It records the audit-turn starting checkpoint as `220/243` with `23` failures
+and full `243/243` identity coverage.  The parent baseline before the landed
+increment was `219/243` with `24` failures.  That `24 -> 23` comparison is
+provenance for the landed increment, not permission to regress: the final
+run must retain all `243` identities, add no failure identity, and remain at
+or below this current `23`-failure set.  The required broad gates below were
+run after the focused milestone and were compared by identity, not only by
+pass count.
+
+The current residual identities in the supplied log are:
 
 - `pa16/tests/general/100-function-pointer-nested-param-name-shadow.t`
 - `pa16/tests/general/200-const-subobject-member-call.t`
@@ -44,154 +46,122 @@ both `0`, and discovered/reference/fresh inventories are exactly
 - `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
 - `pa16/tests/general/300-operator-nullptr-t-from-zero.t`
 - `pa16/tests/general/300-overloaded-deref-user-assignment.t`
-- `pa16/tests/general/300-prvalue-derived-base-friend-operator.t`
 - `pa16/tests/general/300-user-defined-string-literal-operator.t`
 - `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
 - `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
 - `pa16/tests/general/400-signed-bit-field-read.t`
 - `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-The post-repair broad run and exact identity comparison are final current
-evidence: fresh and authority each have `24` failures, fresh-only and
-authority-only are `0`, and discovered/reference/fresh coverage is exactly
-`243/243/243` with no reduction.  The 24 residuals are not re-audited or
-reclassified by this checkpoint.
+The selected identity `pa16/tests/general/300-prvalue-derived-base-friend-
+operator.t` is not residual.  The 23 identities above remain outside this
+bounded audit and are not reclassified or repaired.
 
 ### Typed ownership trace
 
-`process_using_directive` resolves a typed namespace target, records the
-relation at `common_ancestor(scope, target)`, and retains the actual lexical
-scope and declaration point in `EffectiveUsingDirective{target,
-lexical_scope,declaration_point}`.  Unnamed namespaces use the same typed
-implicit relation from the enclosing namespace and retain their declaration
-point.  `prepare_unqualified_lookup` marks only the start scope and its
-lexical ancestors; `append_effective_using_targets` rejects an edge whose
-lexical owner is not applicable, then traverses the existing generation-marked
-typed namespace graph.  Namespace relations continue to use their declaration
-point, including later namespace declarations and implicit unnamed-namespace
-visibility.
-
-The landed one-line owner correction changed the effective-edge visibility
-query from the common ancestor to `directive.lexical_scope`, which restored
-the intended local using-directive path for the primary case.  It also exposed
-a deferred-PA12 source-order leak: a local using-directive declared after a
-call or initializer was visible because local owners were unconditionally
-accepted and lookup used the enclosing function point.  The repair adds a
-transient `LookupPointGuard` and `active_lookup_point_`.  Each typed semantic
-statement and call installs its AST `source_begin`; `lookup_source_point`
-returns that point while the existing lookup graph, qualifier resolution,
-ordinary lookup, and ADL probes run.  `relation_visible_at` then applies the
-existing declaration-point comparison to local owners in that active context.
-Each nested `semantic_id_expression` then installs a further guard at its own
-identifier `source_begin`, which keeps loop-scope declarations visible in
-later condition/iteration operands without moving the enclosing control
-point.  The guards are RAII-restored for nested calls and exceptions.  PA11
-declaration formation outside deferred semantic evaluation retains its
-existing graph and registration behavior; no second lookup engine or graph
-mutation was added.
-
-The complete call publication path is:
+The relevant typed path is:
 
 ```text
-NamePath
-  -> lookup_value_path / source-point-filtered effective using graph
-  -> resolve_single_argument_function
-  -> conversion_for and existing typed overload comparison
-  -> exact ClassValue conversion on the argument fact
-  -> PA15 lower_call validation and existing opaque object bridge
+source fact + value category + target reference cv/type
+  -> conversion_for viability and typed ranking
+  -> derived_base_choice / derived_base_relation access and path
+  -> selected ConversionChoice
+  -> add_conversion canonical ConversionFact and path arena
+  -> PA15 apply_derived_base_conversion
+  -> validated direct-base address projection and reference call argument
 ```
 
-The ambiguous declaration-shaped call uses the same canonical `ValueRef`
-identity and typed resolver as the ordinary call path.  Its selected
-`FunctionIdResolution` is published by `semantic_single_argument_call`; a
-class-value result appends exactly one typed conversion to the argument fact,
-while other choices use the existing context conversion.  The shared
-class-value predicate requires a valid function fact, a namespace-owned
-ordinary function (or the pre-existing narrow canonical constructor
-exception), one nonvariadic parameter, an empty class parameter, a non-class
-result, and a matching lvalue object identity.  PA15 rechecks the selected
-binding, ABI, conversion range, category, and canonical object type before
-lowering the source once.  General class pass-by-value/return-by-value,
-copy/move, temporary materialization, and class-static or in-class constructor
-value semantics remain closed by the PA16 boundary.
+`conversion_for` consumes the source semantic fact, distinguishing lvalue,
+prvalue, and xvalue inputs, and the target reference kind/CV.  The derived
+choice is built from canonical `NamedRecordId`/direct-base records.  The
+typed relation walk validates the single-inheritance endpoint, distance,
+and `access_scope`; no source spelling or host/reference query participates.
+`select_typed_function` and `select_typed_operator` compare these choices.
 
-ADL remains limited to the existing unqualified non-template route.  Ordinary
-parent namespaces and using-directive targets do not become associated; only
-typed associated class/enum records, their validated direct bases/enclosing
-records, and the existing inline-namespace closure contribute.  Direct
-using-declarations and source-visible hidden friends retain canonical owner
-and declaration-point checks.  Qualified namespace-function observation is
-still governed by the same narrow typed empty-class signature; it is not a
-general class-value feature.
+`apply_context_conversion` publishes the selected choice through
+`pa12_semantic_facts.cpp::add_conversion`, which validates derived-base
+metadata and records the canonical conversion plus its path.  It rejects
+base metadata on unrelated conversion kinds.  PA15's structural-conversion
+dispatcher sends `DerivedToBase` to `apply_derived_base_conversion`; that
+consumer rechecks source/target object identity, access, path count/distance,
+and complete direct-base layout before emitting a typed
+`base_subobject` projection.  The call lowerer then passes the resulting
+reference address to the selected function/operator.  Constructor actions
+already provide addressable temporary storage and lifetime ownership, so the
+landed path requires no PA15 change or duplicate materialization.
 
-### Boundary probes and validation
+### Findings and disposition
 
-The focused checked-in comparisons after the repair are all green and are
-durably recorded at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-focused-20260830-v2.log`:
+1. The landed non-lvalue cv-reference branch called `derived_base_choice`
+   for volatile targets as well as const targets.  That made a `Derived`
+   temporary bind to `volatile Base&` and `const volatile Base&`.  The repair
+   limits this new derived-to-base choice to exactly const/nonvolatile
+   lvalue references and blocks the target-directed constructor fallback for
+   volatile lvalue-reference targets.  Rvalue references and ordinary
+   `const Base&` temporary binding remain supported.
+2. The newly viable `const Base&` candidate could beat an exact
+   `const Derived&` candidate: the existing standard-conversion comparator
+   gives a derived-to-base candidate precedence over a non-derived candidate
+   at the same broad category.  The repair gives an exact same-class
+   temporary reference choice exact rank in this branch.  Nearer/farther
+   base distance, CV, access, and non-base rejection remain typed; no
+   class-by-value conversion is introduced.
+
+Boundary probes covered the selected prvalue hidden-friend operator, an
+exact-derived versus base overload, nearer versus farther base selection,
+an xvalue direct-derived/base overload, existing lvalue/reference controls,
+volatile and const-volatile rejection, non-const and non-base reference
+rejection, private-base outside/friend access, and class-by-value rejection.
+No new regression or fixture was added.  Multiple inheritance, templates,
+copy/move, general temporary materialization, and PA17 value transfer remain
+out of scope.
+
+### Focused validation
+
+After the repair, sequential focused validation reported:
 
 - `make -C dev cppgm++ CXX=g++`: status `0`.
-- The selected PA16 lookup/ADL/using/member matrix: status `0`, `PASS (12/12)`.
-- The PA12 using/inline/condition matrix, including the `for` loop and local
-  using-directive control: status `0`, `PASS (6/6)`.
-- The PA15 loop/condition/initializer matrix: status `0`, `PASS (6/6)`.
-- `sh -n cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`
-  and execution: status `0`, `PASS`.
+- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-prvalue-derived-base-friend-operator.t tests/spec/200-conditional-derived-base-lvalue-reference.t tests/spec/200-const-reference-binds-derived-pointer-prvalue.t tests/general/300-const-method-array-member-binds-const-reference.t tests/general/300-basic-operator-overloads.t tests/general/200-derived-pointer-overload-prefers-base-over-void.t tests/spec/300-inherited-const-method-base-pointer-cv-bad.t tests/spec/200-derived-base-reference-overload-rank.t'`: status `0`, `PASS (8/8)`.
+- Ephemeral source probes outside the repository reported status `0` for
+  exact-derived, nearer-base, xvalue, and friend-private-base cases; status
+  `1` for volatile/const-volatile base references, inaccessible private base,
+  class-by-value, non-const base reference, and non-base reference cases.
+- The target LowIR shape retained two constructor calls, two addressable
+  temporary objects, two canonical base projections, and one hidden-friend
+  operator call.
 - `git diff --check`: status `0`.
 
-The exact prior gate is durably recorded at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-through-pa15-20260830-v2.log`:
-`n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`
-exits `0` at `1167/1167`.  The exact file audit is durably recorded at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-file-audit-20260830-v2.log`:
-it exits `0` with only the five known `bad-division` warnings listed in the
-audit output.
+The exact required root-gate transcripts are preserved under
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-e470-checkpoint-audit-20260830/`:
 
-The bounded path/fixture/reference/harness/generated-output/source-set and
-coverage audit is durably recorded at
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-final-bounded-audit-20260830-v2.log`:
-the working tree contains exactly the four approved sources and these two
-records, no staged paths, no excluded artifact paths, and exact
-`243/243/243` discovered/reference/fresh identity coverage.
+- `01-through-pa15.log`: the exact `n=16` prior-through command exits `0` at
+  `1167 / 1167`.
+- `02-file-audit.log`: the exact PA16 file audit exits `0` with only the five
+  known `bad-division` warnings.
+- `03-test-pa16.log`: the exact `make test-pa16` exits `2` with `220 / 243`
+  passing and `23` residual failures.
+- `04-identity-comparison.log` and `05-acceptance.log`: fresh and authority
+  failure sets are both `23`, with fresh-only and authority-only both `0`;
+  discovered/reference/fresh identity inventories are exactly
+  `243/243/243`, and all missing/unexpected counts are `0`.
 
-Ephemeral source probes outside the repository confirm status `0` for nested
-`for` condition/iteration identifiers, a nested `for` initializer/condition/
-iteration, a nested condition-declaration initializer, local using before a
-call, namespace/unnamed-namespace visibility before use, a matching empty
-namespace function, `const E&`, and a qualified empty namespace function.
-They confirm status `1` for local value lookup before a later using-directive,
-a later namespace/unnamed-namespace relation at the use point, an irrelevant
-lexical scope, nonempty or mismatched class arguments, class results, variadic
-and multi-parameter functions, rvalue-reference parameters, and an ambiguous
-empty-class overload.  The narrow out-of-class constructor observation stays
-accepted; in-class constructor and class-static by-value observations stay
-rejected.  These probes are not fixtures.
+Thus the additional passes do not mask a new failure identity; the fresh set
+is within the audit-turn limit and has no fresh-only member.
 
-The primary `300-adl-associated-namespace-does-not-climb-parents.t` focused
-comparison passes and emits the typed `boost_no_adl_barrier__nnn__begin`
-target.  Course 426 continues to pass its inline, pointer, array, and
-function-pointer association positives and its ordinary-parent/using-directive
-rejection controls.  PA15 argument/lowering ownership is unchanged and is
-covered by the emitted empty-class temporary/address shape and the reference
-parameter controls.
+### Architecture and performance
 
-### Architecture, complexity, and disposition
+The new work is bounded by the existing typed candidate set and inheritance
+path.  A qualifying derived-base candidate performs one direct-base relation
+walk of height `H`; across `C` typed candidates and `A` arguments this is
+O(C*A*H).  There is no global scan, textual downgrade, retry/duplicate
+pipeline, host/reference shortcut, or unbounded allocation.  The target's
+two-constructor/two-projection LowIR shape is representative structural
+evidence; this milestone makes no timing or RSS claim.
 
-The repair saves/restores one typed point and performs one constant-time
-relation comparison.  Effective lookup still visits only marked lexical
-ancestors and generation-bounded graph edges; candidate identity, overload
-ranking, PA15 demand, and lowering retain their existing typed bounded
-vectors/maps.  There is no textual downgrade, retry, global scan, duplicate
-semantic/lowering pipeline, host/reference shortcut, or unsupported timing
-claim.  No new `dev/src/*.cpp` file was added, so
-`dev/frontend_source_sets.mk` remains unchanged and the file-audit ownership
-surface is the four approved sources plus the two records.
-
-This is one coherent final audit/repair milestone for the landed increment.
-The required final failure-set rule is satisfied: no fresh failure identity,
-no reduced `243/243` coverage, and no more than the supplied 24 failures.
-PA16 remains incomplete because those 24 residual identities remain; this
-checkpoint does not claim stage completion or broaden their ownership.
+Current disposition is a complete, coherent bounded audit/repair of e470e9df.
+The required prior-through, file-audit, full-PA16, identity, diff, and path
+checks pass their authorized criteria.  PA16 remains incomplete because the
+same 23 supplied residual identities remain; no unrelated residual was
+re-audited.
 
 ## Historical Source-Point ADL Review (ab1b2a8c)
 
@@ -3317,3 +3287,4 @@ conversion slices.
 | `1d7e6860` alias direct-base mem-initializer checkpointAudit | Final bounded audit of landed `1d7e68605aec65b6976772ff117a433cbc232749` relative to `727417db`: N3485 unqualified lookup/member-hiding, canonical alias resolution, injected-name fallback, source-point/access context, duplicate/malformed handling, typed action ranges/order, and PA15 owner/type/layout consumption are traced. The repair applies member-before-type classification and exact named-type matching; steering additionally hardens BindingId bounds before sidecar access and keeps blocked-value lookup single-read. Course 425 covers direct base-name/alias-name hiding, the inherited non-constructor collision, duplicate detection, array-alias rejection, and nested-type hiding. Final PA16 is `216/243` with `27` failures and `243/243` covered; exact authority/final comparison is `27/27`, authority-only/fresh-only `0/0`, and missing artifacts `0`. Focused handout `6/6`, courses 408/409/418/425, build, syntax, reductions, smoke evidence, through-PA15 `1167/1167`, file audit `0` with five known warnings, diff-check, and bounded path audit pass. No handout, fixture, reference, harness, comparator, generated output, coverage rule, or source-set file changed. |
 | `31a938ac` typed aggregate value-initialization compact zero-store checkpointAudit | Final bounded audit of landed `31a938ac01fdc9b5b5f4c625ecf0658d77284504` relative to `d503a9c0`: PA12 value-initialization/synthetic-constructor facts, canonical PA15 `TypeId`/layout, byte-complete 8/4/2/1 scalar clearing, low-alignment x86_64 safety, declaration-ordered nested construction, array paths, and existing cleanup boundaries are traced. The landed alignment-width repair is sufficient; no additional source or regression repair is made. Fresh PA16 is `217/243` with `26` failures and `243/243` covered; exact comparison against the current 26-failure authority is `26` vs `26`, fresh-only `0`, authority-only `0`, and no missing artifacts. Through-PA15 is `1167/1167`; file audit is `0` with five known header warnings; diff-check is `0`; only the two approved documentation paths changed. |
 | `ab1b2a8c` source-point-aware associated ADL checkpointAudit | Final bounded audit of landed `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` relative to `a9728454` plus its approved follow-up: ordinary definition-`SourcePoint` lookup, ADL suppression/union, typed associated class/enum/direct-base/enclosing records, recursive cv/ref/pointer/array/function result-and-parameter association, first-namespace and inline closure, direct using-declarations without using-directives, hidden-friend visibility, canonical candidate identity/order, typed call publication, PA15 demand/declaration/call lowering, and the narrow empty-class opaque ABI bridge are traced. The follow-up repairs only `dev/src/pa12_semantic_calls.cpp`; incomplete named-class records associate their namespace without unvalidated base expansion, while member pointers, template expansion, and general class-value semantics remain closed. Course 426 now validates five positive runtime cases (inline, pointer, array, and function-pointer association) plus ordinary-parent and using-directive rejection controls. Final `make test-pa16` is exit `2` at `218/243`, exactly `25` failures, and `243/243` identities covered; exact sorted comparison with the supplied authority is `25` vs `25`, fresh-only `0`, authority-only `0`, with `243` discovered identities, `243` reference sidecars, `243` fresh sidecars, and missing `0/0`. Focused PA16 is `11/12` with only the known nested-enum LowIR residual; PA12 controls are `2/2`; all three temporary wrapper probes compile, lower, translate, and run with status `0`; course 426 and `sh -n` pass; through-PA15 is `1167/1167`; file audit exits `0` with five existing `bad-division` warnings and no fatals; final `git diff --check` and bounded path/coverage audit both exit `0`. The same 25 residual identities remain, so PA16 remains incomplete; no unrelated residual was re-audited. | completed audit |
+| `e470e9df` prvalue derived-base reference binding checkpointAudit | Final bounded audit of landed `e470e9dfed07ca09a373d227640f3c8042cc2cbf` relative to `f3afe9d5`: the PA12 repair confines prvalue derived-to-base reference binding to const non-volatile lvalue references, restores exact same-class temporary-reference ranking, and retains typed access/path publication into the validated PA15 projection consumer. Focused matrix is `8/8`; required through-PA15 is `1167/1167`; file audit exits `0` with five known warnings; fresh `make test-pa16` exits `2` at `220/243` with `23` failures; exact comparison to the supplied current authority is `23/23`, fresh-only `0`, authority-only `0`, and discovered/reference/fresh coverage `243/243/243` with missing/unexpected `0/0`. No test, fixture, reference, harness, comparator, generated output, coverage rule, source-set file, or unrelated stage code changed; PA16 remains incomplete with the same 23 residual identities. | completed audit |

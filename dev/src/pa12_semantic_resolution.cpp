@@ -107,11 +107,31 @@ ConversionChoice PA11SemanticModel::conversion_for(TypeId source,
 		if (target_kind == TypeKind::LvalueReference && !source_lvalue &&
 			cv_qualifiers(target_referred) != 0)
 		{
-			ConversionChoice base_choice;
-			if (derived_base_choice(source_value, target_referred, &base_choice))
-				return base_choice;
+			// A temporary may bind to a const lvalue reference, but not to an
+			// lvalue reference whose referred type is volatile.  Keep the new
+			// derived-to-base path inside that standard binding boundary.  The
+			// exact class match below remains exact so the new base candidate
+			// cannot outrank it.
+			if ((cv_qualifiers(target_referred) & 3u) == 1u)
+			{
+				ConversionChoice base_choice;
+				if (derived_base_choice(source_value, target_referred, &base_choice))
+					return base_choice;
+			}
 			if (reference_object_convertible(source_value, target_referred))
-				return ConversionChoice(true, 2, ConversionKind::ReferenceBinding);
+			{
+				const ScopeId source_class_scope = class_scope_for_type(source_value);
+				const ScopeId target_class_scope = class_scope_for_type(target_referred);
+				const bool exact_class_reference =
+					source_class_scope.valid() &&
+					source_class_scope == target_class_scope &&
+					strip_cv_type(source_value) == strip_cv_type(target_referred) &&
+					(cv_qualifiers(target_referred) & 3u) == 1u;
+				ConversionChoice result(true,
+					exact_class_reference ? 0 : 2,
+					ConversionKind::ReferenceBinding);
+				return result;
+			}
 		}
 		if (cv_qualifiers(target_referred) != 0)
 		{
@@ -952,8 +972,10 @@ ExprInfo PA11SemanticModel::semantic_expression_for_target(
 			target.value < types_.size())
 		{
 			const TypeId referred = types_[target.value].child;
-			if (target_kind == TypeKind::RvalueReference ||
-				type_kind(referred) == TypeKind::Cv)
+			if ((target_kind == TypeKind::RvalueReference ||
+				type_kind(referred) == TypeKind::Cv) &&
+				!(target_kind == TypeKind::LvalueReference &&
+					(cv_qualifiers(referred) & 2u) != 0))
 			{
 				const TypeId object = strip_cv_type(
 					expression_object_type(referred));
