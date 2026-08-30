@@ -308,260 +308,6 @@ std::vector<std::string> Pa15Lowerer::value_components(ScopeId owner, NameId nam
 		return reversed;
 	}
 
-std::string Pa15Lowerer::abi_variable_symbol(BindingId binding_id, ScopeId owner) const{
-		const Binding& binding = model_.binding(binding_id);
-		abi_mangle::AbiFactCase facts;
-		abi_mangle::AbiFactRecord record;
-		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
-		record.target.kind = abi_mangle::ABI_TARGET_FACT_VARIABLE;
-		record.target.linkage = (binding.internal_linkage ||
-			binding.language_linkage == LanguageLinkage::Cxx) ?
-			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
-		record.target.name.components = value_components(owner, binding.name);
-		facts.records.push_back(record);
-		return abi_mangle::mangle_abi_fact_case(facts);
-	}
-
-std::vector<std::string> Pa15Lowerer::named_type_components(NamedRecordId record) const{
-		if (!record.valid() || record.value >= model_.named_.size() ||
-			!model_.named_[record.value].name.valid())
-			throw std::runtime_error("PA15 ABI named type has no name");
-		std::vector<std::string> reversed;
-		ScopeId scope = model_.named_[record.value].owner;
-		while (scope.valid())
-		{
-			const Scope& current = model_.scopes_[scope.value];
-			if (current.kind == ScopeKind::Namespace && current.name.valid())
-				reversed.push_back(model_.name_text(current.name));
-			scope = current.parent;
-		}
-		std::reverse(reversed.begin(), reversed.end());
-		reversed.push_back(model_.name_text(model_.named_[record.value].name));
-		return reversed;
-	}
-
-abi_mangle::AbiType Pa15Lowerer::abi_type_nested(TypeId type) const{
-		if (!type.valid())
-			throw std::runtime_error("PA15 invalid ABI type");
-		const TypeKind kind = model_.type_kind(type);
-		if (kind == TypeKind::Cv)
-		{
-			abi_mangle::AbiType result;
-			result.kind = abi_mangle::ABI_TYPE_CV;
-			result.is_const = (model_.types_[type.value].cv & 1u) != 0;
-			result.is_volatile = (model_.types_[type.value].cv & 2u) != 0;
-			result.types.push_back(abi_type_nested(model_.types_[type.value].child));
-			return result;
-		}
-		if (kind == TypeKind::Pointer || kind == TypeKind::LvalueReference ||
-			kind == TypeKind::RvalueReference)
-		{
-			abi_mangle::AbiType result;
-			result.kind = kind == TypeKind::Pointer ? abi_mangle::ABI_TYPE_POINTER :
-				kind == TypeKind::LvalueReference ? abi_mangle::ABI_TYPE_LVALUE_REFERENCE :
-				abi_mangle::ABI_TYPE_RVALUE_REFERENCE;
-			result.types.push_back(abi_type_nested(model_.types_[type.value].child));
-			return result;
-		}
-		if (kind == TypeKind::Array)
-		{
-			abi_mangle::AbiType result;
-			result.kind = abi_mangle::ABI_TYPE_ARRAY;
-			result.array_bound.kind = abi_mangle::ABI_ARRAY_BOUND_VALUE;
-			result.array_bound.value = model_.types_[type.value].unknown_bound ? 0 :
-				model_.types_[type.value].bound.value;
-			result.types.push_back(abi_type_nested(model_.types_[type.value].child));
-			return result;
-		}
-		if (kind == TypeKind::Function)
-		{
-			abi_mangle::AbiType result;
-			result.kind = abi_mangle::ABI_TYPE_FUNCTION;
-			result.types.push_back(abi_type_nested(model_.types_[type.value].result));
-			for (std::size_t i = 0; i < model_.types_[type.value].parameters.size(); ++i)
-				result.types.push_back(abi_type_nested(
-					model_.types_[type.value].parameters[i]));
-			result.variadic = model_.types_[type.value].variadic;
-			return result;
-		}
-		if (kind == TypeKind::Named)
-		{
-			abi_mangle::AbiType result;
-			result.kind = abi_mangle::ABI_TYPE_NAMED;
-			result.name.components = named_type_components(model_.types_[type.value].named);
-			return result;
-		}
-		if (kind != TypeKind::Fundamental)
-			throw std::runtime_error("PA15 unsupported ABI parameter type");
-		abi_mangle::AbiType result;
-		result.kind = abi_mangle::ABI_TYPE_BUILTIN;
-		switch (model_.types_[type.value].fundamental)
-		{
-		case FundamentalType::Void: result.builtin = abi_mangle::ABI_BUILTIN_VOID; break;
-		case FundamentalType::WcharT: result.builtin = abi_mangle::ABI_BUILTIN_WCHAR; break;
-		case FundamentalType::Bool: result.builtin = abi_mangle::ABI_BUILTIN_BOOL; break;
-		case FundamentalType::Char: result.builtin = abi_mangle::ABI_BUILTIN_CHAR; break;
-		case FundamentalType::SignedChar: result.builtin = abi_mangle::ABI_BUILTIN_SIGNED_CHAR; break;
-		case FundamentalType::UnsignedChar: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_CHAR; break;
-		case FundamentalType::ShortInt: result.builtin = abi_mangle::ABI_BUILTIN_SHORT; break;
-		case FundamentalType::UnsignedShortInt: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_SHORT; break;
-		case FundamentalType::Int: result.builtin = abi_mangle::ABI_BUILTIN_INT; break;
-		case FundamentalType::UnsignedInt: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_INT; break;
-		case FundamentalType::LongInt: result.builtin = abi_mangle::ABI_BUILTIN_LONG; break;
-		case FundamentalType::UnsignedLongInt: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_LONG; break;
-		case FundamentalType::LongLongInt: result.builtin = abi_mangle::ABI_BUILTIN_LONG_LONG; break;
-		case FundamentalType::UnsignedLongLongInt: result.builtin = abi_mangle::ABI_BUILTIN_UNSIGNED_LONG_LONG; break;
-		case FundamentalType::Char16T: result.builtin = abi_mangle::ABI_BUILTIN_CHAR16; break;
-		case FundamentalType::Char32T: result.builtin = abi_mangle::ABI_BUILTIN_CHAR32; break; case FundamentalType::NullptrT: result.builtin = abi_mangle::ABI_BUILTIN_NULLPTR; break;
-		case FundamentalType::Float: result.builtin = abi_mangle::ABI_BUILTIN_FLOAT; break;
-		case FundamentalType::Double: result.builtin = abi_mangle::ABI_BUILTIN_DOUBLE; break;
-		case FundamentalType::LongDouble: result.builtin = abi_mangle::ABI_BUILTIN_LONG_DOUBLE; break;
-		default: throw std::runtime_error("PA15 unsupported ABI fundamental type");
-		}
-		return result;
-	}
-
-abi_mangle::AbiType Pa15Lowerer::abi_type(TypeId type) const{
-		while (type.valid() && model_.type_kind(type) == TypeKind::Cv)
-			type = model_.types_[type.value].child;
-		return abi_type_nested(type);
-	}
-
-std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
-	abi_mangle::AbiFunctionSpecialTerminalKind terminal) const{
-		const Binding& binding = model_.binding(fact.binding);
-		if (model_.type_kind(binding.type) != TypeKind::Function)
-			throw std::runtime_error("PA15 function binding has non-function type");
-		const TypeKey& function = model_.types_[binding.type.value];
-		const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
-		const bool constructor = sidecar != NULL &&
-			sidecar->constructor_record.valid();
-		const bool destructor = fact.is_destructor || (sidecar != NULL &&
-			sidecar->destructor_record.valid());
-		abi_mangle::AbiFactCase facts;
-		abi_mangle::AbiFactRecord record;
-		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
-		record.target.kind = abi_mangle::ABI_TARGET_FACT_FUNCTION;
-		record.target.linkage = (binding.internal_linkage ||
-			binding.language_linkage == LanguageLinkage::Cxx) ?
-			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
-		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
-		record.target.function.name.components = function_abi_components(
-			fact.binding, fact.owner);
-		if (constructor || destructor)
-		{
-			if (record.target.function.name.components.empty())
-				throw std::runtime_error("PA15 special-member ABI path is empty");
-			record.target.function.name.components.pop_back();
-			if (constructor)
-				record.target.function.special_terminal = terminal ==
-					abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
-					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE : terminal;
-			else
-				record.target.function.special_terminal = terminal ==
-					abi_mangle::ABI_SPECIAL_TERMINAL_NONE ?
-					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE : terminal;
-		}
-		else
-			record.target.function.operator_terminal = operator_terminal(
-				fact.binding, function.parameters.size());
-		for (std::size_t i = 0; i < function.parameters.size(); ++i)
-			record.target.function.signature_parameter_types.push_back(
-				abi_type(function.parameters[i]));
-		if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
-			model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
-			(function.cv & 3u) != 0)
-		{
-			abi_mangle::AbiFactRecord qualifier;
-			qualifier.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
-			qualifier.function.kind = abi_mangle::ABI_FUNCTION_RECORD_QUALIFIER;
-			if ((function.cv & 1u) != 0)
-				qualifier.function.qualifiers.push_back(
-					abi_mangle::ABI_FUNCTION_QUALIFIER_CONST);
-			if ((function.cv & 2u) != 0)
-				qualifier.function.qualifiers.push_back(
-					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
-			facts.records.push_back(qualifier);
-		}
-		if (constructor || destructor)
-		{
-			abi_mangle::AbiFactRecord terminal_record;
-			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
-			terminal_record.function.kind =
-				abi_mangle::ABI_FUNCTION_RECORD_TERMINAL;
-			terminal_record.function.special_terminal = record.target.function.
-				special_terminal;
-			facts.records.push_back(terminal_record);
-		}
-		facts.records.push_back(record);
-		return abi_mangle::mangle_abi_fact_case(facts);
-}
-
-std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id, ScopeId owner) const{
-		const Binding& binding = model_.binding(binding_id);
-		if (model_.type_kind(binding.type) != TypeKind::Function)
-			throw std::runtime_error("PA15 function binding has non-function type");
-		const TypeKey& function = model_.types_[binding.type.value];
-		const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
-		const bool constructor = sidecar != NULL &&
-			sidecar->constructor_record.valid();
-		const bool destructor = sidecar != NULL &&
-			sidecar->destructor_record.valid();
-		abi_mangle::AbiFactCase facts;
-		abi_mangle::AbiFactRecord record;
-		record.kind = abi_mangle::ABI_FACT_RECORD_TARGET;
-		record.target.kind = abi_mangle::ABI_TARGET_FACT_FUNCTION;
-		record.target.linkage = (binding.internal_linkage ||
-			binding.language_linkage == LanguageLinkage::Cxx) ?
-			abi_mangle::ABI_LINKAGE_CXX : abi_mangle::ABI_LINKAGE_C;
-		record.target.function.kind = abi_mangle::ABI_FUNCTION_TARGET_PATH;
-		record.target.function.name.components = function_abi_components(
-			binding_id, owner);
-		if (constructor || destructor)
-		{
-			if (record.target.function.name.components.empty())
-				throw std::runtime_error("PA15 special-member ABI path is empty");
-			record.target.function.name.components.pop_back();
-			record.target.function.special_terminal = constructor ?
-				abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE :
-				abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
-		}
-		else
-			record.target.function.operator_terminal = operator_terminal(
-				binding_id, function.parameters.size());
-		for (std::size_t i = 0; i < function.parameters.size(); ++i)
-			record.target.function.signature_parameter_types.push_back(
-				abi_type(function.parameters[i]));
-		if (owner.valid() && owner.value < model_.scopes_.size() &&
-			model_.scopes_[owner.value].kind == ScopeKind::Class &&
-			(function.cv & 3u) != 0)
-		{
-			abi_mangle::AbiFactRecord qualifier;
-			qualifier.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
-			qualifier.function.kind = abi_mangle::ABI_FUNCTION_RECORD_QUALIFIER;
-			if ((function.cv & 1u) != 0)
-				qualifier.function.qualifiers.push_back(
-					abi_mangle::ABI_FUNCTION_QUALIFIER_CONST);
-			if ((function.cv & 2u) != 0)
-				qualifier.function.qualifiers.push_back(
-					abi_mangle::ABI_FUNCTION_QUALIFIER_VOLATILE);
-			facts.records.push_back(qualifier);
-		}
-		if (constructor || destructor)
-		{
-			abi_mangle::AbiFactRecord terminal_record;
-			terminal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
-			terminal_record.function.kind =
-				abi_mangle::ABI_FUNCTION_RECORD_TERMINAL;
-				terminal_record.function.special_terminal = constructor ?
-					abi_mangle::ABI_SPECIAL_TERMINAL_CONSTRUCTOR_COMPLETE :
-					abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
-			facts.records.push_back(terminal_record);
-		}
-		facts.records.push_back(record);
-		return abi_mangle::mangle_abi_fact_case(facts);
-}
-
 LowType Pa15Lowerer::low_type(TypeId type) const{
 		while (type.valid() && model_.type_kind(type) == TypeKind::Cv)
 			type = model_.types_[type.value].child;
@@ -644,7 +390,11 @@ LowType Pa15Lowerer::low_type(TypeId type) const{
 		case FundamentalType::UnsignedInt:
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_U32; return result;
 		case FundamentalType::LongInt:
-		case FundamentalType::LongLongInt: case FundamentalType::NullptrT:
+		case FundamentalType::LongLongInt:
+			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I64; return result;
+		case FundamentalType::NullptrT:
+			// NullptrT stays a distinct semantic/ABI type; PA15 carries its
+			// value in the canonical 64-bit integer slot.
 			result.kind = LowType::TYPE_INTEGER; result.integer_kind = LowType::INTEGER_I64; return result;
 		case FundamentalType::UnsignedLongInt:
 		case FundamentalType::UnsignedLongLongInt:
@@ -2079,18 +1829,25 @@ LoweredValue Pa15Lowerer::literal(const SemanticFact& fact){
 			value = 0;
 		else if (fact.token == SimpleTokenType::KW_NULLPTR)
 		{
-			LowType pointer;
-			pointer.kind = LowType::TYPE_POINTER;
-			Operand operand = integer_operand(0, pointer);
+			const LowType type = low_type(fact.type);
+			if (type.is_pointer())
+			{
+				Operand operand = integer_operand(0, type);
+				operand.presentation_id = intern_spelling("nullptr");
+				Instruction instruction;
+				instruction.kind = Instruction::IK_COPY;
+				instruction.type = type;
+				instruction.first = operand;
+				const ValueId result = destination(type, &instruction);
+				block().instructions.push_back(instruction);
+				return LoweredValue(temporary_operand(result,
+					instruction.destination_name_id), type, false);
+			}
+			if (!type.is_integer() || type.integer_width() != 64)
+				throw std::runtime_error("PA15 nullptr literal has invalid carrier");
+			Operand operand = integer_operand(0, type);
 			operand.presentation_id = intern_spelling("nullptr");
-			Instruction instruction;
-			instruction.kind = Instruction::IK_COPY;
-			instruction.type = pointer;
-			instruction.first = operand;
-			const ValueId result = destination(pointer, &instruction);
-			block().instructions.push_back(instruction);
-			return LoweredValue(temporary_operand(result,
-				instruction.destination_name_id), pointer, false);
+			return LoweredValue(operand, type, false);
 		}
 		else if (fact.source != NULL && fact.source->kind == PA10NodeKind::Literal)
 		{
@@ -2274,12 +2031,59 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 		conversion.kind == ConversionKind::NullptrToBool)
 	{
 		materialize_lvalue_value(result, result->type);
-		const LowType pointer = result->physical_type;
-		if (!pointer.is_pointer())
+		const LowType source = result->physical_type;
+		if (conversion.kind == ConversionKind::NullptrToBool)
+		{
+			const TypeId source_semantic =
+				conversion.source.valid() &&
+				conversion.source.value < model_.types_.size()
+					? model_.strip_cv_type(
+						model_.expression_object_type(conversion.source))
+					: TypeId();
+			const TypeId target_semantic =
+				conversion.target.valid() &&
+				conversion.target.value < model_.types_.size()
+					? model_.strip_cv_type(conversion.target)
+					: TypeId();
+			const LowType bool_type =
+				low_type(model_.fundamental(FundamentalType::Bool));
+			if (!source_semantic.valid() ||
+				model_.type_kind(source_semantic) != TypeKind::Fundamental ||
+				model_.types_[source_semantic.value].fundamental !=
+					FundamentalType::NullptrT ||
+				!target_semantic.valid() ||
+				model_.type_kind(target_semantic) != TypeKind::Fundamental ||
+				model_.types_[target_semantic.value].fundamental !=
+					FundamentalType::Bool ||
+				source != size_low_type() || target != bool_type)
+				throw std::runtime_error(
+					"PA15 nullptr-to-bool has invalid typed endpoint or carrier");
+		}
+		else if (!source.is_pointer())
 			throw std::runtime_error("PA15 pointer-to-bool source is not a pointer");
-		const LoweredValue zero(integer_operand(0, pointer), pointer, false);
-		*result = emit_compare_value(lowir_model::CPP_NE, pointer, *result, zero);
-		result->type = target;
+		const LoweredValue zero(integer_operand(0, source), source, false);
+		LoweredValue truth = emit_compare_value(lowir_model::CPP_NE, source,
+			*result, zero);
+		truth.type = target;
+		if (conversion.kind == ConversionKind::NullptrToBool &&
+			!omit_boolean_context)
+		{
+			if (!target.is_integer() || source.integer_width() <=
+				target.integer_width())
+				throw std::runtime_error(
+					"PA15 nullptr-to-bool target has invalid width");
+			Instruction instruction;
+			instruction.kind = Instruction::IK_CONVERT;
+			instruction.source_type = source;
+			instruction.first = truth.value;
+			instruction.conversion_operator = lowir_model::COP_TRUNC;
+			const ValueId value = destination(target, &instruction);
+			block().instructions.push_back(instruction);
+			*result = LoweredValue(temporary_operand(value,
+				instruction.destination_name_id), target, false);
+		}
+		else
+			*result = truth;
 		return true;
 	}
 	return false;
@@ -2472,8 +2276,90 @@ LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue resu
 		}
 		return result;
 	}
-	LoweredValue Pa15Lowerer::apply_pointer_conversion(LoweredValue result,
-		const ConversionFact& conversion, const LowType& target){
+LoweredValue Pa15Lowerer::apply_pointer_conversion(LoweredValue result,
+	const ConversionFact& conversion, const LowType& target){
+	if (conversion.kind == ConversionKind::NullptrToPointer)
+	{
+		const TypeId source_semantic =
+			conversion.source.valid() &&
+			conversion.source.value < model_.types_.size()
+				? model_.strip_cv_type(
+					model_.expression_object_type(conversion.source))
+				: TypeId();
+		const TypeId target_semantic =
+			conversion.target.valid() &&
+			conversion.target.value < model_.types_.size()
+				? model_.strip_cv_type(conversion.target)
+				: TypeId();
+		if (!source_semantic.valid() ||
+			model_.type_kind(source_semantic) != TypeKind::Fundamental ||
+			model_.types_[source_semantic.value].fundamental !=
+				FundamentalType::NullptrT ||
+			!target_semantic.valid() ||
+			model_.type_kind(target_semantic) != TypeKind::Pointer ||
+			!target.is_pointer())
+			throw std::runtime_error(
+				"PA15 nullptr-to-pointer conversion has invalid typed endpoint");
+
+		// Evaluate the source before replacing its representation.  nullptr_t
+		// has one value, so the result is always null after this evaluation,
+		// including an lvalue load.
+		if (result.lvalue)
+			materialize_lvalue_value(&result, result.type);
+		if (result.physical_type != size_low_type())
+			throw std::runtime_error(
+				"PA15 nullptr-to-pointer source has invalid carrier");
+		Operand operand = integer_operand(0, target);
+		operand.presentation_id = intern_spelling("nullptr");
+		Instruction instruction;
+		instruction.kind = Instruction::IK_COPY;
+		instruction.type = target;
+		instruction.first = operand;
+		const ValueId value = destination(target, &instruction);
+		block().instructions.push_back(instruction);
+		return LoweredValue(temporary_operand(value,
+			instruction.destination_name_id), target, false);
+	}
+	if (conversion.kind == ConversionKind::NullIntegerToNullptr)
+	{
+		const TypeId source_semantic =
+			conversion.source.valid() &&
+			conversion.source.value < model_.types_.size()
+				? model_.strip_cv_type(
+					model_.expression_object_type(conversion.source))
+				: TypeId();
+		const TypeId target_semantic =
+			conversion.target.valid() &&
+			conversion.target.value < model_.types_.size()
+				? model_.strip_cv_type(conversion.target)
+				: TypeId();
+		FundamentalType source_fundamental = FundamentalType::Void;
+		bool source_is_integral = false;
+		if (source_semantic.valid() &&
+			model_.type_kind(source_semantic) == TypeKind::Fundamental &&
+			model_.types_[source_semantic.value].fundamental !=
+				FundamentalType::Void)
+		{
+			source_fundamental =
+				model_.types_[source_semantic.value].fundamental;
+			source_is_integral = model_.integral_type(source_fundamental);
+		}
+		if (!source_is_integral || !target_semantic.valid() ||
+			model_.type_kind(target_semantic) != TypeKind::Fundamental ||
+			model_.types_[target_semantic.value].fundamental !=
+				FundamentalType::NullptrT ||
+			target != size_low_type() || result.lvalue ||
+			result.value.kind != Operand::OP_INTEGER ||
+			result.value.int_value != 0)
+			throw std::runtime_error(
+				"PA15 integer-to-nullptr conversion has invalid typed zero");
+
+		result.value.literal_type = target;
+		result.type = target;
+		result.physical_type = target;
+		result.lvalue = false;
+		return result;
+	}
 	if (result.lvalue && (conversion.kind == ConversionKind::PointerQualification ||
 		conversion.kind == ConversionKind::PointerToVoid))
 		materialize_lvalue_value(&result, result.type);

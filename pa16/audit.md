@@ -3,6 +3,170 @@
 ## Current Checkpoint Review
 
 This bounded checkpoint audit covers landed commit
+`b58ddd2a86740ad5d70ed3a17d61038279936131` (`PA16: carry nullptr_t through ABI
+and LowIR`) relative to parent `d54e32d1`.  The landed source is
+`dev/src/pa15_lowering.cpp` and the landed plan is `pa16/plan.md`.  The PA16
+boundary, active plan, existing audit ledger, `TESTING_AND_REFERENCES.md`, the
+required `spec.md` Purpose and sections 1, 2, 5, and 7, the landed diff, and
+the named PA12/PA13/PA15 controls were read before editing.  The initial audit
+began from a clean tree; this bounded follow-up began with its accepted
+three-file uncommitted milestone.  The final change set is exactly:
+
+- `dev/src/pa15_lowering.cpp`
+- `dev/src/pa15_lowering_abi.cpp`
+- `dev/frontend_source_sets.mk`
+- `pa16/audit.md`
+- `pa16/plan.md`
+
+No tests, fixtures, references, sidecars, harnesses, comparators, or coverage
+rules changed.
+
+### Authority and exact residual boundary
+
+The supplied primary authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.  It
+reports `make test-pa16` status `2`, `225/243` passing, exactly `18` failures,
+and complete `243/243` identity coverage.  The exact supplied failure map is:
+
+```text
+pa16/tests/general/200-elaborated-member-forward-type.t
+pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
+pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-callable-field-hides-private-base-method.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-user-defined-string-literal-operator.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The active landed identity `300-operator-nullptr-t-from-zero.t` is absent from
+this latest map and remains passing in the final run.  The post-extraction
+final comparison against the supplied log is exact after normalizing the
+`.t`/generated-output suffixes: authority `18`, fresh `18`, retained `18`,
+authority-only `0`, and fresh-only `0`.  Final discovered/reference/fresh
+identity coverage is `243/243/243`; discovered/reference, discovered/fresh,
+and reference/fresh deltas are each `0` in both directions.
+
+### Typed ownership trace and disposition
+
+PA11 pre-interns `FundamentalType::NullptrT`; `type_layout` gives it the
+required Linux x86_64 `8`-byte size and `8`-byte alignment.  A keyword
+`nullptr` semantic literal and `decltype(nullptr)` therefore retain the typed
+fundamental identity.  PA12 owns `NullIntegerToNullptr`: for a typed zero
+source and `NullptrT` target it publishes one typed conversion and lets the
+normal typed overload selector rank the candidate.  No PA16 conversion or
+overload rule was added.
+
+PA15's extracted `abi_type_nested` maps the fundamental to the distinct
+`ABI_BUILTIN_NULLPTR`; the existing Itanium builtin table emits `Dn`, and the
+existing typed symbol path produces the target's `_ZneRK3PtrDn`.  Separately,
+`low_type` maps the same semantic `TypeId` to the physical `TYPE_INTEGER` /
+`INTEGER_I64` carrier.  Function parameter records, parameter slots and
+stores, declarations, call operands, and return values all obtain that
+carrier through their existing typed `low_type` owners.  The LowIR validator
+continues to check the resulting typed parameter/slot/store/call boundaries.
+The six cohesive ABI definitions were moved, without duplication or an
+implementation-fragment include, to `pa15_lowering_abi.cpp`; the `cppgm++`
+source set names that translation unit explicitly.  The shared operator ABI
+helpers remain in their existing module.
+
+PA12's existing producer/global invariants already establish
+`NullIntegerToNullptr`: `conversion_for` classifies a typed integral-zero
+source and an object `NullptrT` target, while `apply_context_conversion`
+publishes the exact source/target pair in one contiguous `ConversionFact`.
+The PA15 consumer adds only the narrow fail-closed check for an integral typed
+source, an exact fundamental `NullptrT` target, canonical i64 carrier, and
+integer literal zero; no generic conversion refactoring was added.
+
+The audit found two issues at the narrow PA15 owner.  The landed same-line
+switch cases were reformatted into maintainable cases.  More importantly,
+`literal()` still emitted keyword `nullptr` as a pointer temporary even after
+`NullptrT` acquired its i64 physical carrier.  Direct `nullptr_t` identity,
+initialization, return, or call paths could consequently feed a pointer temp
+to an i64 slot or comparison.  The repair now derives the keyword literal's
+physical type from `low_type(fact.type)`, accepts only the required i64
+carrier for semantic `NullptrT`, and preserves the existing pointer-typed
+literal shape.  `NullptrToPointer` accepts a source whose typed object identity
+is `NullptrT` (including a reference source that still needs its lvalue load),
+requires the target's semantic type to be a non-reference pointer, evaluates
+the source, and then emits the existing typed pointer-null copy.  The
+hardcoded null result is sound because `nullptr_t` has one value; source
+evaluation and side effects, including an lvalue load, still occur before that
+result is materialized.  `NullptrToBool` requires a semantic non-reference
+bool target with the canonical u8 physical type and a canonical i64 `NullptrT`
+source carrier.  It compares in i64, retains the i64 truth value in condition
+context, and truncates to u8 only at a non-condition bool boundary.  Invalid
+source identity, target kind, or carrier fails closed before invalid LowIR is
+emitted.
+
+This keeps semantic identity, conversion ownership, ABI identity, and
+physical representation separate.  The fixed `nullptr` presentation is only
+the existing LowIR operand spelling at a true text boundary; no source-text
+recovery, duplicate pipeline, host compiler, reference binary, test-name
+branch, or pointer/integer semantic alias was introduced.
+
+### Focused evidence
+
+Final post-extraction evidence, run serially:
+
+- `make -C dev cppgm++ CXX=g++`: status `0`.
+- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-operator-nullptr-t-from-zero.t'`:
+  `PASS (1/1)`.
+- The named PA12 nullptr overload/equality/pointer controls: `PASS (4/4)`.
+- `make -C pa13 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/spec/100-nullptr-return-lowir.t'`:
+  `PASS (1/1)`.
+- `make -C pa15 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-global-pointer-array-nullptr-init.t'`:
+  `PASS (1/1)`.
+- The final direct `nullptr` endpoint probe, including global-lvalue and
+  reference-return sources, compiled with `cppgm++` and passed `lowir2cy86`
+  (status `0`).  Its pointer paths show `load i64` before `copy ptr nullptr`;
+  its bool paths show `cmp ne i64` followed by `convert trunc u8 i64`.
+- The checked-in PA12 `300-nullptr-equality.t` emitted LowIR with direct
+  `cmp ne i64 nullptr, nullptr` and `store i64 nullptr`; `dev/lowir2cy86`
+  accepted the temporary output with status `0`.
+- Temporary non-fixture probes for `return nullptr` and `sink(nullptr)` emitted
+  `cmp ne i64` plus `convert trunc u8 i64`; `dev/lowir2cy86` accepted both.
+- The final post-extraction LowIR is byte-identical to the pre-extraction
+  output for the target, PA12 equality, PA15 pointer, and both endpoint
+  probes.  `git diff --check` is status `0`.
+- Final `make test-pa16` is status `2`, `225/243`, with exactly the 18
+  identities listed above.  The exact normalized identity comparison is
+  `18` authority / `18` fresh, authority-only `0`, fresh-only `0`, and
+  `243/243/243` discovered/reference/fresh coverage with zero pairwise deltas.
+- The exact prior-through-PA15 command passes with status `0` at `1167/1167`.
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` passes with
+  status `0` and five known warnings: `abi_mangle.h`,
+  `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`, and
+  `pa15_lowering.h`, each the existing `bad-division` warning.  The edited
+  `pa15_lowering.cpp` is `2886` lines and the extracted module is `264` lines;
+  neither exceeds the `3000`-line source limit.
+
+### Final disposition and next checkpoint
+
+The nullptr carrier path is internally consistent at the PA11 layout, PA12
+typed-conversion, PA15 ABI, LowIR storage/call, literal, conversion, and
+validator boundaries.  The ABI extraction is ownership-only and preserves
+the generated output byte-for-byte; it reduces the main lowering module below
+the audit limit without minifying code.  The repair is O(1) per affected fact
+and adds no scan, retry, cache, allocation, whole-program traversal, or
+performance-sensitive duplicate path.  No fixture or reference change is
+warranted.  The next separately bounded checkpoint is
+`pa16/tests/general/200-elaborated-member-forward-type.t`; the eighteen
+supplied residual identities are not re-audited here.
+
+## Historical Typed ToVoid Review (6d2ed09c)
+
+This bounded checkpoint audit covers landed commit
 `6d2ed09cd4b3daf55ab28282addcf3a878a8adba` (`PA16 narrow typed ToVoid
 discarded lowering`) relative to parent
 `14cadc0c135156ed20583e3b5adb07b1260cabe2`.  The landed source change is in
@@ -3423,6 +3587,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `b58ddd2a` typed nullptr carrier checkpointAudit | Completed the bounded carrier audit and structural ABI extraction: PA11/PA12/PA15 typed ownership, exact pointer/bool endpoints, canonical i64/u8 carriers, lvalue source evaluation, and the narrow integer-zero consumer guard are recorded. Final post-extraction build and focused PA16 `1/1`, PA12 `4/4`, PA13 `1/1`, PA15 `1/1` pass; target/equality/pointer/endpoint LowIR is byte-identical across extraction; final PA16 is `225/243` with exactly 18 failures, exact comparison authority-only `0`/fresh-only `0`, and `243/243/243` inventories; prior-through is `1167/1167`; file audit passes with five known warnings; no fixture/reference change. Final changed paths are exactly `dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering_abi.cpp`, `dev/frontend_source_sets.mk`, `pa16/audit.md`, and `pa16/plan.md`. | completed audit |
 | `15e9897b` effective-using visibility and typed call-publication checkpointAudit | Final bounded audit of landed `15e9897bc038499f724d69cb3cfe70e806b9fb36` relative to its parent: common-ancestor effective-using registration, canonical lexical owner/source-point filtering, NamePath lookup, typed one-argument overload publication, and the existing PA15 narrow class-value boundary are traced. The directly caused deferred-PA12 local source-order leak is repaired with RAII lookup-point contexts at statement/call and nested identifier owners in the four approved sources. Focused PA16/PA12/PA15 matrices pass `12/12`, `6/6`, `6/6`; final PA16 is `219/243` with the exact supplied 24-failure set, fresh-only `0`, authority-only `0`, and `243/243/243` inventories; through-PA15 is `1167/1167`; file audit passes with five known warnings; exact six-path and artifact/coverage checks pass. PA16 remains incomplete with the same residual 24. No tests, fixtures, references, harnesses, comparators, generated outputs, coverage rules, or source-set files changed. |
 | `08472cce` typed pragma-pack record-layout checkpointAudit | Bounded audit of landed `08472cce8e96daa585f5f07f4ee9d2233e13ade9` relative to `0ff3fdef`: the shared preprocessing cap/stack, include and inactive-conditional behavior, ordered typed `PPPackDirective`, token-transparent posttoken handoff, PA10 whitespace-free boundary, PA11 binary-search lookup, `NamedRecord` cap, and canonical member/base/bit-field/final layout are traced. The audit repairs the wide-bit-field path to use capped storage alignment and makes raw/PA10 typed-fact validation reject invalid operation/state/order/boundary data, including facts after EOF; PA11 also checks the operation domain. Focused build, course 422 (`sh -n` plus execution), packed/natural/conditional/alignas/pop/string probes, and the temporary typed-buffer rejection probe pass. Supplied latest and fresh authority are both `210/243`, `33` failures, `243/243` covered; the durable exact comparison reports fresh-only `0`, authority-only `0`, inventory `243`, and unexpected `0`. The known `300-pragma-pack-followed-by-endif.t` LowIR trunc-before-zext shape remains unrelated. Through-PA15 is `1167/1167`; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-through-pa15-20260830.log`. File audit exits `0` with five known warnings and no fatals; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-file-audit-20260830.log`. Diff-check passes. No handout, fixture, reference, harness, source-set, or generated output changed; course 422 is the sole added public regression. PA16 remains incomplete. |
 | `ee8f44d5` per-throw typed array cleanup checkpointAudit | Completed bounded audit of `ee8f44d5b0e9d4910679c12b443533d787d1cd4c` relative to `3b2b4882`: PA12's typed constructor-action range is traced through action/placement `ArrayAddressRoot`, forward recursive terminal collection, combined constructor-boundary plus typed-argument throw classification, independent per-throw LowIR handlers, fresh root/path replay, reverse cleanup, and canonical `model_.destructor_binding(record)` calls. The approved repair in `dev/src/pa15_lowering.h` and `dev/src/pa15_lowering_construction.cpp` adds exact action target/type/range validation, action/storage root replay identity checks, and existing cached semantic nothrow classification for every actual argument; valid unproven arguments remain potentially throwing and malformed facts fail closed. Supplied authority is `209/243`, `34` failures, `243/243` covered; exact fresh comparison is authority `34` -> fresh `34`, authority-only `0`, fresh-only `0`, inventory `243`, covered `243`, missing `0`, unexpected `0`. Focused matrix is `30/35`; typed argument probes distinguish zero-handler known-nothrow/no-argument cases from one-handler potentially throwing arguments and constructors. Semantic argument-vector array reachability is rejected by PA12 before lowering for current grammar. Representative nested N=6 evidence is 11 blocks, 5 handlers, 5 resumes, and 15 cleanup destructors; through-PA15 is `1167/1167`; file audit and diff-check pass. The exact four-file audit/repair is complete; PA16 remains incomplete only because the same 34 residual identities remain. |
