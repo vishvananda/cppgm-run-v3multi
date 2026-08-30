@@ -2255,7 +2255,8 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 				if (current_block_ != InvalidIdentityValue)
 				{
 					emit_active_scope_destructors();
-					emit_active_destructor_actions();
+					emit_destructor_body_handler_end();
+					emit_active_destructor_actions(true);
 				}
 				block().instructions.push_back(instruction);
 			current_block_ = InvalidIdentityValue;
@@ -2459,6 +2460,36 @@ void Pa15Lowerer::lower_if(SemanticFactId id,
 		set_current(join_block);
 }
 
+void Pa15Lowerer::emit_destructor_body_handler_end()
+{
+	if (!active_destructor_record_.valid() ||
+		!active_destructor_cleanup_.valid())
+		return;
+	Instruction end;
+	end.kind = Instruction::IK_EH_END;
+	block().instructions.push_back(end);
+}
+
+void Pa15Lowerer::emit_destructor_body_unwind_cleanup()
+{
+	if (!active_destructor_record_.valid() ||
+		!active_destructor_cleanup_.valid())
+		return;
+	const BlockId saved_current = current_block_id();
+	set_current(active_destructor_cleanup_);
+	emit_active_destructor_actions(false);
+	Instruction end;
+	end.kind = Instruction::IK_EH_END;
+	block().instructions.push_back(end);
+	Instruction resume;
+	resume.kind = Instruction::IK_RESUME;
+	block().instructions.push_back(resume);
+	if (saved_current.valid())
+		set_current(saved_current);
+	else
+		current_block_ = InvalidIdentityValue;
+}
+
 void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		current_function_ = plan.program_index;
 		current_block_ = InvalidIdentityValue;
@@ -2574,6 +2605,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		active_constructor_this_ = BindingId();
 		active_destructor_record_ = NamedRecordId();
 		active_destructor_this_ = BindingId();
+		active_destructor_cleanup_ = BlockId();
 		if (fact.is_constructor)
 		{
 			if (!fact.constructor_record.valid() ||
@@ -2625,6 +2657,19 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				throw std::runtime_error("PA15 destructor object parameter is invalid");
 			active_destructor_record_ = fact.destructor_record;
 			active_destructor_this_ = this_binding;
+			if (fact.destructor_action_count != 0)
+			{
+				if (fact.destructor_action_begin == InvalidIdentityValue ||
+					fact.destructor_action_begin > model_.destructor_actions_.size() ||
+					fact.destructor_action_count > model_.destructor_actions_.size() -
+					fact.destructor_action_begin)
+					throw std::runtime_error("PA15 destructor action range is invalid");
+				active_destructor_cleanup_ = block_id(new_block("destructor_cleanup"));
+				Instruction handler;
+				handler.kind = Instruction::IK_EH_CLEANUP;
+				handler.first = block_operand(active_destructor_cleanup_);
+				block().instructions.push_back(handler);
+			}
 		}
 		if (fact.body_fact.valid())
 		{
@@ -2638,9 +2683,20 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 			drain_label_recovery_queue(SemanticFactId());
 		if (!label_recovery_queue_.empty())
 			throw std::runtime_error("PA15 reachable deferred label was not drained");
-		if (fact.is_destructor && current_block_ != InvalidIdentityValue &&
-			!terminated(block()))
-			emit_active_destructor_actions();
+		if (fact.is_destructor && active_destructor_cleanup_.valid())
+		{
+			if (current_block_ != InvalidIdentityValue && !terminated(block()))
+			{
+				emit_destructor_body_handler_end();
+				const BlockId end = block_id(new_block("destructor_end"));
+				emit_active_destructor_actions(true);
+				emit_jump(end);
+				emit_destructor_body_unwind_cleanup();
+				set_current(end);
+			}
+			else
+				emit_destructor_body_unwind_cleanup();
+		}
 		if (current_block_ != InvalidIdentityValue &&
 			!terminated(block()))
 		{
@@ -2683,6 +2739,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		active_constructor_this_ = BindingId();
 		active_destructor_record_ = NamedRecordId();
 		active_destructor_this_ = BindingId();
+		active_destructor_cleanup_ = BlockId();
 		lifetime_scope_stack_.clear();
 		lifetime_scope_depths_.clear();
 		active_lifetimes_.clear();

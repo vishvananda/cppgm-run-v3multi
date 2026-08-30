@@ -1038,6 +1038,117 @@ LoweredValue Pa15Lowerer::recompute_constructed_element_address(
 	return result;
 }
 
+void Pa15Lowerer::collect_destructor_elements(TypeId target,
+	const DestructorActionFact& action,
+	std::vector<ConstructorAddressStep>* path,
+	std::vector<DestructedElement>* elements)
+{
+	if (path == NULL || elements == NULL)
+		throw std::runtime_error("PA15 destructor element collection is missing");
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 destructor element type is invalid");
+	if (model_.type_kind(object) == TypeKind::Array)
+	{
+		const TypeKey& array = model_.types_[object.value];
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 destructor element array bound is invalid");
+		for (std::size_t i = array.bound.value; i != 0; --i)
+		{
+			const std::size_t index = i - 1;
+			path->push_back(ConstructorAddressStep(BindingId(), index, true));
+			collect_destructor_elements(array.child, action, path, elements);
+			path->pop_back();
+		}
+		return;
+	}
+	const NamedRecordId record = model_.class_record_for_object_type(object);
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("PA15 destructor element is not a class");
+	(void)checked_destructor_function(action.destructor, record);
+	elements->push_back(DestructedElement(action, *path, record));
+}
+
+LoweredValue Pa15Lowerer::recompute_destructor_element_address(
+	const DestructedElement& element)
+{
+	if (!element.action.object_type.valid() || !element.record.valid())
+		throw std::runtime_error("PA15 destructor element root is invalid");
+	LoweredValue result = destructor_subobject_address(element.action);
+	TypeId current_type = element.action.object_type;
+	for (std::size_t i = 0; i < element.path.size(); ++i)
+	{
+		if (!element.path[i].array_element)
+			throw std::runtime_error("PA15 destructor array path is invalid");
+		const TypeId object = model_.strip_cv_type(
+			model_.expression_object_type(current_type));
+		if (!object.valid() || object.value >= model_.types_.size() ||
+			model_.type_kind(object) != TypeKind::Array)
+			throw std::runtime_error("PA15 destructor array path type is invalid");
+		const TypeId child = model_.types_[object.value].child;
+		const LoweredValue sequence = emit_decay(result);
+		const LoweredValue offset = emit_array_element_offset(object,
+			element.path[i].index);
+		result = emit_index(sequence, offset, array_element_instruction_type(child),
+			lowir_model::IPK_ARRAY_ELEMENT);
+		current_type = child;
+	}
+	const NamedRecordId record = model_.class_record_for_object_type(
+		model_.strip_cv_type(model_.expression_object_type(current_type)));
+	if (record != element.record)
+		throw std::runtime_error("PA15 destructor array element owner changed");
+	return result;
+}
+
+void Pa15Lowerer::emit_destructor_element_sequence(
+	const std::vector<DestructedElement>& elements, bool exception_safe)
+{
+	if (!exception_safe)
+	{
+		for (std::size_t i = 0; i < elements.size(); ++i)
+			emit_destructor_call(elements[i].action.destructor,
+				recompute_destructor_element_address(elements[i]));
+		return;
+	}
+	for (std::size_t i = 0; i < elements.size(); ++i)
+	{
+		const bool has_prefix = i + 1 < elements.size();
+		BlockId cleanup;
+		BlockId next;
+		if (has_prefix)
+		{
+			cleanup = block_id(new_block("destructor_suffix_cleanup"));
+			next = block_id(new_block("destructor_suffix_next"));
+			Instruction handler;
+			handler.kind = Instruction::IK_EH_CLEANUP;
+			handler.first = block_operand(cleanup);
+			block().instructions.push_back(handler);
+		}
+		emit_destructor_call(elements[i].action.destructor,
+			recompute_destructor_element_address(elements[i]));
+		if (!has_prefix)
+			continue;
+		Instruction end;
+		end.kind = Instruction::IK_EH_END;
+		block().instructions.push_back(end);
+		emit_jump(next);
+		set_current(cleanup);
+		for (std::size_t prefix = i + 1; prefix < elements.size(); ++prefix)
+			emit_destructor_call(elements[prefix].action.destructor,
+				recompute_destructor_element_address(elements[prefix]));
+		end = Instruction();
+		end.kind = Instruction::IK_EH_END;
+		block().instructions.push_back(end);
+		Instruction resume;
+		resume.kind = Instruction::IK_RESUME;
+		block().instructions.push_back(resume);
+		set_current(next);
+	}
+}
+
 void Pa15Lowerer::emit_destructor_call(BindingId destructor,
 	const LoweredValue& destination_value)
 {
@@ -1243,8 +1354,11 @@ void Pa15Lowerer::materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
 	}
 }
 
-void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action)
+void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action,
+	std::vector<DestructedElement>* elements)
 {
+	if (elements == NULL)
+		throw std::runtime_error("PA15 destructor element sequence is missing");
 	if ((action.target == ConstructorActionTarget::Base &&
 		(!action.base_record.valid() || action.base_record.value >=
 			model_.named_.size() || action.member.valid())) ||
@@ -1254,21 +1368,23 @@ void Pa15Lowerer::lower_destructor_action(const DestructorActionFact& action)
 			model_.bindings_.size() || !action.object_type.valid() ||
 			action.object_type.value >= model_.types_.size())
 		throw std::runtime_error("PA15 destructor action identity is invalid");
-	const LoweredValue destination = destructor_subobject_address(action);
-	emit_destructor_elements(action.object_type, destination, action.destructor);
+	std::vector<ConstructorAddressStep> path;
+	collect_destructor_elements(action.object_type, action, &path, elements);
 }
 
-void Pa15Lowerer::emit_active_destructor_actions()
+void Pa15Lowerer::emit_active_destructor_actions(bool exception_safe)
 {
 	if (!active_destructor_record_.valid()) return;
 	const BindingId destructor = model_.destructor_binding(
 		active_destructor_record_);
 	const FunctionFact& function = checked_destructor_function(destructor,
 		active_destructor_record_);
+	std::vector<DestructedElement> elements;
 	for (std::size_t action = 0; action < function.destructor_action_count;
 		++action)
 		lower_destructor_action(model_.destructor_actions_[
-			function.destructor_action_begin + action]);
+			function.destructor_action_begin + action], &elements);
+	emit_destructor_element_sequence(elements, exception_safe);
 }
 
 void Pa15Lowerer::activate_lifetime(BindingId object)

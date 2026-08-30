@@ -44,7 +44,7 @@ Pa15Lowerer::Pa15Lowerer(const PA11SemanticModel& model, Program& program)
 		  current_block_(InvalidIdentityValue), temp_ordinal_(0),
 		  block_ordinal_(0), generated_slot_ordinal_(0),
 		  active_constructor_record_(), active_constructor_this_(),
-		  active_destructor_record_(), active_destructor_this_(),
+		  active_destructor_record_(), active_destructor_this_(), active_destructor_cleanup_(),
 		  lifetime_by_binding_(), lifetime_function_scope_flags_(),
 		  lifetime_scope_stack_(),
 		  lifetime_scope_depths_(), active_lifetimes_(),

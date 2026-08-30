@@ -295,6 +295,22 @@ struct ConstructedElement
 		: root(root), path(path), destructor(destructor), record(record) {}
 };
 
+// A destructor suffix terminal retains its typed action and array path so each
+// exceptional prefix can recompute its address without borrowing an SSA
+// producer from the normal path.
+struct DestructedElement
+{
+	DestructorActionFact action;
+	std::vector<ConstructorAddressStep> path;
+	NamedRecordId record;
+
+	DestructedElement(const DestructorActionFact& action = DestructorActionFact(),
+		const std::vector<ConstructorAddressStep>& path =
+			std::vector<ConstructorAddressStep>(),
+		NamedRecordId record = NamedRecordId())
+		: action(action), path(path), record(record) {}
+};
+
 // A constructor's exceptional prefix cleanup is a persistent typed chain.
 // Each node destroys exactly one already-completed element and transfers to
 // the preceding node; no completed-element address or LowIR temporary is
@@ -489,6 +505,7 @@ private:
 	BindingId active_constructor_this_;
 	NamedRecordId active_destructor_record_;
 	BindingId active_destructor_this_;
+	BlockId active_destructor_cleanup_;
 	std::map<std::size_t, const LifetimeFact*> lifetime_by_binding_;
 	std::vector<unsigned char> lifetime_function_scope_flags_;
 	std::vector<ScopeId> lifetime_scope_stack_;
@@ -765,6 +782,14 @@ private:
 	LoweredValue emit_array_element_offset(TypeId array, std::size_t index);
 	LoweredValue recompute_constructed_element_address(
 		const ConstructedElement& element);
+	void collect_destructor_elements(TypeId target,
+		const DestructorActionFact& action,
+		std::vector<ConstructorAddressStep>* path,
+		std::vector<DestructedElement>* elements);
+	LoweredValue recompute_destructor_element_address(
+		const DestructedElement& element);
+	void emit_destructor_element_sequence(
+		const std::vector<DestructedElement>& elements, bool exception_safe);
 	void emit_constructor_call(BindingId constructor,
 		const LoweredValue& destination, std::size_t argument_begin,
 		std::size_t argument_count);
@@ -818,8 +843,11 @@ private:
 	LoweredValue lower_variable_expression(SemanticFactId id);
 	void lower_constructor_action(const ConstructorActionFact& action,
 		BitFieldInitializationContext& context);
-	void lower_destructor_action(const DestructorActionFact& action);
-	void emit_active_destructor_actions();
+	void lower_destructor_action(const DestructorActionFact& action,
+		std::vector<DestructedElement>* elements);
+	void emit_active_destructor_actions(bool exception_safe);
+	void emit_destructor_body_handler_end();
+	void emit_destructor_body_unwind_cleanup();
 	LoweredValue lower_constructor_expression(SemanticFactId id);
 	void activate_lifetime(BindingId object);
 	void emit_lifetime_destructors(std::size_t depth);
