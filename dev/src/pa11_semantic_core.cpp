@@ -736,8 +736,7 @@ void PA11SemanticModel::append_effective_using_targets(ScopeId level,
 	{
 		const EffectiveUsingDirective& directive =
 			current.effective_using_directives[i - 1];
-		if (!lexical_scope_is_applicable(directive.lexical_scope) ||
-			!relation_visible_at(level, directive.declaration_point, point))
+		if (!lexical_scope_is_applicable(directive.lexical_scope) || !relation_visible_at(directive.lexical_scope, directive.declaration_point, point))
 			continue;
 		// Repeated target edges are harmless: the graph generation mark
 		// suppresses a second traversal without a per-level deduplication scan.

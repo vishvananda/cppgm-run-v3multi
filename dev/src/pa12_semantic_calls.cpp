@@ -80,6 +80,47 @@ int compare_conversion_choices(const ConversionChoice& left,
 		ConversionScore(right));
 }
 
+bool PA11SemanticModel::supports_pa16_class_value_parameter(
+	const ValueRef& candidate_ref, std::size_t parameter,
+	const ExprInfo& argument, TypeId parameter_type) const
+{
+	const FunctionFact* function = function_fact_for_binding(
+		candidate_ref.binding);
+	if (function == NULL || !function->binding.valid() ||
+		function->binding != candidate_ref.binding)
+		return false;
+	if (function->is_constructor)
+	{
+		if (!narrow_class_value_constructor(*function))
+			return false;
+	}
+	else if (!function->owner.valid() || function->owner.value >= scopes_.size() ||
+		scopes_[function->owner.value].kind != ScopeKind::Namespace)
+		return false;
+	if (parameter != 0 || candidate_ref.binding.value >= bindings_.size())
+		return false;
+	const TypeId function_type = binding(candidate_ref.binding).type;
+	if (!function_type.valid() || function_type.value >= types_.size() ||
+		type_kind(function_type) != TypeKind::Function ||
+		types_[function_type.value].variadic ||
+		types_[function_type.value].parameters.size() != 1 ||
+		types_[function_type.value].parameters.front() != parameter_type ||
+		class_value_type(types_[function_type.value].result))
+		return false;
+	const TypeId parameter_object = strip_cv_type(
+		expression_object_type(parameter_type));
+	const NamedRecordId parameter_record = named_record_for_type(
+		parameter_object);
+	if (!parameter_record.valid() || parameter_record.value >= named_.size() ||
+		type_kind(parameter_type) == TypeKind::LvalueReference ||
+		type_kind(parameter_type) == TypeKind::RvalueReference ||
+		!empty_class_value_type(parameter_type))
+		return false;
+	return argument.fact.valid() &&
+		argument.category == SemanticValueCategory::Lvalue &&
+		strip_cv_type(expression_object_type(argument.type)) == parameter_object;
+}
+
 TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	const std::vector<ValueRef>& candidates,
 	const std::vector<const PA10AstNode*>& argument_nodes,
@@ -107,44 +148,8 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	{
 		if (!allow_pa16_class_value || parameter >= arguments.size())
 			return false;
-		const FunctionFact* function = function_fact_for_binding(
-			candidate_ref.binding);
-		if (function == NULL || !function->binding.valid() ||
-			function->binding != candidate_ref.binding)
-			return false;
-		if (function->is_constructor)
-		{
-			if (!narrow_class_value_constructor(*function))
-				return false;
-		}
-		else if (!function->owner.valid() || function->owner.value >= scopes_.size() ||
-			scopes_[function->owner.value].kind != ScopeKind::Namespace)
-			return false;
-		if (parameter != 0 || candidate_ref.binding.value >= bindings_.size())
-			return false;
-		const TypeId function_type = binding(candidate_ref.binding).type;
-		if (!function_type.valid() || function_type.value >= types_.size() ||
-			type_kind(function_type) != TypeKind::Function ||
-			types_[function_type.value].variadic ||
-			types_[function_type.value].parameters.size() != 1 ||
-			types_[function_type.value].parameters.front() != parameter_type ||
-			class_value_type(types_[function_type.value].result))
-			return false;
-		const TypeId parameter_object = strip_cv_type(
-			expression_object_type(parameter_type));
-		const NamedRecordId parameter_record = named_record_for_type(
-			parameter_object);
-		if (!parameter_record.valid() || parameter_record.value >= named_.size() ||
-			type_kind(parameter_type) == TypeKind::LvalueReference ||
-			type_kind(parameter_type) == TypeKind::RvalueReference)
-			return false;
-		if (!empty_class_value_type(parameter_type))
-			return false;
-		const ExprInfo& argument = arguments[parameter];
-		return argument.fact.valid() &&
-			argument.category == SemanticValueCategory::Lvalue &&
-			strip_cv_type(expression_object_type(argument.type)) ==
-			parameter_object;
+		return supports_pa16_class_value_parameter(candidate_ref, parameter,
+			arguments[parameter], parameter_type);
 	};
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{

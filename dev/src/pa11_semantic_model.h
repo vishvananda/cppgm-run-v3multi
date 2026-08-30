@@ -2183,7 +2183,7 @@ private:
 	;
 	TypeId function_result_type(TypeId type) const
 	;
-	bool class_value_type(TypeId type) const; bool empty_class_value_type(TypeId type) const; bool narrow_class_value_constructor(const FunctionFact& function) const;
+	bool class_value_type(TypeId type) const; bool empty_class_value_type(TypeId type) const; bool narrow_class_value_constructor(const FunctionFact& function) const; bool supports_pa16_class_value_parameter(const ValueRef& candidate, std::size_t parameter, const ExprInfo& argument, TypeId parameter_type) const;
 	TypeId callable_function_type(TypeId type) const
 	;
 	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId(), TypeId source_operation_type = TypeId(), BindingId source_binding = BindingId()) const;

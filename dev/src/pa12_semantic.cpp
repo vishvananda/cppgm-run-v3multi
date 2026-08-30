@@ -2268,8 +2268,7 @@ SemanticFactId PA11SemanticModel::semantic_declaration(const PA10AstNode& node, 
 	declaration->semantic_count = list.children.size(); declaration->lifetime_count = lifetime_facts_.size() - declaration->lifetime_begin;
 	return declaration_semantic_ids_[declaration->semantic_begin];
 }
-FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(
-	const NamePath& path, ScopeId scope, const ExprInfo& argument) const
+FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(const NamePath& path, ScopeId scope, const ExprInfo& argument) const
 {
 	const std::vector<ValueRef> candidates = lookup_value_path(path, scope);
 	ValueRef selected;
@@ -2278,33 +2277,31 @@ FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(
 	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
 		const Binding& candidate = binding(candidates[i].binding);
-		if (candidate.kind != BindingKind::Function ||
-			type_kind(candidate.type) != TypeKind::Function)
+		if (candidate.kind != BindingKind::Function || type_kind(candidate.type) != TypeKind::Function)
 			continue;
 		const TypeKey& function = types_[candidate.type.value];
 		if (function.parameters.size() != 1)
 			continue;
-		const ConversionChoice choice = conversion_for(argument,
-			function.parameters.front(),
-			semantic_facts_[argument.fact.value].source, scope);
-		if (!choice.valid)
+		const ConversionChoice choice = conversion_for(argument, function.parameters.front(), semantic_facts_[argument.fact.value].source, scope);
+		ConversionChoice selected_choice = choice;
+		if (choice.valid && supports_pa16_class_value_parameter(candidates[i], 0, argument, function.parameters.front()))
+			selected_choice = ConversionChoice(true, 0, ConversionKind::ClassValue);
+		if (!selected_choice.valid)
 			continue;
-		const int comparison = have_selected ? compare_conversion_choices(
-			choice, selected_conversion) : -1;
+		const int comparison = have_selected ? compare_conversion_choices(selected_choice, selected_conversion) : -1;
 		if (!have_selected || comparison < 0)
 		{
 			have_selected = true;
 			ambiguous_best = false;
 			selected = candidates[i];
-			selected_conversion = choice;
+			selected_conversion = selected_choice;
 		}
 		else if (comparison == 0)
 			ambiguous_best = true;
 	}
 	if (ambiguous_best)
 		throw std::runtime_error("PA12 ambiguous call");
-	return have_selected ? FunctionIdResolution(true, selected,
-		selected_conversion) : FunctionIdResolution();
+	return have_selected ? FunctionIdResolution(true, selected, selected_conversion) : FunctionIdResolution();
 }
 ExprInfo PA11SemanticModel::semantic_single_argument_call(
 	const PA10AstNode& node, const FunctionIdResolution& resolution,
@@ -2315,9 +2312,14 @@ ExprInfo PA11SemanticModel::semantic_single_argument_call(
 		FunctionDeclarationKind::Deleted)
 		throw std::runtime_error("PA12 call selects deleted function");
 	const TypeKey& function = types_[binding(selected.binding).type.value];
-	const ExprInfo converted = apply_context_conversion(argument,
-		function.parameters.front(),
-		semantic_facts_[argument.fact.value].source, scope);
+	ExprInfo converted = argument;
+	if (resolution.conversion.kind == ConversionKind::ClassValue)
+	{
+		set_fact_conversion(argument.fact, add_conversion(argument.type, function.parameters.front(), resolution.conversion));
+	}
+	else
+		converted = apply_context_conversion(argument, function.parameters.front(),
+			semantic_facts_[argument.fact.value].source, scope);
 	const TypeId result_type = function.result;
 	SemanticValueCategory result_category = SemanticValueCategory::Prvalue;
 	if (type_kind(result_type) == TypeKind::LvalueReference)
