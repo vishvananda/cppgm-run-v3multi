@@ -386,6 +386,18 @@ void PA11SemanticModel::collect_associated_adl_namespaces(
 	if (associated_namespaces == NULL)
 		throw std::runtime_error("PA12 associated ADL namespace output is missing");
 	associated_namespaces->clear();
+	std::vector<ScopeId> pending;
+	const auto enqueue_namespace = [this, associated_namespaces, &pending](
+		ScopeId candidate) {
+		if (!candidate.valid() || candidate.value >= scopes_.size() ||
+			scopes_[candidate.value].kind != ScopeKind::Namespace)
+			return;
+		for (std::size_t i = 0; i < associated_namespaces->size(); ++i)
+			if ((*associated_namespaces)[i] == candidate)
+				return;
+		associated_namespaces->push_back(candidate);
+		pending.push_back(candidate);
+	};
 	for (std::size_t i = 0; i < associated_records.size(); ++i)
 	{
 		if (!associated_records[i].valid() ||
@@ -398,17 +410,27 @@ void PA11SemanticModel::collect_associated_adl_namespaces(
 		while (cursor.valid() && cursor.value < scopes_.size() &&
 			scopes_[cursor.value].kind != ScopeKind::Namespace)
 			cursor = scopes_[cursor.value].parent;
-		if (!cursor.valid())
-			continue;
-		bool seen = false;
-		for (std::size_t j = 0; j < associated_namespaces->size(); ++j)
-			if ((*associated_namespaces)[j] == cursor)
-			{
-				seen = true;
-				break;
-			}
-		if (!seen)
-			associated_namespaces->push_back(cursor);
+		if (cursor.valid() && cursor.value < scopes_.size())
+			enqueue_namespace(cursor);
+	}
+	// Apply only the standard inline-namespace closure to each first
+	// enclosing namespace.  An inline namespace contributes its enclosing
+	// namespace, and a namespace contributes directly contained inline
+	// namespaces; ordinary namespace parents are never climbed.
+	for (std::size_t i = 0; i < pending.size(); ++i)
+	{
+		const ScopeId current = pending[i];
+		const Scope& scope = scopes_[current.value];
+		if (scope.inline_namespace)
+			enqueue_namespace(scope.parent);
+		for (std::size_t j = 0; j < scope.children.size(); ++j)
+		{
+			const ScopeId child = scope.children[j];
+			if (child.valid() && child.value < scopes_.size() &&
+				scopes_[child.value].kind == ScopeKind::Namespace &&
+				scopes_[child.value].inline_namespace)
+				enqueue_namespace(child);
+		}
 	}
 }
 

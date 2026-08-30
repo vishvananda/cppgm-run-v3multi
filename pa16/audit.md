@@ -2,137 +2,161 @@
 
 ## Current Checkpoint Review
 
-This bounded PA16 checkpoint audit reviews clean landed commit
-`31a938ac01fdc9b5b5f4c625ecf0658d77284504` (`PA16: compact typed aggregate
-value initialization`) relative to `d503a9c0`.  The landed source increment
-is limited to `dev/src/pa15_lowering_construction.cpp`; this review follows
-the PA12 value-initialization facts through the PA15 constructor and LowIR
-owners.  No source repair is justified by this audit.  The follow-up changes
-are limited to this audit and plan record; no handout test, `.ref` fixture,
-sidecar, harness, comparator, reference material, generated output, coverage
-rule, source-set file, or unrelated source is changed.
+This final bounded checkpoint audit is for landed commit
+`ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` (`pa16 add source-point-aware
+associated ADL`) relative to `a9728454`.  The landed ownership path is
+`dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic_calls.cpp`,
+`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering_calls.cpp`,
+`dev/src/pa15_lowering_flow.cpp`, and `pa16/plan.md`.  The audit found one
+genuine in-scope defect in that path: associated namespace formation did not
+apply the standard inline-namespace closure.  The bounded repair is confined
+to `dev/src/pa12_semantic_calls.cpp`; course regression 426 covers it.  The
+documentation changes are this record and `pa16/plan.md`.  No handout test,
+`.ref` fixture, sidecar, harness, comparator, reference material, generated
+output, coverage rule, source-set file, or unrelated stage surface changed.
 
 The supplied turn-start/current authority in
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log` is
-`217/243` passing, with exactly `26` failures and `243/243` identities
-covered.  The pre-landed parent baseline `d503a9c0` was `216/243` with `27`
-failures; its complete 27-name set is the current 26-name set plus
-`pa16/tests/general/300-value-init-aggregate-with-nontrivial-member.t`.
-That is baseline context, not the current authority.
-
-StageProgressPreserved compares the fresh final PA16 run against the actual
-turn-start/current 26-failure set: final failures must be at most `26`, all
-`243` identities must be discovered and covered, and fresh-only failure
-identities must be `0`; extra passes cannot compensate for a fresh failure.
-The fresh final run preserves that authority exactly: `217/243` passed,
-`26` failures, `243/243` covered, fresh-only `0`, and authority-only `0`.
+`218/243` passing, exactly `25` failures, with all `243/243` test identities
+covered.  The parent checkpoint was `217/243` with `26` failures.  The landed
+increment removed exactly
+`pa16/tests/general/300-adl-using-declaration-source-point.t`; that is the
+parent-to-current authority relationship.  The authorized post-repair full
+stage also reports `218/243`, exactly `25` failures, and `243/243` coverage.
+Sorted failure identities compare exactly: authority `25`, fresh `25`,
+fresh-only `0`, authority-only `0`; the reference and fresh status inventories
+each contain all `243` identities with no missing artifacts.
 
 ### Contract and ownership trace
 
-The relevant typed path is:
+The representative ordinary-call path is:
 
 ```text
-PA12 aggregate/value-initialization fact and synthetic constructor selection
-  -> PA15 initialize_constructor_value / lower_constructor_action
-  -> declaration-ordered emit_constructor_elements
-  -> canonical TypeId -> layout-derived LowType object bytes/alignment
-  -> zero_initialize_value_initialized_object -> typed LowIR stores
+function-definition ScopeId
+  -> lookup_source_point
+  -> ordinary lookup_value_path at that SourcePoint
+  -> direct candidates + associated ADL candidates
+  -> typed overload selection and CallExpression fact
+  -> PA15 reachable-function demand/declaration plan
+  -> lower_call and the existing call boundary
 ```
 
-PA12 marks empty aggregate construction as `value_initialize` and publishes
-the selected synthetic constructor/action facts.  PA15 consumes those facts
-without reparsing spelling.  The five existing helper call sites cover the
-terminal class-element path, aggregate/member initialization, and direct
-constructor-action lowering.  Each path validates the exact target type and
-constructor record, derives complete object size/alignment from the canonical
-`TypeId`/`RecordLayout`, and computes the destination through the existing
-typed root, member, or array projection.  Constructor actions remain in their
-existing declaration/array order.
+`semantic_call_expression` admits ADL only for an unqualified, non-template
+single `IdExpression`.  It obtains the function-definition `SourcePoint` with
+`lookup_source_point(scope)` and passes it to the existing typed
+`lookup_value_path`; omitted points follow the same source-point helper.  The
+ordinary result is inspected before ADL: a non-function, a class member, or a
+function whose canonical origin is block scope suppresses ADL, while
+namespace-owned ordinary functions permit the ordinary-plus-ADL union.  The
+union condition preserves the ordinary-only and ADL-only cases and does not
+retry lookup after overload failure.
 
-For an object target, the helper rejects an incomplete or zero-sized span and
-an unrepresentable byte count, then walks `offset` from zero to `bytes`.  It
-selects an 8-, 4-, 2-, or 1-byte integer store only from remaining bytes and
-the byte offset; the landed change correctly removed object-alignment
-divisibility from those scalar-width choices.  Nonzero offsets use an `i8`
-`index`, so the address advances in bytes.  The invariant is exact: each
-chosen width is no greater than the remaining span, the next offset is the
-old offset plus that width, and the final offset is exactly `bytes`.  Thus
-scalar tails cannot overrun or leave a gap.
+When ADL is allowed, PA12 analyzes each ordinary argument once into `ExprInfo`
+and uses those typed facts to form associated objects.  It does not rescan
+source text or re-run an independent expression analyzer.  The associated
+record walk strips only the expression cv/reference wrapper, accepts the
+typed named class/enum record, follows the validated direct-base chain, and
+adds enclosing class records.  Record identity is `NamedRecordId`; duplicate
+records are removed in stable visitation order.  Pointer/array recursive
+association is not invented in this checkpoint and remains outside its
+declared boundary.
 
-`obj<8x4>` is the representative low-alignment case: the emitted clear is one
-`store i64 0` before the nontrivial member constructor.  The declared object
-alignment is layout metadata, not a natural-width restriction on an ordinary
-LowIR store.  LowIR load/store instructions carry no alignment operand, the
-validator imposes no natural-alignment check, and the Linux x86_64 backend
-emits raw integer moves; unaligned integer stores are valid on this target.
-This also covers a packed/under-aligned subobject whose actual address is not
-aligned to the member's scalar width.  It is a target/backend fact, not a
-portable-language claim.
+Each associated record maps to its first enclosing namespace.  Namespace
+parents are not climbed.  The repaired `collect_associated_adl_namespaces`
+then applies only the standard inline closure: an inline namespace contributes
+its parent, and a namespace contributes directly contained inline namespaces;
+the closure is transitive through the typed `Scope::children` relations.  It
+does not traverse using-directive targets.  For every associated namespace,
+`append_adl_function_candidates` calls the existing
+`lookup_value_graph(..., include_using=false, point)`.  Thus direct
+`ValueEntry` entries, including direct using-declarations with canonical
+origin, participate; using-directive edges do not.  Source visibility is
+checked by the existing graph and relation point checks.  Hidden-friend
+sidecars are separately filtered by their declaration point and must retain a
+canonical namespace owner.
 
-Arrays and nested objects retain the existing recursive address and action
-walk.  The focused array control emits four ordered `i64` element stores;
-the functional-cast aggregate emits four stores covering its 32-byte object;
-and the landed target emits the complete zero clear before its nested
-nontrivial constructor.  No member-order, nested-address, or aggregate
-appertainment fact is recreated in this helper.
+The inline repair is necessary because the existing value graph returns after
+finding visible direct values and therefore need not descend into an inline
+child.  An associated outer namespace with a direct but nonviable overload
+could consequently hide a viable inline overload.  Explicitly collecting the
+inline closure makes that case queryable while preserving the graph's ordinary
+lookup behavior and its source-point filtering.  A type declared in an inline
+namespace can likewise associate its enclosing namespace's function set.
 
-Zeroing is emitted before the corresponding constructor call and its EH try
-region.  Stores and address formation do not add a throwing edge.  If a later
-constructor throws, the existing completed-element list still cleans up only
-successfully constructed prior elements; a zeroed-but-not-constructed element
-is not destructed.  The helper therefore changes neither cleanup ownership nor
-reverse destruction order.
+All candidate paths validate canonical `(ScopeId, BindingId)` ownership and
+deduplicate that pair in stable order.  Typed overload selection then applies
+the existing conversion/default-argument rules and publishes the selected
+binding, owner scope, callable type, result category, and typed child facts in
+one `CallExpression`.  The token-operator collector shares the associated
+record/namespace machinery and `include_using=false` graph while retaining
+operator-token filtering and hidden-friend source checks.
+
+PA15 consumes the published call fact through normal reachable-function
+demand, declaration materialization, and `lower_call`; no alternate lowering
+path is introduced.  The sole class-by-value bridge is deliberately narrow:
+one namespace-owned non-constructor, nonvariadic function with one empty-class
+by-value parameter and a non-class result, an exact `ClassValue` conversion,
+and an lvalue argument with the same canonical object record.  PA15 rechecks
+the binding, function ABI, conversion, category, and object identity, lowers
+the source expression once with deferred conversion, and passes the existing
+opaque `obj<1x1>` temporary/address without class-copy materialization.
+General class pass-by-value, class return-by-value, and broader constructor or
+object cases remain rejected.  No host compiler, reference binary, text
+identity, program-wide scan, second lookup engine, retry, or alternate
+lowerer is used.
 
 ### Findings and bounded repair
 
-The landed source change is semantically sufficient.  Removing the alignment
-tests fixes the real owner-level issue: a valid exact-width clear was rejected
-solely because the object's declared layout alignment was below the scalar
-store width.  The size/alignment checks, canonical target validation, byte
-indexing, and constructor sequencing remain intact.  No additional production
-path or course regression is needed.
-
-PA13's `zeroinit <bytes>x<align>` contract is relevant but does not require a
-repair here.  Support for that bulk operation exists, but substituting it is
-not required for this bounded scalar-width correctness/representation fix;
-doing so would be a distinct public LowIR-shape optimization.  The current
-ordinary-store path is valid on the specified LowIR/Linux x86_64 boundary.
-That leaves a possible future representation optimization, outside this
-checkpoint and non-blocking.
+The inline-namespace omission was the only genuine defect found within the
+landed ownership path.  The repair is a small typed closure over already
+materialized namespace relations; it neither changes ordinary namespace
+parent association nor opens using-directive traversal.  The current
+turn-start authority already records the landed source-point using-declaration
+fix.  The 25 residual identities were not re-audited or reclassified here.
 
 ### Performance evidence
 
-The helper remains a single bounded pass, with O(bytes/8) scalar stores and
-constant-width selection state; no scan, allocation, retry, cache, or alternate
-lowerer was added.  Structural evidence, rather than an unsupported timing
-claim, is the relevant result: the target changed from two `i32` stores plus an
-offset projection to one `i64` store before the nested call.  The focused
-generated LowIR also shows four stores for the 32-byte aggregate and four
-ordered stores for the array control.  No timing or RSS result is claimed in
-this checkpoint.
+The repair's work is structurally bounded by the already associated records,
+their validated base/enclosing-class relations, and the directly reached
+namespace child lists.  Each associated namespace is enqueued once; lookup
+generation marks bound and cycle-protect each individual graph traversal, not
+separate queries started with a new generation.  Candidate deduplication
+compares only the collected canonical identity list.
+No unrelated program declaration scan, allocation cache, retry, or second
+lowerer was added.  This is structural evidence only; no timing, RSS, or
+unsupported performance claim is made.
 
 ### Focused validation and residual boundary
 
-Focused and final validation is:
+The compact post-repair validation is:
 
+- `sh -n cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`: status `0`.
 - `make -C dev cppgm++ CXX=g++`: status `0`.
-- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-value-init-aggregate-with-nontrivial-member.t tests/general/300-array-member-empty-paren-value-init.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/general/200-aggregate-class-member-subobject-init-target.t tests/general/200-member-initializer-aggregate-member.t tests/general/100-default-member-initializer-aggregate-member.t'`: status `0`, `PASS (6/6)`.
-- `make test-pa16`: status `2`, `217/243` passed, exactly `26` failures,
-  and `243/243` identities covered.
-- `KEEP_GOING=1 CPPGM_CHECK_MODE=1 CPPGM_CHECK_AUTO_KEEP_GOING=1 scripts/compare_results.pl ref my tests` (from `pa16`): status `1` because the expected residuals remain; exact comparison against the supplied current authority is `26` vs `26`, fresh-only `0`, authority-only `0`.
-- Recursive status-artifact audit: `243` tests discovered, `243` reference
-  statuses, `243` fresh statuses, `243` covered, missing `0`.
+- `make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/300-adl-using-declaration-source-point.t tests/general/200-implicit-member-call-suppresses-adl.t tests/general/300-hidden-friend-definition-adl-call.t tests/general/300-enum-operator-adl-selects-matching-overload.t tests/general/300-basic-operator-overloads.t tests/spec/300-hidden-friend-not-visible-to-unrelated-adl.t tests/spec/300-hidden-friend-not-visible-to-qualified-lookup.t tests/spec/300-operator-lookup-ordinary-adl-union.t tests/spec/300-lazy-class-lookup-ignores-later-using-directive.t tests/general/300-using-declaration-function-hides-tag.t tests/general/200-nested-out-of-class-constructor-enclosing-type.t tests/general/300-nested-enum-hidden-friend-bitmask-adl.t'`: status `2`, `11/12`; only the known `300-nested-enum-hidden-friend-bitmask-adl.t` LowIR comparison residual fails.
+- `make -C pa12 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-inline-namespace-unqualified-call.t tests/general/200-using-directive-call.t'`: status `0`, `PASS (2/2)`.
+- `sh cppgm.tests/course/pa16/426-typed-adl-inline-namespace-regression.sh`: status `0`; two inline-namespace programs run successfully, while ordinary-parent and using-directive association controls reject as expected.
+- `git diff --check`: final status `0`.
+
+- `make test-pa16`: exit `2`, `218/243` passed, exactly `25` failures, and
+  `243/243` identities covered.
+- Exact sorted failure-identity comparison against
+  `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+  authority `25`, fresh `25`, fresh-only `0`, authority-only `0`.
+  Inventory is `243` discovered, `243` reference status sidecars, `243`
+  fresh status sidecars, with missing reference `0` and missing fresh `0`.
 - `n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi`: status `0`, `1167/1167`.
 - `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: status `0`
-  with five known `bad-division` warnings in existing headers:
+  with five existing `bad-division` warnings and no fatal findings:
   `abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
   `pa11_semantic_model.h`, and `pa15_lowering.h`.
-- `git diff --check`: status `0`.
+- Bounded changed-path and coverage audit: status `0`; status paths `4`, tracked
+  paths `3`, staged paths `0`, unapproved paths `0`, discovered tests `243`,
+  reference sidecars `243`, fresh sidecars `243`, missing reference/fresh
+  `0/0`, and course mode `775`.
 
-The complete current 26-name authority map and the pre-landed 27-name
-baseline relationship are kept in `pa16/plan.md`; no unrelated residual was
-re-audited.  The next boundary remains associated-namespace ADL, represented
-by `pa16/tests/general/300-adl-associated-namespace-does-not-climb-parents.t`.
+The complete current 25-name authority map and parent relationship are in
+`pa16/plan.md`; no unrelated residual was re-audited.  PA16 remains
+incomplete because those same 25 identities remain failures.
 
 ## Historical Pack Layout Review (08472cce)
 
@@ -3074,3 +3098,4 @@ conversion slices.
 | `a5c8e166` typed packed-bit-field value/update checkpointAudit | Final bounded review of `a5c8e1664e5059e2453e3252021f3843d0ab23b6` relative to `7f4fe2d4`: PA10 declaration-specifier tokens, PA12 `BitFieldFact` declared/storage/operation/width/mask/signedness, PA11 layout, and PA15 typed projection/replay, extraction/conversion, encode/RMW store, aggregate initialization, and prefix/postfix ownership are traced. The audit repairs full-width plain-`int` promotion to follow the selected unsigned fact while preserving narrow `int` promotion and explicit signed/signed-enum behavior. The copy-suppression flag is proven to omit only redundant bit-field publication; non-bit-field, floating, bool, pointer, reference, and value-category materialization remains. Direct aggregate, nested, and constructor roots are bounded to storage-address, pointer-value, and pointer-load replay respectively; initializers are single-evaluated and packed neighbors are preserved. Focused build, course 412/422/424, probes, and diff-check pass; the 10-test matrix is `7/10` with only the known prefix and two signed-read oracle tensions. Final PA16 is status `2` at `215/243`, exactly `28` failures and `243/243` covered; independent authority/fresh failures are `28/28`, authority-only/fresh-only `0/0`, inventory/run total `243/243`, and unexpected failures `0`. Through-PA15 is status `0` at `1167/1167`; file audit is status `0` with five known warnings; durable evidence is under `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-plain-int-bitfield-checkpoint-audit-20260830/`. No handout, fixture, reference, harness, comparator, coverage surface, or source-set file changed; the sole added regression is course 424. |
 | `1d7e6860` alias direct-base mem-initializer checkpointAudit | Final bounded audit of landed `1d7e68605aec65b6976772ff117a433cbc232749` relative to `727417db`: N3485 unqualified lookup/member-hiding, canonical alias resolution, injected-name fallback, source-point/access context, duplicate/malformed handling, typed action ranges/order, and PA15 owner/type/layout consumption are traced. The repair applies member-before-type classification and exact named-type matching; steering additionally hardens BindingId bounds before sidecar access and keeps blocked-value lookup single-read. Course 425 covers direct base-name/alias-name hiding, the inherited non-constructor collision, duplicate detection, array-alias rejection, and nested-type hiding. Final PA16 is `216/243` with `27` failures and `243/243` covered; exact authority/final comparison is `27/27`, authority-only/fresh-only `0/0`, and missing artifacts `0`. Focused handout `6/6`, courses 408/409/418/425, build, syntax, reductions, smoke evidence, through-PA15 `1167/1167`, file audit `0` with five known warnings, diff-check, and bounded path audit pass. No handout, fixture, reference, harness, comparator, generated output, coverage rule, or source-set file changed. |
 | `31a938ac` typed aggregate value-initialization compact zero-store checkpointAudit | Final bounded audit of landed `31a938ac01fdc9b5b5f4c625ecf0658d77284504` relative to `d503a9c0`: PA12 value-initialization/synthetic-constructor facts, canonical PA15 `TypeId`/layout, byte-complete 8/4/2/1 scalar clearing, low-alignment x86_64 safety, declaration-ordered nested construction, array paths, and existing cleanup boundaries are traced. The landed alignment-width repair is sufficient; no additional source or regression repair is made. Fresh PA16 is `217/243` with `26` failures and `243/243` covered; exact comparison against the current 26-failure authority is `26` vs `26`, fresh-only `0`, authority-only `0`, and no missing artifacts. Through-PA15 is `1167/1167`; file audit is `0` with five known header warnings; diff-check is `0`; only the two approved documentation paths changed. |
+| `ab1b2a8c` source-point-aware associated ADL checkpointAudit | Final bounded audit of landed `ab1b2a8c4a20752434d608b5aef04ef328e5fe5e` relative to `a9728454`: ordinary definition-`SourcePoint` lookup, ADL suppression/union, typed associated class/enum/base/enclosing records, first-namespace and inline closure, direct using-declarations without using-directives, hidden-friend visibility, canonical candidate identity/order, typed call publication, PA15 demand/declaration/call lowering, and the narrow empty-class opaque ABI bridge are traced. The bounded repair adds only typed inline-namespace closure in `dev/src/pa12_semantic_calls.cpp`; course 426 validates two runtime cases and two rejection cases. Final `make test-pa16` is exit `2` at `218/243`, exactly `25` failures, and `243/243` identities covered; exact sorted comparison with the supplied authority is `25` vs `25`, fresh-only `0`, authority-only `0`, with `243` discovered identities, `243` reference sidecars, `243` fresh sidecars, and missing `0/0`. Focused PA16 is `11/12` with only the known nested-enum LowIR residual; PA12 controls are `2/2`; course 426 and `sh -n` pass; through-PA15 is `1167/1167`; file audit exits `0` with five existing `bad-division` warnings and no fatals; diff-check and the bounded path/coverage audit exit `0`. The same 25 residual identities remain, so PA16 remains incomplete; no unrelated residual was re-audited. | completed audit |
