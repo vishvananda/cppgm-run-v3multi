@@ -830,13 +830,24 @@ bool fact_cv_at(const std::vector<PA10Token>& tokens,
 
 bool fact_parameter_specifier_start_at(
 	const std::vector<PA10Token>& tokens, std::size_t absolute,
-	std::size_t& work)
+	std::size_t& work, bool elaborated_only)
 {
 	fact_step(work);
 	if (absolute >= tokens.size() || tokens[absolute].kind != PA10TokenKind::Fixed)
 		return false;
 	const SimpleTokenType type = tokens[absolute].fixed;
-	return is_type_keyword_impl(type) || is_cv_impl(type) ||
+	const bool elaborated_type_key =
+		type == SimpleTokenType::KW_CLASS ||
+		type == SimpleTokenType::KW_STRUCT ||
+		type == SimpleTokenType::KW_UNION ||
+		type == SimpleTokenType::KW_ENUM;
+	// Elaborated-type keys are parameter specifiers too.  The first-position
+	// route asks for only this key subset so existing built-in disambiguation
+	// remains unchanged; later positions use the complete parameter vocabulary.
+	if (elaborated_type_key || elaborated_only)
+		return elaborated_type_key;
+	return is_type_keyword_impl(type) ||
+		is_cv_impl(type) ||
 		type == SimpleTokenType::KW_TYPEDEF ||
 		type == SimpleTokenType::KW_EXTERN ||
 		type == SimpleTokenType::KW_STATIC ||
@@ -849,16 +860,6 @@ bool fact_parameter_specifier_start_at(
 		type == SimpleTokenType::KW_FRIEND ||
 		type == SimpleTokenType::KW_TYPENAME ||
 		type == SimpleTokenType::KW_DECLTYPE;
-}
-
-bool fact_elaborated_specifier_start_at(
-	const std::vector<PA10Token>& tokens, std::size_t absolute,
-	std::size_t& work)
-{
-	return fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_CLASS, work) ||
-		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_STRUCT, work) ||
-		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_UNION, work) ||
-		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_ENUM, work);
 }
 
 PA10ParenthesizedGroupKind fact_parenthesized_group_kind_at(
@@ -894,7 +895,7 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 	// expression in a parenthesized declarator/initializer.  Keep this
 	// discriminator at the shared indexed boundary so the actual specifier is
 	// still parsed once by parse_decl_specifier_seq/classify_elaborated_specifier.
-	if (fact_elaborated_specifier_start_at(tokens, open + 1, work))
+	if (fact_parameter_specifier_start_at(tokens, open + 1, work, true))
 		return NewParameterDefinite;
 	fact_step(work);
 	if (tokens[open + 1].kind == PA10TokenKind::Fixed)
@@ -1028,10 +1029,11 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 		if (valid && cursor == end)
 			return NewParameterAmbiguous;
 		// The first parameter may use a mock type-name while a later parameter
-		// begins with a fixed decl-specifier, as in (kind, int).  This indexed
-		// constant-time discriminator keeps the whole group on the parameter
-		// owner without scanning or constructing a trial AST.
-		if (fact_parameter_specifier_start_at(tokens, open + 3, work))
+		// begins with a fixed decl-specifier, as in (kind, int).  Reuse the
+		// delimiter-bounded scan's actual failure cursor so this also covers
+		// arbitrary subsequent positions without constructing a trial AST.
+		if (cursor < end && fact_parameter_specifier_start_at(tokens, cursor,
+			work, false))
 			return NewParameterAmbiguous;
 	}
 	if (fact_fixed_at(tokens, open, 2, SimpleTokenType::OP_COLON2, work))

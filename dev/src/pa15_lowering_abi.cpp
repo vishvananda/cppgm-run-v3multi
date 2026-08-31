@@ -20,21 +20,12 @@ std::string Pa15Lowerer::abi_variable_symbol(BindingId binding_id,
 
 std::vector<std::string> Pa15Lowerer::named_type_components(
 	NamedRecordId record) const{
-	if (!record.valid() || record.value >= model_.named_.size() ||
-		!model_.named_[record.value].name.valid())
+	if (!record.valid() || record.value >= model_.named_.size())
 		throw std::runtime_error("PA15 ABI named type has no name");
-	std::vector<std::string> reversed;
-	ScopeId scope = model_.named_[record.value].owner;
-	while (scope.valid())
-	{
-		const Scope& current = model_.scopes_[scope.value];
-		if (current.kind == ScopeKind::Namespace && current.name.valid())
-			reversed.push_back(model_.name_text(current.name));
-		scope = current.parent;
-	}
-	std::reverse(reversed.begin(), reversed.end());
-	reversed.push_back(model_.name_text(model_.named_[record.value].name));
-	return reversed;
+	const NamedRecord& named = model_.named_[record.value];
+	if (!named.name.valid())
+		throw std::runtime_error("PA15 ABI named type has no name");
+	return value_components(named.owner, named.name);
 }
 
 abi_mangle::AbiType Pa15Lowerer::abi_type_nested(TypeId type) const{

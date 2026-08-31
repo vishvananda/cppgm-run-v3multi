@@ -3,6 +3,170 @@
 ## Current Checkpoint Review
 
 This bounded checkpoint audit covers landed commit
+`29d9c4ce8cd2d9c85ae8de25ea3c3d8515520f4f` (`PA16 route elaborated types in
+parameter clauses`) relative to parent
+`6fc0a8124619282302c7ca1759245ca7a550a117`, together with the focused audit
+repairs in `dev/src/pa10_parser_support.cpp` and
+`dev/src/pa15_lowering_abi.cpp`.  The PA16 Assignment Boundary, applicable
+syntax contract and Out Of Scope text, `spec.md` Purpose and sections 1--5
+and 7, and the unchanged fixture/reference boundary,
+the active plan, this audit, the landed diff, the target test/ref for
+observation, and the named PA10/PA11/PA12/PA15 controls were inspected.  The
+turn-start tree was clean.  No tests, fixtures, references, exit-status
+sidecars, harnesses, comparators, generated outputs, coverage rules, or
+source-set files changed.
+
+### Authority and exact residual boundary
+
+The primary authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its turn-start `make test-pa16` result was status `2`, `228/243` passing, and
+exactly these 15 failures:
+
+```text
+pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-callable-field-hides-private-base-method.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-user-defined-string-literal-operator.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The final serial run is also status `2` at `228/243`, with exactly the same
+15 normalized identities.  The target
+`pa16/tests/general/200-elaborated-member-forward-type.t` is resolved; the
+comparison is authority `15`, fresh `15`, retained `15`, authority-only `0`,
+fresh-only `0`, with no compensated failure.  Discovered/reference/fresh
+inventories are `243/243/243`; all missing and unexpected comparisons are
+zero.
+
+### Complete typed ownership trace and findings
+
+The affected ownership path is:
+
+```text
+tokens
+  -> PA10 indexed delimiter/parenthesized-group fact
+  -> parse_decl_or_function / parse_decl_specifier_seq
+  -> ClassForwardDeclaration or enum elaborated declaration
+  -> PA11 ensure_named_class/add_type_binding canonical identity
+  -> PA12 typed member lookup and selected call fact
+  -> PA15 typed object/member/call LowIR and ABI lowering
+```
+
+The landed PA10 route correctly indexed the data-member declaration but did
+not classify an elaborated specifier at the first parameter of a function
+clause.  The first-position route now uses the shared
+`fact_parameter_specifier_start_at` owner in elaborated-only mode, recognizing
+only `class`, `struct`, `union`, and `enum` there.  This preserves the existing
+built-in first-position disambiguation.  The nearby duplicate
+`fact_elaborated_specifier_start_at` was removed rather than retaining two
+owners for the same four-key fact.
+
+For a bare-name prefix such as `(Y0, Y1, struct S*)`, the existing
+delimiter-bounded scan now passes its actual failure cursor to the shared
+parameter-specifier fact.  It therefore recognizes any subsequent position,
+not only `open + 3`; the parser still consumes the declaration once through
+`parse_class_declaration(true)`/`parse_enum_declaration(true)` and the
+existing `classify_elaborated_specifier` path.  Malformed forms remain on the
+normal failure path.
+
+PA11 publishes one canonical named identity through `ensure_named_class` and
+`add_type_binding`.  On the target, the member and parameter both use the
+single `Outer::Hidden` record; PA12 publishes the typed `Outer::set` member
+call and implicit object fact.  PA15 consumes those typed facts directly.
+The original five-line class-scope walk in `named_type_components` was
+semantically identical to `value_components`: both walk the typed owner chain,
+collect namespace and class names, reverse once, and append the owned name.
+`named_type_components` now validates its `NamedRecord` and delegates to
+`value_components(named.owner, named.name)`, leaving one canonical ABI owner
+walk.  No semantic reason made reuse unsafe.
+
+### Focused and broad evidence
+
+Focused build and controls passed:
+
+```text
+make -C dev cppgm++                                      status 0
+PA16 selected target plus four controls                  PASS (5/5)
+PA11 elaborated-type control                              PASS (1/1)
+PA12 enum/struct elaborated controls                      PASS (3/3)
+```
+
+Disposable parser controls returned status `0` for class/struct/union/enum
+starts in the second, third, and fourth parameter positions, including scoped
+enum forms.  The ordinary comma-expression control returned `0`; all four
+malformed elaborated forms returned `1`.  The target LowIR contains exactly:
+
+```text
+function @Outer__set(%this : ptr, %q : ptr) -> void [binding=strong, object=_ZN5Outer3setEPNS_6HiddenE]
+```
+
+The disposable ABI controls contain the exact qualified objects
+`_ZN1N3useEPNS_1SE` for a namespace-owned type and
+`_ZN5Outer3useEPNS_5InnerEPNS_4KindE` for nested class/enum types.
+
+The required serial gates passed as follows:
+
+```text
+make test-pa16
+status 2; TEST SUMMARY: 228 / 243 TESTS PASSED
+exact normalized identity comparison: authority 15, fresh 15,
+  retained 15, authority-only 0, fresh-only 0
+inventories: discovered/reference/fresh 243/243/243;
+  missing/unexpected 0/0
+
+n=16; make test-report-through-pa15
+status 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
+
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+status 0; six non-fatal bad-division warnings
+```
+
+The warnings are the existing header-body findings for `abi_mangle.h`,
+`cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`,
+`pa12_semantic_selection.h`, and `pa15_lowering.h`.
+
+### Architecture, bounds, and disposition
+
+The first elaborated-key decision is one charged fixed-token fact with four
+constant key comparisons and an immediate return; the full declaration is
+still parsed only by the existing PA10 owner.  Arbitrary later detection
+reuses the existing bare-name scan from `open + 1` through the current
+parenthesis's delimiter end.  Every token predicate in that scan goes through
+a charged `fact_*` helper, so its work is linear in the bounded group span,
+not an unbounded source or class-body scan.  The indexed reverse pass still
+classifies each parenthesized group once, and the parser retains its
+`96 * token_count + 2048` work limit and nesting bounds.  The focused
+second/third/fourth-position matrix is representative structural evidence;
+no timing or RSS claim is made.
+
+PA15 named-type ABI construction now reuses `value_components` for the sole
+typed namespace/class owner traversal.  The target, namespace, and nested
+class/enum object metadata above exercise the relevant paths.  No textual
+lookup, duplicate parser/model, fixture-specific branch, or host/reference
+tool invocation was added.
+
+The bounded checkpoint is complete.  Its only modified implementation paths
+are `dev/src/pa10_parser_support.cpp` and `dev/src/pa15_lowering_abi.cpp`,
+with this audit and `pa16/plan.md` as the only documentation paths.  PA16
+remains incomplete solely on the unchanged 15 residual identities; the next
+separate checkpoint is
+`pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`.
+No other residual was re-audited or repaired.
+
+## Historical Constructor-Overload Review (d5bf2600)
+
+This bounded checkpoint audit covers landed commit
 `d5bf26009aa73a113473070913e5fc199faf7081` (`PA16 fix constructor overload
 viability`) relative to `d5bf2600^`.  The audited ownership path is the seven
 landed source files named in the checkpoint request, plus the bounded PA12
@@ -3887,6 +4051,7 @@ conversion slices.
 | checkpoint | result and disposition |
 | --- | --- |
 | `d5bf2600` constructor-overload viability checkpointAudit | Completed bounded follow-up repair of the shared PA12 constructor/call owner: ambiguous constructor-level sequences remain viable UDCs, same-constructor UDCs retain typed second-standard-sequence ranking, access/deleted status is diagnosed after selection, inherited hiding uses contiguous typed indexes, and the inheriting-constructor publisher plus constructor/lifetime facts are extracted within the source-audit limits. The final hot-record probe is `ConversionChoice` parent/current `56/56` bytes and `ConversionScore` `20/40` bytes; the latter reuses standard payload fields for second-SCS detail and adds only typed UDC identity/markers. Focused build, the exact 7-test matrix, all discriminating access/deleted/ambiguity/inherited probes, and the same-constructor LowIR probe pass. Final `make test-pa16` is status `2` at `227/243` with exactly the unchanged 16 identities; normalized authority/fresh comparison is `16/16`, authority-only/fresh-only `0/0`, and discovered/reference/fresh coverage is `243/243/243`. Through-PA15 is `1167/1167`; file audit exits `0` with the six exact warnings recorded above; diff-check and bounded path/artifact checks pass. No handout/test/reference mutation; next checkpoint is the separate residual `200-elaborated-member-forward-type.t`. | completed audit |
+| `29d9c4ce checkpointAudit` | Completed the bounded PA10 elaborated-member parameter-clause audit and repair plus PA15 ABI owner consolidation. First-position elaborated keys use one charged shared fact; arbitrary later positions reuse the delimiter-bounded bare-name scan's actual failure cursor; PA15 named types delegate to `value_components`. Focused controls and exact target/namespace/nested-class-enum ABI probes pass. Final PA16 is `228/243` with the unchanged 15 identities, retained `15`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243`; through-PA15 is `1167/1167`; file audit is status `0` with six known warnings; no test, fixture, reference, sidecar, harness, comparator, generated-output, coverage, or source-set change. | completed audit |
 | `b58ddd2a` typed nullptr carrier checkpointAudit | Completed the bounded carrier audit and structural ABI extraction: PA11/PA12/PA15 typed ownership, exact pointer/bool endpoints, canonical i64/u8 carriers, lvalue source evaluation, and the narrow integer-zero consumer guard are recorded. Final post-extraction build and focused PA16 `1/1`, PA12 `4/4`, PA13 `1/1`, PA15 `1/1` pass; target/equality/pointer/endpoint LowIR is byte-identical across extraction; final PA16 is `225/243` with exactly 18 failures, exact comparison authority-only `0`/fresh-only `0`, and `243/243/243` inventories; prior-through is `1167/1167`; file audit passes with five known warnings; no fixture/reference change. Final changed paths are exactly `dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering_abi.cpp`, `dev/frontend_source_sets.mk`, `pa16/audit.md`, and `pa16/plan.md`. | completed audit |
 | `15e9897b` effective-using visibility and typed call-publication checkpointAudit | Final bounded audit of landed `15e9897bc038499f724d69cb3cfe70e806b9fb36` relative to its parent: common-ancestor effective-using registration, canonical lexical owner/source-point filtering, NamePath lookup, typed one-argument overload publication, and the existing PA15 narrow class-value boundary are traced. The directly caused deferred-PA12 local source-order leak is repaired with RAII lookup-point contexts at statement/call and nested identifier owners in the four approved sources. Focused PA16/PA12/PA15 matrices pass `12/12`, `6/6`, `6/6`; final PA16 is `219/243` with the exact supplied 24-failure set, fresh-only `0`, authority-only `0`, and `243/243/243` inventories; through-PA15 is `1167/1167`; file audit passes with five known warnings; exact six-path and artifact/coverage checks pass. PA16 remains incomplete with the same residual 24. No tests, fixtures, references, harnesses, comparators, generated outputs, coverage rules, or source-set files changed. |
 | `08472cce` typed pragma-pack record-layout checkpointAudit | Bounded audit of landed `08472cce8e96daa585f5f07f4ee9d2233e13ade9` relative to `0ff3fdef`: the shared preprocessing cap/stack, include and inactive-conditional behavior, ordered typed `PPPackDirective`, token-transparent posttoken handoff, PA10 whitespace-free boundary, PA11 binary-search lookup, `NamedRecord` cap, and canonical member/base/bit-field/final layout are traced. The audit repairs the wide-bit-field path to use capped storage alignment and makes raw/PA10 typed-fact validation reject invalid operation/state/order/boundary data, including facts after EOF; PA11 also checks the operation domain. Focused build, course 422 (`sh -n` plus execution), packed/natural/conditional/alignas/pop/string probes, and the temporary typed-buffer rejection probe pass. Supplied latest and fresh authority are both `210/243`, `33` failures, `243/243` covered; the durable exact comparison reports fresh-only `0`, authority-only `0`, inventory `243`, and unexpected `0`. The known `300-pragma-pack-followed-by-endif.t` LowIR trunc-before-zext shape remains unrelated. Through-PA15 is `1167/1167`; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-through-pa15-20260830.log`. File audit exits `0` with five known warnings and no fatals; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-file-audit-20260830.log`. Diff-check passes. No handout, fixture, reference, harness, source-set, or generated output changed; course 422 is the sole added public regression. PA16 remains incomplete. |
