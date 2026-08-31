@@ -57,7 +57,7 @@ checkpoint targets; no unrelated failure was compensated or displaced.
 
 ## Active Checkpoint
 
-The coherent implementation is validated and pending commit.
+The coherent implementation is validated and committed in `69bbe800`.
 
 Invariants:
 
