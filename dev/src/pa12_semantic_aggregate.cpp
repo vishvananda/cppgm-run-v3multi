@@ -106,8 +106,8 @@ struct PA11SemanticModel::AggregateAppertainer
 				// constructor selection can therefore initialize the subobject
 				// directly, preserving copy-elision and avoiding an untyped class
 				// value transfer through the enclosing aggregate.
-				return model_.semantic_aggregate_constructor_value(list, destination,
-					scope_, arguments, list.children.empty());
+				return model_.semantic_aggregate_constructor_value(
+					list, destination, scope_, arguments, list.children.empty());
 			}
 		}
 		if (record.valid() && record.value < model_.named_.size() &&

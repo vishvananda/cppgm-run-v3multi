@@ -28,6 +28,7 @@ write_source()
     case "$mode" in
       pure) argument=$i ;;
       side) argument=$([ "$i" -eq 0 ] && echo 'side()' || echo "$i") ;;
+      body) argument=$i ;;
       volatile) argument=$([ "$i" -eq 0 ] && echo 'source' || echo "$i") ;;
       *) echo "unknown source mode: $mode" >&2; exit 1 ;;
     esac
@@ -35,11 +36,15 @@ write_source()
     i=$((i + 1))
   done
   {
-    if [ "$mode" = side ]; then
+    if [ "$mode" = side ] || [ "$mode" = body ]; then
       printf '%s\n' 'int side() { return 7; }'
     fi
     printf '%s\n' 'struct value {'
-    printf '  value(%s) {}\n' "$params"
+    if [ "$mode" = body ]; then
+      printf '  value(%s) { side(); }\n' "$params"
+    else
+      printf '  value(%s) {}\n' "$params"
+    fi
     printf '%s\n' '};' 'struct holder {' '  value first;' '  int second;' '};'
     printf '%s\n' 'int main() {'
     if [ "$mode" = volatile ]; then
@@ -83,6 +88,19 @@ side_constructor_calls=$(printf '%s\n' "$side_main" |
   rg -c 'call void @value__value' || echo 0)
 if [ "$side_calls" -ne 1 ] || [ "$side_constructor_calls" -ne 1 ]; then
   echo 'side-effecting aggregate constructor argument was incorrectly elided' >&2
+  exit 1
+fi
+
+body_source=$build_dir/body.cpp
+body_output=$build_dir/body.lowir
+write_source body "$body_source"
+"$app" --emit-lowir -O0 -o "$body_output" "$body_source"
+body_main=$(main_body "$body_output")
+body_side_calls=$(rg -c 'call i32 @side[(]' "$body_output" || echo 0)
+body_constructor_calls=$(printf '%s\n' "$body_main" |
+  rg -c 'call void @value__value' || echo 0)
+if [ "$body_side_calls" -ne 1 ] || [ "$body_constructor_calls" -ne 1 ]; then
+  echo 'effectful aggregate constructor body was incorrectly elided' >&2
   exit 1
 fi
 

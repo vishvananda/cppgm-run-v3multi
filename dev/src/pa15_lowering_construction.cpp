@@ -943,58 +943,59 @@ const FunctionFact& Pa15Lowerer::checked_constructor_function(
 
 void Pa15Lowerer::initialize_constructor_noop_caches() const
 {
-	if (constructor_noop_states_.size() == model_.function_facts_.size() && constructor_noop_results_.size() == model_.function_facts_.size() &&
-		constructor_noop_invalid_.size() == model_.function_facts_.size() && zero_initialization_noop_states_.size() == model_.types_.size() &&
-		zero_initialization_noop_results_.size() == model_.types_.size() && zero_initialization_noop_invalid_.size() == model_.types_.size())
+	const std::size_t function_cache_size = model_.function_facts_.size() * 2;
+	if (constructor_noop_states_.size() == function_cache_size &&
+		zero_initialization_noop_states_.size() == model_.types_.size())
 		return;
-	constructor_noop_states_.assign(model_.function_facts_.size(), ConstructorRuntimeCacheState::Unseen);
-	constructor_noop_results_.assign(model_.function_facts_.size(), 0);
-	constructor_noop_invalid_.assign(model_.function_facts_.size(), 0);
+	constructor_noop_states_.assign(function_cache_size, ConstructorRuntimeCacheState::Unseen);
+	constructor_noop_results_.assign(function_cache_size, 0);
+	constructor_noop_invalid_.assign(function_cache_size, 0);
 	zero_initialization_noop_states_.assign(model_.types_.size(), ConstructorRuntimeCacheState::Unseen);
 	zero_initialization_noop_results_.assign(model_.types_.size(), 0);
 	zero_initialization_noop_invalid_.assign(model_.types_.size(), 0);
 }
 
-bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id, bool require_empty_parameters) const
+bool Pa15Lowerer::constructor_function_is_noop(
+	FunctionFactId function_id, bool require_empty_parameters) const
 {
 	initialize_constructor_noop_caches();
-	if (!function_id.valid() || function_id.value >= model_.function_facts_.size() ||
-		function_id.value >= constructor_noop_states_.size() ||
-		constructor_noop_states_.size() != model_.function_facts_.size() ||
-		constructor_noop_results_.size() != model_.function_facts_.size() ||
-		constructor_noop_invalid_.size() != model_.function_facts_.size())
+	if (!function_id.valid() ||
+		function_id.value >= model_.function_facts_.size())
 		return false;
 	const std::size_t index = function_id.value;
-	if (constructor_noop_states_[index] ==
+	const std::size_t cache_index = (require_empty_parameters ? 0 :
+		model_.function_facts_.size()) + index;
+	if (cache_index >= constructor_noop_states_.size() ||
+		cache_index >= constructor_noop_results_.size() ||
+		cache_index >= constructor_noop_invalid_.size())
+		return false;
+	if (constructor_noop_states_[cache_index] ==
 		ConstructorRuntimeCacheState::Complete)
-		return constructor_noop_results_[index] != 0 &&
-			constructor_noop_invalid_[index] == 0;
-	if (constructor_noop_states_[index] ==
+		return constructor_noop_results_[cache_index] != 0 &&
+			constructor_noop_invalid_[cache_index] == 0;
+	if (constructor_noop_states_[cache_index] ==
 		ConstructorRuntimeCacheState::InProgress)
 	{
-		constructor_noop_invalid_[index] = 1;
+		constructor_noop_invalid_[cache_index] = 1;
 		return false;
 	}
-	constructor_noop_states_[index] =
+	constructor_noop_states_[cache_index] =
 		ConstructorRuntimeCacheState::InProgress;
 	bool result = false;
 	const FunctionFact& function = model_.function_facts_[index];
 	do
 	{
 		if (!function.is_constructor || function.is_destructor ||
-			!function.binding.valid() || function.binding.value >=
-			model_.bindings_.size() || function.binding.value >=
-			model_.binding_owners_.size())
+			!function.binding.valid() || function.binding.value >= model_.bindings_.size() || function.binding.value >= model_.binding_owners_.size())
 			break;
 		const Binding& binding = model_.binding(function.binding);
-		if (binding.kind != BindingKind::Function || !binding.type.valid() ||
-			binding.type.value >= model_.types_.size() ||
+		if (binding.kind != BindingKind::Function || !binding.type.valid() || binding.type.value >= model_.types_.size() ||
 			model_.type_kind(binding.type) != TypeKind::Function)
 			break;
 		const TypeKey& signature = model_.types_[binding.type.value];
 		if (signature.result != model_.fundamental(FundamentalType::Void) || signature.variadic ||
-			(require_empty_parameters && !signature.parameters.empty()) ||
-			function.default_argument_count != 0 || !function.function_scope.valid() ||
+			(require_empty_parameters && !signature.parameters.empty()) || function.default_argument_count != 0 ||
+			!function.function_scope.valid() ||
 			function.function_scope.value >= model_.scopes_.size() ||
 			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
 			model_.scopes_[function.function_scope.value].parent != function.owner)
@@ -1006,8 +1007,7 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id, bool 
 			model_.binding_owners_[this_binding.value] != function.function_scope ||
 			model_.binding(this_binding).kind != BindingKind::Parameter)
 			break;
-		if (!function.constructor_record.valid() ||
-			function.constructor_record.value >= model_.named_.size())
+		if (!function.constructor_record.valid() || function.constructor_record.value >= model_.named_.size())
 			break;
 		const NamedRecord& record = model_.named_[function.constructor_record.value];
 		if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
@@ -1078,8 +1078,8 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id, bool 
 		}
 	}
 	while (false);
-	constructor_noop_states_[index] = ConstructorRuntimeCacheState::Complete;
-	constructor_noop_results_[index] = result ? 1 : 0;
+	constructor_noop_states_[cache_index] = ConstructorRuntimeCacheState::Complete;
+	constructor_noop_results_[cache_index] = result ? 1 : 0;
 	return result;
 }
 

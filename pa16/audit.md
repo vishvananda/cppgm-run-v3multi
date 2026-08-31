@@ -2,6 +2,159 @@
 
 ## Current Checkpoint Review
 
+This milestone audits landed checkpoint
+`2e48cd6dd87726828ee329d6b47e89435d964fc0` (`PA16 checkpoint: nested braced
+aggregate member`) relative to parent `67d8f53b`.  The authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`: turn-start
+`make test-pa16` exited `2` at `235/243`, with complete `243/243` identity
+coverage and exactly the eight residual owners below.  This audit freshly
+reran the prior-through and file-audit gates after the focused repair.
+
+```text
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+### Changed-path boundary
+
+The bounded implementation path is `dev/src/pa10_ast.cpp`,
+`dev/src/pa10_renderer.cpp`, `dev/src/pa12_semantic_aggregate.cpp`,
+`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering_aggregate.cpp`, and
+`dev/src/pa15_lowering_construction.cpp`, with course regression
+`cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh`.
+The audit documentation paths are `pa16/plan.md` and this file.  No handout
+test, fixture, `.ref` file, exit-status sidecar, harness, comparator, generated
+output, source-set file, or unrelated residual owner is in the diff.
+
+### Complete typed ownership trace
+
+The representative `holder x{value{1, 2}, 0}` path is one forward pipeline:
+
+```text
+PA10 postfix seed: IdExpression + BracedInitList
+  -> PA10 renderer: one Value{...} spelling, ordinary calls remain (...)
+  -> PA12 AggregateAppertainer: exact destination class record check
+  -> semantic_aggregate_constructor_value/select_constructor
+  -> ConstructorAction: selected binding/scope/callable TypeId and typed
+     converted semantic argument edges
+  -> PA15 aggregate range: member address/projection, then call or safe elision
+```
+
+PA10 owns the grammar boundary and creates one `CallExpression`; PA12 retains
+the existing AST nodes only as input to the existing typed constructor
+selection.  `functional_cast_target` resolves the functional target through
+typed lookup and the appertainer requires its class record to equal the
+destination record.  No source text is rendered and reparsed, and no parallel
+semantic model or broad retry is introduced.  Malformed call child counts,
+non-braced arguments, unsupported target kinds, and nonmatching records remain
+on the existing fail-closed paths.  The renderer's braced branch is isolated
+from parenthesized calls.
+
+`semantic_aggregate_constructor_value` publishes the selected binding, access
+scope, hidden-object callable type, target type, and `select_constructor`'s
+converted fact IDs as one `ConstructorAction`.  PA15 consumes the aggregate
+element facts and validates member owner/type/layout identity.  For the narrow
+empty/memberless user-constructor suppression, it computes the member path and
+field projection first, then suppresses only the constructor call.  Otherwise
+`emit_constructor_call` lowers every typed argument; a constructor body with
+effects remains reachable.
+
+### Findings and repairs
+
+The supervisor's cache concern is a correctness defect.  For an empty-body
+user constructor with explicit parameters, `constructor_function_is_noop(F,
+true)` is false because the strict policy requires an empty signature, while
+`constructor_function_is_noop(F, false)` can be true because typed arguments
+are permitted.  The old complete-cache branch keyed only by `F`, so strict-then-
+loose returned false and loose-then-strict returned true.  The repaired dense
+caches use `(FunctionFactId, require_empty_parameters)` as their key, with
+independent state/result/invalid entries and cycle invalidation per policy;
+the result is now call-order independent.
+
+The aggregate suppression proof now fails closed on action/type identity,
+selected binding and owner ranges, record-layout range, and the exact callable
+hidden-object pointer plus explicit parameter sequence.  Its typed argument
+recursion validates semantic-fact and child ranges, valid types, and volatile
+qualification; it treats cycles as effectful.  It accepts only literals,
+`sizeof`, and recursively side-effect-free unary/cast/member/subscript/
+binary/conditional edges.  Calls, assignments, increment/decrement,
+identifiers, constructor actions, and unknown kinds are rejected.  Thus an
+argument read, a volatile read, an assignment/inc-dec, or any call prevents
+elision.  Complete non-union memberless classes without bases, destructors,
+default-member initializers, constructor actions, or effectful bodies remain
+the only user-constructor candidates for this suppression.
+
+Regression 429 was strengthened with a fixed 64-argument constructor whose
+body calls `side()`.  Its pure case checks one helper, no constructor call, and
+the retained field projection; its side-effecting argument, effectful body,
+and volatile cases each require the observable evaluation/call boundary.
+
+### Focused and final-gate evidence
+
+The focused validation and the authorized fresh gates were run after the
+identity and cache repairs:
+
+```text
+make build
+exit 0
+sh -n cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
+exit 0
+sh cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
+429 nested braced aggregate-member constructor regression: PASS
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-nested-braced-member-aggregate-init.t'
+pa16 check: PASS (1/1)
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-aggregate-class-member-subobject-init-target.t tests/general/200-member-initializer-aggregate-member.t tests/general/200-aggregate-array-member-brace-elision.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/spec/200-direct-list-init-explicit-ctor.t tests/general/200-copy-list-init-explicit-ctor-bad.t'
+pa16 check: PASS (6/6)
+sh cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh
+exit 0 (silent)
+make test-pa16
+exit 2; TEST SUMMARY: 235 / 243 TESTS PASSED
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+exit 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+exit 0; File audit passed for pa16 with 6 warning(s)
+git diff --check
+exit 0
+```
+
+The fresh PA16 failure set is exactly the authority set above: `8` authority
+failures and `8` fresh failures, with `authority-only=0`, `fresh-only=0`, and
+no lost or final-only identity.  The discovered and fresh inventories are
+both `243/243`; missing and unexpected identities are `0/0`.  The file audit
+has no fatal finding.  Its six known nonfatal warnings are the existing
+`bad-division` findings in `dev/src/abi_mangle.h`,
+`dev/src/cpp_semantic_core.h`, `dev/src/lowir_model.h`,
+`dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic_selection.h`, and
+`dev/src/pa15_lowering.h`.
+
+### Structural performance evidence and uncertainties
+
+The brace path adds one AST list and one typed argument-vector pass.  Existing
+constructor selection remains `O(C*A)` for `C` candidates and `A` arguments.
+The PA15 side-effect proof visits each reachable typed fact/edge once with
+balanced-tree memo/visiting structures: structural `O((A+E) log(A+E))` time
+and `O(A+E)` temporary storage.  Constructor no-op caches are dense `O(F)` per
+policy and zero-initialization caching is dense `O(T)`.  Regression 429 is a
+fixed 64-argument structural scale check.  No timing or RSS claim is made.
+
+The remaining uncertainty is intentionally bounded to the eight unrelated
+authority owners.  Unsupported temporary/copy/value-transfer paths remain
+outside the PA16 contract, and the six file-audit warnings are known header
+findings rather than checkpoint defects.  No in-scope correctness uncertainty
+remains after the focused checks, exact failure-set comparison, prior-through,
+file audit, and diff check.  The next checkpoint is the first residual owner,
+`200-local-default-class-array-lifecycle.t`; PA16 is not being claimed
+complete.  This bounded checkpoint audit is committed, and the final bounded
+path/clean-status gates passed.
+
+## Historical Typed Object-Call Boundary Checkpoint Review (617c137a)
+
 This bounded review covers clean landed checkpoint
 `617c137a3881fe78a40e068cbb14c45fbbcc6380` (`PA16 complete typed object-call
 boundary`) relative to parent `4a5bbdd5`.  The review is limited to the three
@@ -4598,3 +4751,4 @@ conversion slices.
 | `6d2ed09c` typed ToVoid discarded lowering checkpointAudit | Completed audit of landed `6d2ed09cd4b3daf55ab28282addcf3a878a8adba` relative to `14cadc0c`: PA12's typed `ToVoid` producer and PA15's discarded-expression consumer are traced through O0 LowIR. The consumer now fail-closes in-range typed source/target mismatches; the narrow non-reference scalar-parameter read and volatile/function/reference/class/comma/conditional/assignment/increment boundaries remain intact. Serial reconfirmation is build `0`, PA16 `3/3`, and PA15 `4/4`; the exact prior-through gate is `1167/1167`; final PA16 is status `2` at `224/243` with exactly the same 19 failures; identity comparison is `19 -> 19`, retained `19`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243` with all missing/unexpected counts `0`; file audit is status `0` with five pre-existing warnings; diff-check and bounded path audit pass. Durable evidence is in the final checkpoint directory. No test, fixture, reference, harness, comparator, generated-output, coverage, source-set, or unrelated stage change. |
 | `75f7944aacd312b09b3183170e62f35e69808a44` | Completed committed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings. |
 | `617c137a` typed object-call boundary checkpointAudit | Completed committed bounded audit/repair: typed assignment, same-class constructor, and direct/imported member candidates remain single-forward and PA15-consumable; the parenthesized functional-construction wrapper is repaired; regression 428, focused PA16/PA15/access controls, and final gates pass. Final PA16 is exit `2` at `234/243` with the exact unchanged nine residual identities and `243/243` coverage; comparison is baseline-only `0`, final-only `0`, unrecognized `0`; through-PA15 is `1167/1167`; file audit exits `0` with six known header-division warnings. No out-of-scope files or residual owners changed. |
+| `2e48cd6d` nested-braced aggregate-member checkpointAudit | Completed bounded audit of landed `2e48cd6d` versus `67d8f53b`: the typed PA10→PA12→PA15 path is traced, the `(FunctionFactId, require_empty_parameters)` no-op cache-key defect is repaired, aggregate ownership checks are fail-closed, and regression 429 covers pure projection, side effects, constructor-body effects, and volatile reads. Focused target/control checks pass `1/1` and `6/6`; course 409 exits `0`; regression 429 and shell syntax pass. Fresh `make test-pa16` exits `2` at `235/243` with the exact unchanged eight residual identities, complete `243/243` coverage, and authority-only/fresh-only `0/0`; through-PA15 is `1167/1167`; file audit exits `0` with the six known header warnings above; diff-check exits `0`. No handout, fixture, reference, sidecar, harness, comparator, generated-output, source-set, or unrelated-owner change; PA16 remains incomplete. |

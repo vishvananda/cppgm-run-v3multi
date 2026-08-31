@@ -901,8 +901,11 @@ bool Pa15Lowerer::aggregate_constructor_action_is_noop(
 	TypeId type, const SemanticFact& action) const
 {
 	if (action.kind != SemanticFactKind::ConstructorAction ||
+		action.type != type ||
 		!action.has_callee || action.temporary_object || action.value_initialize ||
 		!action.selected_binding.valid() || !action.selected_scope.valid() ||
+		action.selected_binding.value >= model_.bindings_.size() ||
+		action.selected_binding.value >= model_.binding_owners_.size() ||
 		action.selected_scope.value >= model_.scopes_.size() ||
 		!action.callable_type.valid() || action.callable_type.value >=
 			model_.types_.size() || model_.type_kind(action.callable_type) !=
@@ -919,6 +922,15 @@ bool Pa15Lowerer::aggregate_constructor_action_is_noop(
 		model_.named_[record.value].class_tag == ClassTag::Union ||
 		model_.named_[record.value].has_base)
 		return false;
+	if (record.value >= model_.record_layouts_.size())
+		return false;
+	const ScopeId record_scope = model_.named_[record.value].scope;
+	if (!record_scope.valid() || record_scope.value >= model_.scopes_.size() ||
+		model_.scopes_[record_scope.value].kind != ScopeKind::Class ||
+		model_.scopes_[record_scope.value].record != record ||
+		action.selected_scope != record_scope ||
+		model_.binding_owners_[action.selected_binding.value] != record_scope)
+		return false;
 	const RecordLayout& layout = model_.record_layout(record);
 	if (layout.state != RecordLayoutState::Complete || !layout.members.empty())
 		return false;
@@ -933,7 +945,10 @@ bool Pa15Lowerer::aggregate_constructor_action_is_noop(
 		model_.function_facts_.size())
 		return false;
 	const FunctionFact& function = model_.function_facts_[function_id->value];
-	if (function.synthetic || !constructor_function_is_noop(*function_id, false))
+	if (function.binding != action.selected_binding ||
+		function.constructor_record != record ||
+		function.owner != record_scope || function.synthetic ||
+		!constructor_function_is_noop(*function_id, false))
 		return false;
 	const Binding& binding = model_.binding(action.selected_binding);
 	if (binding.kind != BindingKind::Function || !binding.type.valid() ||
@@ -941,6 +956,28 @@ bool Pa15Lowerer::aggregate_constructor_action_is_noop(
 		model_.type_kind(binding.type) != TypeKind::Function)
 		return false;
 	const TypeKey& signature = model_.types_[binding.type.value];
+	const TypeKey& callable_signature =
+		model_.types_[action.callable_type.value];
+	if (callable_signature.result != signature.result ||
+		callable_signature.variadic != signature.variadic ||
+		callable_signature.parameters.size() != signature.parameters.size() + 1)
+		return false;
+	const TypeId implicit_object = callable_signature.parameters.front();
+	if (!implicit_object.valid() ||
+		implicit_object.value >= model_.types_.size() ||
+		model_.type_kind(implicit_object) != TypeKind::Pointer ||
+		!model_.types_[implicit_object.value].child.valid() ||
+		model_.types_[implicit_object.value].child.value >= model_.types_.size() ||
+		model_.type_kind(model_.types_[implicit_object.value].child) !=
+			TypeKind::Named ||
+		model_.named_record_for_type(
+			model_.types_[implicit_object.value].child) != record)
+		return false;
+	for (std::size_t parameter = 0;
+		parameter < signature.parameters.size(); ++parameter)
+		if (callable_signature.parameters[parameter + 1] !=
+			signature.parameters[parameter])
+			return false;
 	if (signature.variadic || signature.parameters.size() != action.child_count)
 		return false;
 	if (action.child_count != 0 &&
@@ -976,26 +1013,23 @@ bool Pa15Lowerer::aggregate_direct_scalar(const SemanticFact* initializer,
 		model_.type_kind(object) != TypeKind::Array;
 }
 
-void Pa15Lowerer::initialize_aggregate_value(TypeId target,
-	SemanticFactId initializer, const LoweredValue& destination_value,
-	const ConstructorActionFact* root_action,
-	const std::vector<ConstructorAddressStep>* path,
-	BitFieldInitializationContext* context,
-	const LoweredValue* aggregate_root_storage, TypeId aggregate_root_type)
+void Pa15Lowerer::initialize_aggregate_value(
+	TypeId target, SemanticFactId initializer,
+	const LoweredValue& destination_value,
+	const ConstructorActionFact* root_action, const std::vector<ConstructorAddressStep>* path,
+	BitFieldInitializationContext* context, const LoweredValue* aggregate_root_storage, TypeId aggregate_root_type)
 {
 	BitFieldInitializationContext local_context;
 	if (context == NULL)
 		context = &local_context;
 	if (!initializer.valid() || initializer.value >= model_.semantic_facts_.size())
 		throw std::runtime_error("PA15 aggregate initializer is invalid");
-	const TypeId object = model_.strip_cv_type(
-		model_.expression_object_type(target));
+	const TypeId object = model_.strip_cv_type(model_.expression_object_type(target));
 	if (!object.valid() || object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 aggregate constructor target is invalid");
 	std::size_t element_count = 0;
 	std::size_t total_count = 0;
-	const AggregateElementFact* elements = aggregate_elements(initializer,
-		&element_count, &total_count);
+	const AggregateElementFact* elements = aggregate_elements(initializer, &element_count, &total_count);
 	if (model_.type_kind(object) == TypeKind::Array)
 	{
 		const TypeKey& array = model_.types_[object.value];
@@ -1013,8 +1047,7 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 		LoweredValue sequence;
 		if (!lazy_storage_context && !direct_root_address)
 			sequence = emit_decay(destination_value);
-		const TypeId child_object = model_.strip_cv_type(
-			model_.expression_object_type(array.child));
+		const TypeId child_object = model_.strip_cv_type(model_.expression_object_type(array.child));
 		const bool byte_projection = (child_object.valid() &&
 			model_.type_kind(child_object) == TypeKind::Array) ||
 			class_object_type(array.child);
@@ -1141,10 +1174,15 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			(element_fact != NULL && element_fact->type !=
 				model_.binding(member).type))
 			throw std::runtime_error("PA15 aggregate member fact owner is invalid");
-		const SemanticFact* element_initializer = element_fact != NULL ? &model_.semantic_facts_[element_fact->initializer.value] : NULL;
-		const bool aggregate_action_noop = element_initializer != NULL && element_initializer->kind == SemanticFactKind::ConstructorAction &&
-			aggregate_constructor_action_is_noop(model_.binding(member).type, *element_initializer);
-		if (aggregate_element_is_noop(model_.binding(member).type, element_fact) && !aggregate_action_noop) continue;
+		const SemanticFact* element_initializer = element_fact != NULL ?
+			&model_.semantic_facts_[element_fact->initializer.value] : NULL;
+		const bool aggregate_action_noop = element_initializer != NULL &&
+			element_initializer->kind == SemanticFactKind::ConstructorAction &&
+			aggregate_constructor_action_is_noop(
+				model_.binding(member).type, *element_initializer);
+		if (aggregate_element_is_noop(model_.binding(member).type, element_fact) &&
+			!aggregate_action_noop)
+			continue;
 		const std::size_t* offset = layout.member_offsets.find(member);
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
@@ -1185,10 +1223,11 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			member_value = model_.bit_field_fact(member) != NULL ?
 				emit_bit_field_index(destination_value, member_offset, byte,
 					lowir_model::IPK_FIELD, member) :
-					emit_index(destination_value, member_offset, byte,
+				emit_index(destination_value, member_offset, byte,
 					lowir_model::IPK_FIELD);
 		}
-		if (aggregate_action_noop) continue;
+		if (aggregate_action_noop)
+			continue;
 		if (encoded_bit_field)
 		{
 			if (encode_before_address)
@@ -1219,8 +1258,7 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 				aggregate_root_storage, aggregate_root_type);
 		}
 	}
-	if (next_element != element_count)
-		throw std::runtime_error("PA15 aggregate member sparse index is invalid");
+	if (next_element != element_count) throw std::runtime_error("PA15 aggregate member sparse index is invalid");
 }
 
 } // namespace pa11_semantic_internal

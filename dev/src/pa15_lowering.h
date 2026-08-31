@@ -521,6 +521,8 @@ private:
 	// emission classification.  An in-progress entry is conservatively
 	// effectful, so recursive synthetic-constructor graphs cannot recurse
 	// without a bound or accidentally become pruned through a cycle.
+	// The policy bit is part of the cache key: the first F entries require an
+	// empty parameter list, and the second F entries permit typed arguments.
 	mutable std::vector<ConstructorRuntimeCacheState> constructor_noop_states_;
 	mutable std::vector<unsigned char> constructor_noop_results_;
 	mutable std::vector<unsigned char> constructor_noop_invalid_;
@@ -836,7 +838,8 @@ private:
 	const FunctionFact& checked_constructor_function(BindingId constructor,
 		NamedRecordId record) const;
 	void initialize_constructor_noop_caches() const;
-	bool constructor_function_is_noop(FunctionFactId function_id, bool require_empty_parameters = true) const;
+	bool constructor_function_is_noop(FunctionFactId function_id,
+		bool require_empty_parameters = true) const;
 	bool constructor_record_layout_is_consistent(NamedRecordId record) const;
 	bool constructor_graph_action_is_noop(
 		const ConstructorActionFact& action) const;

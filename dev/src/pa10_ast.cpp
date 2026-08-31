@@ -60,13 +60,8 @@ public:
 	}
 private:
 	const std::vector<PA10Token>& tokens_;
-	std::size_t position_;
-	std::size_t work_;
-	std::size_t work_limit_;
-	std::size_t nesting_;
-	std::size_t recursion_depth_;
-	std::size_t angle_depth_;
-	std::size_t non_angle_depth_;
+	std::size_t position_, work_, work_limit_;
+	std::size_t nesting_, recursion_depth_, angle_depth_, non_angle_depth_;
 	std::vector<std::size_t> angle_bases_;
 	std::vector<std::size_t> template_close_index_;
 	std::vector<unsigned char> template_top_level_or_;
@@ -277,6 +272,13 @@ private:
 		PA10AstNode result(kind);
 		result.source_begin = position_;
 		result.source_end = position_;
+		return result;
+	}
+	PA10AstNode call_node(PA10AstNode callee, PA10AstNode arguments)
+	{
+		PA10AstNode result = node(PA10NodeKind::CallExpression);
+		result.children.push_back(std::move(callee));
+		result.children.push_back(std::move(arguments));
 		return result;
 	}
 	PA10AstNode fixed_node(PA10NodeKind kind)
@@ -2086,33 +2088,30 @@ PA10AstNode PA10Parser::parse_postfix_expression_seed()
 		callee.has_token = true;
 		callee.token = type.fixed;
 		callee.token_spelling = intern(type.source);
-		PA10AstNode result = node(PA10NodeKind::CallExpression);
-		result.children.push_back(std::move(callee));
-		result.children.push_back(parse_paren_argument_list());
-		return result;
+		return call_node(std::move(callee), parse_paren_argument_list());
 	}
 	if (classification.kind ==
 		PA10ParserSupport::PA10FunctionStyleCastKind::TypeId)
 	{
 		PA10AstNode type_id = node(PA10NodeKind::TypeId);
 		type_id.children.push_back(parse_decl_specifier_seq(true));
-		PA10AstNode result = node(PA10NodeKind::CallExpression);
-		result.children.push_back(std::move(type_id));
-		result.children.push_back(parse_paren_argument_list());
-		return result;
+		return call_node(std::move(type_id), parse_paren_argument_list());
 	}
 	PA10AstNode primary = parse_primary_expression();
-	if (primary.kind == PA10NodeKind::IdExpression && fixed(SimpleTokenType::OP_LBRACE)) { PA10AstNode result = node(PA10NodeKind::CallExpression); result.children.push_back(std::move(primary)); result.children.push_back(parse_braced_init_list()); return result; } return primary; }
+	if (primary.kind == PA10NodeKind::IdExpression &&
+		fixed(SimpleTokenType::OP_LBRACE))
+	{
+		return call_node(std::move(primary), parse_braced_init_list());
+	}
+	return primary;
+}
 PA10AstNode PA10Parser::parse_postfix_suffixes(PA10AstNode result)
 {
 	while (true)
 	{
 		if (fixed(SimpleTokenType::OP_LPAREN))
 		{
-			PA10AstNode call = node(PA10NodeKind::CallExpression);
-			call.children.push_back(std::move(result));
-			call.children.push_back(parse_argument_list());
-			result = std::move(call);
+			result = call_node(std::move(result), parse_argument_list());
 			continue;
 		}
 		if (fixed(SimpleTokenType::OP_LSQUARE))
