@@ -848,14 +848,31 @@ LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
 		const bool right_pointer = pointer_like(
 			model_.semantic_facts_[operands[1].value].type);
 		const bool force_size_operands = fact.size_type_derived;
+		const bool left_has_explicit_cast =
+			model_.semantic_facts_[operands[0].value].kind ==
+			SemanticFactKind::CastExpression;
+		const bool right_has_explicit_cast =
+			model_.semantic_facts_[operands[1].value].kind ==
+			SemanticFactKind::CastExpression;
 		LoweredValue left = lower_expression_impl(operands[0], false, true,
 			force_size_operands, true);
+		// An explicit cast is an operand-owned typed boundary.  Parent-assigned
+		// implicit conversions retain the established schedule: evaluate both
+		// operands first, then apply their contextual conversion ranges.
+		if (left_has_explicit_cast)
+			left = apply_conversions(operands[0], left, false, true,
+				force_size_operands, true);
 		LoweredValue right = lower_expression_impl(operands[1], false, true,
 			force_size_operands, true);
-		left = apply_conversions(operands[0], left, false, true,
-			force_size_operands, true);
-		right = apply_conversions(operands[1], right, false, true,
-			force_size_operands, true);
+		if (right_has_explicit_cast)
+			right = apply_conversions(operands[1], right, false, true,
+				force_size_operands, true);
+		if (!left_has_explicit_cast)
+			left = apply_conversions(operands[0], left, false, true,
+				force_size_operands, true);
+		if (!right_has_explicit_cast)
+			right = apply_conversions(operands[1], right, false, true,
+				force_size_operands, true);
 		if ((fact.token == SimpleTokenType::OP_PLUS ||
 			fact.token == SimpleTokenType::OP_MINUS) && left_pointer &&
 			!right_pointer && left.type.is_pointer())
