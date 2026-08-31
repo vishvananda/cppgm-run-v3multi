@@ -108,6 +108,16 @@ struct LoweredValue
 		condition_value(), has_condition_value(false) {}
 };
 
+// The packed value boundary has two deterministic instruction forms.  An
+// initialization presents the mask as the left operand, while a builtin
+// update presents the extracted value first.  Both forms consume the same
+// typed PA11 fact and differ only in the value-encoding boundary.
+enum class BitFieldEncodingOrder
+{
+	MaskFirst,
+	ValueFirst
+};
+
 struct FunctionPlan
 {
 	std::size_t fact_index;
@@ -703,7 +713,8 @@ private:
 		BindingId binding, const LowType& result_type);
 	LoweredValue reproject_bit_field_address(const LoweredValue& storage);
 	LoweredValue encode_bit_field_value(BindingId binding,
-		const LoweredValue& value, bool force_storage_type = false);
+		const LoweredValue& value, bool force_storage_type = false,
+		BitFieldEncodingOrder order = BitFieldEncodingOrder::MaskFirst);
 	void emit_encoded_bit_field_store(const LoweredValue& storage,
 		BindingId binding, const LoweredValue& encoded,
 		bool preserve_existing);

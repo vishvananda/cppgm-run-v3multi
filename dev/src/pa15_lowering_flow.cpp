@@ -1053,6 +1053,37 @@ LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
 				compare_type.kind = LowType::TYPE_INTEGER;
 				compare_type.integer_kind = LowType::INTEGER_I32;
 			}
+			// PA12's operation_type remains the promoted type used for semantic
+			// overload and builtin decisions.  For equality only, a narrow
+			// unsigned bit-field's represented value is non-negative and fits in
+			// that same-width carrier, so the typed storage carrier is an
+			// equivalent LowIR comparison spelling.  Do not apply this to signed
+			// fields or relational predicates: their signed operation type is
+			// semantically observable.
+			if ((fact.token == SimpleTokenType::OP_EQ ||
+				fact.token == SimpleTokenType::OP_NE) && compare_type.is_integer())
+			{
+				for (std::size_t i = 0; i < operands.size(); ++i)
+				{
+					const SemanticFact& operand_fact = model_.semantic_facts_[
+						operands[i].value];
+					const BindingId binding_id = operand_fact.binding.valid() ?
+						operand_fact.binding : operand_fact.selected_binding;
+					const BitFieldFact* bit_field = model_.bit_field_fact(binding_id);
+					if (bit_field == NULL || bit_field->is_signed)
+						continue;
+					const LowType storage_type = low_type(bit_field->storage_type);
+					if (!storage_type.is_integer() ||
+						storage_type.integer_width() != compare_type.integer_width() ||
+						bit_field->value_width >= static_cast<std::size_t>(
+							storage_type.integer_width()) ||
+						storage_type.integer_kind == compare_type.integer_kind ||
+						!unsigned_type_for(bit_field->storage_type))
+						continue;
+					compare_type = storage_type;
+					break;
+				}
+			}
 			return emit_compare_value(compare_predicate(fact.token,
 				operation_type.valid() && unsigned_type_for(operation_type)),
 				compare_type,

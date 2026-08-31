@@ -565,7 +565,8 @@ LoweredValue Pa15Lowerer::emit_bit_field_load(
 }
 
 LoweredValue Pa15Lowerer::encode_bit_field_value(BindingId binding_id,
-	const LoweredValue& value, bool force_storage_type)
+	const LoweredValue& value, bool force_storage_type,
+	BitFieldEncodingOrder order)
 {
 	const BitFieldFact* fact = model_.bit_field_fact(binding_id);
 	if (fact == NULL || !fact->named || fact->binding != binding_id ||
@@ -608,9 +609,11 @@ LoweredValue Pa15Lowerer::encode_bit_field_value(BindingId binding_id,
 				conversion.destination_name_id), write_type, false);
 		}
 	}
-	LoweredValue encoded = emit_binary_value(lowir_model::BOP_AND, write_type,
-		LoweredValue(integer_operand(static_cast<long long>(fact->value_mask),
-			write_type), write_type, false), source);
+	const LoweredValue mask(integer_operand(static_cast<long long>(
+		fact->value_mask), write_type), write_type, false);
+	LoweredValue encoded = order == BitFieldEncodingOrder::ValueFirst ?
+		emit_binary_value(lowir_model::BOP_AND, write_type, source, mask) :
+		emit_binary_value(lowir_model::BOP_AND, write_type, mask, source);
 	if (fact->bit_offset != 0)
 		encoded = emit_binary_value(lowir_model::BOP_SHL, write_type, encoded,
 			LoweredValue(integer_operand(static_cast<long long>(fact->bit_offset),

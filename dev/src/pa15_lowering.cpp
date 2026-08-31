@@ -2701,8 +2701,8 @@ LoweredValue Pa15Lowerer::lower_incdec(SemanticFactId id, bool postfix){
 			// evaluated projection because its result is the old value.
 			const LoweredValue operation_storage = postfix ? left :
 				reproject_bit_field_address(left);
-			const LoweredValue encoded = encode_bit_field_value(
-				left.bit_field_binding, updated);
+			const LoweredValue encoded = encode_bit_field_value(left.bit_field_binding,
+				updated, false, BitFieldEncodingOrder::ValueFirst);
 			emit_encoded_bit_field_store(operation_storage,
 				left.bit_field_binding, encoded, true);
 		}

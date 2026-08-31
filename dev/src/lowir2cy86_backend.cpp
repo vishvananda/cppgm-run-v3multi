@@ -450,6 +450,18 @@ private:
            actual.type.integer_width() == expected.integer_width();
   }
 
+  bool comparison_operand_matches(const Operand &operand,
+                                  const LowType &expected,
+                                  ComparePredicate predicate) const {
+    if (operand_matches(operand, expected)) return true;
+    // Equality has no signed ordering.  Permit the same-width signedness
+    // carrier used by PA15 for a narrow unsigned bit-field; relational
+    // predicates must continue to match their exact typed operation carrier.
+    if (predicate != lowir_model::CPP_EQ && predicate != lowir_model::CPP_NE)
+      return false;
+    return copy_operand_matches(operand, expected);
+  }
+
   void require_operand_type(const Operand &operand, const LowType &expected, const std::string &what) const {
     if (!operand_matches(operand, expected)) throw LowirError(what + " type mismatch");
   }
@@ -732,8 +744,12 @@ private:
       break;
     case Instruction::IK_CMP:
       if (instruction.compare_predicate == lowir_model::CPP_INVALID) throw LowirError("unknown comparison predicate");
-      require_operand_type(instruction.first, instruction.type, "left comparison operand");
-      require_operand_type(instruction.second, instruction.type, "right comparison operand");
+      if (!comparison_operand_matches(instruction.first, instruction.type,
+                                       instruction.compare_predicate))
+        throw LowirError("left comparison operand type mismatch");
+      if (!comparison_operand_matches(instruction.second, instruction.type,
+                                      instruction.compare_predicate))
+        throw LowirError("right comparison operand type mismatch");
       if (!instruction.type.is_integer() && !instruction.type.is_float() && !instruction.type.is_pointer()) throw LowirError("invalid comparison type");
       define_value(&instruction, i64_type(), &values);
       break;
