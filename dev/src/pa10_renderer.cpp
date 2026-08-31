@@ -263,6 +263,42 @@ void validate_node_sidecar_ranges(const PA10Ast& ast,
 		node.user_defined_literal_count > ast.user_defined_literals.size() -
 		node.user_defined_literal_begin)
 		throw std::runtime_error("invalid PA10 user-defined literal range");
+	if (node.user_defined_literal_count != 0 &&
+		node.kind != PA10NodeKind::UserDefinedLiteral &&
+		!(node.unqualified_id_kind == PA10UnqualifiedIdKind::OperatorFunction &&
+			node.operator_function_kind == PA10OperatorFunctionKind::Literal))
+		throw std::runtime_error("PA10 user-defined literal range has no owner");
+	if (node.kind == PA10NodeKind::UserDefinedLiteral)
+	{
+		if (node.user_defined_literal_count != 1 || node.text == 0 ||
+			node.text >= ast.presentation_spellings.size())
+			throw std::runtime_error("invalid PA10 user-defined literal owner");
+		const UserDefinedLiteralData& data = ast.user_defined_literals[
+			node.user_defined_literal_begin];
+		if (data.source.empty() || data.suffix.empty() ||
+			ast.spelling(node.text) != data.source)
+			throw std::runtime_error("invalid PA10 user-defined literal owner data");
+	}
+	if (node.operator_function_kind == PA10OperatorFunctionKind::Literal)
+	{
+		if (node.unqualified_id_kind != PA10UnqualifiedIdKind::OperatorFunction ||
+			node.user_defined_literal_count != 1 ||
+			node.unqualified_id_token != SimpleTokenType::KW_OPERATOR ||
+			node.operator_presentation_count != 2)
+			throw std::runtime_error("invalid PA10 literal operator owner");
+		const UserDefinedLiteralData& data = ast.user_defined_literals[
+			node.user_defined_literal_begin];
+		const PA10StringId keyword = ast.operator_presentation_spellings[
+			node.operator_presentation_begin];
+		const PA10StringId spelling = ast.operator_presentation_spellings[
+			node.operator_presentation_begin + 1];
+		if (keyword == 0 || keyword >= ast.presentation_spellings.size() ||
+			ast.spelling(keyword) != "operator" || spelling == 0 ||
+			spelling >= ast.presentation_spellings.size() ||
+			data.source.empty() || data.suffix.empty() ||
+			ast.spelling(spelling) != data.source)
+			throw std::runtime_error("invalid PA10 literal operator owner data");
+	}
 	if (node.default_template_argument_form !=
 		PA10DefaultTemplateArgumentForm::Normal &&
 		(node.kind != PA10NodeKind::DefaultTemplateArgument ||

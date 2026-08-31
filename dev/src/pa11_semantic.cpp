@@ -1874,6 +1874,27 @@ void PA11SemanticModel::process_using_directive(const PA10AstNode& node, ScopeId
 	scopes_[effective.value].effective_using_directives.push_back(
 		EffectiveUsingDirective(target, scope, declaration_point));
 }
+bool PA11SemanticModel::direct_value_exists(ScopeId scope, NameId name) const
+{
+	const ValueList* found = scopes_[scope.value].values.find(name);
+	if (found == NULL)
+		return false;
+	for (std::size_t i = 0; i < found->entries.size(); ++i)
+	{
+		const BindingSidecar* sidecar = binding_sidecar(
+			found->entries[i].binding);
+		if (sidecar == NULL || sidecar->operator_function_kind !=
+			PA10OperatorFunctionKind::Literal)
+			return true;
+	}
+	return false;
+}
+bool PA11SemanticModel::direct_namespace_exists(ScopeId scope, NameId name) const
+{
+	const Scope& current = scopes_[scope.value];
+	return current.namespaces.find(name) != NULL ||
+		current.namespace_aliases.find(name) != NULL;
+}
 BindingId PA11SemanticModel::direct_variable_binding(ScopeId scope,
 	const ValueList& values, bool* direct_other) const
 {
@@ -1891,6 +1912,10 @@ BindingId PA11SemanticModel::direct_variable_binding(ScopeId scope,
 			binding_owners_[entry.binding.value] != entry.origin)
 			throw std::runtime_error("value entry owner identity mismatch");
 		const Binding& value = binding(entry.binding);
+		const BindingSidecar* sidecar = binding_sidecar(entry.binding);
+		if (sidecar != NULL && sidecar->operator_function_kind ==
+			PA10OperatorFunctionKind::Literal)
+			continue;
 		if (entry.origin != scope)
 		{
 			// An imported value is not a redeclaration in this scope.  Keep it as
@@ -1968,7 +1993,7 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 		validate_type(introduced, type, origin, ScopeId());
 	if (direct_namespace_exists(scope, introduced) ||
 		(type.valid() && (existing_type != NULL ||
-			(current.values.find(introduced) != NULL &&
+			(direct_value_exists(scope, introduced) &&
 				!imported_type_is_tag))) ||
 		(!type.valid() && existing_type != NULL && !existing_type_is_tag))
 		throw std::runtime_error("using declaration conflicts with binding");
@@ -1985,14 +2010,26 @@ void PA11SemanticModel::process_using_declaration(const PA10AstNode& node, Scope
 	if (values.empty())
 		throw std::runtime_error("using declaration target is not a binding");
 	const ValueList* existing = current.values.find(introduced);
-	bool existing_functions = existing != NULL && !existing->entries.empty();
-	for (std::size_t i = 0;
-		existing_functions && i < existing->entries.size(); ++i)
+	bool have_existing_value = false;
+	bool existing_functions = true;
+	if (existing != NULL)
 	{
-		const Binding& old = binding(existing->entries[i].binding);
-		existing_functions = old.kind == BindingKind::Function &&
-			type_kind(old.type) == TypeKind::Function;
+		for (std::size_t i = 0; i < existing->entries.size(); ++i)
+		{
+			const BindingSidecar* sidecar = binding_sidecar(
+				existing->entries[i].binding);
+			if (sidecar != NULL && sidecar->operator_function_kind ==
+				PA10OperatorFunctionKind::Literal)
+				continue;
+			have_existing_value = true;
+			const Binding& old = binding(existing->entries[i].binding);
+			if (old.kind != BindingKind::Function ||
+				type_kind(old.type) != TypeKind::Function)
+				existing_functions = false;
+		}
 	}
+	if (!have_existing_value)
+		existing = NULL;
 	std::vector<ValueRef> additions;
 	std::size_t incoming_function_count = 0;
 	for (std::size_t i = 0; i < values.size(); ++i)
@@ -2107,14 +2144,50 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	bool hidden_friend, PA10OperatorFunctionKind operator_function_kind,
 	SimpleTokenType operator_token, NameId operator_literal_suffix)
 {
+	const bool literal_operator = operator_function_kind ==
+		PA10OperatorFunctionKind::Literal;
+	if (literal_operator && (language_linkage != LanguageLinkage::Cxx ||
+		!scope.valid() || scope.value >= scopes_.size() ||
+		scopes_[scope.value].kind != ScopeKind::Namespace))
+		throw std::runtime_error(
+			"literal operator must have namespace owner and C++ linkage");
 	Scope& current = scopes_[scope.value];
-	if (direct_namespace_exists(scope, name))
+	if (!literal_operator && direct_namespace_exists(scope, name))
 		throw std::runtime_error("value conflicts with namespace");
 	const TypeId* type_found = current.types.find(name);
-	if (type_found != NULL && type_kind(*type_found) != TypeKind::Named)
+	if (!literal_operator && type_found != NULL &&
+		type_kind(*type_found) != TypeKind::Named)
 		throw std::runtime_error("value conflicts with type alias");
 	const TypeId unadjusted_type = type;
 	type = normalize_embedded_function_types(type);
+	if (literal_operator)
+	{
+		if (!function || !type.valid() || type.value >= types_.size() ||
+			type_kind(type) != TypeKind::Function)
+			throw std::runtime_error("invalid literal operator declaration");
+		const TypeKey& signature = types_[type.value];
+		const TypeId size = fundamental(FundamentalType::UnsignedLongInt);
+		const TypeId raw = make_pointer(make_cv(fundamental(FundamentalType::Char), 1u));
+		const TypeId text[] = {raw, make_pointer(make_cv(
+			fundamental(FundamentalType::WcharT), 1u)),
+			make_pointer(make_cv(fundamental(FundamentalType::Char16T), 1u)),
+			make_pointer(make_cv(fundamental(FundamentalType::Char32T), 1u))};
+		const TypeId scalar[] = {fundamental(FundamentalType::UnsignedLongLongInt),
+			fundamental(FundamentalType::LongDouble), fundamental(FundamentalType::Char),
+			fundamental(FundamentalType::WcharT), fundamental(FundamentalType::Char16T),
+			fundamental(FundamentalType::Char32T)};
+		bool legal = !signature.variadic && signature.cv == 0 &&
+			signature.parameters.size() == 1 && signature.parameters[0] == raw;
+		for (std::size_t i = 0; !legal && i < sizeof(scalar) / sizeof(*scalar); ++i)
+			legal = !signature.variadic && signature.cv == 0 &&
+				signature.parameters.size() == 1 && signature.parameters[0] == scalar[i];
+		for (std::size_t i = 0; !legal && i < sizeof(text) / sizeof(*text); ++i)
+			legal = !signature.variadic && signature.cv == 0 &&
+				signature.parameters.size() == 2 && signature.parameters[1] == size &&
+				signature.parameters[0] == text[i];
+		if (!legal)
+			throw std::runtime_error("invalid literal operator parameter clause");
+	}
 	const ValueList* existing_values = current.values.find(name);
 	const auto operator_identity_matches =
 		[operator_function_kind, operator_token, operator_literal_suffix](
@@ -2226,7 +2299,19 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 					add_dump_binding_view(scope, direct_variable);
 				return direct_variable;
 			}
-			if (direct_other || !existing_values->entries.empty())
+			bool conflicting_value = false;
+			for (std::size_t i = 0; i < existing_values->entries.size(); ++i)
+			{
+				const BindingSidecar* sidecar = binding_sidecar(
+					existing_values->entries[i].binding);
+				if (sidecar == NULL || sidecar->operator_function_kind !=
+					PA10OperatorFunctionKind::Literal)
+				{
+					conflicting_value = true;
+					break;
+				}
+			}
+			if (direct_other || conflicting_value)
 				throw std::runtime_error("incompatible value redeclaration");
 		}
 		else

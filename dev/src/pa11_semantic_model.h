@@ -1481,13 +1481,13 @@ private:
 	;
 	bool lookup_value_graph(ScopeId start, NameId name,
 	std::vector<ValueRef>* result, bool include_using = true,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), NameId literal_suffix = NameId()) const
 	;
 	std::vector<ValueRef> lookup_value_unqualified(ScopeId start, NameId name,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), NameId literal_suffix = NameId()) const
 	;
 	std::vector<ValueRef> lookup_value_path(const NamePath& path, ScopeId start,
-		SourcePoint point = SourcePoint()) const
+		SourcePoint point = SourcePoint(), NameId literal_suffix = NameId()) const
 	;
 	ScopeId resolve_qualifier_scope(const std::vector<NameId>& components,
 		ScopeId start, SourcePoint point = SourcePoint(), ScopeId access_scope = ScopeId()) const

@@ -1392,7 +1392,8 @@ NameId PA11SemanticModel::literal_operator_suffix(const DeclaratorName& name)
 		throw std::runtime_error("literal operator has no typed suffix");
 	const UserDefinedLiteralData& data = ast_.user_defined_literals[
 		name.operator_literal_data_begin];
-	if (data.source.empty() || data.suffix.empty())
+	if (data.source.empty() || data.suffix.empty() ||
+		data.kind != UserDefinedLiteralKind::String)
 		throw std::runtime_error("literal operator has invalid typed suffix");
 	return intern_name(data.suffix);
 }
@@ -1404,6 +1405,17 @@ ExprInfo PA11SemanticModel::semantic_user_defined_literal(
 	if (data == NULL || data->kind != UserDefinedLiteralKind::String)
 		throw std::runtime_error(
 			"PA12 unsupported non-string user-defined literal");
+	switch (data->value.type)
+	{
+	case FundamentalType::Char:
+	case FundamentalType::WcharT:
+	case FundamentalType::Char16T:
+	case FundamentalType::Char32T:
+		break;
+	default:
+		throw std::runtime_error(
+			"PA12 invalid cooked string element type");
+	}
 	const TypeId element = fundamental(data->value.type);
 	const std::size_t element_size = type_size(element);
 	const std::size_t count = data->value.element_count;
@@ -1445,8 +1457,9 @@ ExprInfo PA11SemanticModel::semantic_user_defined_literal(
 		PA10OperatorFunctionKind::Literal, SimpleTokenType::OP_SEMICOLON));
 	const NameId suffix = intern_name(data->suffix);
 	const std::vector<ValueRef> visible = lookup_value_path(path, scope,
-		SourcePoint(node.source_begin));
+		SourcePoint(node.source_begin), suffix);
 	std::vector<ValueRef> candidates;
+	FlatIndex<BindingId, bool, IdentityHash<BindingId> > candidate_seen;
 	for (std::size_t i = 0; i < visible.size(); ++i)
 	{
 		const ValueRef& candidate = visible[i];
@@ -1473,22 +1486,26 @@ ExprInfo PA11SemanticModel::semantic_user_defined_literal(
 			throw std::runtime_error(
 				"PA12 literal operator candidate function/type is invalid");
 		if (scopes_[candidate.scope.value].kind != ScopeKind::Namespace)
-			continue;
+			throw std::runtime_error(
+				"PA12 literal operator owner is not a namespace");
 		const BindingSidecar* sidecar = binding_sidecar(candidate.binding);
 		if (sidecar == NULL || sidecar->operator_function_kind !=
 			PA10OperatorFunctionKind::Literal ||
 			sidecar->operator_literal_suffix != suffix)
+			throw std::runtime_error(
+				"PA12 literal operator candidate suffix is invalid");
+		const TypeKey& function = types_[binding_value.type.value];
+		const TypeId expected_text = make_pointer(make_cv(element, 1u));
+		const TypeId expected_size = fundamental(
+			FundamentalType::UnsignedLongInt);
+		if (function.variadic || function.parameters.size() != 2 ||
+			normalize_parameter_type(function.parameters[0]) != expected_text ||
+			normalize_parameter_type(function.parameters[1]) != expected_size)
 			continue;
-		bool duplicate = false;
-		for (std::size_t j = 0; j < candidates.size(); ++j)
-			if (candidates[j].binding == candidate.binding &&
-				candidates[j].scope == candidate.scope)
-			{
-				duplicate = true;
-				break;
-			}
-		if (!duplicate)
-			candidates.push_back(candidate);
+		if (candidate_seen.find(candidate.binding) != NULL)
+			continue;
+		candidate_seen.set(candidate.binding, true);
+		candidates.push_back(candidate);
 	}
 	if (candidates.empty())
 		throw std::runtime_error("PA12 no literal operator candidate");

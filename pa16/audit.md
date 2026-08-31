@@ -2,6 +2,188 @@
 
 ## Current Checkpoint Review
 
+This bounded review covers clean landed checkpoint
+`2cfa111111cf8a675c9e248e18508dedb0b61592` (`PA16: lower typed cooked-string
+UDL calls`) relative to parent `2ca2323aa66519896c05f5382da4bd3558eb6fff`.
+The PA16 boundary, active plan, relevant spec sections, landed diff, target
+fixture/ref, and all implementation files on the UDL ownership path were
+inspected.  The bounded source, course regression, and documentation result
+is complete for the amended checkpoint.  No handout tests, fixtures, refs, exit-status
+sidecars, harnesses, comparators, generated outputs, coverage rules, or
+source-set files were changed.
+
+The ownership review covers every landed implementation unit in this
+increment: `dev/src/pa10_ast.cpp`, `pa10_ast.h`, `pa10_parser_support.cpp`,
+`pa10_parser_support.h`, `pa10_renderer.cpp`, `pa11_semantic.cpp`,
+`pa11_semantic_core.cpp`, `pa11_semantic_model.h`, `pa12_semantic.cpp`,
+`pa12_semantic_calls.cpp`, `pa12_semantic_facts.cpp`,
+`pa15_lowering_abi.cpp`, and `pa15_operator_abi.cpp`, plus regression 427.
+
+### Authority and exact residual boundary
+
+The primary authority remains
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its turn-start `make test-pa16` result is exit `2`, `231/243` passing, complete
+`243/243` coverage, and exactly these 12 failures:
+
+```text
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The final authority map and coverage were regenerated.  The fresh full PA16
+run retains exactly the same 12 residuals and `243/243` coverage; every listed
+identity remains outside this checkpoint and was neither re-audited nor
+repaired.
+
+### Complete typed ownership trace
+
+The representative fact path is:
+
+```text
+posttoken UserDefinedLiteralData
+  -> PA10 UDL node and operator-name sparse ranges
+  -> PA11 DeclaratorName/BindingSidecar and suffix-filtered lookup
+  -> PA12 cooked array/size facts, normal call selection/conversions,
+     selected call and constant-address bytes
+  -> PA15 literal storage, selected-call lowering, and ABI suffix record
+```
+
+Posttoken owns the decoded source, suffix, kind, and literal value bytes.  For
+strings, concatenation produces the typed element array including its
+terminator; the length supplied to the operator is the element count minus
+one.  PA10 records each occurrence once in `PA10Ast::user_defined_literals`.
+The node and literal-operator name retain sparse ranges, while source text is
+used only for presentation.  The renderer now validates range ownership,
+exact one-entry UDL ranges, operator presentation shape, and source/data
+agreement before rendering.
+
+PA11 copies the operator range into `DeclaratorName` and stores operator kind,
+token, and literal suffix on the canonical binding sidecar.  Function
+declaration/definition merging compares the suffix as part of literal
+operator identity.  The canonical declaration path rejects non-C++ linkage,
+non-namespace ownership, and every malformed non-template parameter clause;
+it accepts the C++11 scalar, raw, and cooked forms represented by this model.
+Thus an unused `(const char*, int)`, variadic, or wrong-arity declaration fails
+at declaration time rather than becoming a merely non-viable PA12 candidate.
+Literal operators share the existing typed lookup bucket, but lookup filters
+that bucket by the requested suffix before deciding that a scope has a result;
+ordinary lookups exclude literal entries.  Direct value, namespace, type-alias,
+and using-declaration conflict checks likewise treat the bucket as an internal
+view, so a source declaration named `operatorliteral` remains independent.
+
+PA12 accepts only the active string UDL kind and the four decoded character
+element types, validates element size, count, and byte payload, constructs a
+const array lvalue and a typed `size - 1` prvalue, then sends both through the
+existing typed operator-selection and conversion machinery.  Before that
+selection, a candidate must be non-variadic with exactly two parameters,
+`const decoded-element*` followed by the model's canonical `unsigned long`
+`size_t`; legal same-suffix scalar/raw declarations are filtered here because
+they are not cooked-string candidates, while malformed declarations have
+already failed in PA11.  Neither class can mask a valid cooked candidate.  The
+selected binding, scope, callable type, argument facts, and conversion facts
+remain on the call fact.  Constant-address resolution consumes the same
+decoded bytes and element count.  PA15 dedupes literal storage by typed content
+and emits the literal operator suffix as a typed ABI fact; it does not recover
+either fact from rendered text.
+
+### Findings and bounded repairs
+
+Four in-scope defects were reproducible against the landed checkpoint.  A
+nonmatching literal suffix in a direct inner scope incorrectly stopped lookup
+before a matching suffix reachable through a using directive; the synthetic
+shared `operatorliteral` key collided with legal ordinary source declarations;
+generic selection admitted invalid same-suffix cooked-string signatures; and
+the declaration path accepted the ill-formed `(const char*, int)` shape.  The
+repairs are suffix-aware value-graph lookup before shadowing, ordinary-value
+separation in declaration conflict paths, canonical namespace/linkage and
+non-template parameter validation, and typed cooked-string candidate
+filtering.  The PA12 candidate list now uses a `FlatIndex<BindingId, ...>` seen
+set rather than a nested duplicate scan.  These changes preserve canonical
+binding identity and do not add a second semantic model, text reparse,
+whole-program retry, host/reference invocation, or hardcoded test answer.
+
+### Focused evidence
+
+The final focused commands completed successfully:
+
+```text
+git diff --check                                                        exit 0
+sh -n cppgm.tests/course/pa16/427-typed-user-defined-literal-boundary-regression.sh  exit 0
+make -C dev cppgm++                                                    exit 0
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/300-user-defined-string-literal-operator.t  PASS (1/1)
+make -C pa10 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/200-literal-operator-id.t                  PASS (1/1)
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t  PASS (1/1)
+sh cppgm.tests/course/pa16/427-typed-user-defined-literal-boundary-regression.sh  PASS
+```
+
+The disposable typed probes also passed for suffix fallback through a using
+directive and for ordinary variable/function/namespace/namespace-alias/type-
+alias/using-declaration names colliding with `operatorliteral`.  A using
+directive introduced after the literal use returned status `1`, while one
+introduced before it returned status `0`.  A numeric UDL use returned status
+`1` through the active string-only declaration path, while a legal same-suffix
+`unsigned long long` declaration was accepted and filtered during the cooked
+string use.  Unused `(const char*, int)` and wrong-arity declarations returned
+status `1`; C-linkage and class/function-scope literal operators also returned
+status `1` with their corresponding fail-closed diagnostics, while wchar,
+char16, and char32 cooked strings lowered and
+ran with status `0`.  A clean compiler built from landed `2cfa1111` returns
+status `1` with `ERROR: PA12 no literal operator candidate` on the expanded
+427 early-shadow source; the repaired compiler returns `0`.  A representative
+final LowIR trace contains decoded bytes `104, 101, 108, 108, 111, 0`, a
+selected function object symbol `_ZN5traceli6_traceEPKcm`, an address argument,
+a converted size argument `5`, and the selected call.  Regression 427 observes
+the three original suffixes, all 64 `_slot00`--`_slot63` ABI suffixes, the
+early-shadow fallback, legal-other-form filtering, malformed-declaration
+rejection, ordinary-name collision,
+and runtime success.
+
+### Final validation
+
+`make test-pa16` exits `2` with `231/243` passing, complete `243/243`
+coverage, and exactly the 12 authority identities above.  The normalized
+comparison against
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`
+reports authority/fresh failures `12/12`, fresh-only `0`, authority-only `0`,
+and discovered/reference/fresh inventories `243/243/243` with zero inventory
+deltas.  The required `n=16` through-PA15 command exits `0` at `1167/1167`.
+The final file audit exits `0` with six nonfatal `bad-division` warnings:
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`,
+`pa11_semantic_model.h`, `pa12_semantic_selection.h`, and `pa15_lowering.h`.
+Final diff-check and the bounded changed-path/artifact audit pass; only the
+allowlisted course regression, five bounded source files, and these two
+documentation files are changed.
+
+### Bounds, performance, and next checkpoint
+
+Sidecar transfer and validation are constant work per owned occurrence.
+Suffix filtering traverses only the reachable lexical/using lookup graph and
+its visible candidate entries; candidate deduplication is expected constant
+time per entry and selection remains bounded by candidates times arguments.
+Literal address materialization is proportional to the decoded payload and
+the existing content bucket.  Regression 427 supplies structural scale
+evidence with 64 declaration/definition suffix pairs, 64 unique `_slot` ABI
+symbols, a late selected suffix, an early-shadow blocker, and separate
+signature/scope/collision controls.  It supplies no timing or RSS claim.  No
+unbounded retry or needless whole-program scan was introduced.
+
+The checkpoint is complete and committed with the exact residual boundary
+preserved.  The next checkpoint is a separate PA16 residual; no unrelated
+residual surface was re-audited here.
+
+## Historical Empty-Base Checkpoint Review (75f7944a)
+
 This checkpoint review covers committed audit/repair
 `75f7944aacd312b09b3183170e62f35e69808a44` (`PA16: audit empty-base layout
 ownership`), which audits landed increment
@@ -4199,6 +4381,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `2cfa1111` typed cooked-string UDL checkpointAudit | Final bounded PA10--PA15 audit and repair: suffix-aware lookup filters before shadowing, ordinary names remain separate from the internal literal bucket, the canonical PA11 path rejects malformed non-template declarations, and PA12 filters legal scalar/raw same-suffix alternatives before cooked-string selection. Regression 427 durably covers early-shadow fallback, legal-other-form filtering, unused `(const char*, int)` and wrong-arity rejection, C-linkage rejection, ordinary-name collision, and class/function-scope rejection; clean landed `2cfa1111` fails the early-shadow case while the amended compiler passes. Final PA16 is `231/243` with the exact unchanged 12 failures and `243/243` coverage; normalized authority/fresh comparison is `12/12`, fresh-only/authority-only `0/0`, inventories `243/243/243`; through-PA15 is `1167/1167`; file audit exits `0` with six known warnings; diff/path audits pass. The bounded result is committed with no handout, fixture, reference, sidecar, harness, comparator, generated-output, coverage, or source-set changes. | completed audit |
 | `d5bf2600` constructor-overload viability checkpointAudit | Completed bounded follow-up repair of the shared PA12 constructor/call owner: ambiguous constructor-level sequences remain viable UDCs, same-constructor UDCs retain typed second-standard-sequence ranking, access/deleted status is diagnosed after selection, inherited hiding uses contiguous typed indexes, and the inheriting-constructor publisher plus constructor/lifetime facts are extracted within the source-audit limits. The final hot-record probe is `ConversionChoice` parent/current `56/56` bytes and `ConversionScore` `20/40` bytes; the latter reuses standard payload fields for second-SCS detail and adds only typed UDC identity/markers. Focused build, the exact 7-test matrix, all discriminating access/deleted/ambiguity/inherited probes, and the same-constructor LowIR probe pass. Final `make test-pa16` is status `2` at `227/243` with exactly the unchanged 16 identities; normalized authority/fresh comparison is `16/16`, authority-only/fresh-only `0/0`, and discovered/reference/fresh coverage is `243/243/243`. Through-PA15 is `1167/1167`; file audit exits `0` with the six exact warnings recorded above; diff-check and bounded path/artifact checks pass. No handout/test/reference mutation; next checkpoint is the separate residual `200-elaborated-member-forward-type.t`. | completed audit |
 | `29d9c4ce checkpointAudit` | Completed the bounded PA10 elaborated-member parameter-clause audit and repair plus PA15 ABI owner consolidation. First-position elaborated keys use one charged shared fact; arbitrary later positions reuse the delimiter-bounded bare-name scan's actual failure cursor; PA15 named types delegate to `value_components`. Focused controls and exact target/namespace/nested-class-enum ABI probes pass. Final PA16 is `228/243` with the unchanged 15 identities, retained `15`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243`; through-PA15 is `1167/1167`; file audit is status `0` with six known warnings; no test, fixture, reference, sidecar, harness, comparator, generated-output, coverage, or source-set change. | completed audit |
 | `b58ddd2a` typed nullptr carrier checkpointAudit | Completed the bounded carrier audit and structural ABI extraction: PA11/PA12/PA15 typed ownership, exact pointer/bool endpoints, canonical i64/u8 carriers, lvalue source evaluation, and the narrow integer-zero consumer guard are recorded. Final post-extraction build and focused PA16 `1/1`, PA12 `4/4`, PA13 `1/1`, PA15 `1/1` pass; target/equality/pointer/endpoint LowIR is byte-identical across extraction; final PA16 is `225/243` with exactly 18 failures, exact comparison authority-only `0`/fresh-only `0`, and `243/243/243` inventories; prior-through is `1167/1167`; file audit passes with five known warnings; no fixture/reference change. Final changed paths are exactly `dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering_abi.cpp`, `dev/frontend_source_sets.mk`, `pa16/audit.md`, and `pa16/plan.md`. | completed audit |

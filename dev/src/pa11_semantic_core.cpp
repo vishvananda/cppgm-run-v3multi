@@ -602,17 +602,6 @@ TypeId PA11SemanticModel::conditional_pointer_common_type(TypeId left,
 		cv_qualifiers(right_pointee);
 	return make_pointer(make_cv(left_unqualified, qualifiers));
 }
-bool PA11SemanticModel::direct_value_exists(ScopeId scope, NameId name) const
-{
-	const ValueList* found = scopes_[scope.value].values.find(name);
-	return found != NULL && !found->entries.empty();
-}
-bool PA11SemanticModel::direct_namespace_exists(ScopeId scope, NameId name) const
-{
-	const Scope& current = scopes_[scope.value];
-	return current.namespaces.find(name) != NULL ||
-		current.namespace_aliases.find(name) != NULL;
-}
 ScopeId PA11SemanticModel::named_namespace(ScopeId parent, NameId name)
 {
 	Scope& current = scopes_[parent.value];
@@ -1037,7 +1026,7 @@ TypeId PA11SemanticModel::lookup_type_unqualified(ScopeId start, NameId name,
 	return TypeId();
 }
 bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
-	std::vector<ValueRef>* result, bool include_using, SourcePoint point) const
+	std::vector<ValueRef>* result, bool include_using, SourcePoint point, NameId literal_suffix) const
 {
 	reset_lookup_frames(LookupGraphKind::Value, start);
 	while (!lookup_frames_.empty())
@@ -1069,6 +1058,14 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 						continue;
 					if (!entry.binding.valid() || entry.binding.value >= bindings_.size() || entry.binding.value >= binding_owners_.size() || !entry.origin.valid() || entry.origin.value >= scopes_.size() || binding_owners_[entry.binding.value] != entry.origin) throw std::runtime_error("PA11 value entry identity is invalid");
 					if ((entry.has_access_override && (!entry.access_view_owner.valid() || entry.access_view_owner != frame.scope || frame.scope.value >= scopes_.size() || scopes_[frame.scope.value].kind != ScopeKind::Class)) || (!entry.has_access_override && (entry.access_view_owner.valid() || entry.access_override != MemberAccess::Public))) throw std::runtime_error("PA11 access view identity is invalid");
+					const BindingSidecar* sidecar = binding_sidecar(entry.binding);
+					if (literal_suffix.valid() ?
+						sidecar == NULL || sidecar->operator_function_kind !=
+							PA10OperatorFunctionKind::Literal ||
+							sidecar->operator_literal_suffix != literal_suffix :
+						sidecar != NULL && sidecar->operator_function_kind ==
+							PA10OperatorFunctionKind::Literal)
+						continue;
 					result->push_back(ValueRef(entry.origin, entry.binding, entry.has_access_override, entry.access_override, entry.access_view_owner));
 					have_visible = true;
 				}
@@ -1110,7 +1107,7 @@ bool PA11SemanticModel::lookup_value_graph(ScopeId start, NameId name,
 	return false;
 }
 std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
-	ScopeId start, NameId name, SourcePoint point) const
+	ScopeId start, NameId name, SourcePoint point, NameId literal_suffix) const
 {
 	prepare_unqualified_lookup(start);
 	ScopeId scope = start;
@@ -1118,8 +1115,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
 	{
 		begin_lookup();
 		std::vector<ValueRef> found;
-		const bool have_direct = lookup_value_graph(scope, name, &found, false,
-			point);
+		const bool have_direct = lookup_value_graph(scope, name, &found, false, point, literal_suffix);
 		if (have_direct)
 			return found;
 		// Namespace-owned friend bodies retain one exact class lexical value
@@ -1144,7 +1140,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
 				begin_lookup();
 				std::vector<ValueRef> friend_values;
 				if (lookup_value_graph(lexical->class_scope, name,
-					&friend_values, true, point))
+					&friend_values, true, point, literal_suffix))
 				{
 					return friend_values;
 				}
@@ -1155,7 +1151,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
 		for (std::size_t i = 0; i < targets.size(); ++i)
 		{
 			std::vector<ValueRef> nominated;
-			if (!lookup_value_graph(targets[i], name, &nominated, true, point))
+			if (!lookup_value_graph(targets[i], name, &nominated, true, point, literal_suffix))
 				continue;
 			found.insert(found.end(), nominated.begin(), nominated.end());
 		}
@@ -1168,7 +1164,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_unqualified(
 	return std::vector<ValueRef>();
 }
 std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
-	const NamePath& path, ScopeId start, SourcePoint point) const
+	const NamePath& path, ScopeId start, SourcePoint point, NameId literal_suffix) const
 {
 	if (path.components.empty())
 		return std::vector<ValueRef>();
@@ -1177,10 +1173,10 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
 	if (path.components.size() == 1)
 	{
 		if (!path.global)
-			return lookup_value_unqualified(start, path.last(), point);
+			return lookup_value_unqualified(start, path.last(), point, literal_suffix);
 		begin_lookup();
 		std::vector<ValueRef> result;
-		lookup_value_graph(global_, path.last(), &result, true, point);
+		lookup_value_graph(global_, path.last(), &result, true, point, literal_suffix);
 		return result;
 	}
 	std::vector<NameId> prefix(path.components.begin(), path.components.end() - 1);
@@ -1189,7 +1185,7 @@ std::vector<ValueRef> PA11SemanticModel::lookup_value_path(
 		return std::vector<ValueRef>();
 	begin_lookup();
 	std::vector<ValueRef> result;
-	lookup_value_graph(scope, path.last(), &result, true, point);
+	lookup_value_graph(scope, path.last(), &result, true, point, literal_suffix);
 	return result;
 }
 ScopeId PA11SemanticModel::resolve_qualifier_scope(const std::vector<NameId>& components,
