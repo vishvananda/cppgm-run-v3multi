@@ -381,6 +381,31 @@ widening, synthesized member-array cleanup, the special-member body-owner
 path, and the repaired user-destructor suffix; the required broad through-stage
 gate also passed.
 
+### Independent final confirmation and committed evidence
+
+Independent supervisor validation confirms:
+
+- `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`: exit `0`,
+  with the same six established nonfatal header-division warnings;
+- `make test-report-through-pa16`: exit `0`,
+  `ALL TESTS PASSED SUCCESSFULLY! (1410 / 1410)`, stages `pa1`–`pa16`;
+- courses 410, 434, and 435 retain the structural counters and deltas above;
+- `git diff --check` and `git fsck --no-dangling --no-progress`: exit `0`;
+- post-commit `git status --short`: exit `0`, empty.
+
+The implementation/audit commit being evidenced is
+`51a39a0ae942813d5ca30a8ab25544daf165012c`.  `git show --check --stat`
+passes, and that commit contains exactly these six paths:
+
+```text
+dev/src/pa15_lowering.h
+dev/src/pa15_lowering_construction.cpp
+cppgm.tests/course/pa16/435-typed-destructor-suffix-linearity-regression.sh
+pa16/tests/general/300-synthesized-array-member-lifecycle.ref
+pa16/plan.md
+pa16/audit.md
+```
+
 ## Durable stage ledger
 
 The following compact ledger preserves the decisions that should not be
@@ -419,5 +444,5 @@ review found none of those designs in the current PA16 path.
   the PA16 implementation boundary.
 
 This final audit covers the implementation, regression, oracle, and
-documentation repair.  The authorized final commit and clean-tree results are
-recorded in the final evidence above.
+documentation repair.  The implementation/audit commit and clean-tree
+results are recorded above.

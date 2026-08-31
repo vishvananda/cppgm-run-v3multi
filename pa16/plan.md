@@ -149,14 +149,15 @@ The final audit has the following focused evidence:
   unchanged;
 - the final source review and `git diff --check` have no new fatal finding.
 
-The final audit records the fresh broad through-PA16 result and source file
-audit:
+The final audit records these final outcomes:
 
-```text
-perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
-make test-report-through-pa16
-git status --short       # empty only after the authorized commit
-```
+- source file audit: PASS, exit `0`, with six established nonfatal
+  header-division warnings;
+- through-PA16 gate: PASS, exit `0`, `1410/1410`, all `16/16` stages;
+- `git diff --check`, `git fsck --no-dangling --no-progress`: PASS;
+- implementation/audit commit `51a39a0ae942813d5ca30a8ab25544daf165012c`:
+  `git show --check --stat` PASS, exact six-path content confirmed;
+- post-commit `git status --short`: PASS, empty.
 
 The next stage may rely on the typed PA16 facts and LowIR contract here; it
 must not treat this plan or `pa16/audit.md` as a second semantic model.
