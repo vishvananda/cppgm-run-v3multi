@@ -2,6 +2,152 @@
 
 ## Current Checkpoint Review
 
+This checkpoint review audits landed increment
+`69bbe80097030fb38b4aed6c6d5cf937a2dd6e87` relative to `148ef591`, with
+bookkeeping-only follow-ups `a5839138` and `3348d274`.  The turn-start clean
+HEAD was `3348d274`; the current implementation/docs milestone is an explicit
+working-tree, pre-commit marker pending the first audit/repair commit.  The PA16 boundary and design notes, `spec.md`
+Purpose and sections 1--5 and 7, the landed diff, current bounded source, the
+named tests for observation, and the relevant typed consumers were inspected.
+No handout tests, fixtures, refs, sidecars, harnesses, comparators, generated
+outputs, coverage rules, source-set files, or unrelated residual surfaces were
+changed.
+
+### Authority and exact residual boundary
+
+The primary authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its turn-start `make test-pa16` result is exit `2`, `230/243` passing, complete
+`243/243` coverage, and exactly these 13 failures:
+
+```text
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-user-defined-string-literal-operator.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The two resolved checkpoint identities are absent from this map.  The map and
+coverage are retained unchanged by this milestone.  The final serial gates
+reported through-PA15 `1167/1167` (exit `0`) and PA16 exit `2` at `230/243`.
+The fresh normalized failure comparison is authority `13`, fresh `13`,
+authority-only `0`, and fresh-only `0`; discovered/reference/fresh inventories
+are `243/243/243`, with all missing/unexpected artifact counts `0`.
+
+### Complete typed ownership trace
+
+The audited production path is:
+
+```text
+typed declarations/records
+  -> PA11 NamedRecordId + pa11_semantic_model.h RecordLayout
+  -> PA12 typed member/base-path facts
+  -> PA15 member address, member call, conversion, construction, destructor
+     lowering and LowIR projections
+```
+
+In `pa11_record_layout.cpp`, `complete_record_layout` is the one owner of
+complete-object size/alignment, direct-base placement, local member offsets,
+bit-field storage facts, and requested alignment.  A direct base is first
+completed and its `empty` fact becomes the typed `zero_size` edge fact; the
+complete object is still rounded to at least one byte.  The first-storage
+decision uses declaration/event order and preserves barriers from nonzero-width
+bit-fields, requested alignment, default member initialization, and other
+storage-bearing members.  Arrays and CV wrappers are unwrapped by the typed
+query.  Nested zero-offset members recurse through completed local layouts,
+while the per-query visited set terminates cycles.  Same-type direct
+base/member/array/nested occurrences remain unique and disable overlap;
+distinct empty types may overlap.  Anonymous members use their canonical
+member type, backing storage type, and generated record identity rather than a
+spelling shortcut.  Computing/failed/invalid layouts fail closed.
+
+The landed implementation correctly retained one direct typed edge and local
+facts, but the nested zero-offset query trusted some completed owner, member,
+sidecar, and direct-base identities.  A malformed typed fact could therefore
+be interpreted as a non-collision.  The repair in
+`dev/src/pa11_record_layout.cpp` validates class-scope ownership, exact
+member-offset entries and owners, bit-field sidecars, direct-base identity,
+kind, offset, and base-layout consistency before following a fact.  Layout
+completion now rejects mismatched record scope, absent/stale base metadata,
+self/union/nonclass bases, and invalid base validity.  These are fail-closed
+checks; valid layout results do not change.  `pa11_semantic_model.h` remains
+the typed fact contract and was audited but not modified.
+
+The representative PA15 paths are end-to-end typed.  Member-address lowering
+recomputes the member base path, checks every edge against the current layout,
+and then emits the field projection.  Member-call lowering first invokes
+`validate_typed_base_path`, which checks every typed relation, the completed
+current layout, and the zero direct-base offset; its following loop
+independently rechecks the relation and end owner but does not itself recheck
+layout before the projection.  Derived-to-base conversion validates the typed
+fact, each path edge, current/base complete layouts, and the final target before
+emission.  Constructor-subobject and destructor paths validate owner, edge,
+layout, and action metadata; no-op construction validates its action graph
+before pruning.  Identity paths emit zero base projections.  Every valid
+nonempty all-zero path emits exactly one canonical `base_subobject`, regardless
+of path depth; no PA15 projection behavior was changed in this milestone.
+
+### Focused evidence and stage failures
+
+After the source repair, the final serial gates were:
+
+```text
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+                                                         exit 0; 1167/1167
+make test-pa16                                           exit 2; 230/243
+normalized failure comparison                           authority 13, fresh 13,
+                                                         authority-only 0, fresh-only 0
+artifact inventories                                    discovered/reference/fresh 243/243/243,
+                                                         missing/unexpected 0/0/0/0
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+                                                         exit 0; 6 nonfatal warnings
+git diff --check                                         exit 0
+focused target/control evidence                          targets 2/2, matrix 12/12
+sh cppgm.tests/course/pa16/401-typed-member-projection-boundary-regression.sh exit 0
+sh cppgm.tests/course/pa16/404-typed-implicit-default-demand-regression.sh   exit 0
+sh cppgm.tests/course/pa16/408-typed-constructor-explicit-context-regression.sh exit 0
+sh cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh        exit 0
+sh cppgm.tests/course/pa16/418-typed-inherited-constructor-wrapper-regression.sh exit 0
+```
+
+The exploratory 400/402/403/405 scripts exited `1`: 400 stops at its existing
+DMI expectation mismatch, 402 at a declaration-only demand-boundary
+expectation, and 403/405 expect two per-edge projections.  The last expectation
+conflicts with the current PA16 one-canonical-projection contract, so none is
+repaired here.
+The six file-audit warnings are the existing header/body findings for
+`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`,
+`pa12_semantic_selection.h`, and `pa15_lowering.h`.  The PA16 fresh failure
+identity set is exactly the supplied 13-item authority set; no added pass
+compensated for a new failure.
+
+### Bounds, architecture, and disposition
+
+`RecordLayout` persists one direct edge and local offsets, not a transitive
+closure.  The empty-base query constructs typed ancestry scratch state only
+for the candidate query, visits local members once, unwraps bounded arrays/CV,
+and uses typed visited identities for nested traversal.  The repair adds only
+linear local-member/direct-edge validation and no whole-program scan or
+per-access lookup.  The retained structural scale probe used 64 inheritance
+edges and 65 records, retained 64 direct edges and zero closure entries, and
+emitted one deepest inherited-call projection; no timing or RSS claim is made.
+
+This milestone changes only `dev/src/pa11_record_layout.cpp` plus the two
+requested records.  It leaves the exact 13 residual identities untouched and
+does not claim completion of PA16.  The first audit/repair commit and the
+docs-only hash-recording follow-up remain; no other residual was re-audited.
+
+## Historical Elaborated-Member Review (29d9c4ce)
+
 This bounded checkpoint audit covers landed commit
 `29d9c4ce8cd2d9c85ae8de25ea3c3d8515520f4f` (`PA16 route elaborated types in
 parameter clauses`) relative to parent
@@ -4090,3 +4236,4 @@ conversion slices.
 | `e470e9df` prvalue derived-base reference binding checkpointAudit | Final bounded audit of landed `e470e9dfed07ca09a373d227640f3c8042cc2cbf` relative to `f3afe9d5`: the PA12 repair confines prvalue derived-to-base reference binding to const non-volatile lvalue references, restores exact same-class temporary-reference ranking, and retains typed access/path publication into the validated PA15 projection consumer. Focused matrix is `8/8`; required through-PA15 is `1167/1167`; file audit exits `0` with five known warnings; fresh `make test-pa16` exits `2` at `220/243` with `23` failures; exact comparison to the supplied current authority is `23/23`, fresh-only `0`, authority-only `0`, and discovered/reference/fresh coverage `243/243/243` with missing/unexpected `0/0`. No test, fixture, reference, harness, comparator, generated output, coverage rule, source-set file, or unrelated stage code changed; PA16 remains incomplete with the same 23 residual identities. | completed audit |
 | `24d555c8` typed no-op construction effects checkpointAudit | Completed final bounded audit of landed `24d555c882a3e15ea3ffe5be42ed5d9953084df6` relative to `d889058c0d159bd4414ffb6e9f5ac75227ce0192`: PA12 typed constructor facts flow through PA15 memoized constructor/zero-init summaries, demand traversal, aggregate/construction lowering, and typed address paths. The audit repairs the semantic demand/action-shape split, fail-closed enclosing action-graph ownership/layout/result validation, and inconsistent direct-base metadata handling before pruning; current-block address reuse, cache cycle handling, leaf retention, DMI/destructor/lifetime barriers, argumented construction, and scalar/value stores remain guarded. Focused targets, course 404/409, and the constructor matrix pass; the exact prior-through gate is `1167/1167`; fresh PA16 is `222/243` with the exact unchanged 21-failure identity set; authority/fresh failures are `21/21`, authority-only/fresh-only are `0/0`, and discovered/reference/fresh inventories are `243/243/243` with all missing/unexpected comparisons `0`. The file audit exits `0` with five pre-existing warnings, the structural scale probe retains 128 base entries while emitting 0 derived wrappers/calls, and final diff-check and clean-tree verification pass. | completed audit |
 | `6d2ed09c` typed ToVoid discarded lowering checkpointAudit | Completed audit of landed `6d2ed09cd4b3daf55ab28282addcf3a878a8adba` relative to `14cadc0c`: PA12's typed `ToVoid` producer and PA15's discarded-expression consumer are traced through O0 LowIR. The consumer now fail-closes in-range typed source/target mismatches; the narrow non-reference scalar-parameter read and volatile/function/reference/class/comma/conditional/assignment/increment boundaries remain intact. Serial reconfirmation is build `0`, PA16 `3/3`, and PA15 `4/4`; the exact prior-through gate is `1167/1167`; final PA16 is status `2` at `224/243` with exactly the same 19 failures; identity comparison is `19 -> 19`, retained `19`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243` with all missing/unexpected counts `0`; file audit is status `0` with five pre-existing warnings; diff-check and bounded path audit pass. Durable evidence is in the final checkpoint directory. No test, fixture, reference, harness, comparator, generated-output, coverage, source-set, or unrelated stage change. |
+| `working-tree` (pending; based on `3348d274`) | Completed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings; first commit/hash-recording follow-up pending. |

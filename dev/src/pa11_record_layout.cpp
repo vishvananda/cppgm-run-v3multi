@@ -214,35 +214,62 @@ bool PA11SemanticModel::type_has_zero_offset_record(TypeId type,
 		return false;
 	if (records.find(key.named) != NULL)
 		return true;
-	if (named_[key.named.value].kind != NamedKind::Class)
+	const NamedRecord& record = named_[key.named.value];
+	if (record.kind != NamedKind::Class)
 		return false;
 	if (visited.find(key.named) != NULL)
 		return false;
 	visited.set(key.named, true);
 	const RecordLayout& layout = record_layout(key.named);
-	if (layout.state != RecordLayoutState::Complete)
+	if (layout.state != RecordLayoutState::Complete || layout.size == 0 ||
+		layout.alignment == 0 || !record.scope.valid() ||
+		record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != key.named ||
+		layout.has_direct_base != record.has_base ||
+		(!layout.has_direct_base && (layout.direct_base.record.valid() ||
+			layout.direct_base.zero_size || layout.direct_base.offset != 0)))
 		throw std::runtime_error(
-			"zero-offset record query requires a complete layout");
-	if (layout.has_direct_base && layout.direct_base.offset == 0)
+			"zero-offset record query has an inconsistent layout owner");
+	if (layout.has_direct_base)
 	{
 		if (!layout.direct_base.record.valid() ||
-			layout.direct_base.record.value >= named_.size())
+			layout.direct_base.record.value >= named_.size() ||
+			record.direct_base != layout.direct_base.record ||
+			record.direct_base_virtual || layout.direct_base.offset != 0 ||
+			named_[layout.direct_base.record.value].kind != NamedKind::Class)
 			throw std::runtime_error("zero-offset direct base identity is invalid");
+		const RecordLayout& base_layout = record_layout(
+			layout.direct_base.record);
+		if (base_layout.state != RecordLayoutState::Complete ||
+			base_layout.size == 0 || base_layout.alignment == 0 ||
+			(layout.direct_base.zero_size && !base_layout.empty))
+			throw std::runtime_error("zero-offset direct base layout is invalid");
 		if (type_has_zero_offset_record(
 			named_type(layout.direct_base.record), records, visited))
 			return true;
 	}
 	for (std::size_t i = 0; i < layout.members.size(); ++i)
 	{
-		if (layout.members[i].offset != 0)
-			continue;
 		const BindingId member_id = layout.members[i].binding;
-		if (!member_id.valid() || member_id.value >= bindings_.size())
+		if (!member_id.valid() || member_id.value >= bindings_.size() ||
+			member_id.value >= binding_owners_.size() ||
+			binding_owners_[member_id.value] != record.scope)
 			throw std::runtime_error("zero-offset member identity is invalid");
 		const Binding& member = binding(member_id);
 		if (member.kind != BindingKind::Variable ||
 			is_static_member(member_id))
 			throw std::runtime_error("zero-offset layout member is not a field");
+		const std::size_t* member_offset = layout.member_offsets.find(member_id);
+		if (member_offset == NULL || *member_offset != layout.members[i].offset)
+			throw std::runtime_error("zero-offset member layout is inconsistent");
+		const BitFieldFact* bit_field = bit_field_fact(member_id);
+		if (bit_field != NULL && (bit_field->binding != member_id ||
+			bit_field->owner_record != key.named ||
+			bit_field->owner_scope != record.scope))
+			throw std::runtime_error("zero-offset bit-field identity is invalid");
+		if (layout.members[i].offset != 0)
+			continue;
 		if (type_has_zero_offset_record(member.type, records, visited))
 			return true;
 	}
@@ -550,14 +577,20 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 	layout.empty = false;
 	layout.checkpoint_zero_storage_eligible = false;
 	if (record.kind != NamedKind::Class || !record.defined ||
-		!record.scope.valid() || record.scope.value >= scopes_.size())
+		!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
 	{
 		layout.state = RecordLayoutState::Failed;
 		throw std::runtime_error("record definition is incomplete");
 	}
 	if (record.has_virtual_member || record.direct_base_virtual ||
+		record.has_base != record.direct_base.valid() ||
 		(record.has_base && (!record.direct_base.valid() ||
-			record.direct_base.value >= named_.size())))
+			record.direct_base.value >= named_.size() ||
+			record.direct_base == record_id ||
+			named_[record.direct_base.value].kind != NamedKind::Class ||
+			named_[record.direct_base.value].class_tag == ClassTag::Union)))
 	{
 		layout.state = RecordLayoutState::Failed;
 		layout.empty = false;
