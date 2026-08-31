@@ -1503,6 +1503,42 @@ LoweredValue Pa15Lowerer::recompute_destructor_element_address(
 	return result;
 }
 
+void Pa15Lowerer::materialize_destructor_suffix_chain(
+	const std::vector<DestructedElement>& elements,
+	DestructorSuffixChain* chain)
+{
+	if (chain == NULL || elements.size() < 2 || chain->terminal.valid() ||
+		!chain->heads.empty())
+		throw std::runtime_error("PA15 destructor suffix chain is invalid");
+	if (elements.size() == std::numeric_limits<std::size_t>::max())
+		throw std::runtime_error("PA15 destructor suffix chain is too large");
+	chain->heads.assign(elements.size() + 1, BlockId());
+	const BlockId saved_current = current_block_id();
+	chain->terminal = block_id(new_block("destructor_suffix_terminal"));
+	set_current(chain->terminal);
+	Instruction end;
+	end.kind = Instruction::IK_EH_END;
+	block().instructions.push_back(end);
+	Instruction resume;
+	resume.kind = Instruction::IK_RESUME;
+	block().instructions.push_back(resume);
+	chain->heads[elements.size()] = chain->terminal;
+	BlockId next = chain->terminal;
+	for (std::size_t i = elements.size(); i > 1; --i)
+	{
+		const std::size_t index = i - 1;
+		const BlockId node = block_id(new_block("destructor_suffix_cleanup"));
+		set_current(node);
+		emit_destructor_call(elements[index].action.destructor,
+			recompute_destructor_element_address(elements[index]));
+		emit_jump(next);
+		chain->heads[index] = node;
+		next = node;
+	}
+	if (saved_current.valid()) set_current(saved_current);
+	else current_block_ = InvalidIdentityValue;
+}
+
 void Pa15Lowerer::emit_destructor_element_sequence(
 	const std::vector<DestructedElement>& elements, bool exception_safe)
 {
@@ -1513,38 +1549,39 @@ void Pa15Lowerer::emit_destructor_element_sequence(
 				recompute_destructor_element_address(elements[i]));
 		return;
 	}
+	if (elements.size() < 2)
+	{
+		for (std::size_t i = 0; i < elements.size(); ++i)
+			emit_destructor_call(elements[i].action.destructor,
+				recompute_destructor_element_address(elements[i]));
+		return;
+	}
+	DestructorSuffixChain suffix;
+	materialize_destructor_suffix_chain(elements, &suffix);
 	for (std::size_t i = 0; i < elements.size(); ++i)
 	{
-		const bool has_prefix = i + 1 < elements.size();
-		BlockId cleanup;
+		const bool has_suffix = i + 1 < elements.size();
 		BlockId next;
-		if (has_prefix)
+		if (has_suffix)
 		{
-			cleanup = block_id(new_block("destructor_suffix_cleanup"));
+			if (i + 1 >= suffix.heads.size() ||
+				!suffix.heads[i + 1].valid())
+				throw std::runtime_error(
+					"PA15 destructor suffix chain head is missing");
 			next = block_id(new_block("destructor_suffix_next"));
 			Instruction handler;
 			handler.kind = Instruction::IK_EH_CLEANUP;
-			handler.first = block_operand(cleanup);
+			handler.first = block_operand(suffix.heads[i + 1]);
 			block().instructions.push_back(handler);
 		}
 		emit_destructor_call(elements[i].action.destructor,
 			recompute_destructor_element_address(elements[i]));
-		if (!has_prefix)
+		if (!has_suffix)
 			continue;
 		Instruction end;
 		end.kind = Instruction::IK_EH_END;
 		block().instructions.push_back(end);
 		emit_jump(next);
-		set_current(cleanup);
-		for (std::size_t prefix = i + 1; prefix < elements.size(); ++prefix)
-			emit_destructor_call(elements[prefix].action.destructor,
-				recompute_destructor_element_address(elements[prefix]));
-		end = Instruction();
-		end.kind = Instruction::IK_EH_END;
-		block().instructions.push_back(end);
-		Instruction resume;
-		resume.kind = Instruction::IK_RESUME;
-		block().instructions.push_back(resume);
 		set_current(next);
 	}
 }

@@ -318,8 +318,8 @@ struct ConstructedElement
 		: root(root), path(path), destructor(destructor), record(record) {}
 };
 
-// A destructor suffix terminal retains its typed action and array path so each
-// exceptional prefix can recompute its address without borrowing an SSA
+// A destructor terminal retains its typed action and array path so each
+// exceptional suffix can recompute its address without borrowing an SSA
 // producer from the normal path.
 struct DestructedElement
 {
@@ -332,6 +332,19 @@ struct DestructedElement
 			std::vector<ConstructorAddressStep>(),
 		NamedRecordId record = NamedRecordId())
 		: action(action), path(path), record(record) {}
+};
+
+// Shared immutable cleanup tails for one destructor action sequence.  For
+// 1 <= i < N, heads[i] is the block that destroys elements[i..N), and
+// heads[N] is the single EH_END/resume terminal.  A normal destructor's
+// handler enters heads[i + 1], while cleanup-tail destructors deliberately
+// have no nested handler so their throw behavior remains unchanged.
+struct DestructorSuffixChain
+{
+	BlockId terminal;
+	std::vector<BlockId> heads;
+
+	DestructorSuffixChain() : terminal(), heads() {}
 };
 
 typedef FlowArenaIndex<LoopFlowIndexTag> LoopFlowIndex;
@@ -839,6 +852,9 @@ private:
 		std::vector<DestructedElement>* elements);
 	LoweredValue recompute_destructor_element_address(
 		const DestructedElement& element);
+	void materialize_destructor_suffix_chain(
+		const std::vector<DestructedElement>& elements,
+		DestructorSuffixChain* chain);
 	void emit_destructor_element_sequence(
 		const std::vector<DestructedElement>& elements, bool exception_safe);
 	void emit_constructor_call(BindingId constructor,

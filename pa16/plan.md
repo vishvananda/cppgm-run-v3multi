@@ -1,97 +1,162 @@
-# PA16 typed source-to-LowIR checkpoint
+# PA16 final typed source-to-LowIR architecture audit
 
-## Stage Design
+## Objective and authority
 
-PA11 owns canonical class, lifetime, layout, and `BitFieldFact` identities,
-including declared/storage/operation types, signedness, widths, masks, and
-offsets.  PA12 carries those facts through conversions, actions, and retained
-`(ReturnStatement, FunctionFactId)` owner pairs; its finalizer accepts both
-body-bearing function node kinds and resolves bindings through
-`definition_by_binding_` in O(1).  PA15 consumes the facts through typed
-`LoweredValue`, `integer_i64`, construction/destruction paths, and bit-field
-extraction; PA13 validates typed LowIR directly.
+Close PA16's full typed ownership path from the PA10 AST through PA11/PA12
+facts, PA15 LowIR, and the PA13 validator, while preserving one forward
+production model and the PA16 boundary in `pa16/README.md` and `spec.md`.
+The audited committed implementation baseline/checkpoint parent is
+`306078539b51b5ae2be2fa3d31ad0c403e5668f2`, whose parent is
+`ff83cef40a28a6c01aa1a7d9eafc0477e6aa7489`.  The final audit and compact
+durable stage ledger are in `pa16/audit.md`.
 
-Both automatic storage-root and action-based/member-array construction use one
-typed `ArrayCleanupChain`.  Each completed element adds one persistent reverse
-cleanup node; its address is recomputed in its own unwind block and it jumps to
-the preceding node.  Deferred constructor edges retain typed identity without
-cross-block SSA producers.  For fixed array rank this is deterministic O(n)
-cleanup and LowIR work, with O(rank) typed address reconstruction per element;
-there are no per-width scans or LowIR-text/source-spelling reconstruction.
-This aligns with `spec.md` Purpose and §§1–5/§7, C++ reverse lifetime order,
-and the PA13 same-operation-type operand contract.  The old member-array
-fixture shape was established as non-ABI behavior by the source-preserving
-local check and independent course stress regression.
+Fresh final validation reports `make test-report-through-pa16` exit `0`,
+`1410/1410`, and all `16/16` stages.  The final source file audit exits `0`
+with only the six established nonfatal header-division warnings recorded in
+the final audit.
 
-## Failure Map
+## Typed stage design
 
-Turn-start authority was clean `ff83cef4`, `make test-pa16` `239/243`, earlier
-through PA15 `1167/1167`, and exactly four residual local failures:
+PA11 owns canonical `NamedRecordId`, `ScopeId`, `BindingId`, `TypeId`,
+`RecordLayout`, layout states, lifetime facts, and `BitFieldFact` identities.
+The bit-field fact keeps declared, storage, and operation types separate,
+including signedness, width, masks, and offsets.
 
-1. `200-local-default-class-array-lifecycle.t`: the fixture encoded forward
-   flat destruction and repeated root recomputation; PA15 and C++ require
-   reverse order with root reuse.
-2. `200-reference-indexed-pointer-member-access.t`: the fixture fed `i32`
-   directly to an `i64` multiply; PA13 requires matching binary operand types,
-   so PA15 widens with typed signed `sext`.
-3. `400-signed-bit-field-read.t`: the fixture discarded sign reconstruction
-   and returned a masked positive value instead of the represented negative
-   value required by PA16.
-4. `400-signed-enum-bit-field-read.t`: the same error occurred for a signed
-   `int`-underlying enum bit-field.
+PA12 owns source-point lookup, access, overload/ADL selection, conversion
+ranges, constructor/destructor/lifetime actions, and retained
+`(ReturnStatement, FunctionFactId)` owner pairs.  Its canonical truth finalizer
+accepts both body-bearing `FunctionDefinition` and `SpecialMemberDefinition`
+nodes and resolves canonical definitions through `definition_by_binding_`.
 
-The four fixture repairs preserve their sources, sidecars, comparator,
-validator, and coverage identities.  Course 410 exposed the actual
-`SpecialMemberDefinition` owner node; PA12 validates its canonical body,
-identity, and binding exactly like an ordinary function definition.  PA15's
-remaining array residual is closed by removing the quadratic
-`emit_constructor_call_with_cleanup` path and routing action/member roots
-through the persistent chain.  The authorized 300 fixture records that shape,
-and course 434 checks it at three sizes.
+PA15 consumes those facts through typed `LoweredValue`, `FunctionFact`,
+`integer_i64`, record-layout offsets, selected bindings, callable types,
+base-path ranges, symbols, and typed LowIR operands.  PA13 validates the same
+typed LowIR model directly.  ABI names, symbol spellings, metadata, and
+rendered output are terminal boundaries; they are never semantic lookup
+inputs.
 
-## Active Checkpoint
+Automatic storage-root and action/member-array construction share one typed
+`ArrayCleanupChain`.  It creates one persistent reverse cleanup node per
+completed destructible element, recomputes each address in its own unwind
+block, calls the canonical destructor once, and transfers to its predecessor.
+The repaired user-destructor path uses a separate typed
+`DestructorSuffixChain`: one persistent tail node per remaining action leaf
+and one `EH_END`/`resume` terminal.  Both chains remove repeated full-prefix
+regeneration and do not carry an SSA producer across an exception edge.
 
-Final validation is green: `make test-pa16` `243/243`; the exact `n=16`
-through-PA15 command `1167/1167`; `make test-report-through-pa16`
-`1410/1410`; the PA16 source audit passes with six established
-header-division warnings; course 410 and 434 pass; the four original residual
-locals pass `4/4`; local 300 passes `1/1`; courses 431, 412, 418, 420, 423,
-424, 429, 432, and 433 pass; and `git diff --check` passes.
+## Failure closure and boundaries
 
-The original PA16 local corpus remains `243` `.t` files, `243` matching
-`.ref.exit_status` sidecars, and `242` `.ref` LowIR fixtures.  The sole absent
-LowIR fixture is the intentional rejected
-`200-protected-member-typedef-access-bad.t`, whose sidecar is `EXIT_FAILURE`.
-There are `35` PA16 course scripts in both the source directory and the
-`pa16/course/pa16` symlink view.  No tests, sidecars, harnesses, comparators,
-or coverage paths were deleted or renamed.
+The parent authority had four residual public identities:
 
-## Performance Evidence
+- `200-local-default-class-array-lifecycle.t`: reverse destruction and root
+  reuse were absent from the checked oracle;
+- `200-reference-indexed-pointer-member-access.t`: an `i32` index was used
+  directly in an `i64` multiply;
+- `400-signed-bit-field-read.t`;
+- `400-signed-enum-bit-field-read.t`.
 
-Automatic storage-root arrays from course 410 report cleanup calls
-`E=8/16/32: 7/15/31` and main-function lines `143/287/575`, with incremental
-line deltas `144` and `288`.  Action-based/member-array roots from course 434
-report cleanup nodes and calls `7/7`, `15/15`, `31/31` and Holder-constructor
-lines `141/285/573`, with the same `144` and `288` deltas.  Thus both root
-kinds have linear cleanup-node/call and LowIR growth; nested course 410 also
-checks reverse order (`outer 1,0`; `inner 2,1,0`).  Each chain node emits one
-destructor and one predecessor transfer.  Retained return owners finalize in
-one pass with O(1) definition lookup, and the audit-visible construction unit
-remains `2834` lines.
+The audited baseline implementation and its five approved oracle changes
+close those four identities.  The current repair also updates only the
+`Holder` destructor function in
+`300-synthesized-array-member-lifecycle.ref` to record the shared-tail EH
+shape; its source and exit-status sidecar remain unchanged.  No tests,
+sidecars, harnesses, comparators, or coverage identities were deleted or
+renamed.  The PA16 corpus remains
+`243/243/242` for source tests/status sidecars/LowIR references; the sole
+missing LowIR reference is the intentional rejected protected-member typedef
+case.
 
-## Checkpoint Ledger
+PA16 does not implement copy/move value transfer, virtual or multiple
+inheritance, member pointers, templates, conversion operators, or other
+PA17–PA19 features.  Those boundaries remain explicit and are not reopened by
+the lifecycle repair.
 
-- Start: clean `ff83cef4`; supplied authority `239/243`, four residual
-  identities, and complete original coverage.
-- Trace: PA11/PA12 facts and PA15 consumers establish reverse lifetime order,
-  typed index widening, signed integral/underlying-enum extraction, the
-  `SpecialMemberDefinition` body owner, and shared cleanup-chain ownership.
-- Repair: four allowed LowIR fixture contracts repaired; PA12 canonical
-  ownership generalized; PA15 now uses the persistent chain for automatic and
-  action/member arrays; the obsolete helper is removed; course 434 is added.
-- Broad evidence: PA16 `243/243`; through PA15 `1167/1167`; through PA16
-  `1410/1410`; audit passed with six warnings; coverage is `243/243/242` as
-  documented above; and `git diff --check` passed.
-- Final handoff: one coherent PA16 checkpoint contains the typed implementation,
-  authorized 300 fixture, course 434 regression, and plan, with parent
-  `ff83cef4` and no unrelated coverage or history mutation.
+## Architecture review checklist
+
+The final audit records the full traces for:
+
+1. layout/member projection: canonical record/layout state, direct-base offset
+   zero, empty-base/alignment/pack behavior, member-offset indexes, typed
+   access/base paths, and `IPK_FIELD`/`IPK_BASE_SUBOBJECT` lowering;
+2. member/overloaded/ADL calls: source-point ordinary lookup, associated
+   records/namespaces, hidden friends, deterministic candidate identities,
+   access/cv/implicit-object/conversion selection, hidden object pointers,
+   typed function symbols, and demand-driven body emission;
+3. construction/destruction/lifetime: typed action and owner ranges, local and
+   namespace roots, special-member body ownership, reverse order, one-time
+   evaluation, EH edge address recomputation, and the persistent cleanup chain;
+4. packed bit-fields: distinct storage/operation types, promotion,
+   extraction/sign reconstruction, packed read-modify-write, and preserved
+   neighbors;
+5. global/internal identity and demand: unnamed-namespace ownership,
+   internal linkage, special-member base entries, dense typed demand vectors,
+   and no rendered-name reconstruction or eager helper sweep.
+
+The source review found no duplicate PA16 production model, textual semantic
+downgrade, whole-program retry, broad invalidation, incomplete hot-path cache
+key, or host/reference/previous-compiler shellout.  Layout, lookup, ADL,
+demand, and ordinary lowering are bounded by typed record/scope/candidate
+work.  `scanned_functions` and `scanned_runtime_facts` deduplicate their
+respective domains; global-root facts are deduplicated once per explicit root
+mode.  The final array-constructor and destructor-suffix cleanup paths are
+`O(ND)` for fixed-rank typed paths, with one typed cleanup node per applicable
+element and one shared terminal for destructor suffixes.
+
+## Structural evidence
+
+Course 410 (automatic roots) reports:
+
+```text
+E=8:  cleanup_calls=7,  main_lines=143
+E=16: cleanup_calls=15, main_lines=287
+E=32: cleanup_calls=31, main_lines=575
+line deltas: 144, 288
+```
+
+Course 434 (action/member roots) reports:
+
+```text
+E=8:  cleanup_nodes=7,  cleanup_calls=7,  Holder_lines=141
+E=16: cleanup_nodes=15, cleanup_calls=15, Holder_lines=285
+E=32: cleanup_nodes=31, cleanup_calls=31, Holder_lines=573
+line deltas: 144, 288
+```
+
+Course 435 (user-destructor suffixes) reports:
+
+```text
+E=8:  suffix_nodes=7,  suffix_calls=7,  Holder_lines=191
+E=16: suffix_nodes=15, suffix_calls=15, Holder_lines=375
+E=32: suffix_nodes=31, suffix_calls=31, Holder_lines=743
+line deltas: 184, 368
+```
+
+These are structural generated-LowIR measurements, not timing, RSS,
+allocation, or throughput claims.  All three probes check reverse order and
+one destructor call per cleanup node where applicable.
+
+## Final disposition
+
+The final audit has the following focused evidence:
+
+- `make -C dev cppgm++ CXX=g++` exits `0`;
+- course 410 exits `0`;
+- course 434 exits `0`;
+- course 435 exits `0`; shared suffix nodes/calls are linear and the
+  reverse chain/terminal invariants pass;
+- the five changed public targets plus the two lifetime controls pass `7/7`;
+- the single changed public fixture is source-preserving and its sidecar is
+  unchanged;
+- the final source review and `git diff --check` have no new fatal finding.
+
+The final audit records the fresh broad through-PA16 result and source file
+audit:
+
+```text
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+make test-report-through-pa16
+git status --short       # empty only after the authorized commit
+```
+
+The next stage may rely on the typed PA16 facts and LowIR contract here; it
+must not treat this plan or `pa16/audit.md` as a second semantic model.
