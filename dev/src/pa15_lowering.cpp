@@ -1004,9 +1004,52 @@ void Pa15Lowerer::collect_functions(){
 			function_symbols_[fact.binding.value] = function.symbol_id;
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
+			// When PA12 publishes a demanded, corresponding base ABI entry for an
+			// internal special member, that entry owns the C2/D2 object spelling.
+			// Prove that ownership through typed identities and the demand vector;
+			// a stale or incomplete relation must not suppress the complete-entry
+			// alias.  Keep the existing external ABI alias behavior.
+			const BindingId* mapped_base_entry = is_constructor ?
+				model_.constructor_base_entry_bindings_.find(fact.binding) :
+				is_destructor ?
+				model_.destructor_base_entry_bindings_.find(fact.binding) : NULL;
+			bool internal_special_member_pair = false;
+			if (binding.internal_linkage && mapped_base_entry != NULL &&
+				mapped_base_entry->valid() &&
+				mapped_base_entry->value < model_.bindings_.size() &&
+				mapped_base_entry->value < model_.binding_owners_.size() &&
+				model_.binding_owners_[mapped_base_entry->value] == fact.owner)
+			{
+				const Binding& base_entry_binding =
+					model_.binding(*mapped_base_entry);
+				const FunctionFactId* base_entry_id =
+					model_.function_binding_fact_index_.find(*mapped_base_entry);
+				if (base_entry_binding.kind == BindingKind::Function &&
+					base_entry_binding.type.valid() &&
+					base_entry_binding.type.value < model_.types_.size() &&
+					model_.type_kind(base_entry_binding.type) == TypeKind::Function &&
+					base_entry_id != NULL && base_entry_id->valid() &&
+					base_entry_id->value < model_.function_facts_.size() &&
+					base_entry_id->value < demanded_member_functions.size())
+				{
+					const FunctionFact& base_entry =
+						model_.function_facts_[base_entry_id->value];
+					const bool matching_base_entry = is_constructor ?
+						base_entry.is_constructor && base_entry.constructor_base_entry &&
+						base_entry.constructor_entry_source == fact.binding &&
+						base_entry.constructor_record == fact.constructor_record :
+						base_entry.is_destructor && base_entry.destructor_base_entry &&
+						base_entry.destructor_entry_source == fact.binding &&
+						base_entry.destructor_record == fact.destructor_record;
+					internal_special_member_pair =
+						base_entry.binding == *mapped_base_entry &&
+						base_entry.owner == fact.owner && matching_base_entry &&
+						demanded_member_functions[base_entry_id->value] != 0;
+				}
+			}
 			if (is_special_member && !fact.constructor_base_entry &&
 				!fact.destructor_base_entry &&
-				!(trivial_lifecycle && binding.internal_linkage))
+				!internal_special_member_pair)
 			{
 				lowir_model::ObjectAlias alias;
 				alias.object_name_id = intern_spelling(abi_symbol(fact,

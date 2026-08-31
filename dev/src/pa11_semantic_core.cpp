@@ -318,7 +318,7 @@ ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId n
 	const ScopeId result(scopes_.size());
 	const std::size_t depth = parent.valid() ? scopes_[parent.value].depth + 1 : 0;
 	scopes_.push_back(Scope(kind, parent, name, record, inline_namespace, creation_order_++, depth));
-	if (parent.valid() && scopes_[parent.value].internal_linkage_scope)
+	if (parent.valid() && scopes_[parent.value].internal_linkage_scope && (kind == ScopeKind::Namespace || kind == ScopeKind::Class || kind == ScopeKind::Enum || kind == ScopeKind::TemplateParameters))
 		scopes_[result.value].internal_linkage_scope = true;
 	if (parent.valid() && attach) scopes_[parent.value].children.push_back(result);
 	if (parent.valid() && !attach) deferred_scopes_.push_back(result);

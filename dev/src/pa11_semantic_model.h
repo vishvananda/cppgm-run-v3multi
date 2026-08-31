@@ -414,7 +414,7 @@ struct Scope
 	// PA12 owns the exact synthetic object parameter for a member function.
 	// Consumers must not rediscover it from names or parameter ordering.
 	BindingId implicit_object_binding;
-	// Namespace identity and propagated linkage are typed scope facts.
+	// Typed scope ownership excludes function/block locals; template-parameter scopes bridge declarations without linking their bindings.
 	bool inline_namespace, unnamed_namespace, internal_linkage_scope;
 	std::vector<ScopeId> children;
 	std::vector<BindingId> bindings;

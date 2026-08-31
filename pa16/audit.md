@@ -2,18 +2,17 @@
 
 ## Current Checkpoint Review
 
-This milestone audits landed checkpoint
-`2e48cd6dd87726828ee329d6b47e89435d964fc0` (`PA16 checkpoint: nested braced
-aggregate member`) relative to parent `67d8f53b`.  The authority is
-`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`: turn-start
-`make test-pa16` exited `2` at `235/243`, with complete `243/243` identity
-coverage and exactly the eight residual owners below.  This audit freshly
-reran the prior-through and file-audit gates after the focused repair.
+This is the completed `checkpointAudit` of landed HEAD
+`8708859c48a0327d4a975e1bce059a066b4676ca` (`PA16: preserve unnamed
+namespace symbol identity`) relative to parent `542b136a`.  The supplied
+authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
+turn-start `make test-pa16` exited `2` at `236/243`, with complete `243/243`
+identity coverage and exactly these seven residual owners:
 
 ```text
 pa16/tests/general/200-local-default-class-array-lifecycle.t
 pa16/tests/general/200-reference-indexed-pointer-member-access.t
-pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
 pa16/tests/general/300-friend-function-definition-skip.t
 pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
 pa16/tests/general/400-bit-field-prefix-postfix-increment.t
@@ -21,137 +20,170 @@ pa16/tests/general/400-signed-bit-field-read.t
 pa16/tests/general/400-signed-enum-bit-field-read.t
 ```
 
+The landed active target,
+`200-unnamed-namespace-hidden-friend-single-definition.t`, is passing and is
+not in the residual set.  Fresh authorized validation reproduces `236/243`
+with exactly the same seven failures: authority-only/fresh-only are `0/0`,
+and discovered/reference/fresh inventories are `243/243/243` with no missing,
+unexpected, new, or lost identity.  The exact through-PA15 gate is
+`1167/1167`; the final file audit exits `0` with six known nonfatal warnings.
+
 ### Changed-path boundary
 
-The bounded implementation path is `dev/src/pa10_ast.cpp`,
-`dev/src/pa10_renderer.cpp`, `dev/src/pa12_semantic_aggregate.cpp`,
-`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering_aggregate.cpp`, and
-`dev/src/pa15_lowering_construction.cpp`, with course regression
-`cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh`.
-The audit documentation paths are `pa16/plan.md` and this file.  No handout
+The landed implementation boundary is exactly:
+
+- `dev/src/pa11_semantic.cpp`
+- `dev/src/pa11_semantic_core.cpp`
+- `dev/src/pa11_semantic_model.h`
+- `dev/src/pa12_semantic_construction.cpp`
+- `dev/src/pa12_semantic_facts.cpp`
+- `dev/src/pa15_lowering.h`
+- `dev/src/pa15_lowering.cpp`
+- `dev/src/pa15_lowering_calls.cpp`
+- `cppgm.tests/course/pa16/430-typed-unnamed-namespace-per-parent-regression.sh`
+
+The bounded source repair is limited to
+`dev/src/pa11_semantic_core.cpp`, `dev/src/pa11_semantic_model.h`, and
+`dev/src/pa15_lowering.cpp`.  The only additional test is
+`cppgm.tests/course/pa16/431-typed-internal-special-member-abi-regression.sh`;
+the only documentation paths are `pa16/plan.md` and this file.  No handout
 test, fixture, `.ref` file, exit-status sidecar, harness, comparator, generated
-output, source-set file, or unrelated residual owner is in the diff.
+output, source-set manifest, or unrelated residual owner was changed.
 
 ### Complete typed ownership trace
 
-The representative `holder x{value{1, 2}, 0}` path is one forward pipeline:
+The unnamed-namespace path remains one forward pipeline:
 
 ```text
-PA10 postfix seed: IdExpression + BracedInitList
-  -> PA10 renderer: one Value{...} spelling, ordinary calls remain (...)
-  -> PA12 AggregateAppertainer: exact destination class record check
-  -> semantic_aggregate_constructor_value/select_constructor
-  -> ConstructorAction: selected binding/scope/callable TypeId and typed
-     converted semantic argument edges
-  -> PA15 aggregate range: member address/projection, then call or safe elision
+parent-keyed unnamed namespace reopen
+  -> one typed ScopeId and internal owner fact
+  -> namespace/class/enum ownership (function/block locals excluded; template
+     parameter scope bridges the declaration owner)
+  -> hidden-friend selection/function fact and ADL edge
+  -> namespace-scope default-object ConstructorAction and typed demand marker
+  -> constructor/base-entry BindingIds and PA15 demand worklist
+  -> typed namespace ABI component and internal LowIR definitions
 ```
 
-PA10 owns the grammar boundary and creates one `CallExpression`; PA12 retains
-the existing AST nodes only as input to the existing typed constructor
-selection.  `functional_cast_target` resolves the functional target through
-typed lookup and the appertainer requires its class record to equal the
-destination record.  No source text is rendered and reparsed, and no parallel
-semantic model or broad retry is introduced.  Malformed call child counts,
-non-braced arguments, unsupported target kinds, and nonmatching records remain
-on the existing fail-closed paths.  The renderer's braced branch is isolated
-from parenthesized calls.
+PA11's `process_namespace` reuses the parent-keyed unnamed scope and installs
+the implicit using relation once.  `add_value` supplements explicit `static`
+with the scope owner fact, so namespace/class/enum-owned values, hidden
+friends, and special members retain internal binding.  Template-parameter
+scopes carry the enclosing declaration's owner fact while their parameter
+bindings remain unlinked.  The audit found and repaired the overreach:
+function and block scopes are lexical boundaries, so their local bindings no
+longer inherit internal linkage from an enclosing unnamed namespace.  This is
+a typed owner rule, not a rendered-name filter.
 
-`semantic_aggregate_constructor_value` publishes the selected binding, access
-scope, hidden-object callable type, target type, and `select_constructor`'s
-converted fact IDs as one `ConstructorAction`.  PA15 consumes the aggregate
-element facts and validates member owner/type/layout identity.  For the narrow
-empty/memberless user-constructor suppression, it computes the member path and
-field projection first, then suppresses only the constructor call.  Otherwise
-`emit_constructor_call` lowers every typed argument; a constructor body with
-effects remains reachable.
+PA12's default-object path publishes the selected constructor binding,
+class-owner scope, callable `TypeId`, empty typed action, and
+`internal_namespace_default_constructor_demand` fact.  It publishes the
+constructor base-entry relation before lowering.  Synthesized aggregate and
+inheriting constructors and implicit destructors copy the owner linkage into
+their canonical bindings; `ensure_special_member_base_entry` copies the
+source binding/sidecar rather than creating a second semantic owner.
+
+PA15's `namespace_component` and `function_components`/`value_components` use
+the typed unnamed scope, rendering `_GLOBAL__N_1` for each unnamed namespace
+under its named parent.  The demand worklist consumes the marker only at a
+global root.  It therefore retains the required internal constructor pair for
+the active zero-data object without inventing a startup call, while ordinary
+function roots and explicit/user-initialized objects keep their existing
+runtime-demand rules.  Hidden-friend and named-namespace controls use the same
+typed selection and emission path.
 
 ### Findings and repairs
 
-The supervisor's cache concern is a correctness defect.  For an empty-body
-user constructor with explicit parameters, `constructor_function_is_noop(F,
-true)` is false because the strict policy requires an empty signature, while
-`constructor_function_is_noop(F, false)` can be true because typed arguments
-are permitted.  The old complete-cache branch keyed only by `F`, so strict-then-
-loose returned false and loose-then-strict returned true.  The repaired dense
-caches use `(FunctionFactId, require_empty_parameters)` as their key, with
-independent state/result/invalid entries and cycle invalidation per policy;
-the result is now call-order independent.
+The suspected scope propagation issue was a real metadata defect.  The landed
+`create_scope` copied `internal_linkage_scope` into every child kind, and
+`add_value` ORed it into block/function-local bindings even though those names
+have no linkage.  The repair propagates the fact to `Namespace`, `Class`, and
+`Enum` scopes and through `TemplateParameters` so a declaration nested beneath
+it inherits the owner; template-parameter bindings themselves remain
+unlinked.  Function and block scopes stop propagation at the lexical boundary.
+The PA16 local-class syntax path is not supported well enough to provide a useful
+public LowIR assertion for this metadata-only owner, but the repaired fact is
+consumed by typed binding/redeclaration and special-member metadata checks.
 
-The aggregate suppression proof now fails closed on action/type identity,
-selected binding and owner ranges, record-layout range, and the exact callable
-hidden-object pointer plus explicit parameter sequence.  Its typed argument
-recursion validates semantic-fact and child ranges, valid types, and volatile
-qualification; it treats cycles as effectful.  It accepts only literals,
-`sizeof`, and recursively side-effect-free unary/cast/member/subscript/
-binary/conditional edges.  Calls, assignments, increment/decrement,
-identifiers, constructor actions, and unknown kinds are rejected.  Thus an
-argument read, a volatile read, an assignment/inc-dec, or any call prevents
-elision.  Complete non-union memberless classes without bases, destructors,
-default-member initializers, constructor actions, or effectful bodies remain
-the only user-constructor candidates for this suppression.
+The alias review found a second bounded defect.  When an internal complete
+constructor or destructor already had a separately published base entry,
+PA15 could add a complete-entry alias with the same ABI `C2`/`D2` object
+spelling.  The alias condition now suppresses it only when the mapped
+`BindingId` is valid, its index resolves to the corresponding typed
+base-entry `FunctionFact` with matching owner/source/record facts, and its
+entry is set in `demanded_member_functions`; this is a constant-sized,
+fail-closed check with no name inference.  The base entry then owns that
+object spelling, while an internal complete special member with no valid
+demanded base entry retains its alias.  The existing external ABI alias
+behavior is unchanged.  Regression 431 catches the constructor pair, the
+in-class/no-relation destructor control, and the destructor declared
+in-class/defined out-of-class with its D1/D2 pair and no duplicate D2 alias.
 
-Regression 429 was strengthened with a fixed 64-argument constructor whose
-body calls `side()`.  Its pure case checks one helper, no constructor call, and
-the retained field projection; its side-effecting argument, effectful body,
-and volatile cases each require the observable evaluation/call boundary.
+The custom demand marker is necessary for the active implicit empty
+constructor: ordinary no-op pruning would otherwise omit its ABI-visible
+internal pair.  It is bounded by a defined namespace-scope complete non-union
+class object, the default-object AST shape, internal namespace ownership, and
+absence of a user-declared constructor.  It adds one typed action and one
+base-entry edge per qualifying object, is consumed only at the global root,
+and is not inferred from `_GLOBAL__N_1`, LowIR spellings, or source-text
+recovery.  Direct/brace initialization, named namespaces, local objects, and
+user-declared constructors remain on their pre-existing typed paths.
 
-### Focused and final-gate evidence
+### Focused and representative evidence
 
-The focused validation and the authorized fresh gates were run after the
-identity and cache repairs:
+Post-repair focused results are:
 
 ```text
-make build
-exit 0
-sh -n cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
-exit 0
-sh cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
-429 nested braced aggregate-member constructor regression: PASS
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-nested-braced-member-aggregate-init.t'
-pa16 check: PASS (1/1)
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-aggregate-class-member-subobject-init-target.t tests/general/200-member-initializer-aggregate-member.t tests/general/200-aggregate-array-member-brace-elision.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/spec/200-direct-list-init-explicit-ctor.t tests/general/200-copy-list-init-explicit-ctor-bad.t'
-pa16 check: PASS (6/6)
-sh cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh
-exit 0 (silent)
-make test-pa16
-exit 2; TEST SUMMARY: 235 / 243 TESTS PASSED
-n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
-exit 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
-perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
-exit 0; File audit passed for pa16 with 6 warning(s)
-git diff --check
-exit 0
+make build                                             exit 0
+sh -n .../430-typed-unnamed-namespace-per-parent...    exit 0
+sh .../430-typed-unnamed-namespace-per-parent...       PASS
+sh -n .../431-typed-internal-special-member-abi...      exit 0
+sh .../431-typed-internal-special-member-abi...         PASS
+active handout check                                   PASS (1/1)
+named/lifecycle/friend controls                        PASS (5/5)
+git diff --check                                       exit 0
 ```
 
-The fresh PA16 failure set is exactly the authority set above: `8` authority
-failures and `8` fresh failures, with `authority-only=0`, `fresh-only=0`, and
-no lost or final-only identity.  The discovered and fresh inventories are
-both `243/243`; missing and unexpected identities are `0/0`.  The file audit
-has no fatal finding.  Its six known nonfatal warnings are the existing
-`bad-division` findings in `dev/src/abi_mangle.h`,
-`dev/src/cpp_semantic_core.h`, `dev/src/lowir_model.h`,
-`dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic_selection.h`, and
-`dev/src/pa15_lowering.h`.
+Regression 430 checks two named parents, unnamed-namespace reopening, one
+fixed `_GLOBAL__N_1` component per parent, internal globals/friends, and one
+constructor/base-entry definition per owner.  Regression 431 checks one
+internal `C1`/`C2` constructor pair for a default member initializer, the
+in-class `WithDtor` no-base-entry control with exactly one `D1` owner and one
+retained `D2` alias, and the out-of-class-defined `OutDtor` with exactly one
+`D1` owner and one `D2` base-entry function/object pair, no D2 alias, and a
+global lifetime call to the complete destructor.  Temporary nested
+anonymous-namespace and internal special-member probes also lower with status
+zero and retain deterministic typed components/metadata.  The named
+global-class, named constructor, hidden-friend, simple-friend declaration, and
+TLS symbol controls pass in the `5/5` matrix.
 
-### Structural performance evidence and uncertainties
+The fresh broad gate is `make test-pa16`: exit `2`, `236/243` passed, and the
+exact seven residual identities listed above.  The sorted failure comparison
+is authority `7`, fresh `7`, authority-only `0`, fresh-only `0`; added passes
+did not mask a new failure.  Discovered/reference/fresh identity inventories
+are `243/243/243`, with both inventory diffs zero.  The exact prior-stage gate
+returns `0` at `1167/1167`.  The final file audit returns `0` with six known
+nonfatal `bad-division` warnings in `abi_mangle.h`, `cpp_semantic_core.h`,
+`lowir_model.h`, `pa11_semantic_model.h`, `pa12_semantic_selection.h`, and
+`pa15_lowering.h`; final `git diff --check` returns `0`.
 
-The brace path adds one AST list and one typed argument-vector pass.  Existing
-constructor selection remains `O(C*A)` for `C` candidates and `A` arguments.
-The PA15 side-effect proof visits each reachable typed fact/edge once with
-balanced-tree memo/visiting structures: structural `O((A+E) log(A+E))` time
-and `O(A+E)` temporary storage.  Constructor no-op caches are dense `O(F)` per
-policy and zero-initialization caching is dense `O(T)`.  Regression 429 is a
-fixed 64-argument structural scale check.  No timing or RSS claim is made.
+### Structural performance evidence, uncertainties, and next checkpoint
 
-The remaining uncertainty is intentionally bounded to the eight unrelated
-authority owners.  Unsupported temporary/copy/value-transfer paths remain
-outside the PA16 contract, and the six file-audit warnings are known header
-findings rather than checkpoint defects.  No in-scope correctness uncertainty
-remains after the focused checks, exact failure-set comparison, prior-through,
-file audit, and diff check.  The next checkpoint is the first residual owner,
-`200-local-default-class-array-lifecycle.t`; PA16 is not being claimed
-complete.  This bounded checkpoint audit is committed, and the final bounded
-path/clean-status gates passed.
+Unnamed-scope reuse, owner propagation, and the typed base-entry alias check
+are constant-sized work per consumed scope/function.  PA12 adds one action and
+one base-entry edge per qualifying object.  PA15 continues to use dense typed
+binding/function/fact worklists; no whole-program retry, rendered-name search,
+extra reorder pass, or unbounded cache was introduced.  Regressions 430 and
+431 provide structural representative evidence.  No timing, RSS, allocation,
+or generated-program performance claim is made.
+
+The seven residual identities are deliberately untouched and no unrelated
+cluster was re-audited.  Remaining uncertainty is limited to the absence of
+timing/RSS measurements and the known six nonfatal file-audit warnings; the
+identity, through-PA15, and path gates are complete.  The checkpoint audit is
+complete, while PA16 remains incomplete only because the same seven residuals
+remain.  The next checkpoint is the separately scoped
+`200-local-default-class-array-lifecycle.t` owner if work continues.
 
 ## Historical Typed Object-Call Boundary Checkpoint Review (617c137a)
 
@@ -4752,3 +4784,4 @@ conversion slices.
 | `75f7944aacd312b09b3183170e62f35e69808a44` | Completed committed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings. |
 | `617c137a` typed object-call boundary checkpointAudit | Completed committed bounded audit/repair: typed assignment, same-class constructor, and direct/imported member candidates remain single-forward and PA15-consumable; the parenthesized functional-construction wrapper is repaired; regression 428, focused PA16/PA15/access controls, and final gates pass. Final PA16 is exit `2` at `234/243` with the exact unchanged nine residual identities and `243/243` coverage; comparison is baseline-only `0`, final-only `0`, unrecognized `0`; through-PA15 is `1167/1167`; file audit exits `0` with six known header-division warnings. No out-of-scope files or residual owners changed. |
 | `2e48cd6d` nested-braced aggregate-member checkpointAudit | Completed bounded audit of landed `2e48cd6d` versus `67d8f53b`: the typed PA10→PA12→PA15 path is traced, the `(FunctionFactId, require_empty_parameters)` no-op cache-key defect is repaired, aggregate ownership checks are fail-closed, and regression 429 covers pure projection, side effects, constructor-body effects, and volatile reads. Focused target/control checks pass `1/1` and `6/6`; course 409 exits `0`; regression 429 and shell syntax pass. Fresh `make test-pa16` exits `2` at `235/243` with the exact unchanged eight residual identities, complete `243/243` coverage, and authority-only/fresh-only `0/0`; through-PA15 is `1167/1167`; file audit exits `0` with the six known header warnings above; diff-check exits `0`. No handout, fixture, reference, sidecar, harness, comparator, generated-output, source-set, or unrelated-owner change; PA16 remains incomplete. |
+| `8708859c` unnamed-namespace identity/lifecycle checkpointAudit | Completed bounded audit/repair of landed `8708859c48a0327d4a975e1bce059a066b4676ca` relative to `542b136a`: parent-keyed unnamed `ScopeId`, typed internal ownership, hidden-friend/ADL continuity, the narrow global-root default-constructor demand marker, and typed PA15 ABI components align with `spec.md` Purpose and §§1–5/§7. The repair stops internal-owner propagation at function/block lexical scopes while preserving the `TemplateParameters` declaration bridge; template-parameter bindings themselves remain unlinked. PA15 now suppresses a complete-entry `C2`/`D2` alias only after a valid mapped `BindingId` resolves to the corresponding owner/source/record-matched typed base-entry `FunctionFact` and its `demanded_member_functions` bit is set, preserving the no-base-entry and external alias controls. Regressions 430/431 cover parent/reopen identity, constructor C2 ownership, the in-class/no-relation D2 alias, and the in-class-declared/out-of-class-defined destructor D1/D2 pair. Focused build, shell syntax, both regressions, active target `1/1`, five controls, and diff-check pass. Fresh `make test-pa16` is exit `2` at `236/243` with exactly the same seven residual identities; authority/fresh failures are `7/7`, authority-only/fresh-only `0/0`, and discovered/reference/fresh inventories are `243/243/243` with zero inventory deltas. Through-PA15 is `1167/1167`; file audit exits `0` with six known nonfatal `bad-division` warnings; no prohibited or unrelated path changed. The typed checks and one-edge-per-qualifying-object demand remain constant-sized with no retry loop, name recovery, eager helper sweep, or timing/RSS claim. PA16 remains incomplete only because the same seven residuals remain; next checkpoint is the separately scoped `200-local-default-class-array-lifecycle.t`. | completed audit |
