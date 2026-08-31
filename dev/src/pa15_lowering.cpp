@@ -976,9 +976,9 @@ void Pa15Lowerer::collect_functions(){
 				!sidecar->inline_member;
 			const bool trivial_lifecycle = is_constructor && fact.synthetic &&
 				constructor_function_is_noop(FunctionFactId(i), false);
-			function.metadata.binding = strong_out_of_class_special ?
-				lowir_model::SBM_STRONG : binding.internal_linkage ?
-				lowir_model::SBM_INTERNAL : is_special_member ?
+			function.metadata.binding = binding.internal_linkage ?
+				lowir_model::SBM_INTERNAL : strong_out_of_class_special ?
+				lowir_model::SBM_STRONG : is_special_member ?
 				lowir_model::SBM_WEAK : lowir_model::SBM_STRONG;
 			if (trivial_lifecycle)
 				function.metadata.object_trivial_lifecycle = true;

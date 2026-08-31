@@ -76,8 +76,8 @@ fi
 
 expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor(%this : ptr)'
 expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor__base_entry(%this : ptr)'
-expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor(%this : ptr) -> void [binding=strong, object=_ZN12_GLOBAL__N_17OutDtorD1Ev]'
-expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor__base_entry(%this : ptr) -> void [binding=strong, object=_ZN12_GLOBAL__N_17OutDtorD2Ev]'
+expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor(%this : ptr) -> void [binding=internal, object=_ZN12_GLOBAL__N_17OutDtorD1Ev]'
+expect_one 'function @_GLOBAL__N_1__OutDtor___OutDtor__base_entry(%this : ptr) -> void [binding=internal, object=_ZN12_GLOBAL__N_17OutDtorD2Ev]'
 expect_one 'object=_ZN12_GLOBAL__N_17OutDtorD1Ev'
 expect_one 'object=_ZN12_GLOBAL__N_17OutDtorD2Ev'
 expect_one 'function @_GLOBAL__N_1__OutDtor__OutDtor(%this : ptr) -> void [unwind=no, binding=internal, object=_ZN12_GLOBAL__N_17OutDtorC1Ev]'

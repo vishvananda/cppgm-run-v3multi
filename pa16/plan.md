@@ -23,8 +23,11 @@ constructor base-entry relation.  PA15 consumes that marker through its
 existing global-root demand worklist, emits the required internal constructor
 pair, and keeps the zero-data object path free of a startup call.  Typed
 namespace components render `_GLOBAL__N_1` for each unnamed namespace under
-its named owner.  No stage parses rendered names, creates a second semantic
-owner, retries the whole program, or eagerly emits unrelated helpers.
+its named owner.  Out-of-class definition strength is applied only after the
+internal-linkage proof, so unnamed-owned special members remain internal while
+ordinary external out-of-class specials remain strong.  No stage parses
+rendered names, creates a second semantic owner, retries the whole program, or
+eagerly emits unrelated helpers.
 
 This aligns with `spec.md` Purpose and §§1–5/§7: one forward pipeline,
 continuity of typed identity/linkage/lifetime/demand facts, distinct runtime
@@ -35,7 +38,7 @@ special-member paths retain their typed owners and prior boundaries.
 
 ## Checkpoint Authority and Failure Map
 
-The clean starting HEAD is
+The clean landed starting HEAD is
 `8708859c48a0327d4a975e1bce059a066b4676ca` (`PA16: preserve unnamed
 namespace symbol identity`), relative to parent `542b136a`.  Supplied
 turn-start authority is `make test-pa16` exit `2`, `236/243` passing, complete
@@ -55,8 +58,10 @@ set.  Authorized fresh validation reproduces the same seven failures at
 authority-only/fresh-only `0/0`.  Discovered/reference/fresh identity
 inventories are `243/243/243`, with no new or lost identity.  The through-PA15
 gate is `1167/1167`, and the final file audit passes with six known nonfatal
-`bad-division` warnings.  No unrelated residual cluster was audited or
-repaired.
+`bad-division` warnings.  This follow-up corrects the remaining metadata
+precedence defect from checkpoint commit
+`6ea5d117f8a443b4ce3c1164ca1d3f5c9e4ad5ad`; no unrelated residual cluster was
+audited or repaired.
 
 ## Bounded Audit Result
 
@@ -72,9 +77,8 @@ The landed implementation boundary is exactly:
 - `dev/src/pa15_lowering_calls.cpp`
 - `cppgm.tests/course/pa16/430-typed-unnamed-namespace-per-parent-regression.sh`
 
-The bounded audit repair is limited to `pa11_semantic_core.cpp`,
-`pa11_semantic_model.h`, and `pa15_lowering.cpp`.  Course regression 431 is
-the only additional test surface:
+The follow-up source repair is limited to `pa15_lowering.cpp`.  Course
+regression 431 is the only additional test surface:
 `cppgm.tests/course/pa16/431-typed-internal-special-member-abi-regression.sh`.
 Only `pa16/plan.md` and `pa16/audit.md` are documentation changes.  No
 handout test, fixture, `.ref` file, exit-status sidecar, harness, comparator,
@@ -104,9 +108,12 @@ is valid, resolves to the corresponding typed base-entry `FunctionFact` with
 the matching owner/source/record, and has a nonzero
 `demanded_member_functions` bit.  The constant-sized proof is fail-closed;
 otherwise the alias is retained.  When the proof succeeds, the emitted base
-entry owns the object spelling.  This was checked with internal
-default-member-initializer and both destructor relation/no-relation cases as
-well as the existing named controls.
+entry owns the object spelling.  The later metadata repair also makes
+`binding.internal_linkage` precede `strong_out_of_class_special`, preserving
+internal metadata on out-of-class definitions while retaining strong external
+definitions and weak other external special members.  This was checked with
+internal default-member-initializer and both destructor relation/no-relation
+cases as well as the existing named controls.
 
 The demand marker is typed and narrow.  It requires a defined namespace-scope
 class object, a complete non-union class, the declaration's default-object AST
@@ -122,8 +129,9 @@ The suspected propagation defect was real at the typed metadata boundary:
 the landed `create_scope` copied internal ownership into function/block
 children, and `add_value` consequently marked block/function-local bindings
 as internal despite their having no linkage.  The repair keeps the fact on
-namespace/class/enum owner scopes and stops it at lexical function/block and
-template-parameter scopes.  PA16 does not have a supported local-class
+namespace/class/enum owner scopes and through `TemplateParameters` as a
+declaration bridge; propagation stops at function/block scopes, while
+template-parameter bindings themselves have no linkage.  PA16 does not have a supported local-class
 LowIR case that would provide a useful public-output assertion for this
 metadata-only boundary; the owner invariant is nevertheless consumed by
 binding/redeclaration and special-member metadata code.
@@ -139,7 +147,7 @@ sh .../430-typed-unnamed-namespace-per-parent...       PASS
 sh -n .../431-typed-internal-special-member-abi...      exit 0
 sh .../431-typed-internal-special-member-abi...         PASS
 active handout check                                   PASS (1/1)
-named/lifecycle/friend controls                        PASS (5/5)
+relevant named/internal/out-of-class-special-member controls PASS (10/10)
 git diff --check                                       exit 0
 ```
 
@@ -149,8 +157,9 @@ constructor/base-entry definition per owner.  Regression 431 covers an
 internal default-member-initializer constructor pair, an in-class destructor
 with no base-entry relation, and an internal destructor declared in-class and
 defined out-of-class.  It asserts one `D1` owner and one `D2` base-entry
-function/object pair for the related case, no duplicate `D2` alias there, and
-one retained `D2` alias for the no-relation control.  Temporary nested
+function/object pair for the related case, both with internal binding
+metadata, no duplicate `D2` alias there, and one retained `D2` alias for the
+no-relation control.  Temporary nested
 anonymous-namespace and internal special-member probes also lower with status
 zero and retain deterministic typed components/metadata.
 
@@ -160,9 +169,14 @@ The focused control command was:
 make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check \
   TEST='tests/general/100-global-class-zero.t \
 tests/general/200-global-constructor.t \
-tests/general/300-hidden-friend-definition-adl-call.t \
+tests/general/100-out-of-class-methods.t \
+tests/general/200-constructor-member-init.t \
 tests/general/200-friend-simple-declaration-skip.t \
-tests/general/300-thread-local-synthetic-symbol-family-isolation.t'
+tests/general/300-hidden-friend-definition-adl-call.t \
+tests/general/300-explicit-destructor-call-enclosing-namespace-type.t \
+tests/general/300-member-operator-bang-out-of-class.t \
+tests/general/300-out-of-class-member-trailing-return.t \
+tests/general/500-inheriting-external-transitive-constructor.t'
 ```
 
 ## Structural Performance, Uncertainty, and Next Checkpoint
