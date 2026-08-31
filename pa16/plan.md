@@ -133,4 +133,4 @@ No timing or RSS claim is made.
 | e09d8223 | Recorded the nullptr-carrier audit state: 225/243 authority, 18 residual failures, `243/243/243` inventories, and through-PA15 `1167/1167`. |
 | d5bf2600 | Completed the typed constructor-overload/lifetime ownership audit; focused matrix passed and PA16 reached `227/243` with 16 residual failures. |
 | 29d9c4ce | Completed the PA10 elaborated-member parameter-clause repair and PA15 ABI owner consolidation; PA16 reached `228/243` with this exact 15-item residual set and `243/243/243` inventories. |
-| working tree (pending) | Empty-base layout/address projection: PA16 `230/243`, two target identities resolved, 13 exact residuals retained; through-PA15 `1167/1167`, file audit pass with six warnings. |
+| 69bbe800 | Empty-base layout/address projection: post-commit PA16 `230/243`, two target identities resolved, 13 exact residuals retained; through-PA15 `1167/1167`, file audit pass with six warnings. |
