@@ -50,7 +50,7 @@ typed call edge demands the first; this is the fixture-defined boundary and
 does not imply that the caller was emitted.  The narrow owner boundary keeps
 the first while suppressing the unrooted second body.
 
-The implementation will trace direct calls through
+The implementation traces direct calls through
 `selected_binding -> function_binding_fact_index_ -> FunctionFact`, and
 function references through `IdExpression`/`Variable` binding facts, including
 global semantic roots.  Ordinary namespace free functions, exported/C-linkage
@@ -111,5 +111,6 @@ definition.
 - Audit and hygiene: the PA16 file audit exited `0` with the six listed
   `bad-division` warnings; `git diff --check` exited `0`.  No timing/RSS claim
   is made.
-- Commit: pending final diff review; intentionally uncommitted until the
-  coherent checkpoint increment is committed.
+- Commit: implementation committed as `8c60e658572a1f73aa0387ffaf6dc5546e5c2bda`
+  (`PA16: demand hidden friend definitions`); post-commit `git status --short`
+  was empty.
