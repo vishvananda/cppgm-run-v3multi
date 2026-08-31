@@ -1601,6 +1601,19 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 						"PA15 member call base record is invalid");
 				const NamedRecordId base_record = model_.semantic_base_paths_[
 					fact.base_path_begin + i];
+				if (!base_record.valid() || base_record.value >= model_.named_.size() ||
+					model_.named_[current_record.value].kind != NamedKind::Class ||
+					!model_.named_[current_record.value].has_base ||
+					model_.named_[current_record.value].direct_base_virtual ||
+					model_.named_[current_record.value].direct_base != base_record)
+					throw std::runtime_error(
+						"PA15 member call base path relation is invalid");
+				current_record = base_record;
+			}
+			if (current_record != model_.scopes_[member_owner.value].record)
+				throw std::runtime_error("PA15 member call base path ended at wrong owner");
+			if (fact.base_path_count != 0)
+			{
 				const LowType offset_type = size_low_type();
 				const LoweredValue offset(integer_operand(0, offset_type),
 					offset_type, false);
@@ -1609,7 +1622,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 				byte.integer_kind = LowType::INTEGER_I8;
 				object = emit_index(object, offset, byte,
 					lowir_model::IPK_BASE_SUBOBJECT);
-				current_record = base_record;
 			}
 			instruction.args.push_back(object.value);
 			argument_begin = 1;

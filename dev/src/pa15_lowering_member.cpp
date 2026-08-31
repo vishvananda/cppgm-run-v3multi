@@ -111,18 +111,21 @@ LoweredValue Pa15Lowerer::apply_derived_base_conversion(
 		// pointer therefore remains null through the zero projection; a typed
 		// null literal skips even that projection so it cannot become a
 		// fabricated non-null address.
-		if (!null_pointer_literal)
-		{
-			const LoweredValue zero(integer_operand(0, offset_type),
-				offset_type, false);
-			base = emit_index(base, zero, byte,
-				lowir_model::IPK_BASE_SUBOBJECT);
-		}
 		current_record = base_record;
 	}
 	if (current_record != target_record)
 		throw std::runtime_error(
 			"PA15 derived-base projection ended at wrong record");
+	// A DerivedToBase fact has a nonempty typed path; identity conversions are
+	// handled by the structural Identity branch.  Keep the count guard here as
+	// well so a malformed identity-shaped fact cannot grow LowIR.
+	if (conversion.base_path_count != 0 && !null_pointer_literal)
+	{
+		const LoweredValue zero(integer_operand(0, offset_type),
+			offset_type, false);
+		base = emit_index(base, zero, byte,
+			lowir_model::IPK_BASE_SUBOBJECT);
+	}
 	if (address_context)
 		return base;
 	base.type = target;
@@ -227,14 +230,17 @@ LoweredValue Pa15Lowerer::lower_member_address(SemanticFactId id){
 			const RecordLayout& base_layout = model_.record_layout(base_record);
 			if (base_layout.state != RecordLayoutState::Complete)
 				throw std::runtime_error("PA15 member base target has no complete layout");
-			const LoweredValue zero(integer_operand(0, offset_type),
-				offset_type, false);
-			base = emit_index(base, zero, byte,
-				lowir_model::IPK_BASE_SUBOBJECT);
 			current_record = base_record;
 		}
 		if (current_record != owner)
 			throw std::runtime_error("PA15 member base path ended at wrong owner");
+		if (!base_path.empty())
+		{
+			const LoweredValue zero(integer_operand(0, offset_type),
+				offset_type, false);
+			base = emit_index(base, zero, byte,
+				lowir_model::IPK_BASE_SUBOBJECT);
+		}
 		const RecordLayout& layout = model_.record_layout(owner);
 		if (layout.state != RecordLayoutState::Complete)
 			throw std::runtime_error("PA15 member owner has no complete layout");

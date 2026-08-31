@@ -589,10 +589,13 @@ struct RecordLayoutBase
 {
 	NamedRecordId record;
 	std::size_t offset;
+	// A zero-size direct base contributes no bytes to its containing record,
+	// while its complete class type still has the ordinary nonzero size fact.
+	bool zero_size;
 
 	RecordLayoutBase(NamedRecordId record = NamedRecordId(),
-		std::size_t offset = 0)
-		: record(record), offset(offset)
+		std::size_t offset = 0, bool zero_size = false)
+		: record(record), offset(offset), zero_size(zero_size)
 	{}
 };
 
@@ -633,6 +636,10 @@ struct RecordLayout
 	// supports exactly one non-virtual base at offset zero.
 	bool has_direct_base;
 	RecordLayoutBase direct_base;
+	// True when this class has no non-static object storage of its own and any
+	// direct base is represented as a zero-size subobject.  Complete class
+	// objects still use size >= 1; this is a base-layout eligibility fact.
+	bool empty;
 	// Narrow PA15 checkpoint fact; this is not a full C++ triviality claim.
 	// It is meaningful only for a Complete layout and is reset on failure.
 	bool checkpoint_zero_storage_eligible;
@@ -642,6 +649,7 @@ struct RecordLayout
 	RecordLayout()
 		: state(RecordLayoutState::Incomplete), size(0), alignment(0),
 		  has_direct_base(false), direct_base(),
+		  empty(false),
 		  checkpoint_zero_storage_eligible(false), members(), member_offsets()
 	{}
 };
@@ -1301,6 +1309,8 @@ private:
 	bool pa12_render_mode_;
 	LanguageLinkage current_language_linkage_;
 	typedef FlatIndex<BindingId, const PA10AstNode*, IdentityHash<BindingId> > ConstructorMemberInitializerIndex;
+	typedef FlatIndex<NamedRecordId, bool,
+		IdentityHash<NamedRecordId> > RecordTypeSet;
 	static void unsupported(const char* feature)
 	;
 	NameId intern_name(const std::string& name)
@@ -1640,9 +1650,21 @@ private:
 	;
 	bool type_checkpoint_zero_storage_eligible(TypeId type) const
 	;
+	bool type_has_zero_offset_record(TypeId type,
+		const RecordTypeSet& records) const
+	;
+	bool type_has_zero_offset_record(TypeId type,
+		const RecordTypeSet& records, RecordTypeSet& visited) const
+	;
+	void append_direct_base_records(NamedRecordId base,
+		RecordTypeSet& records) const
+	;
 	TypeLayout type_layout(TypeId type) const
 	;
-	void complete_record_members(NamedRecordId record, const Scope& scope, RecordLayout& layout, bool is_union, bool& zero_storage_eligible, std::size_t& offset, std::size_t& largest_member, std::size_t& record_alignment);
+	void complete_record_members(NamedRecordId record, const Scope& scope,
+		RecordLayout& layout, bool is_union, bool& zero_storage_eligible,
+		std::size_t& offset, std::size_t& largest_member,
+		std::size_t& record_alignment);
 	void complete_record_layout(NamedRecordId record)
 	;
 	std::size_t type_size(TypeId type) const

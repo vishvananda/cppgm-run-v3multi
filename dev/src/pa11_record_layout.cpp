@@ -188,6 +188,101 @@ TypeLayout PA11SemanticModel::type_layout(TypeId type) const
 	throw std::runtime_error("unhandled PA11 record layout type");
 }
 
+bool PA11SemanticModel::type_has_zero_offset_record(TypeId type,
+	const RecordTypeSet& records) const
+{
+	RecordTypeSet visited;
+	return type_has_zero_offset_record(type, records, visited);
+}
+
+bool PA11SemanticModel::type_has_zero_offset_record(TypeId type,
+	const RecordTypeSet& records, RecordTypeSet& visited) const
+{
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	while (type.valid() && type.value < types_.size() &&
+		type_kind(type) == TypeKind::Cv)
+		type = types_[type.value].child;
+	if (!type.valid() || type.value >= types_.size())
+		return false;
+	const TypeKey& key = types_[type.value];
+	if (key.kind == TypeKind::Array)
+		return !key.unknown_bound &&
+			type_has_zero_offset_record(key.child, records, visited);
+	if (key.kind != TypeKind::Named || !key.named.valid() ||
+		key.named.value >= named_.size())
+		return false;
+	if (records.find(key.named) != NULL)
+		return true;
+	if (named_[key.named.value].kind != NamedKind::Class)
+		return false;
+	if (visited.find(key.named) != NULL)
+		return false;
+	visited.set(key.named, true);
+	const RecordLayout& layout = record_layout(key.named);
+	if (layout.state != RecordLayoutState::Complete)
+		throw std::runtime_error(
+			"zero-offset record query requires a complete layout");
+	if (layout.has_direct_base && layout.direct_base.offset == 0)
+	{
+		if (!layout.direct_base.record.valid() ||
+			layout.direct_base.record.value >= named_.size())
+			throw std::runtime_error("zero-offset direct base identity is invalid");
+		if (type_has_zero_offset_record(
+			named_type(layout.direct_base.record), records, visited))
+			return true;
+	}
+	for (std::size_t i = 0; i < layout.members.size(); ++i)
+	{
+		if (layout.members[i].offset != 0)
+			continue;
+		const BindingId member_id = layout.members[i].binding;
+		if (!member_id.valid() || member_id.value >= bindings_.size())
+			throw std::runtime_error("zero-offset member identity is invalid");
+		const Binding& member = binding(member_id);
+		if (member.kind != BindingKind::Variable ||
+			is_static_member(member_id))
+			throw std::runtime_error("zero-offset layout member is not a field");
+		if (type_has_zero_offset_record(member.type, records, visited))
+			return true;
+	}
+	return false;
+}
+
+void PA11SemanticModel::append_direct_base_records(NamedRecordId base,
+	RecordTypeSet& records) const
+{
+	// Per-query scratch ancestry; no transitive closure is retained in RecordLayout.
+	if (!base.valid() || base.value >= named_.size())
+		throw std::runtime_error("zero-offset base identity is invalid");
+	NamedRecordId current = base;
+	while (current.valid())
+	{
+		if (current.value >= named_.size() ||
+			named_[current.value].kind != NamedKind::Class)
+			throw std::runtime_error("zero-offset base ancestry is invalid");
+		if (records.find(current) != NULL)
+			throw std::runtime_error("cyclic zero-offset base ancestry");
+		const NamedRecord& record = named_[current.value];
+		const RecordLayout& layout = record_layout(current);
+		if (layout.state != RecordLayoutState::Complete)
+			throw std::runtime_error("zero-offset base ancestry fact is invalid");
+		records.set(current, true);
+		if (!record.has_base)
+		{
+			if (layout.has_direct_base)
+				throw std::runtime_error("zero-offset base ancestry fact is invalid");
+			break;
+		}
+		if (!layout.has_direct_base || layout.direct_base.offset != 0 ||
+			record.direct_base != layout.direct_base.record ||
+			!layout.direct_base.record.valid() ||
+			layout.direct_base.record.value >= named_.size())
+			throw std::runtime_error("zero-offset base ancestry fact is invalid");
+		current = layout.direct_base.record;
+	}
+}
+
 void PA11SemanticModel::complete_record_members(NamedRecordId record_id,
 	const Scope& scope, RecordLayout& layout, bool is_union,
 	bool& checkpoint_zero_storage_eligible, std::size_t& offset,
@@ -441,15 +536,18 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		return;
 	if (layout.state == RecordLayoutState::Failed)
 	{
+		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
 		throw std::runtime_error("record layout previously failed");
 	}
 	if (layout.state == RecordLayoutState::Computing)
 	{
 		layout.state = RecordLayoutState::Failed;
+		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
 		throw std::runtime_error("cyclic record layout computation");
 	}
+	layout.empty = false;
 	layout.checkpoint_zero_storage_eligible = false;
 	if (record.kind != NamedKind::Class || !record.defined ||
 		!record.scope.valid() || record.scope.value >= scopes_.size())
@@ -462,6 +560,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			record.direct_base.value >= named_.size())))
 	{
 		layout.state = RecordLayoutState::Failed;
+		layout.empty = false;
 		layout.size = 0;
 		layout.alignment = 0;
 		layout.has_direct_base = false;
@@ -477,6 +576,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 	layout.alignment = 0;
 	layout.has_direct_base = false;
 	layout.direct_base = RecordLayoutBase();
+	layout.empty = false;
 	layout.members.clear();
 	layout.member_offsets = FlatIndex<BindingId, std::size_t,
 		IdentityHash<BindingId> >();
@@ -497,6 +597,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		}
 		const bool is_union = record.class_tag == ClassTag::Union;
 		bool checkpoint_zero_storage_eligible = !is_union;
+		bool direct_base_zero_size = false;
 		std::size_t offset = 0;
 		std::size_t largest_member = 0;
 		std::size_t record_alignment = 1;
@@ -508,9 +609,83 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 				throw std::runtime_error("direct base has no complete layout");
 			if (!base_layout.checkpoint_zero_storage_eligible)
 				checkpoint_zero_storage_eligible = false;
+			direct_base_zero_size = base_layout.empty;
 			layout.has_direct_base = true;
-			layout.direct_base = RecordLayoutBase(record.direct_base, 0);
-			offset = base_layout.size;
+			layout.direct_base = RecordLayoutBase(record.direct_base, 0, false);
+			if (direct_base_zero_size)
+			{
+				if (record_id.value >= record_member_declarations_.size())
+					throw std::runtime_error(
+						"record member declaration index is invalid");
+				const std::vector<RecordMemberDeclaration>& declarations =
+					record_member_declarations_[record_id.value];
+				for (std::size_t i = 0; i < declarations.size(); ++i)
+				{
+					const RecordMemberDeclaration& declaration = declarations[i];
+					if (declaration.owner_record != record_id)
+						throw std::runtime_error(
+							"record member declaration owner is invalid");
+					if (declaration.bit_field)
+					{
+						// An unnamed or named zero-width bit-field does not
+						// introduce an addressable object or storage.  The first
+						// nonzero bit-field consumes the offset-zero unit, so no
+						// later member can overlap the base.
+						if (declaration.bit.zero_width)
+							continue;
+						break;
+					}
+					const BindingId member_id = declaration.binding;
+					if (!member_id.valid() || member_id.value >= bindings_.size())
+						throw std::runtime_error("record member binding is invalid");
+					const Binding& member = binding(member_id);
+					if (member.kind != BindingKind::Variable ||
+						is_static_member(member_id))
+						throw std::runtime_error(
+							"record member declaration is not a field");
+					// This declaration stream is the typed layout owner.  Synthetic
+					// names must not hide its first storage event: a backed injected
+					// view is checked through its canonical backing type below, and a
+					// generated storage binding is checked through member.type.
+					const BindingId first_member_id = member_id;
+					const TypeId first_member_type = member.type;
+					RecordTypeSet base_records;
+					append_direct_base_records(record.direct_base, base_records);
+					bool same_type_subobject =
+						type_has_zero_offset_record(first_member_type,
+							base_records);
+					const BindingSidecar* sidecar =
+						binding_sidecar(first_member_id);
+					if (!same_type_subobject && sidecar != NULL &&
+						sidecar->backing_storage.valid())
+					{
+						const BindingId storage = sidecar->backing_storage;
+						if (storage.value >= bindings_.size())
+							throw std::runtime_error(
+								"anonymous backing storage identity is invalid");
+						same_type_subobject =
+							type_has_zero_offset_record(binding(storage).type,
+								base_records);
+					}
+					if (!same_type_subobject && sidecar != NULL &&
+						sidecar->generated_name_record.valid())
+					{
+						if (sidecar->generated_name_record.value >= named_.size())
+							throw std::runtime_error(
+								"generated record identity is invalid");
+						same_type_subobject =
+							type_has_zero_offset_record(
+								named_type(sidecar->generated_name_record),
+								base_records);
+					}
+					if (same_type_subobject)
+						direct_base_zero_size = false;
+					// Every complete non-bit-field member has nonzero size,
+					// therefore later members are necessarily after it.
+					break;
+				}
+			}
+			offset = direct_base_zero_size ? 0 : base_layout.size;
 			record_alignment = base_layout.alignment;
 			if (record.pack_alignment != 0 &&
 				record_alignment > record.pack_alignment)
@@ -519,6 +694,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		complete_record_members(record_id, scope, layout, is_union,
 			checkpoint_zero_storage_eligible, offset, largest_member,
 			record_alignment);
+		if (layout.has_direct_base)
+			layout.direct_base.zero_size = direct_base_zero_size;
 		if (record.has_requested_alignment)
 		{
 			if (record.requested_alignment == 0 ||
@@ -533,6 +710,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			&layout.size))
 			throw std::runtime_error("record layout size overflow");
 		layout.alignment = record_alignment;
+		layout.empty = !is_union && layout.members.empty() && offset == 0 &&
+			(!layout.has_direct_base || layout.direct_base.zero_size);
 		layout.checkpoint_zero_storage_eligible =
 			checkpoint_zero_storage_eligible;
 		layout.state = RecordLayoutState::Complete;
@@ -540,6 +719,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 	catch (...)
 	{
 		layout.state = RecordLayoutState::Failed;
+		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
 		layout.size = 0;
 		layout.alignment = 0;

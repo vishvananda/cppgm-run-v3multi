@@ -1,162 +1,136 @@
-# PA16 elaborated-member-forward-type checkpoint
+# PA16 empty-base layout/address-projection checkpoint
 
 ## Stage Design
 
-PA10 owns the syntax boundary and indexed parenthesized-group fact used for
-declaration/declarator routing.  PA11 owns typed AST/model identities,
-including the canonical `ClassForwardDeclaration` -> named class/type fact.
-PA12 owns semantic lookup and selected typed calls.  PA15 consumes those facts
-for typed LowIR and ABI lowering.  Class value semantics, copy/move transfer,
-and pass-by-value class objects remain PA17 scope.
+PA10 owns syntax and parser facts; PA11 owns typed `NamedRecordId` identities
+and the canonical `RecordLayout`; PA12 owns typed lookup, selected calls, and
+member/base-path facts; PA15 consumes those facts for LowIR and ABI lowering.
+This checkpoint stays within that flow and does not recover relationships from
+spellings or add a parallel semantic model.
 
-The owner path is:
+`PA11SemanticModel::complete_record_layout` is the sole owner of class size,
+alignment, direct-base placement, and member offsets.  A complete layout keeps
+the local `empty` fact and the direct base's `zero_size` fact; it deliberately
+does not retain a transitive zero-offset closure.  When an empty direct base
+can be placed at offset zero, PA11 builds a bounded scratch set from its typed
+direct-base chain and queries completed local base/member offsets through the
+first storage-capable declaration.  The query unwraps arrays/CV types and
+recurses through typed zero-offset nested objects, with per-query visited
+identities.  Same-type subobjects therefore remain distinct while differently
+typed empty base/member objects may overlap.  Backed/generated anonymous
+declarations are not skipped: the canonical member type, backing storage type,
+and generated record identity are checked as typed facts.
 
-    tokens -> PA10 indexed parenthesized-group classification
-      -> parse_decl_or_function / parse_decl_specifier_seq
-      -> ClassForwardDeclaration or enum elaborated declaration
-      -> PA11 ensure_named_class + add_type_binding
-      -> PA12 typed member lookup and selected call fact
-      -> PA15 typed object/member/call LowIR and value_components ABI path
+PA15 validates every typed edge in member-address, member-call, conversion, and
+destructor paths.  Since every supported edge is offset zero, it emits at most
+one canonical `base_subobject` projection for a nonempty path; identity paths
+emit none.  `apply_derived_base_conversion` rejects a zero-length
+`DerivedToBase` fact and also guards emission by the path count.
 
-This follows `spec.md` Purpose and sections 1--5 and 7: each stage owns one
-fact boundary, the declaration is parsed once, PA11 canonicalizes one typed
-identity, and later stages consume it without text recovery or a duplicate
-parser/model.
+## Failure Map
 
-## Baseline Authority and Failure Map
-
-The audited increment is landed commit
-`29d9c4ce8cd2d9c85ae8de25ea3c3d8515520f4f`, relative to parent
-`6fc0a8124619282302c7ca1759245ca7a550a117`.  The supplied turn-start
-authority is `make test-pa16` status `2`, `228/243` passing, with the exact
-15-item failure map below and complete `243/243/243` coverage:
+Turn-start authority was clean HEAD `148ef591`: `make test-pa16` had
+`228/243` passing, complete `243/243` coverage, and exactly these 15
+failures:
 
 ```text
-pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
-pa16/tests/general/200-local-default-class-array-lifecycle.t
-pa16/tests/general/200-nested-braced-member-aggregate-init.t
-pa16/tests/general/200-reference-indexed-pointer-member-access.t
-pa16/tests/general/200-reference-member-class-init.t
-pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
-pa16/tests/general/300-callable-field-hides-private-base-method.t
-pa16/tests/general/300-friend-function-definition-skip.t
-pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
-pa16/tests/general/300-overloaded-deref-user-assignment.t
-pa16/tests/general/300-user-defined-string-literal-operator.t
-pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
-pa16/tests/general/400-bit-field-prefix-postfix-increment.t
-pa16/tests/general/400-signed-bit-field-read.t
-pa16/tests/general/400-signed-enum-bit-field-read.t
+200-friend-intermediate-derived-protected-base-method       RESOLVED: path projection
+200-local-default-class-array-lifecycle                    residual
+200-nested-braced-member-aggregate-init                    residual
+200-reference-indexed-pointer-member-access                residual
+200-reference-member-class-init                            residual
+200-unnamed-namespace-hidden-friend-single-definition       residual
+300-callable-field-hides-private-base-method               RESOLVED: EBO/layout
+300-friend-function-definition-skip                         residual
+300-nested-enum-hidden-friend-bitmask-adl                   residual
+300-overloaded-deref-user-assignment                        residual
+300-user-defined-string-literal-operator                   residual
+300-using-base-static-same-signature-derived-preferred      residual
+400-bit-field-prefix-postfix-increment                     residual
+400-signed-bit-field-read                                   residual
+400-signed-enum-bit-field-read                              residual
 ```
 
-The final serial rerun is also status `2` at `228/243`, with exactly the same
-15 normalized identities: retained `15`, authority-only `0`, and fresh-only
-`0`; no failure was compensated by another result.  The target
-`200-elaborated-member-forward-type.t` is resolved.  Discovered/reference/
-fresh inventories remain `243/243/243`, with missing and unexpected counts
-all zero.
+Final stage inventory is `230/243`, complete `243/243` coverage, and exactly
+the 13 turn-start residuals above.  The two resolved identities are the two
+checkpoint targets; no unrelated failure was compensated or displaced.
 
 ## Active Checkpoint
 
-The original failure was PA10 syntax routing, before semantic ownership:
-`parameter_clause_kind_at` omitted an elaborated specifier at the first
-parameter, so `void set(struct Hidden* q)` could be routed as an expression.
-The first-position repair uses the shared
-`fact_parameter_specifier_start_at` owner in elaborated-only mode for the four
-keys `class`, `struct`, `union`, and `enum`, preserving existing built-in
-disambiguation.  The duplicate `fact_elaborated_specifier_start_at` was
-removed.
+The coherent implementation is validated and pending commit.
 
-For a bare-name prefix such as `(Y0, Y1, struct S*)`, the existing
-delimiter-bounded bare-name scan now passes its actual failure cursor to the
-same shared fact.  This handles arbitrary subsequent positions without a
-hard-coded offset.  The existing parser consumes the declaration once through
-`parse_class_declaration(true)`/`parse_enum_declaration(true)` and
-`classify_elaborated_specifier`; malformed forms remain normal failures.
+Invariants:
 
-PA11 still canonicalizes one `Outer::Hidden` identity through
-`ensure_named_class`/`add_type_binding`; PA12 publishes typed member lookup,
-call selection, and implicit-object facts; PA15 consumes those facts directly.
-The ABI repair validates the `NamedRecord` and delegates named-type component
-construction to `value_components(record.owner, record.name)`, so namespace
-and class owner traversal has one implementation.
+- `RecordLayout` owns EBO, size, alignment, direct-base offset, and member
+  offsets.  Complete class objects remain at least one byte; nonempty bases,
+  requested alignment, bit-fields, default member initializers, aggregate and
+  lifetime consumers keep their existing layout facts.
+- An empty direct base overlaps a first member only when typed zero-offset
+  facts prove that no same-type base subobject occurs in that member, including
+  arrays and nested base/member paths.  Same-type direct members/arrays/nested
+  occurrences disable EBO; a distinct empty member remains eligible.
+- All typed base-path edges are validated even when one LowIR projection
+  represents an all-zero path.  Identity paths are zero projections and
+  nonempty all-zero paths are one projection.
 
-## Validation
+## Focused Validation
 
-Focused validation:
+The shared compiler builds successfully:
 
     make -C dev cppgm++
-    status 0
 
-The selected PA16 regression plus four parser/semantic controls passed:
+The two checkpoint targets pass together, and 12 representative checked-in
+controls (empty class, nonempty base/member offset, inherited access, requested
+alignment, destructor/lifetime, and anonymous aggregate controls) pass:
 
-    make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-elaborated-member-forward-type.t tests/general/100-self-pointer-layout.t tests/general/100-member-methods.t tests/general/200-member-call-hides-outer-type-declaration.t tests/general/200-inherited-member-call-hides-outer-type.t'
-    pa16 check: PASS (5/5)
+    make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 CPPGM_TEST_JOBS=1 check TEST='tests/general/200-friend-intermediate-derived-protected-base-method.t tests/general/300-callable-field-hides-private-base-method.t'
+    pa16 check: PASS (2/2)
+    make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 CPPGM_TEST_JOBS=1 check TEST='tests/general/100-empty-class-sizeof.t tests/general/200-empty-class-member-declaration.t tests/general/200-base-field-access.t tests/general/200-inherited-member-call-hides-outer-type.t tests/general/200-local-class-direct-init-inherited-member-call.t tests/general/200-destructor-body-local-before-base-destruction.t tests/general/300-alignas-class-layout.t tests/general/300-alignas-derived-base-layout.t tests/general/300-member-alignas-layout.t tests/general/300-explicit-destructor-call-enclosing-namespace-type.t tests/general/300-anonymous-bitfield-helper-member.t tests/general/300-mutable-anonymous-member.t'
+    pa16 check: PASS (12/12)
 
-The earlier PA11 control also passes with the rebuilt shared compiler:
+The selected array-lifecycle control remains the known pre-existing residual:
+`200-local-default-class-array-lifecycle.t` has its existing LowIR destruction
+order mismatch.  The final through-stage run still passes
+`1167/1167` through PA15.  The final file audit passes with the same six
+nonfatal header/body warnings.
 
-    make -C pa11 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/200-elaborated-type-hidden-by-function.t
-    pa11 check: PASS (1/1)
-
-The PA12 elaborated-enum/struct controls pass `3/3`.  Disposable parser
-controls return `0` for class/struct/union/enum starts in second, third, and
-fourth positions; scoped-enum forms and a comma expression return `0`; four
-malformed forms return `1`.  The target LowIR contains
-`object=_ZN5Outer3setEPNS_6HiddenE`.  Namespace and nested class/enum ABI
-controls contain `_ZN1N3useEPNS_1SE` and
-`_ZN5Outer3useEPNS_5InnerEPNS_4KindE` respectively.
-
-The final broad evidence is:
-
-    make test-pa16
-    status 2; TEST SUMMARY: 228 / 243 TESTS PASSED; 15 failures
-
-    n=16; ... make test-report-through-pa$((n - 1))
-    status 0; ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
-
-    perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
-    status 0; six non-fatal bad-division warnings
-
-The six warnings are the existing header-body findings for `abi_mangle.h`,
-`cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`,
-`pa12_semantic_selection.h`, and `pa15_lowering.h`.
-
-The exact identity comparison exits `0`: authority `15`, fresh `15`, retained
-`15`, authority-only `0`, fresh-only `0`; the inventory check is
-`243/243/243` with missing/unexpected `0/0` in every pair.  The final diff
-check also exits `0`.
-
+Disposable LowIR controls compiled successfully.  Same-type direct member,
+same-type first array element, and nested zero-offset occurrence produced
+`obj<2x1>`, `obj<3x1>`, and `obj<2x1>` with member offsets `1`, `1`, and
+nested `1 -> 0`; the distinct empty member produced `obj<1x1>` at offset
+`0`.  Requested alignment produced `obj<8x8>`, and the nonempty base retained
+a base projection with member offset `4` and `obj<8x4>`.  A deep inherited
+member call emitted one base projection; the identity call emitted none.  A
+derived-to-base destructor setup emitted one conversion projection, followed
+by the identity base-destructor call; generated direct destructor actions each
+retained their one direct-edge projection.  The accepted anonymous PA16
+controls passed in the 12-test matrix.
 
 ## Performance Evidence
 
-These are structural bounds and representative controls, not timing or RSS
-measurements.  The first elaborated-key route performs one charged
-fixed-token classification with four constant key comparisons and returns
-immediately.  Arbitrary later detection reuses the existing bare-name scan
-from the opening parenthesis to its delimiter-bounded end; every token
-predicate is charged, so this route is O(L) in the current group span and is
-still bounded by the parser's `96 * token_count + 2048` work limit.  The reverse
-index pass classifies each delimiter group once, and full elaborated-specifier
-parsing remains owned by the existing declaration parser.  PA15 ABI named
-types reuse `value_components` for the single typed namespace/class owner
-walk.  The second/third/fourth-position, scoped-enum, comma-expression,
-malformed, namespace, and nested-class/enum controls pass; no unsupported
-timing or RSS claim is made.
+Each completed `RecordLayout` retains one direct typed base edge (when
+present), local member offsets, and bounded scalar facts; no per-layout
+transitive identity vector/index remains.  EBO creates a `RecordTypeSet` only
+for an actual empty-base/first-storage intersection query, and the query is
+deterministic, memoized through completed layouts, and uses a per-query visited
+set for nested object types.  There is no whole-program scan or per-access
+semantic lookup.  The persistent layout facts are linear in records plus local
+members; scratch ancestry is bounded to the one candidate query.
 
-## Next Checkpoint
-
-This checkpoint removes
-`pa16/tests/general/200-elaborated-member-forward-type.t` from the residual
-identity set.  The next separate residual checkpoint is
-`pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t`;
-the other 14 residual identities remain outside this scope.
+The representative deep stress probe used 64 inheritance edges (65 records)
+and one deepest `E0` member to exercise the same-type ancestry query.  It
+compiled successfully (`rc=0`), retained `64` direct edges, `64` empty-chain
+facts plus the deepest member layout, and `0` transitive closure entries; the
+deepest object was `obj<2x1>` and the inherited call emitted `1` projection.
+No timing or RSS claim is made.
 
 ## Checkpoint Ledger
 
 | checkpoint | compact result |
 |---|---|
-| d54e32d1 | Prior PA16 authority was 224/243 with exactly 19 failures and 243/243 identity coverage. |
-| b58ddd2a | Completed the typed nullptr_t carrier path through PA11/PA12/PA15, including ABI and LowIR ownership and the bounded endpoint audit. |
-| e09d8223 | Recorded the completed nullptr carrier audit state: 225/243 authority, exact 18-item residual map, 243/243/243 inventories, through-PA15 1167/1167, and passing file audit with five known warnings. |
-| d5bf2600 checkpointAudit | Completed the bounded typed ownership audit and PA12 repair for constructor-overload viability/materialization, inherited candidate visibility, declaration hiding, access/deleted post-selection diagnosis, ambiguous UDC retention, and same-constructor second-SCS ranking. The inheriting-constructor publisher is extracted to the registered 215-line `pa12_semantic_constructor_candidates.cpp`; constructor/lifetime facts are in the normal 89-line `pa12_semantic_constructor_facts.h`, `pa12_semantic_construction.cpp` is 1876 lines, and `pa11_semantic_model.h` is 2374 lines. The final size probe is `ConversionChoice` 56/56 and `ConversionScore` 20/40 parent/current bytes. Focused build/matrix pass 7/7; all discriminating probes pass their expected statuses; final PA16 is 227/243 with exactly the unchanged 16 failures, exact authority/fresh identity sets 16/16 with zero deltas, and 243/243/243 coverage. Through-PA15 is 1167/1167; file audit exits 0 with six exact warnings; diff-check and changed-path/artifact checks pass. No handout/test/reference mutation; next is the separate residual `200-elaborated-member-forward-type.t`. |
-| 29d9c4ce checkpointAudit | Completed the bounded PA10 elaborated-member parameter-clause audit and repair plus the PA15 ABI owner consolidation. First-position elaborated keys use one charged shared fact; arbitrary later positions reuse the delimiter-bounded bare-name scan's failure cursor. The target, namespace, and nested class/enum ABI controls pass. Final PA16 is `228/243` with exactly the unchanged 15 residual identities, retained `15`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243`; through-PA15 is `1167/1167`; file audit exits `0` with six known warnings; no tests, references, sidecars, harnesses, comparators, generated outputs, coverage rules, or source-set files changed. |
+| d54e32d1 | Prior authority was `224/243` with 19 failures and complete identity coverage. |
+| b58ddd2a | Completed the typed `nullptr_t` carrier path through PA11/PA12/PA15, including ABI and LowIR ownership. |
+| e09d8223 | Recorded the nullptr-carrier audit state: 225/243 authority, 18 residual failures, `243/243/243` inventories, and through-PA15 `1167/1167`. |
+| d5bf2600 | Completed the typed constructor-overload/lifetime ownership audit; focused matrix passed and PA16 reached `227/243` with 16 residual failures. |
+| 29d9c4ce | Completed the PA10 elaborated-member parameter-clause repair and PA15 ABI owner consolidation; PA16 reached `228/243` with this exact 15-item residual set and `243/243/243` inventories. |
+| working tree (pending) | Empty-base layout/address projection: PA16 `230/243`, two target identities resolved, 13 exact residuals retained; through-PA15 `1167/1167`, file audit pass with six warnings. |

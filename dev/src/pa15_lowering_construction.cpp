@@ -1655,8 +1655,7 @@ LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
 		if (!current_record.valid() || current_record.value >= model_.named_.size())
 			throw std::runtime_error("PA15 destructor base record is invalid");
 		const NamedRecord& current = model_.named_[current_record.value];
-		const NamedRecordId base_record = model_.semantic_base_paths_[
-			fact.base_path_begin + i];
+		const NamedRecordId base_record = model_.semantic_base_paths_[fact.base_path_begin + i];
 		if (current.kind != NamedKind::Class || !current.has_base ||
 			current.direct_base_virtual || current.direct_base != base_record)
 			throw std::runtime_error("PA15 destructor base relation is invalid");
@@ -1665,6 +1664,11 @@ LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
 			!layout.has_direct_base || layout.direct_base.record != base_record ||
 			layout.direct_base.offset != 0)
 			throw std::runtime_error("PA15 destructor base layout is invalid");
+		current_record = base_record;
+	}
+	if (current_record != record) throw std::runtime_error("PA15 destructor base path ended at wrong record");
+	if (fact.base_path_count != 0)
+	{
 		const LowType offset_type = size_low_type();
 		const LoweredValue offset(integer_operand(0, offset_type),
 			offset_type, false);
@@ -1673,10 +1677,7 @@ LoweredValue Pa15Lowerer::lower_destructor_call(SemanticFactId id)
 		byte.integer_kind = LowType::INTEGER_I8;
 		object = emit_index(object, offset, byte,
 			lowir_model::IPK_BASE_SUBOBJECT);
-		current_record = base_record;
 	}
-	if (current_record != record)
-		throw std::runtime_error("PA15 destructor base path ended at wrong record");
 	emit_destructor_call(fact.selected_binding, object);
 	return LoweredValue(Operand(), low_type(fact.type), false);
 }
