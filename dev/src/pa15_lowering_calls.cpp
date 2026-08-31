@@ -259,16 +259,59 @@ void Pa15Lowerer::collect_demanded_functions(
 	std::vector<FunctionFactId> function_work;
 	std::vector<unsigned char> scanned_functions(
 		model_.function_facts_.size(), 0);
+	const auto namespace_function_is_definition = [this](
+		const FunctionFact& function, const Binding& binding) -> bool {
+		if (!function.owner.valid() || function.owner.value >=
+			model_.scopes_.size())
+			throw std::runtime_error("PA15 namespace function owner is invalid");
+		if (!function.binding.valid() || function.binding.value >=
+			model_.bindings_.size() || function.binding.value >=
+			model_.binding_owners_.size() ||
+			model_.binding_owners_[function.binding.value] != function.owner)
+			throw std::runtime_error(
+				"PA15 namespace function binding owner is invalid");
+		if (model_.scopes_[function.owner.value].kind != ScopeKind::Namespace)
+			return false;
+		// PA12 may retain a bodyless declaration FunctionFact for default
+		// arguments.  That is a valid declaration state, but a defined binding
+		// must never be allowed to fall through with an incomplete body identity.
+		if (!function.function_scope.valid())
+		{
+			if (function.body_scope.valid() || function.body_fact.valid() ||
+				binding.has_definition)
+				throw std::runtime_error(
+					"PA15 namespace function definition is incomplete");
+			return false;
+		}
+		if (function.function_scope.value >= model_.scopes_.size() ||
+			model_.scopes_[function.function_scope.value].kind !=
+			ScopeKind::Function || model_.scopes_[function.function_scope.value].parent !=
+			function.owner || !function.body_scope.valid() ||
+			function.body_scope.value >= model_.scopes_.size() ||
+			model_.scopes_[function.body_scope.value].kind != ScopeKind::Block ||
+			model_.scopes_[function.body_scope.value].parent !=
+			function.function_scope || !function.body_fact.valid() ||
+			function.body_fact.value >= model_.semantic_facts_.size() ||
+			model_.semantic_facts_[function.body_fact.value].kind !=
+			SemanticFactKind::CompoundStatement || !binding.has_definition)
+			throw std::runtime_error("PA15 namespace function definition is invalid");
+		return true;
+	};
 	for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 	{
 		const FunctionFact& fact = model_.function_facts_[i];
 		if (!fact.owner.valid() || fact.owner.value >= model_.scopes_.size() ||
-			model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace ||
-			!fact.function_scope.valid())
+			model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace)
 			continue;
 		if (!fact.binding.valid() || fact.binding.value >= model_.bindings_.size())
 			throw std::runtime_error("PA15 namespace function binding is missing");
 		const Binding& binding = model_.binding(fact.binding);
+		if (binding.kind != BindingKind::Function || !binding.type.valid() ||
+			binding.type.value >= model_.types_.size() ||
+			model_.type_kind(binding.type) != TypeKind::Function)
+			throw std::runtime_error("PA15 namespace function type is invalid");
+		if (!namespace_function_is_definition(fact, binding))
+			continue;
 		const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
 		const bool hidden_friend = sidecar != NULL && sidecar->hidden_friend;
 		if (!hidden_friend || binding.internal_linkage ||
@@ -554,44 +597,62 @@ void Pa15Lowerer::collect_demanded_functions(
 	// declaration without a FunctionFact remains a declaration demand handled
 	// by the ordinary call/address lowering path.
 	const auto demand_namespace_function = [this,
-		demanded_namespace_functions](BindingId binding_id) {
+		demanded_namespace_functions, &namespace_function_is_definition](
+		BindingId binding_id) {
 		if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
 			throw std::runtime_error("PA15 namespace function reference is invalid");
 		const Binding& binding = model_.binding(binding_id);
-		if (binding.kind != BindingKind::Function || !binding.type.valid() ||
-			binding.type.value >= model_.types_.size() ||
-			model_.type_kind(binding.type) != TypeKind::Function)
+		if (binding.kind != BindingKind::Function)
 			return;
+		if (!binding.type.valid() || binding.type.value >= model_.types_.size() ||
+			model_.type_kind(binding.type) != TypeKind::Function)
+			throw std::runtime_error("PA15 namespace function type is invalid");
 		const FunctionFactId* function_id =
 			model_.function_binding_fact_index_.find(binding_id);
 		if (function_id == NULL)
+		{
+			// Deleted/defaulted declarations carry the merged binding definition
+			// bit but intentionally have no body FunctionFact.  Only a normal
+			// definition is malformed when its canonical fact is absent.
+			if (binding.has_definition && model_.function_declaration_kind(binding_id) ==
+				FunctionDeclarationKind::Normal)
+				throw std::runtime_error(
+					"PA15 namespace function definition fact is missing");
 			return;
+		}
 		if (!function_id->valid() || function_id->value >=
 			model_.function_facts_.size())
 			throw std::runtime_error("PA15 namespace function fact is invalid");
 		const FunctionFact& function = model_.function_facts_[function_id->value];
-		if (function.binding != binding_id || !function.owner.valid() ||
-			function.owner.value >= model_.scopes_.size() ||
-			model_.scopes_[function.owner.value].kind != ScopeKind::Namespace)
+		if (function.binding != binding_id)
+			throw std::runtime_error(
+				"PA15 namespace function fact identity is inconsistent");
+		if (!function.owner.valid() || function.owner.value >=
+			model_.scopes_.size())
+			throw std::runtime_error("PA15 namespace function owner is invalid");
+		if (model_.scopes_[function.owner.value].kind != ScopeKind::Namespace)
 			return;
-		if (!function.function_scope.valid() ||
-			function.function_scope.value >= model_.scopes_.size() ||
-			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
-			model_.scopes_[function.function_scope.value].parent != function.owner ||
-			!function.body_fact.valid() ||
-			function.body_fact.value >= model_.semantic_facts_.size() ||
-			!binding.has_definition)
+		if (!namespace_function_is_definition(function, binding))
 			return;
 		(*demanded_namespace_functions)[function_id->value] = 1;
 	};
 	const auto scan_namespace_function_reference =
 		[&demand_namespace_function](const SemanticFact& fact) {
-		if ((fact.kind == SemanticFactKind::IdExpression ||
-			fact.kind == SemanticFactKind::Variable) && fact.binding.valid())
+		if (fact.kind == SemanticFactKind::IdExpression ||
+			fact.kind == SemanticFactKind::Variable)
+		{
+			if (!fact.binding.valid())
+				throw std::runtime_error(
+					"PA15 namespace function reference binding is missing");
 			demand_namespace_function(fact.binding);
-		if (fact.kind == SemanticFactKind::CallExpression && fact.has_callee &&
-			fact.selected_binding.valid())
+		}
+		if (fact.kind == SemanticFactKind::CallExpression && fact.has_callee)
+		{
+			if (!fact.selected_binding.valid())
+				throw std::runtime_error(
+					"PA15 namespace function call binding is missing");
 			demand_namespace_function(fact.selected_binding);
+		}
 	};
 	// Global/static roots are lowered after function collection and therefore
 	// are not reachable from a namespace function body.  Walk their typed

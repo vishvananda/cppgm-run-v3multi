@@ -12,43 +12,56 @@ PA15 scans all semantically validated namespace function bodies to discover
 typed member, constructor, destructor, and global-root dependencies, but
 `collect_functions` filters only class-owned facts.  The checkpoint adds a
 dense, per-`FunctionFact` namespace-definition demand result to that same
-bounded pass.  Non-hidden namespace definitions and internal-linkage hidden
-friends remain roots; an externally linked hidden friend is emitted only when
-a typed call or address edge reaches its binding.  The scan includes bodies
-that will not themselves become plans; this semantic dependency traversal is
-distinct from emitted-caller reachability.  Existing class/lifecycle demand
-edges stay unchanged.  The result is consumed before function-plan creation,
+bounded pass.  Non-hidden namespace definitions and C/internal-linkage hidden
+friends remain roots; an externally linked C++ hidden friend is emitted only
+when a typed call, address/reference, or ordinary-visibility edge reaches its
+binding.  The scan includes bodies that will not themselves become plans;
+this semantic dependency traversal is distinct from emitted-caller
+reachability.  Existing class/lifecycle demand edges stay unchanged.  The
+audit additionally makes malformed namespace fact identities fail closed,
+without changing valid demand.  The result is consumed before plan creation,
 with no render/reintern lookup, second semantic owner, or body lowering for
 skipped definitions.
 
+This is the `spec.md` Purpose and §§1–5/§7 boundary: typed facts retain their
+identity and canonical owner from PA11 through PA12 and PA15; semantic body
+validation is separate from runtime reachability and emitted-definition
+demand; roots and edges are typed; and the demand pass uses bounded dense
+worklists with an architecture trace to `FunctionPlan` and LowIR emission.
+
 ## Failure Map
 
-Authoritative start is clean HEAD `dff21435b183d2bb123c508522627ed4b5e20421`.
-The supplied `make test-pa16` baseline is `236/243`, with all `243` test
-identities covered and exactly these seven failures:
+The supplied current authority is from clean HEAD
+`544904edcd691ea7fc77599236a63fe9b40f1bd3`, with `make test-pa16` exiting `2`
+at `237/243`; all `243/243` test identities are covered and exactly these six
+failures remain:
 
 1. `pa16/tests/general/200-local-default-class-array-lifecycle.t`
 2. `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
-3. `pa16/tests/general/300-friend-function-definition-skip.t`
-4. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
-5. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
-6. `pa16/tests/general/400-signed-bit-field-read.t`
-7. `pa16/tests/general/400-signed-enum-bit-field-read.t`
+3. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
+4. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
+5. `pa16/tests/general/400-signed-bit-field-read.t`
+6. `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-Only #3 is in this checkpoint.  The reverse-array, typed-index-widening,
-instruction-order, and signed bit-field evidence in the other six failures is
-out of scope and must not be regressed or repaired here.
+The repaired `300-friend-function-definition-skip.t` is no longer a failure.
+The reverse-array, typed-index-widening, instruction-order, and signed
+bit-field owners in the six residuals are out of scope and must not be
+repaired here.  Fresh final `make test-pa16` reproduces `237/243` and the same
+six identities: authority-only, fresh-only, and new failures are `0/0/0`.
+Discovered source tests, checked-in reference exit-status sidecars, and fresh
+output exit-status sidecars are each `243`, with zero identity-set deltas.
+Reference and fresh sidecar statuses are each `224` `EXIT_SUCCESS` and `19`
+`EXIT_FAILURE`, with zero status mismatches.
 
 ## Active Checkpoint
 
-The failing source creates two namespace-owned hidden-friend `FunctionFact`s:
-`operator==` and `operator!=`.  PA12 validates both bodies; PA15 presently
-emits both because namespace ownership bypasses the class demand filter.  The
-canonical mismatch is only the second definition, whose typed body calls the
-first.  PA15 scans that second body even though it is not planned, and the
-typed call edge demands the first; this is the fixture-defined boundary and
-does not imply that the caller was emitted.  The narrow owner boundary keeps
-the first while suppressing the unrooted second body.
+The active source creates two namespace-owned hidden-friend `FunctionFact`s:
+`operator==` and `operator!=`.  Before this checkpoint, namespace ownership
+allowed both definitions through the class demand filter.  The landed demand
+split scans both validated bodies, while the second body's typed call edge
+demands the first; the audit preserves that fixture-defined distinction even
+though the caller itself is not planned.  The narrow owner boundary keeps the
+first while suppressing the unrooted second body.
 
 The implementation traces direct calls through
 `selected_binding -> function_binding_fact_index_ -> FunctionFact`, and
@@ -61,35 +74,34 @@ relations.  Demand bits are deduplicated by fact identity and processed in
 stable existing worklist order.  No friend is suppressed from semantic body
 validation, and no decision uses a rendered spelling.
 
-Focused controls will cover the active skip, used hidden-friend/ADL operators,
-ordinary namespace operators and free functions, friend body calls, exported
-free functions, and the unnamed-namespace hidden-friend lifecycle case.  No
-additional regression is planned unless an existing control cannot express
-the owner boundary.
+Focused controls cover the active skip, used hidden-friend/ADL operators,
+ordinary namespace operators and free functions, friend body calls, function
+address/reference roots, member calls, and the unnamed-namespace hidden-friend
+lifecycle case.  No additional regression was needed: the repair is an
+internal malformed-fact guard and the existing controls express the owner
+boundary.
 
 ## Performance Evidence
 
-At turn start, the supplied authority was `236/243` with complete `243/243`
-identity coverage.  Final `make test-pa16` exited `2` with `237/243` passed and
-these exact six residuals (the baseline seven minus the repaired active test):
+The supplied authority and fresh final `make test-pa16` from clean HEAD
+`544904edcd691ea7fc77599236a63fe9b40f1bd3` are both exit `2` at `237/243`,
+with complete `243/243` identity coverage and the exact six residuals above.
+The exact prior gate exits `0` at `1167/1167`.  The exact file audit exits `0`
+with six known nonfatal `bad-division` warnings at line 1 in
+`dev/src/abi_mangle.h`, `dev/src/cpp_semantic_core.h`,
+`dev/src/lowir_model.h`, `dev/src/pa11_semantic_model.h`,
+`dev/src/pa12_semantic_selection.h`, and `dev/src/pa15_lowering.h`.
 
-1. `pa16/tests/general/200-local-default-class-array-lifecycle.t`
-2. `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
-3. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
-4. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
-5. `pa16/tests/general/400-signed-bit-field-read.t`
-6. `pa16/tests/general/400-signed-enum-bit-field-read.t`
-
-The source, reference, and fresh exit-status inventories were each `243`, and
-both source-vs-reference and source-vs-fresh identity comparisons were empty.
-The required through-PA15 command exited `0` at `1167/1167`.  The file audit
-exited `0` with six known nonfatal `bad-division` warnings in
-`abi_mangle.h`, `cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`,
-`pa12_semantic_selection.h`, and `pa15_lowering.h`.  `git diff --check` exited
-`0`.  No timing, RSS, or allocation claim is made.  The principal uncertainty
-is preserving the fixture's typed dependency from a semantically validated
-friend body while not turning an unrooted hidden-friend body into an emitted
-definition.
+Fresh focused evidence is `make build` exit `0`, the PA15
+deleted-declaration control `PASS (1/1)`, the exact active handout `PASS
+(1/1)`, a representative affected matrix `PASS (14/14)`, course regressions
+430 and 431 both `PASS`, and `git diff --check` exit `0`.  The matrix covers
+address/reference, ordinary/static member and namespace functions, friend
+declarations/definitions, ADL operators, mixed/nullptr and derived-base friend
+operators, and qualified friend access.  The evidence is structural: dense
+fact-indexed worklists and one bounded typed scan per relevant fact domain are
+retained, with no timing, RSS, allocation, or generated-program performance
+claim.
 
 ## Checkpoint Ledger
 
@@ -98,19 +110,24 @@ definition.
 - Investigation: complete; owner/data flow is `BindingId`/sidecar -> namespace
   `FunctionFact` -> PA12 `body_fact` -> PA15 demand bit -> `FunctionPlan`.
 - Plan: rewritten for this hidden-friend/non-member checkpoint.
-- Implementation: complete in `dev/src/pa15_lowering.h`,
-  `dev/src/pa15_lowering.cpp`, and `dev/src/pa15_lowering_calls.cpp`.
-- Focused evidence: `make build` exited `0`; the exact active handout passed
-  `1/1`; the hidden-friend/ADL/operator/free-function/internal-linkage set
-  passed `13/13`; two address controls passed `2/2`; two friend-declaration
-  controls passed `2/2`.
-- Broad evidence: `make test-pa16` exited `2` at `237/243` with exactly the six
-  residual identities listed in Performance Evidence; all `243` inventories
-  matched with no identity differences.  The required prior gate exited `0` at
-  `1167/1167`.
-- Audit and hygiene: the PA16 file audit exited `0` with the six listed
-  `bad-division` warnings; `git diff --check` exited `0`.  No timing/RSS claim
-  is made.
-- Commit: implementation committed as `8c60e658572a1f73aa0387ffaf6dc5546e5c2bda`
-  (`PA16: demand hidden friend definitions`); post-commit `git status --short`
-  was empty.
+- Landed increment: committed as
+  `8c60e658572a1f73aa0387ffaf6dc5546e5c2bda` (`PA16: demand hidden friend
+  definitions`), relative to `dff21435b183d2bb123c508522627ed4b5e20421`.
+- Focused evidence: `make build` exit `0`; exact active handout `PASS (1/1)`;
+  representative matrix `PASS (14/14)`; PA15 deleted-declaration control
+  `PASS (1/1)`; course 430 and course 431 `PASS`; `git diff --check` exit `0`.
+- Current authority/fresh result: `make test-pa16` exits `2` at `237/243`,
+  complete `243/243` coverage, and exactly the six residual identities listed
+  above; authority-only/fresh-only/new failures are `0/0/0`.  Discovered,
+  reference-sidecar, and fresh-sidecar identities are `243/243/243`, with
+  zero identity deltas; sidecar statuses are `224` success and `19` failure
+  on both sides, with zero mismatches.
+- Required gates: exact through-PA15 exits `0` at `1167/1167`; exact file
+  audit exits `0` with six known nonfatal header-division warnings.
+- Checkpoint/audit: complete and committed for this bounded scope.  The repair
+  in `dev/src/pa15_lowering_calls.cpp` hardens malformed namespace definition
+  and typed-edge identities while preserving declaration-only and
+  member/lifecycle demand; `pa16/audit.md` records the final trace, evidence,
+  and residual boundary.
+- Next checkpoint: `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+  as a separately scoped residual owner.
