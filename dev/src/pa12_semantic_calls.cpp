@@ -1364,6 +1364,173 @@ ExprInfo PA11SemanticModel::semantic_operator_call(
 	return ExprInfo(result, result_type, result_category, false);
 }
 
+const UserDefinedLiteralData* PA11SemanticModel::user_defined_literal_data(
+	const PA10AstNode& node) const
+{
+	if (node.kind != PA10NodeKind::UserDefinedLiteral)
+		return NULL;
+	if (node.user_defined_literal_count != 1 ||
+		node.user_defined_literal_begin > ast_.user_defined_literals.size() ||
+		node.user_defined_literal_count > ast_.user_defined_literals.size() -
+		node.user_defined_literal_begin)
+		throw std::runtime_error("invalid PA10 user-defined literal sidecar");
+	const UserDefinedLiteralData& data = ast_.user_defined_literals[
+		node.user_defined_literal_begin];
+	if (data.source.empty() || data.suffix.empty() || node.text == 0 ||
+		ast_.spelling(node.text) != data.source)
+		throw std::runtime_error("invalid PA10 user-defined literal data");
+	return &data;
+}
+NameId PA11SemanticModel::literal_operator_suffix(const DeclaratorName& name)
+{
+	if (name.operator_function_kind != PA10OperatorFunctionKind::Literal)
+		return NameId();
+	if (name.operator_literal_data_count != 1 ||
+		name.operator_literal_data_begin > ast_.user_defined_literals.size() ||
+		name.operator_literal_data_count > ast_.user_defined_literals.size() -
+		name.operator_literal_data_begin)
+		throw std::runtime_error("literal operator has no typed suffix");
+	const UserDefinedLiteralData& data = ast_.user_defined_literals[
+		name.operator_literal_data_begin];
+	if (data.source.empty() || data.suffix.empty())
+		throw std::runtime_error("literal operator has invalid typed suffix");
+	return intern_name(data.suffix);
+}
+
+ExprInfo PA11SemanticModel::semantic_user_defined_literal(
+	const PA10AstNode& node, ScopeId scope)
+{
+	const UserDefinedLiteralData* data = user_defined_literal_data(node);
+	if (data == NULL || data->kind != UserDefinedLiteralKind::String)
+		throw std::runtime_error(
+			"PA12 unsupported non-string user-defined literal");
+	const TypeId element = fundamental(data->value.type);
+	const std::size_t element_size = type_size(element);
+	const std::size_t count = data->value.element_count;
+	if (!element.valid() || element_size == 0 || count == 0 ||
+		count > std::numeric_limits<std::size_t>::max() / element_size ||
+		data->value.bytes.size() != count * element_size)
+		throw std::runtime_error("PA12 invalid user-defined string payload");
+	const TypeId array = make_array(make_cv(element, 1u), false,
+		ArrayBound(count));
+	SemanticFact text_fact(SemanticFactKind::Literal, array,
+		SemanticValueCategory::Lvalue, &node);
+	text_fact.literal_element_count = count;
+	const SemanticFactId text_id = make_semantic_fact(text_fact);
+	const ExprInfo text(text_id, array, SemanticValueCategory::Lvalue, false);
+
+	// The cooked string form supplies the source array and a typed size_t
+	// argument.  Keep the size as a synthetic scalar fact, as existing
+	// selection/lowering machinery already handles its integral conversion.
+	const bool size_unsigned = count - 1 > static_cast<std::size_t>(
+		std::numeric_limits<int>::max());
+	const TypeId size_type = fundamental(size_unsigned ?
+		FundamentalType::UnsignedLongInt : FundamentalType::Int);
+	const std::size_t size = count - 1;
+	SemanticFact size_fact(SemanticFactKind::Literal, size_type,
+		SemanticValueCategory::Prvalue, &node);
+	size_fact.has_literal_value = true;
+	size_fact.literal_value = static_cast<std::uint64_t>(size);
+	size_fact.literal_value_unsigned = size_unsigned;
+	size_fact.has_constant_value = true;
+	size_fact.constant_value = static_cast<__int128>(size);
+	size_fact.constant_value_unsigned = size_unsigned;
+	size_fact.constant_value_evaluated = true;
+	const SemanticFactId size_id = make_semantic_fact(size_fact);
+	const ExprInfo size_expression(size_id, size_type,
+		SemanticValueCategory::Prvalue, false);
+
+	NamePath path;
+	path.components.push_back(operator_name(
+		PA10OperatorFunctionKind::Literal, SimpleTokenType::OP_SEMICOLON));
+	const NameId suffix = intern_name(data->suffix);
+	const std::vector<ValueRef> visible = lookup_value_path(path, scope,
+		SourcePoint(node.source_begin));
+	std::vector<ValueRef> candidates;
+	for (std::size_t i = 0; i < visible.size(); ++i)
+	{
+		const ValueRef& candidate = visible[i];
+		if (!candidate.binding.valid() || candidate.binding.value >=
+			bindings_.size())
+			throw std::runtime_error(
+				"PA12 literal operator candidate binding is invalid");
+		if (candidate.binding.value >= binding_owners_.size())
+			throw std::runtime_error(
+				"PA12 literal operator candidate owner is missing");
+		if (!candidate.scope.valid() || candidate.scope.value >= scopes_.size())
+			throw std::runtime_error(
+				"PA12 literal operator candidate scope is invalid");
+		const ScopeId owner = binding_owners_[candidate.binding.value];
+		if (!owner.valid() || owner.value >= scopes_.size() || owner !=
+			candidate.scope)
+			throw std::runtime_error(
+				"PA12 literal operator candidate owner mismatch");
+		const Binding& binding_value = binding(candidate.binding);
+		if (binding_value.name != path.components.back() ||
+			binding_value.kind != BindingKind::Function ||
+			!binding_value.type.valid() || binding_value.type.value >= types_.size() ||
+			type_kind(binding_value.type) != TypeKind::Function)
+			throw std::runtime_error(
+				"PA12 literal operator candidate function/type is invalid");
+		if (scopes_[candidate.scope.value].kind != ScopeKind::Namespace)
+			continue;
+		const BindingSidecar* sidecar = binding_sidecar(candidate.binding);
+		if (sidecar == NULL || sidecar->operator_function_kind !=
+			PA10OperatorFunctionKind::Literal ||
+			sidecar->operator_literal_suffix != suffix)
+			continue;
+		bool duplicate = false;
+		for (std::size_t j = 0; j < candidates.size(); ++j)
+			if (candidates[j].binding == candidate.binding &&
+				candidates[j].scope == candidate.scope)
+			{
+				duplicate = true;
+				break;
+			}
+		if (!duplicate)
+			candidates.push_back(candidate);
+	}
+	if (candidates.empty())
+		throw std::runtime_error("PA12 no literal operator candidate");
+
+	std::vector<const PA10AstNode*> no_member_nodes;
+	std::vector<ExprInfo> no_member_arguments;
+	std::vector<const PA10AstNode*> argument_nodes;
+	argument_nodes.push_back(&node);
+	argument_nodes.push_back(&node);
+	std::vector<ExprInfo> arguments;
+	arguments.push_back(text);
+	arguments.push_back(size_expression);
+	const TypedOperatorSelection selection = select_typed_operator(
+		std::vector<ValueRef>(), candidates, text, no_member_nodes,
+		no_member_arguments, argument_nodes, arguments, scope);
+	if (!selection.valid() || selection.member)
+		throw std::runtime_error("PA12 literal operator selection failed");
+	const TypeId result_type = function_result_type(selection.type);
+	SemanticValueCategory result_category = SemanticValueCategory::Prvalue;
+	if (type_kind(result_type) == TypeKind::LvalueReference)
+		result_category = SemanticValueCategory::Lvalue;
+	else if (type_kind(result_type) == TypeKind::RvalueReference)
+		result_category = SemanticValueCategory::Xvalue;
+	SemanticFact call(SemanticFactKind::CallExpression, result_type,
+		result_category, &node);
+	call.has_callee = true;
+	call.bool_context_operand = bool_id(result_type);
+	call.direct_bool_boundary = bool_id(result_type);
+	call.selected_binding = selection.selected.binding;
+	call.selected_scope = selection.selected.scope;
+	call.callable_type = selection.type;
+	if (!call.callable_type.valid() || type_kind(call.callable_type) !=
+		TypeKind::Function)
+		throw std::runtime_error("PA12 literal operator signature is invalid");
+	std::vector<SemanticFactId> children;
+	for (std::size_t i = 0; i < selection.arguments.size(); ++i)
+		children.push_back(selection.arguments[i].fact);
+	const SemanticFactId result = make_semantic_fact(call);
+	set_semantic_children(result, children);
+	return ExprInfo(result, result_type, result_category, false);
+}
+
 void PA11SemanticModel::apply_call_argument_conversions(
 	std::vector<ExprInfo>& arguments, TypeId selected_type, ScopeId scope)
 {

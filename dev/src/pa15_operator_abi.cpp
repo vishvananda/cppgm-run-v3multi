@@ -125,8 +125,9 @@ abi_mangle::AbiOperatorTerminalKind Pa15Lowerer::operator_terminal(
 			break;
 		}
 		throw std::runtime_error("PA15 unsupported operator ABI token");
-	case PA10OperatorFunctionKind::Conversion:
 	case PA10OperatorFunctionKind::Literal:
+		return abi_mangle::ABI_OPERATOR_TERMINAL_LITERAL;
+	case PA10OperatorFunctionKind::Conversion:
 		throw std::runtime_error("PA15 unsupported typed operator ABI terminal");
 	case PA10OperatorFunctionKind::None:
 		return abi_mangle::ABI_OPERATOR_TERMINAL_NONE;

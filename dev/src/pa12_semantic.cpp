@@ -1908,6 +1908,8 @@ ExprInfo PA11SemanticModel::semantic_expression(const PA10AstNode& node, ScopeId
 		return ExprInfo(fact, semantic_facts_[fact.value].type,
 			semantic_facts_[fact.value].category, integer_zero(node));
 	}
+	case PA10NodeKind::UserDefinedLiteral:
+		return semantic_user_defined_literal(node, scope);
 	case PA10NodeKind::KeywordLiteral:
 		if (node.has_token && node.token == SimpleTokenType::KW_THIS)
 			return semantic_this_expression(node, scope);

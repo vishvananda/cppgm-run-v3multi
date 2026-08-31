@@ -10,6 +10,8 @@ namespace PA10ParserSupport
 {
 
 std::size_t parser_work_limit_for(std::size_t token_count);
+void record_user_defined_literal(PA10Ast& ast, PA10AstNode& node,
+	const PA10Token& token);
 bool advance_token_position(const std::vector<PA10Token>& tokens,
 	std::size_t absolute, std::size_t amount, std::size_t* result);
 bool token_identifier_at(const std::vector<PA10Token>& tokens,

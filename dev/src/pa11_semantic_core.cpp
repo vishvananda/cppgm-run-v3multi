@@ -85,9 +85,8 @@ const char* operator_name_key(PA10OperatorFunctionKind kind,
 		default: return NULL;
 		}
 	case PA10OperatorFunctionKind::Conversion:
-	case PA10OperatorFunctionKind::Literal:
-	case PA10OperatorFunctionKind::None:
-		return NULL;
+	case PA10OperatorFunctionKind::None: return NULL;
+	case PA10OperatorFunctionKind::Literal: return "operatorliteral";
 	}
 	return NULL;
 }
@@ -415,6 +414,7 @@ bool PA11SemanticModel::find_declarator_name(const PA10AstNode& node,
 			result->operator_function = true;
 			result->operator_function_kind = node.operator_function_kind;
 			result->operator_token = node.operator_token;
+			result->operator_literal_data_begin = node.user_defined_literal_begin; result->operator_literal_data_count = node.user_defined_literal_count;
 		}
 		return true;
 	}
@@ -1305,12 +1305,13 @@ void PA11SemanticModel::record_function_declarator(BindingId binding_id,
 		sidecar = *existing;
 	if (name.operator_function)
 	{
+		const NameId suffix = name.operator_function_kind == PA10OperatorFunctionKind::Literal ? literal_operator_suffix(name) : NameId();
 		if (sidecar.operator_function_kind != PA10OperatorFunctionKind::None &&
-			(sidecar.operator_function_kind != name.operator_function_kind ||
-			 sidecar.operator_token != name.operator_token))
+			(sidecar.operator_function_kind != name.operator_function_kind || sidecar.operator_token != name.operator_token || (name.operator_function_kind == PA10OperatorFunctionKind::Literal && sidecar.operator_literal_suffix != suffix)))
 			throw std::runtime_error("conflicting operator declaration identity");
 		sidecar.operator_function_kind = name.operator_function_kind;
 		sidecar.operator_token = name.operator_token;
+		if (name.operator_function_kind == PA10OperatorFunctionKind::Literal) sidecar.operator_literal_suffix = suffix;
 	}
 	if (nonthrowing)
 		sidecar.nonthrowing = true;
@@ -2494,8 +2495,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 			binding_id = add_value(target, name.path.last(), type,
 				function, definition, true, BindingId(),
 				SourcePoint(node.source_begin), internal_linkage,
-				current_language_linkage_, declaration_kind, hidden_friend,
-				name.operator_function_kind, name.operator_token);
+				current_language_linkage_, declaration_kind, hidden_friend, name.operator_function_kind, name.operator_token, literal_operator_suffix(name));
 			if (function)
 			{
 				record_function_declarator(binding_id, name, declarator,

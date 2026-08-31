@@ -222,6 +222,7 @@ enum class PA10NodeKind
 	ExceptionDeclaration,
 	IdExpression,
 	Literal,
+	UserDefinedLiteral,
 	KeywordLiteral,
 	ParenthesizedExpression,
 	CallExpression,
@@ -335,6 +336,10 @@ struct PA10AstNode
 	PA10DefaultTemplateArgumentForm default_template_argument_form;
 	std::size_t alignment_specifier_begin;
 	std::size_t alignment_specifier_count;
+	// A posttoken UDL is kept as one typed sidecar entry.  The source spelling
+	// remains cold presentation text; semantic consumers use this range.
+	std::size_t user_defined_literal_begin;
+	std::size_t user_defined_literal_count;
 	bool has_literal;
 	LiteralData literal;
 	std::vector<PA10AstNode> children;
@@ -357,6 +362,7 @@ struct PA10AstNode
 		  lambda_capture_begin(0), lambda_capture_count(0),
 		  default_template_argument_form(PA10DefaultTemplateArgumentForm::Normal),
 		  alignment_specifier_begin(0), alignment_specifier_count(0),
+		  user_defined_literal_begin(0), user_defined_literal_count(0),
 		  has_literal(false), literal(),
 		  children()
 	{}
@@ -422,6 +428,9 @@ struct PA10Ast
 	// conversion type-ids are sparse semantic children owned by the AST.
 	std::vector<PA10StringId> operator_presentation_spellings;
 	std::vector<PA10AstNode> semantic_child_nodes;
+	// Decoded user-defined literal payloads are owned once at the PA10 boundary;
+	// nodes retain only a sparse range into this sidecar.
+	std::vector<UserDefinedLiteralData> user_defined_literals;
 	std::vector<PA10LambdaCapture> lambda_captures;
 	// Alignment arguments are sparse typed syntax facts owned by the
 	// declaration/class node through its range.  Keeping them out of the
@@ -440,6 +449,7 @@ struct PA10Ast
 		: producer_spellings(1, std::string()),
 		  presentation_spellings(1, std::string()),
 		  operator_presentation_spellings(), semantic_child_nodes(),
+		  user_defined_literals(),
 		  lambda_captures(),
 		  alignment_specifiers(),
 		  pack_directives(),

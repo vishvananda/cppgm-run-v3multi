@@ -1521,10 +1521,22 @@ bool PA11SemanticModel::resolve_constant_address_literal(
 		return false;
 	const TypeId element_type = types_[array_type.value].child;
 	const std::size_t element_size = type_size(element_type);
-	const LiteralData& literal = fact.source->literal;
-	if (element_size == 0 || literal.element_count != fact.literal_element_count ||
+	if (fact.source == NULL)
+		return false;
+	const LiteralData* literal = &fact.source->literal;
+	if (fact.source->kind == PA10NodeKind::UserDefinedLiteral)
+	{
+		const UserDefinedLiteralData* user_defined =
+			user_defined_literal_data(*fact.source);
+		if (user_defined == NULL ||
+			user_defined->kind != UserDefinedLiteralKind::String)
+			return false;
+		literal = &user_defined->value;
+	}
+	if (element_size == 0 || literal->element_count != fact.literal_element_count ||
 		fact.literal_element_count > std::numeric_limits<std::size_t>::max() /
-			element_size || literal.bytes.size() !=
+			element_size ||
+		literal->bytes.size() !=
 			fact.literal_element_count * element_size)
 		return false;
 	result->kind = ConstantAddressKind::Literal;
@@ -1532,9 +1544,9 @@ bool PA11SemanticModel::resolve_constant_address_literal(
 	result->element_type = element_type;
 	result->literal_element_count = fact.literal_element_count;
 	result->literal_byte_begin = constant_address_literal_bytes_.size();
-	result->literal_byte_count = literal.bytes.size();
+	result->literal_byte_count = literal->bytes.size();
 	constant_address_literal_bytes_.insert(constant_address_literal_bytes_.end(),
-		literal.bytes.begin(), literal.bytes.end());
+		literal->bytes.begin(), literal->bytes.end());
 	return true;
 }
 
@@ -1553,7 +1565,8 @@ bool PA11SemanticModel::resolve_constant_address_impl(SemanticFactId fact_id,
 		return false;
 	if (fact.kind == SemanticFactKind::Literal &&
 		fact.literal_element_count != 0 && fact.source != NULL &&
-		fact.source->kind == PA10NodeKind::Literal)
+		(fact.source->kind == PA10NodeKind::Literal ||
+		 fact.source->kind == PA10NodeKind::UserDefinedLiteral))
 		return resolve_constant_address_literal(fact, context, result);
 	if (fact.kind == SemanticFactKind::IdExpression)
 	{

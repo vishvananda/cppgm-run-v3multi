@@ -274,7 +274,7 @@ struct BindingSidecar
 	// them beside the canonical binding so ABI/lowering consumers do not have
 	// to recover either fact from a rendered name or a declarator body.
 	PA10OperatorFunctionKind operator_function_kind;
-	SimpleTokenType operator_token;
+	SimpleTokenType operator_token; NameId operator_literal_suffix;
 	bool nonthrowing;
 	bool explicit_constructor;
 	FunctionDeclarationKind declaration_kind;
@@ -293,7 +293,7 @@ struct BindingSidecar
 		  default_member_initializer(),
 		  has_requested_alignment(false), requested_alignment(0),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
-		  operator_token(SimpleTokenType::OP_SEMICOLON), nonthrowing(false),
+		  operator_token(SimpleTokenType::OP_SEMICOLON), operator_literal_suffix(), nonthrowing(false),
 		  explicit_constructor(false),
 		  declaration_kind(FunctionDeclarationKind::Normal),
 		  template_specialization(), unadjusted_type()
@@ -768,10 +768,11 @@ struct DeclaratorName
 	bool operator_function;
 	PA10OperatorFunctionKind operator_function_kind;
 	SimpleTokenType operator_token;
+	std::size_t operator_literal_data_begin, operator_literal_data_count;
 	DeclaratorName()
 		: found(false), path(), operator_function(false),
 		  operator_function_kind(PA10OperatorFunctionKind::None),
-		  operator_token(SimpleTokenType::OP_SEMICOLON) {}
+		  operator_token(SimpleTokenType::OP_SEMICOLON), operator_literal_data_begin(InvalidIdentityValue), operator_literal_data_count(0) {}
 };
 enum class DeclaratorBaseKind { Typed, AutoPlaceholder };
 struct DeclaratorOp
@@ -1740,7 +1741,7 @@ private:
 		LanguageLinkage language_linkage = LanguageLinkage::Cxx,
 		FunctionDeclarationKind declaration_kind = FunctionDeclarationKind::Normal,
 		bool hidden_friend = false, PA10OperatorFunctionKind operator_function_kind = PA10OperatorFunctionKind::None,
-		SimpleTokenType operator_token = SimpleTokenType::OP_SEMICOLON);
+		SimpleTokenType operator_token = SimpleTokenType::OP_SEMICOLON, NameId operator_literal_suffix = NameId());
 	void index_hidden_friend(NameId name, ScopeId namespace_scope, BindingId binding);
 	bool has_friend_specifier(const PA10AstNode& node) const;
 	ScopeId friend_namespace_scope(ScopeId scope) const;
@@ -2220,6 +2221,9 @@ private:
 	;
 	SemanticFactId semantic_literal(const PA10AstNode& node)
 	;
+	const UserDefinedLiteralData* user_defined_literal_data(const PA10AstNode& node) const;
+	NameId literal_operator_suffix(const DeclaratorName& name);
+	ExprInfo semantic_user_defined_literal(const PA10AstNode& node, ScopeId scope);
 	std::size_t add_floating_literal(const LiteralData& literal)
 	;
 	ExprInfo semantic_id_expression(const PA10AstNode& node, ScopeId scope)

@@ -1569,7 +1569,8 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 		type, true, true, true, BindingId(), SourcePoint(node.source_begin),
 		internal_linkage, current_language_linkage_,
 		FunctionDeclarationKind::Normal, hidden_friend,
-		name.operator_function_kind, name.operator_token);
+		name.operator_function_kind, name.operator_token,
+		literal_operator_suffix(name));
 	record_function_declarator(function_binding, name, declarator,
 		FunctionDeclarationKind::Normal);
 	if (friend_record.valid())
@@ -2104,7 +2105,7 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	SourcePoint declaration_point, bool internal_linkage,
 	LanguageLinkage language_linkage, FunctionDeclarationKind declaration_kind,
 	bool hidden_friend, PA10OperatorFunctionKind operator_function_kind,
-	SimpleTokenType operator_token)
+	SimpleTokenType operator_token, NameId operator_literal_suffix)
 {
 	Scope& current = scopes_[scope.value];
 	if (direct_namespace_exists(scope, name))
@@ -2115,6 +2116,21 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	const TypeId unadjusted_type = type;
 	type = normalize_embedded_function_types(type);
 	const ValueList* existing_values = current.values.find(name);
+	const auto operator_identity_matches =
+		[operator_function_kind, operator_token, operator_literal_suffix](
+			const BindingSidecar* existing_sidecar) -> bool {
+		const PA10OperatorFunctionKind existing_kind = existing_sidecar == NULL ?
+			PA10OperatorFunctionKind::None :
+			existing_sidecar->operator_function_kind;
+		if (operator_function_kind == PA10OperatorFunctionKind::None &&
+			existing_kind == PA10OperatorFunctionKind::None)
+			return true;
+		if (existing_sidecar == NULL || existing_kind != operator_function_kind ||
+			existing_sidecar->operator_token != operator_token)
+			return false;
+		return operator_function_kind != PA10OperatorFunctionKind::Literal ||
+			existing_sidecar->operator_literal_suffix == operator_literal_suffix;
+	};
 	const std::vector<HiddenFriendBindingRelation>* hidden_candidates =
 		function ? hidden_friend_bindings_.find(HiddenFriendBindingKey(scope,
 			name)) : NULL;
@@ -2149,15 +2165,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 			const Binding& existing = binding(relation.binding);
 			const BindingSidecar* existing_sidecar =
 				binding_sidecar(relation.binding);
-			if (operator_function_kind != PA10OperatorFunctionKind::None ||
-				(existing_sidecar != NULL &&
-					existing_sidecar->operator_function_kind !=
-						PA10OperatorFunctionKind::None))
-				if (existing_sidecar == NULL ||
-					existing_sidecar->operator_function_kind !=
-						operator_function_kind ||
-					existing_sidecar->operator_token != operator_token)
-					continue;
+			if (!operator_identity_matches(existing_sidecar))
+				continue;
 			if (existing.kind != BindingKind::Function ||
 				existing.name != name ||
 				existing.language_linkage != language_linkage ||
@@ -2228,15 +2237,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 				const Binding& existing = binding(existing_id);
 				const BindingSidecar* existing_sidecar =
 					binding_sidecar(existing_id);
-				if (operator_function_kind != PA10OperatorFunctionKind::None ||
-					(existing_sidecar != NULL &&
-						existing_sidecar->operator_function_kind !=
-							PA10OperatorFunctionKind::None))
-					if (existing_sidecar == NULL ||
-						existing_sidecar->operator_function_kind !=
-							operator_function_kind ||
-						existing_sidecar->operator_token != operator_token)
-						continue;
+				if (!operator_identity_matches(existing_sidecar))
+					continue;
 				if (existing.language_linkage != language_linkage ||
 					existing.internal_linkage != internal_linkage)
 					continue;
@@ -2270,7 +2272,9 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 	value.language_linkage = language_linkage;
 	value.internal_linkage = internal_linkage;
 	const BindingId binding_id = store_binding(scope, value);
-	if (backing_storage.valid() || unadjusted_type != type || hidden_friend)
+	if (backing_storage.valid() || unadjusted_type != type || hidden_friend ||
+		operator_function_kind != PA10OperatorFunctionKind::None ||
+		operator_literal_suffix.valid())
 	{
 		BindingSidecar sidecar;
 		sidecar.backing_storage = backing_storage;
@@ -2279,6 +2283,7 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 		sidecar.hidden_friend = hidden_friend;
 		sidecar.operator_function_kind = operator_function_kind;
 		sidecar.operator_token = operator_token;
+		sidecar.operator_literal_suffix = operator_literal_suffix;
 		set_binding_sidecar(binding_id, sidecar);
 	}
 	if (hidden_friend)
@@ -2428,6 +2433,11 @@ std::string PA11SemanticModel::semantic_literal_token(
 	if (fact.source->kind == PA10NodeKind::KeywordLiteral)
 		result << simple_token_type_name(fact.source->token) << ':';
 	if (fact.source->kind == PA10NodeKind::Literal)
+	{
+		if (fact.source->text != 0)
+			result << ast_.spelling(fact.source->text);
+	}
+	else if (fact.source->kind == PA10NodeKind::UserDefinedLiteral)
 	{
 		if (fact.source->text != 0)
 			result << ast_.spelling(fact.source->text);

@@ -152,8 +152,26 @@ std::string Pa15Lowerer::abi_symbol(const FunctionFact& fact,
 				abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE : terminal;
 	}
 	else
+	{
 		record.target.function.operator_terminal = operator_terminal(
 			fact.binding, function.parameters.size());
+		if (sidecar != NULL && sidecar->operator_function_kind ==
+			PA10OperatorFunctionKind::Literal)
+		{
+			if (!sidecar->operator_literal_suffix.valid())
+				throw std::runtime_error(
+					"PA15 literal operator suffix is missing");
+			abi_mangle::AbiFactRecord literal_record;
+			literal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			literal_record.function.kind =
+				abi_mangle::ABI_FUNCTION_RECORD_OPERATOR_TERMINAL;
+			literal_record.function.operator_terminal =
+				record.target.function.operator_terminal;
+			literal_record.function.literal_suffix = model_.name_text(
+				sidecar->operator_literal_suffix);
+			facts.records.push_back(literal_record);
+		}
+	}
 	for (std::size_t i = 0; i < function.parameters.size(); ++i)
 		record.target.function.signature_parameter_types.push_back(
 			abi_type(function.parameters[i]));
@@ -217,8 +235,26 @@ std::string Pa15Lowerer::abi_function_symbol(BindingId binding_id,
 			abi_mangle::ABI_SPECIAL_TERMINAL_DESTRUCTOR_COMPLETE;
 	}
 	else
+	{
 		record.target.function.operator_terminal = operator_terminal(
 			binding_id, function.parameters.size());
+		if (sidecar != NULL && sidecar->operator_function_kind ==
+			PA10OperatorFunctionKind::Literal)
+		{
+			if (!sidecar->operator_literal_suffix.valid())
+				throw std::runtime_error(
+					"PA15 literal operator suffix is missing");
+			abi_mangle::AbiFactRecord literal_record;
+			literal_record.kind = abi_mangle::ABI_FACT_RECORD_FUNCTION;
+			literal_record.function.kind =
+				abi_mangle::ABI_FUNCTION_RECORD_OPERATOR_TERMINAL;
+			literal_record.function.operator_terminal =
+				record.target.function.operator_terminal;
+			literal_record.function.literal_suffix = model_.name_text(
+				sidecar->operator_literal_suffix);
+			facts.records.push_back(literal_record);
+		}
+	}
 	for (std::size_t i = 0; i < function.parameters.size(); ++i)
 		record.target.function.signature_parameter_types.push_back(
 			abi_type(function.parameters[i]));

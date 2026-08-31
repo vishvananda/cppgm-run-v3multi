@@ -81,6 +81,7 @@ const char* node_kind_name(PA10NodeKind kind)
 	case PA10NodeKind::ExceptionDeclaration: return "exception-declaration";
 	case PA10NodeKind::IdExpression: return "id-expression";
 	case PA10NodeKind::Literal: return "literal";
+	case PA10NodeKind::UserDefinedLiteral: return "user-defined-literal";
 	case PA10NodeKind::KeywordLiteral: return "keyword-literal";
 	case PA10NodeKind::ParenthesizedExpression: return "parenthesized-expression";
 	case PA10NodeKind::CallExpression: return "call-expression";
@@ -179,6 +180,8 @@ bool has_non_token_payload(const PA10AstNode& node)
 			PA10DefaultTemplateArgumentForm::Normal ||
 		node.alignment_specifier_begin != 0 ||
 		node.alignment_specifier_count != 0 ||
+		node.user_defined_literal_begin != 0 ||
+		node.user_defined_literal_count != 0 ||
 		node.has_literal;
 }
 
@@ -209,7 +212,9 @@ void append_fixed_id_expression(const PA10Ast& ast,
 		SimpleTokenType::OP_SEMICOLON || node.operator_presentation_begin != 0 ||
 		node.operator_presentation_count != 0 || node.semantic_child_begin != 0 ||
 		node.semantic_child_count != 0 || node.text != 0 ||
-		node.has_literal || !node.children.empty())
+		node.user_defined_literal_begin != 0 ||
+		node.user_defined_literal_count != 0 || node.has_literal ||
+		!node.children.empty())
 		throw std::runtime_error("invalid PA10 fixed-token id-expression");
 	const std::string& spelling = ast.spelling(node.token_spelling);
 	if (spelling.empty())
@@ -254,6 +259,10 @@ void validate_node_sidecar_ranges(const PA10Ast& ast,
 		node.alignment_specifier_count > ast.alignment_specifiers.size() -
 			node.alignment_specifier_begin)
 		throw std::runtime_error("invalid PA10 alignment specifier range");
+	if (node.user_defined_literal_begin > ast.user_defined_literals.size() ||
+		node.user_defined_literal_count > ast.user_defined_literals.size() -
+		node.user_defined_literal_begin)
+		throw std::runtime_error("invalid PA10 user-defined literal range");
 	if (node.default_template_argument_form !=
 		PA10DefaultTemplateArgumentForm::Normal &&
 		(node.kind != PA10NodeKind::DefaultTemplateArgument ||
@@ -531,6 +540,10 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 		output << ')';
 		break;
 	case PA10NodeKind::Literal:
+		if (node.text != 0)
+			output << ast.spelling(node.text);
+		break;
+	case PA10NodeKind::UserDefinedLiteral:
 		if (node.text != 0)
 			output << ast.spelling(node.text);
 		break;
@@ -1062,6 +1075,9 @@ void render_node(const PA10Ast& ast, const PA10AstNode& node,
 		else
 			output << ' ';
 		output << node_text(ast, node.text);
+		break;
+	case PA10NodeKind::UserDefinedLiteral:
+		output << ' ' << node_text(ast, node.text);
 		break;
 	case PA10NodeKind::KeywordLiteral:
 		if (node.has_token)

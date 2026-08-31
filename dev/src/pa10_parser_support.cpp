@@ -1,6 +1,7 @@
 #include "pa10_parser_support.h"
 
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace PA10ParserSupport
@@ -86,6 +87,17 @@ std::size_t parser_work_limit_for(std::size_t token_count)
 	if (token_count > (maximum - overhead) / per_token)
 		return maximum;
 	return token_count * per_token + overhead;
+}
+void record_user_defined_literal(PA10Ast& ast, PA10AstNode& node,
+	const PA10Token& token)
+{
+	if (token.kind != PA10TokenKind::UserDefinedLiteral ||
+		token.user_defined.suffix.empty() || token.user_defined.source.empty() ||
+		token.user_defined.source != token.source)
+		throw std::runtime_error("invalid user-defined literal payload");
+	node.user_defined_literal_begin = ast.user_defined_literals.size();
+	node.user_defined_literal_count = 1;
+	ast.user_defined_literals.push_back(token.user_defined);
 }
 bool advance_token_position(const std::vector<PA10Token>& tokens,
 	std::size_t absolute, std::size_t amount, std::size_t* result)

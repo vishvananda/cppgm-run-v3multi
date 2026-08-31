@@ -293,12 +293,11 @@ private:
 	PA10AstNode literal_node()
 	{
 		const PA10Token token = consume_token();
-		if (token.kind != PA10TokenKind::Literal)
+		if (token.kind != PA10TokenKind::Literal && token.kind != PA10TokenKind::UserDefinedLiteral)
 			fail("expected literal");
-		PA10AstNode result = node(PA10NodeKind::Literal);
+		PA10AstNode result = node(token.kind == PA10TokenKind::UserDefinedLiteral ? PA10NodeKind::UserDefinedLiteral : PA10NodeKind::Literal);
 		result.text = intern(token.source);
-		result.has_literal = true;
-		result.literal = token.literal;
+		if (token.kind == PA10TokenKind::UserDefinedLiteral) PA10ParserSupport::record_user_defined_literal(ast_, result, token); else { result.has_literal = true; result.literal = token.literal; }
 		return result;
 	}
 	PA10AstNode name_node(PA10NodeKind kind, const PA10Name& name)
@@ -321,7 +320,7 @@ private:
 			result.operator_presentation_count =
 				id.operator_presentation_count;
 			result.semantic_child_begin = id.semantic_child_begin;
-			result.semantic_child_count = id.semantic_child_count;
+			result.semantic_child_count = id.semantic_child_count; result.user_defined_literal_begin = id.user_defined_literal_begin; result.user_defined_literal_count = id.user_defined_literal_count;
 		}
 		if (name.has_decltype_root)
 		{
@@ -2165,7 +2164,7 @@ PA10AstNode PA10Parser::parse_postfix_expression()
 PA10AstNode PA10Parser::parse_primary_expression()
 {
 	RecursionGuard recursion(*this);
-	if (literal())
+	if (look().kind == PA10TokenKind::UserDefinedLiteral || literal())
 		return literal_node();
 	if (fixed(SimpleTokenType::KW_TRUE) ||
 		fixed(SimpleTokenType::KW_FALSE) ||
@@ -2684,6 +2683,7 @@ PA10AstNode PA10Parser::parse_operator_name()
 	{
 		const PA10Token literal = consume_token();
 		result.operator_function_kind = PA10OperatorFunctionKind::Literal;
+		PA10ParserSupport::record_user_defined_literal(ast_, result, literal);
 		append_operator_presentation(result, literal.source);
 	}
 	else
