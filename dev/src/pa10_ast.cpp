@@ -2101,8 +2101,8 @@ PA10AstNode PA10Parser::parse_postfix_expression_seed()
 		result.children.push_back(parse_paren_argument_list());
 		return result;
 	}
-	return parse_primary_expression();
-}
+	PA10AstNode primary = parse_primary_expression();
+	if (primary.kind == PA10NodeKind::IdExpression && fixed(SimpleTokenType::OP_LBRACE)) { PA10AstNode result = node(PA10NodeKind::CallExpression); result.children.push_back(std::move(primary)); result.children.push_back(parse_braced_init_list()); return result; } return primary; }
 PA10AstNode PA10Parser::parse_postfix_suffixes(PA10AstNode result)
 {
 	while (true)

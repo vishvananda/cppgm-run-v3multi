@@ -88,6 +88,30 @@ struct PA11SemanticModel::AggregateAppertainer
 		const NamedRecordId record = model_.named_record_for_type(object);
 		if (record.valid() && record.value < model_.named_.size() &&
 			model_.named_[record.value].kind == NamedKind::Class &&
+			clause.kind == PA10NodeKind::CallExpression &&
+			clause.children.size() == 2 &&
+			clause.children.back().kind == PA10NodeKind::BracedInitList)
+		{
+			TypeId functional_target;
+			if (model_.functional_cast_target(clause.children.front(), scope_,
+				&functional_target) &&
+				model_.class_record_for_object_type(functional_target) == record)
+			{
+				const PA10AstNode& list = clause.children.back();
+				std::vector<const PA10AstNode*> arguments;
+				arguments.reserve(list.children.size());
+				for (std::size_t i = 0; i < list.children.size(); ++i)
+					arguments.push_back(&list.children[i]);
+				// The list expression names exactly this aggregate member.  Its
+				// constructor selection can therefore initialize the subobject
+				// directly, preserving copy-elision and avoiding an untyped class
+				// value transfer through the enclosing aggregate.
+				return model_.semantic_aggregate_constructor_value(list, destination,
+					scope_, arguments, list.children.empty());
+			}
+		}
+		if (record.valid() && record.value < model_.named_.size() &&
+			model_.named_[record.value].kind == NamedKind::Class &&
 			!aggregate_target(destination))
 		{
 			std::vector<const PA10AstNode*> arguments;

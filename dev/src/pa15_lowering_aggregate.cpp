@@ -831,7 +831,134 @@ bool Pa15Lowerer::aggregate_element_is_noop(TypeId type,
 	const SemanticFact& initializer =
 		model_.semantic_facts_[element->initializer.value];
 	return initializer.kind == SemanticFactKind::ConstructorAction &&
-		constructor_action_is_noop(initializer);
+		(constructor_action_is_noop(initializer) ||
+			aggregate_constructor_action_is_noop(type, initializer));
+}
+
+bool Pa15Lowerer::semantic_fact_is_side_effect_free(
+	SemanticFactId fact_id, std::set<std::size_t>& visiting,
+	std::map<std::size_t, bool>& memo) const
+{
+	if (!fact_id.valid() || fact_id.value >= model_.semantic_facts_.size())
+		return false;
+	const std::map<std::size_t, bool>::const_iterator known =
+		memo.find(fact_id.value);
+	if (known != memo.end())
+		return known->second;
+	if (!visiting.insert(fact_id.value).second)
+		return false;
+	const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
+	const bool child_range_valid = fact.child_begin == InvalidIdentityValue ?
+		fact.child_count == 0 :
+		(fact.child_begin <= model_.semantic_children_.size() &&
+			fact.child_count <= model_.semantic_children_.size() -
+				fact.child_begin);
+	bool result = false;
+	if (child_range_valid && fact.type.valid() &&
+		fact.type.value < model_.types_.size() &&
+		(model_.cv_qualifiers(fact.type) & 2u) == 0)
+		switch (fact.kind)
+		{
+		case SemanticFactKind::Literal:
+		case SemanticFactKind::SizeofExpression:
+			result = fact.child_count == 0;
+			break;
+		case SemanticFactKind::UnaryExpression:
+			if (fact.token == SimpleTokenType::OP_INC ||
+				fact.token == SimpleTokenType::OP_DEC)
+			{
+				result = false;
+				break;
+			}
+			// Fall through: the remaining unary operators only evaluate their
+			// operand, so their typed child edges carry the complete effect set.
+		case SemanticFactKind::CastExpression:
+		case SemanticFactKind::MemberExpression:
+		case SemanticFactKind::SubscriptExpression:
+		case SemanticFactKind::BinaryExpression:
+		case SemanticFactKind::ConditionalExpression:
+			result = true;
+			for (std::size_t i = 0; i < fact.child_count; ++i)
+			{
+				const SemanticFactId child = model_.semantic_children_[
+					fact.child_begin + i];
+				if (!semantic_fact_is_side_effect_free(child, visiting, memo))
+				{
+					result = false;
+					break;
+				}
+			}
+			break;
+		default:
+			break;
+		}
+	visiting.erase(fact_id.value);
+	memo[fact_id.value] = result;
+	return result;
+}
+
+bool Pa15Lowerer::aggregate_constructor_action_is_noop(
+	TypeId type, const SemanticFact& action) const
+{
+	if (action.kind != SemanticFactKind::ConstructorAction ||
+		!action.has_callee || action.temporary_object || action.value_initialize ||
+		!action.selected_binding.valid() || !action.selected_scope.valid() ||
+		action.selected_scope.value >= model_.scopes_.size() ||
+		!action.callable_type.valid() || action.callable_type.value >=
+			model_.types_.size() || model_.type_kind(action.callable_type) !=
+			TypeKind::Function)
+		return false;
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(type));
+	if (!object.valid() || object.value >= model_.types_.size() ||
+		model_.type_kind(object) != TypeKind::Named)
+		return false;
+	const NamedRecordId record = model_.named_record_for_type(object);
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].kind != NamedKind::Class ||
+		model_.named_[record.value].class_tag == ClassTag::Union ||
+		model_.named_[record.value].has_base)
+		return false;
+	const RecordLayout& layout = model_.record_layout(record);
+	if (layout.state != RecordLayoutState::Complete || !layout.members.empty())
+		return false;
+	const BindingSidecar* sidecar =
+		model_.binding_sidecar(action.selected_binding);
+	if (sidecar == NULL || sidecar->constructor_record != record ||
+		action.selected_scope != model_.named_[record.value].scope)
+		return false;
+	const FunctionFactId* function_id =
+		model_.function_binding_fact_index_.find(action.selected_binding);
+	if (function_id == NULL || !function_id->valid() || function_id->value >=
+		model_.function_facts_.size())
+		return false;
+	const FunctionFact& function = model_.function_facts_[function_id->value];
+	if (function.synthetic || !constructor_function_is_noop(*function_id, false))
+		return false;
+	const Binding& binding = model_.binding(action.selected_binding);
+	if (binding.kind != BindingKind::Function || !binding.type.valid() ||
+		binding.type.value >= model_.types_.size() ||
+		model_.type_kind(binding.type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[binding.type.value];
+	if (signature.variadic || signature.parameters.size() != action.child_count)
+		return false;
+	if (action.child_count != 0 &&
+		(action.child_begin == InvalidIdentityValue ||
+			action.child_begin > model_.semantic_children_.size() ||
+			action.child_count > model_.semantic_children_.size() -
+				action.child_begin))
+		return false;
+	if (action.child_count == 0 && action.child_begin != InvalidIdentityValue &&
+		action.child_begin > model_.semantic_children_.size())
+		return false;
+	std::set<std::size_t> visiting;
+	std::map<std::size_t, bool> memo;
+	for (std::size_t i = 0; i < action.child_count; ++i)
+		if (!semantic_fact_is_side_effect_free(model_.semantic_children_[
+			action.child_begin + i], visiting, memo))
+			return false;
+	return true;
 }
 
 bool Pa15Lowerer::aggregate_direct_scalar(const SemanticFact* initializer,
@@ -1014,8 +1141,10 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			(element_fact != NULL && element_fact->type !=
 				model_.binding(member).type))
 			throw std::runtime_error("PA15 aggregate member fact owner is invalid");
-		if (aggregate_element_is_noop(model_.binding(member).type, element_fact))
-			continue;
+		const SemanticFact* element_initializer = element_fact != NULL ? &model_.semantic_facts_[element_fact->initializer.value] : NULL;
+		const bool aggregate_action_noop = element_initializer != NULL && element_initializer->kind == SemanticFactKind::ConstructorAction &&
+			aggregate_constructor_action_is_noop(model_.binding(member).type, *element_initializer);
+		if (aggregate_element_is_noop(model_.binding(member).type, element_fact) && !aggregate_action_noop) continue;
 		const std::size_t* offset = layout.member_offsets.find(member);
 		if (offset == NULL || *offset > static_cast<std::size_t>(
 			std::numeric_limits<long long>::max()))
@@ -1026,8 +1155,7 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			member_path = *path;
 			member_path.push_back(ConstructorAddressStep(member));
 		}
-		const SemanticFact* initializer_fact = element_fact != NULL ?
-			&model_.semantic_facts_[element_fact->initializer.value] : NULL;
+		const SemanticFact* initializer_fact = element_initializer;
 		const bool direct_scalar = aggregate_direct_scalar(initializer_fact,
 			model_.binding(member).type);
 		LoweredValue direct_value = direct_scalar ?
@@ -1057,9 +1185,10 @@ void Pa15Lowerer::initialize_aggregate_value(TypeId target,
 			member_value = model_.bit_field_fact(member) != NULL ?
 				emit_bit_field_index(destination_value, member_offset, byte,
 					lowir_model::IPK_FIELD, member) :
-				emit_index(destination_value, member_offset, byte,
+					emit_index(destination_value, member_offset, byte,
 					lowir_model::IPK_FIELD);
 		}
+		if (aggregate_action_noop) continue;
 		if (encoded_bit_field)
 		{
 			if (encode_before_address)

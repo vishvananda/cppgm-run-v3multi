@@ -836,7 +836,7 @@ private:
 	const FunctionFact& checked_constructor_function(BindingId constructor,
 		NamedRecordId record) const;
 	void initialize_constructor_noop_caches() const;
-	bool constructor_function_is_noop(FunctionFactId function_id) const;
+	bool constructor_function_is_noop(FunctionFactId function_id, bool require_empty_parameters = true) const;
 	bool constructor_record_layout_is_consistent(NamedRecordId record) const;
 	bool constructor_graph_action_is_noop(
 		const ConstructorActionFact& action) const;
@@ -872,6 +872,11 @@ private:
 		const LoweredValue* aggregate_root_storage = NULL,
 		TypeId aggregate_root_type = TypeId());
 	bool zero_initialization_is_noop(TypeId type) const;
+	bool semantic_fact_is_side_effect_free(SemanticFactId fact,
+		std::set<std::size_t>& visiting,
+		std::map<std::size_t, bool>& memo) const;
+	bool aggregate_constructor_action_is_noop(TypeId type,
+		const SemanticFact& action) const;
 	bool constructor_action_call_shape_is_noop(
 		const SemanticFact& action) const;
 	bool constructor_action_is_noop(const SemanticFact& action) const;

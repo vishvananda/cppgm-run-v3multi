@@ -629,10 +629,12 @@ void append_inline_node(const PA10Ast& ast, const PA10AstNode& node,
 			append_inline_node(ast, node.children[0], output, depth + 1);
 		if (node.children.size() > 1)
 		{
-			output << '(';
-			append_inline_children(ast, node.children[1].children, output,
+			const PA10AstNode& arguments = node.children[1];
+			const bool braced = arguments.kind == PA10NodeKind::BracedInitList;
+			output << (braced ? '{' : '(');
+			append_inline_children(ast, arguments.children, output,
 				depth + 1, ",");
-			output << ')';
+			output << (braced ? '}' : ')');
 		}
 		break;
 	case PA10NodeKind::ArgumentList:

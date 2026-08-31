@@ -955,7 +955,7 @@ void Pa15Lowerer::initialize_constructor_noop_caches() const
 	zero_initialization_noop_invalid_.assign(model_.types_.size(), 0);
 }
 
-bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
+bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id, bool require_empty_parameters) const
 {
 	initialize_constructor_noop_caches();
 	if (!function_id.valid() || function_id.value >= model_.function_facts_.size() ||
@@ -992,8 +992,8 @@ bool Pa15Lowerer::constructor_function_is_noop(FunctionFactId function_id) const
 			model_.type_kind(binding.type) != TypeKind::Function)
 			break;
 		const TypeKey& signature = model_.types_[binding.type.value];
-		if (signature.result != model_.fundamental(FundamentalType::Void) ||
-			signature.variadic || !signature.parameters.empty() ||
+		if (signature.result != model_.fundamental(FundamentalType::Void) || signature.variadic ||
+			(require_empty_parameters && !signature.parameters.empty()) ||
 			function.default_argument_count != 0 || !function.function_scope.valid() ||
 			function.function_scope.value >= model_.scopes_.size() ||
 			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
