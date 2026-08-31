@@ -3,130 +3,136 @@
 ## Current Checkpoint Review
 
 This bounded `checkpointAudit` covers landed increment
-`71a40cfd8fb20f6b5a52725649b9b2610b3ddfc8` (`PA16: schedule typed binary
-operand conversions`) relative to `c529ea6a`.  The working tree was clean at
-that HEAD.  The supplied authority is
+`177b845feb46d7e04c23e1397a97eb18845c9a1c` (`PA16: stabilize typed bit-field
+value boundary`) relative to parent `ab4fa405`.  The turn-start tree was
+clean.  The supplied authority is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`; its
-`make test-pa16` result is the baseline `238/243`, with complete `243/243`
-coverage and exactly these five residual owners:
+`make test-pa16` result is exit 2 at `239/243`, with complete coverage and
+exactly these four residual owners:
 
 ```text
 pa16/tests/general/200-local-default-class-array-lifecycle.t
 pa16/tests/general/200-reference-indexed-pointer-member-access.t
-pa16/tests/general/400-bit-field-prefix-postfix-increment.t
 pa16/tests/general/400-signed-bit-field-read.t
 pa16/tests/general/400-signed-enum-bit-field-read.t
 ```
 
-The landed active identity,
-`pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`, is no
-longer residual.  Fresh final validation reproduces `238/243` with exactly the
-same five identities: authority-only, fresh-only, and new-failure sets are all
-empty.  Discovered tests, checked-in reference sidecars, and fresh status
-sidecars are complete and equal at `243/243/243`; the reference and fresh
-status distributions both contain 224 `EXIT_SUCCESS` and 19 `EXIT_FAILURE`,
-with zero status mismatches.  The exact prior-through gate is `1167/1167`, and
-the exact file audit passes with six known nonfatal warnings.
+The prefix/postfix bit-field target is no longer residual.  Authorized final
+validation retains exactly the four supplied residual identities, with full
+test/reference/fresh-sidecar coverage and no status-sidecar mismatches.
 
 ### Changed-path boundary
 
-The landed implementation change is `dev/src/pa15_lowering_flow.cpp`, with
-the landed plan refresh.  The final audit/repair boundary is limited to the
-three PA15 source/header paths `dev/src/pa15_lowering.cpp`,
-`dev/src/pa15_lowering.h`, and `dev/src/pa15_lowering_flow.cpp`, plus this
-review, the plan, and the single new course regression
-`cppgm.tests/course/pa16/432-typed-binary-cast-boundary-regression.sh`.
-No handout test, fixture, `.ref` file, exit-status sidecar, harness,
-comparator, generated oracle output, source-set manifest, or unrelated PA16
-residual owner was changed.
+The landed source paths are `dev/src/lowir2cy86_backend.cpp`,
+`dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering.h`,
+`dev/src/pa15_lowering_flow.cpp`, and `dev/src/pa15_lowering_member.cpp`.
+The bounded repair touches only the backend consumer and PA15 binary producer;
+the focused public regression is
+`cppgm.tests/course/pa16/433-typed-equality-carrier-validation-regression.sh`.
+The documentation paths are this review and `pa16/plan.md`.  No handout test,
+fixture, `.ref` file, status sidecar, harness, comparator, generated oracle,
+source-set manifest, or unrelated residual owner is changed.
 
 ### Complete typed ownership trace
 
-The affected path is one typed pipeline:
+The affected path remains one typed pipeline:
 
 ```text
-PA10 CastExpression syntax
-  -> PA12 SemanticFactId child order and ConversionFact range
-  -> PA15 lower_expression_impl(..., defer_conversions)
-  -> PA15 lower_binary_expression / apply_conversions
-  -> typed LowIR instructions in deterministic evaluation order
+PA11 BitFieldFact (declared/storage/operation type, signedness, widths, masks,
+                  offset)
+  -> PA12 promotion and builtin conversion choice
+  -> PA15 typed lvalue projection/replay and value materialization
+  -> PA15 load/sign-extension, update encode, packed RMW, and comparison
+  -> typed LowIR
+  -> PA13 LowIR consumer
 ```
 
-PA10's explicit cast node is preserved as a typed syntax fact.  PA12's cast
-builders append the cast's selected conversion edge(s) to the cast fact and
-the binary semantic owner appends any contextual promotion to that same
-contiguous range.  The conversion records retain typed source, target, kind,
-rank, and any existing path metadata; no spelling or name is recovered.
+PA12's canonical fact makes a non-signed field with narrow unsigned `u32`
+storage use `int`/`i32` as its operation comparison type when that promotion is
+valid; the same typed endpoint can arise from an unsigned-underlying enum.
+PA15 obtains the field fact from the direct semantic binding, uses the
+operation type for normal promotion and builtin selection, and uses the
+storage fact for extraction, masks, offsets, and packed-unit preservation.
+Prefix/postfix evaluation remains one target evaluation; the value-first
+`AND` order affects only the deterministic LowIR spelling, while the store's
+clear/OR sequence preserves unrelated packed bits.
 
-PA15 validates the semantic child range through `children`.  At the binary
-boundary, the immediate child's `SemanticFactKind::CastExpression` is the
-correct typed discriminator for the special operand-owned boundary, including
-PA12-generated typed cast wrappers.  The complete conversion range is first
-validated for identity, bounds, and typed continuity.  A linear walk then
-finds the cast-owned prefix whose endpoint reaches the cast fact's typed
-result; a contextual suffix is not moved across sibling evaluation.  If a
-nonempty cast range starts at the cast result and has no cast-owned endpoint,
-the range is a valid zero-owned reference wrapper and remains after the
-sibling boundary.  Otherwise a missing or discontinuous typed boundary fails
-closed.  `apply_conversions` validates the whole range before validating and
-consuming the requested subrange; existing conversion-kind consumers still own
-the detailed typed endpoint and carrier checks.
+Direct, implicit-`this`, pointer, and nested member expressions retain the
+canonical binding/selected-binding identity needed by the carrier check.  Cast
+wrappers and const-reference wrappers take their own typed conversion or
+reference-temporary paths and produce exact comparison operands, so a direct
+binding lookup is sufficient for this special boundary without reconstructing
+source text or searching through arbitrary wrappers.
 
 ### Findings and bounded repair
 
-The landed schedule was correct for the active nested-enum hidden-friend
-body: each direct cast's conversion appeared with its operand, producing the
-required load/cast/load/cast/or shape.  The audit found one directly caused
-ordering defect: the full cast fact range was applied early.  For
-`static_cast<short>(left_value()) + right_value()`, PA12's later `short ->
-long` parent promotion shared the cast range and was emitted before the right
-call.  That is outside the intended PA15 boundary of evaluating both operands
-before parent contextual conversions.
+The landed PA15 shape intentionally emits `cmp eq/ne u32` for the canonical
+non-signed narrow-field carrier even when the extracted producer is `i32`;
+signedness does not affect equality for the field's represented value.  The
+landed PA13 consumer used `copy_operand_matches`, which accepted every
+same-width integer signedness mismatch for equality/inequality, including
+unrelated `i8/u8`, `i16/u16`, and reverse-direction `u32/i32` cases.  That was
+broader than the typed producer path and broader than the LowIR comparison
+contract.
 
-The repair keeps only the cast-owned prefix with the operand, then applies
-the remaining left and right ranges after both operands.  The boundary walk
-has no PA12 edge-count assumption: it consumes the complete typed range and
-also preserves contiguous typed reference-binding edges for a value temporary.
-The shared conversion consumer now validates the complete range, including the
-narrow reference-temporary retarget boundary, and fails closed on malformed
-fact, range, subrange, or endpoint identities instead of relying on unchecked
-vector access.  No correction was made to array lifetime, pointer-index
-widening, or bit-field increment/read owners.
+The repair retains the existing checked public carrier spelling but makes the
+boundary explicit and fail-closed: only an actual `i32` operand against an
+expected `u32` `eq`/`ne` comparison type is admitted; PA15 selects that pair
+only for a non-signed canonical field with narrow unsigned `u32` storage,
+unsigned storage facts, and `i32` operation comparison type.  All relational
+predicates and other operand/type directions require exact matching.  The
+explicit `IK_COPY` retag rule remains separate for real copy instructions.
 
-Nested/effectful operands retain left-then-right evaluation.  Comma and
-short-circuit operators return through their existing lowering owners before
-this builtin-binary path; overloaded operators remain typed call boundaries.
-The member-pointer const-typedef return regression remains protected because
-its implicit promotions are in the post-sibling suffix, after both pointer
-loads.
+The two signed-read residuals remain unchanged because their current emitted
+sign extension is semantically required while the checked fixtures omit that
+shape.  The array-lifetime and reference/index residuals remain outside this
+checkpoint.
 
-### Focused evidence, structural performance, and disposition
+### Focused evidence, final validation, and structural performance
 
-Final focused evidence is:
+The focused evidence is:
 
 ```text
-make build                                             exit 0
-active nested-enum + member-pointer check              PASS (2/2)
-PA15 conversion/binary matrix                          PASS (6/6)
-PA16 operator/member/friend/chained matrix              PASS (6/6)
-course 432 cast-boundary regression                    PASS
-typed zero-owned reference-cast probe                  PASS
-git diff --check                                       exit 0
+make -C dev cppgm++ lowir2cy86 CXX=g++                         exit 0
+five affected PA16 checks                                      1/5 pass;
+                                                               four supplied residuals remain
+course 412, 422, 424, 433 + sh -n                              PASS
+valid direct/implicit/pointer/nested/cast/reference/enum probes PASS
+wrong-width, reverse, pointer, relational, right-operand probes rejected
+git diff --check                                               exit 0
 ```
 
-Course 432 is justified because the newly found ordering defect is a public
-typed LowIR contract; no fixture or reference regeneration is needed.  The
-implementation validates a complete typed conversion range and walks it
-linearly to find the cast boundary; fixed split/application calls preserve
-O(number of consumed conversion records) work per binary node without a
-hardcoded edge count.  LowIR order remains deterministic, with no retry loop,
-name scan, or cache.  No timing, RSS, allocation, generated-program, or other
-material performance claim is made.
+The work is structurally bounded: each access/update performs fixed typed
+fact lookups and bounded-width masking/shifting/sign-extension/RMW actions;
+the carrier check examines two operands.  No timing, RSS, allocation, or
+generated-code performance claim is made.
 
-Fresh final broad validation reproduces the exact five residual identities and
-the exact `238/243` result from the supplied authority.  The audit is complete
-for this bounded increment; the five residual owners remain separately scoped
-and no unrelated PA16 repair is included.
+The authorized final gates are:
+
+```text
+make test-pa16                                             exit 2; 239/243
+exact failure identity comparison                           exact; four residuals retained
+test/reference/fresh status-sidecar coverage                243/243/243
+sidecar content mismatches                                  0
+reference/fresh status distributions                        224 EXIT_SUCCESS / 19 EXIT_FAILURE
+make test-report-through-pa15                               exit 0; 1167/1167
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src exit 0; 6 warnings, no fatals
+```
+
+The LowIR prose requires exact comparison operand types, but the checked PA16
+prefix shape intentionally exposes the canonical `i32` producer versus `u32`
+carrier pair.  LowIR has no provenance bit with which the PA13 consumer could
+distinguish that source from a hand-authored identical pair, so the consumer
+accepts only this one typed direction for `eq`/`ne`; every other mismatch is
+rejected and course 433 freezes the boundary.  No fixture or reference change
+was made.
+
+The bounded changed-path and artifact audit found only the two repaired source
+paths, course 433, `pa16/plan.md`, and this review; no handout, fixture,
+reference, status sidecar, harness, comparator, generated output, source-set,
+or unrelated residual owner changed.  The audit is complete for this bounded
+increment.  The next checkpoint is the separately scoped
+`pa16/tests/general/200-local-default-class-array-lifecycle.t` residual.
 
 ## Historical Unnamed-Namespace Identity/Lifecycle Checkpoint Review (8708859c)
 
@@ -4893,6 +4899,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `177b845f` typed bit-field value-boundary checkpointAudit | Completed bounded audit of landed `177b845feb46d7e04c23e1397a97eb18845c9a1c` relative to `ab4fa405`: canonical PA11 bit-field facts flow through PA12 promotion and builtin typing, PA15 projection/load/sign-extension/update encoding/packed RMW, the explicit `i32 -> u32` equality carrier, typed LowIR, and the PA13 consumer. The repair restricts the consumer from broad same-width signedness acceptance to the one fact-backed carrier direction and keeps all other comparison mismatches fail-closed; course 433 covers generated `eq`/`ne`, unsigned-underlying enum behavior, both operands, and wrong-width/reverse/relational rejection. Focused checks preserve the supplied four residuals; final PA16 is exit `2` at `239/243` with an exact unchanged four-identity failure set, complete `243/243/243` test/reference/fresh-sidecar coverage, matching `224/19` status distributions, and zero sidecar mismatches. The exact through-PA15 gate is `1167/1167`; the exact file audit exits `0` with six known nonfatal warnings; diff/path/artifact checks pass. Final changed paths are exactly `dev/src/lowir2cy86_backend.cpp`, `dev/src/pa15_lowering_flow.cpp`, `cppgm.tests/course/pa16/433-typed-equality-carrier-validation-regression.sh`, `pa16/plan.md`, and `pa16/audit.md`; no handout, fixture, reference, sidecar, harness, comparator, generated output, source-set, or unrelated residual owner changed. The next checkpoint is the separate array-lifetime residual. | completed checkpointAudit |
 | `2cfa1111` typed cooked-string UDL checkpointAudit | Final bounded PA10--PA15 audit and repair: suffix-aware lookup filters before shadowing, ordinary names remain separate from the internal literal bucket, the canonical PA11 path rejects malformed non-template declarations, and PA12 filters legal scalar/raw same-suffix alternatives before cooked-string selection. Regression 427 durably covers early-shadow fallback, legal-other-form filtering, unused `(const char*, int)` and wrong-arity rejection, C-linkage rejection, ordinary-name collision, and class/function-scope rejection; clean landed `2cfa1111` fails the early-shadow case while the amended compiler passes. Final PA16 is `231/243` with the exact unchanged 12 failures and `243/243` coverage; normalized authority/fresh comparison is `12/12`, fresh-only/authority-only `0/0`, inventories `243/243/243`; through-PA15 is `1167/1167`; file audit exits `0` with six known warnings; diff/path audits pass. The bounded result is committed with no handout, fixture, reference, sidecar, harness, comparator, generated-output, coverage, or source-set changes. | completed audit |
 | `d5bf2600` constructor-overload viability checkpointAudit | Completed bounded follow-up repair of the shared PA12 constructor/call owner: ambiguous constructor-level sequences remain viable UDCs, same-constructor UDCs retain typed second-standard-sequence ranking, access/deleted status is diagnosed after selection, inherited hiding uses contiguous typed indexes, and the inheriting-constructor publisher plus constructor/lifetime facts are extracted within the source-audit limits. The final hot-record probe is `ConversionChoice` parent/current `56/56` bytes and `ConversionScore` `20/40` bytes; the latter reuses standard payload fields for second-SCS detail and adds only typed UDC identity/markers. Focused build, the exact 7-test matrix, all discriminating access/deleted/ambiguity/inherited probes, and the same-constructor LowIR probe pass. Final `make test-pa16` is status `2` at `227/243` with exactly the unchanged 16 identities; normalized authority/fresh comparison is `16/16`, authority-only/fresh-only `0/0`, and discovered/reference/fresh coverage is `243/243/243`. Through-PA15 is `1167/1167`; file audit exits `0` with the six exact warnings recorded above; diff-check and bounded path/artifact checks pass. No handout/test/reference mutation; next checkpoint is the separate residual `200-elaborated-member-forward-type.t`. | completed audit |
 | `29d9c4ce checkpointAudit` | Completed the bounded PA10 elaborated-member parameter-clause audit and repair plus PA15 ABI owner consolidation. First-position elaborated keys use one charged shared fact; arbitrary later positions reuse the delimiter-bounded bare-name scan's actual failure cursor; PA15 named types delegate to `value_components`. Focused controls and exact target/namespace/nested-class-enum ABI probes pass. Final PA16 is `228/243` with the unchanged 15 identities, retained `15`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243`; through-PA15 is `1167/1167`; file audit is status `0` with six known warnings; no test, fixture, reference, sidecar, harness, comparator, generated-output, coverage, or source-set change. | completed audit |

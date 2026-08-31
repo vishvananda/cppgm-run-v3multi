@@ -454,12 +454,18 @@ private:
                                   const LowType &expected,
                                   ComparePredicate predicate) const {
     if (operand_matches(operand, expected)) return true;
-    // Equality has no signed ordering.  Permit the same-width signedness
-    // carrier used by PA15 for a narrow unsigned bit-field; relational
-    // predicates must continue to match their exact typed operation carrier.
+    // PA15 has one deliberate public carrier boundary: a non-signed
+    // canonical bit-field with narrow u32 storage and an i32 operation
+    // comparison may use that same-width storage carrier.  Keep that
+    // boundary explicit here; equality's representation is signedness-
+    // independent, but unrelated same-width pairs are malformed LowIR and
+    // must remain rejected.
     if (predicate != lowir_model::CPP_EQ && predicate != lowir_model::CPP_NE)
       return false;
-    return copy_operand_matches(operand, expected);
+    const Value actual = operand_value(operand);
+    return actual.known && actual.type.is_integer() && expected.is_integer() &&
+           actual.type.integer_kind == LowType::INTEGER_I32 &&
+           expected.integer_kind == LowType::INTEGER_U32;
   }
 
   void require_operand_type(const Operand &operand, const LowType &expected, const std::string &what) const {
