@@ -77,4 +77,5 @@ recursive layout walk.  The correction focus rebuilt the affected compiler in
   operators remain excluded; residual failures remain in the overlapping
   copy/value, ref/xvalue, allocation, conversion/operator, union, and
   temporary/lifetime clusters listed above.
-- Commit: pending final PA17 implementation commit; populate after commit.
+- Commit: final PA17 implementation commit `868403c6`; this ledger update is
+  the follow-up documentation commit.
