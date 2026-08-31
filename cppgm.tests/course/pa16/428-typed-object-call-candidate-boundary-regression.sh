@@ -62,10 +62,39 @@ append_line '  static char choose(tag63*) { return 63; }'
 append_line '  using base::choose;'
 append_line '};'
 
+# Static and non-static declarations are separate lookup categories.  Keep
+# both sides of this using-view alive: the object call must select the direct
+# non-static member while the qualified call must select the imported static
+# member.
+append_line 'struct category_tag {};'
+append_line 'struct category_base {'
+append_line '  static int choose_category(category_tag*) { return 71; }'
+append_line '};'
+append_line 'struct category_derived : category_base {'
+append_line '  int choose_category(category_tag*) { return 72; }'
+append_line '  using category_base::choose_category;'
+append_line '};'
+
+# cv qualifiers are part of the typed signature key.  The const base overload
+# must remain usable through a const derived view even when the derived class
+# declares the same parameter list without const.
+append_line 'struct qualifier_base {'
+append_line '  int choose_qual(tag00*) const { return 81; }'
+append_line '};'
+append_line 'struct qualifier_derived : qualifier_base {'
+append_line '  int choose_qual(tag00*) { return 83; }'
+append_line '  using qualifier_base::choose_qual;'
+append_line '};'
+
 append_line 'struct Box { int x; };'
 append_line 'struct Holder {'
 append_line '  Box& ref;'
-append_line '  Holder(Box& box) : ref(box) {}'
+append_line '  explicit Holder(Box& box) : ref(box) {}'
+append_line '};'
+append_line 'struct PairHolder {'
+append_line '  Box& first;'
+append_line '  Box& second;'
+append_line '  explicit PairHolder(Box& first_box, Box& second_box) : first(first_box), second(second_box) {}'
 append_line '};'
 
 append_line 'int assigned = 0;'
@@ -77,10 +106,16 @@ append_line '};'
 append_line 'int main() {'
 append_line '  Box box;'
 append_line '  box.x = 7;'
+append_line '  Box second_box;'
+append_line '  second_box.x = 8;'
 append_line '  Holder holder = Holder(box);'
+append_line '  Holder wrapped_holder = (Holder(box));'
+append_line '  PairHolder pair = PairHolder(box, second_box);'
 append_line '  holder.ref.x = 9;'
+append_line '  wrapped_holder.ref.x = 10;'
+append_line '  pair.second.x = 12;'
 append_line '  Iter it;'
-append_line '  *it = 17;'
+append_line '  Iter* assignment_result = &(*it = 17);'
 append_line '  int scalar = 1;'
 append_line '  scalar = 2;'
 append_line '  tag63 direct_tag_object;'
@@ -91,10 +126,22 @@ append_line '  int first = 3;'
 append_line '  int second = 4;'
 append_line '  int* pointer = &first;'
 append_line '  pointer = &second;'
+append_line '  category_tag category_argument;'
+append_line '  category_derived category_object;'
+append_line '  int category_member = category_object.choose_category(&category_argument);'
+append_line '  int category_static = category_derived::choose_category(&category_argument);'
+append_line '  qualifier_derived qualifier_object;'
+append_line '  const qualifier_derived& const_qualifier = qualifier_object;'
+append_line '  tag00 qualifier_cv_tag_object;'
+append_line '  int cv_direct = qualifier_object.choose_qual(&qualifier_cv_tag_object);'
+append_line '  int cv_imported = const_qualifier.choose_qual(&qualifier_cv_tag_object);'
 append_line '  return derived::choose(direct_tag) == 63 &&'
 append_line '    derived::choose(imported_tag) == 62 &&'
-append_line '    box.x == 9 && holder.ref.x == 9 && assigned == 17 &&'
-append_line '    scalar == 2 && *pointer == 4 ? 0 : 1;'
+append_line '    box.x == 10 && holder.ref.x == 10 && wrapped_holder.ref.x == 10 &&'
+append_line '    pair.first.x == 10 && pair.second.x == 12 && assigned == 17 &&'
+append_line '    assignment_result == &it && scalar == 2 && *pointer == 4 &&'
+append_line '    category_member == 72 && category_static == 71 &&'
+append_line '    cv_direct == 83 && cv_imported == 81 ? 0 : 1;'
 append_line '}'
 
 "$app" --emit-types -o "$types" "$source"
@@ -120,6 +167,13 @@ fi
 if ! rg -Fq 'function @derived__choose' "$lowir" ||
    ! rg -Fq 'function @base__choose' "$lowir"; then
   echo "typed object-call stress source did not emit both derived and base calls" >&2
+  exit 1
+fi
+holder_constructor_calls=$(rg -F -c 'call void @Holder__Holder' "$lowir" || true)
+pair_constructor_calls=$(rg -F -c 'call void @PairHolder__PairHolder' "$lowir" || true)
+if [ "$holder_constructor_calls" -ne 2 ] ||
+   [ "$pair_constructor_calls" -ne 1 ]; then
+  echo "functional construction emitted $holder_constructor_calls Holder and $pair_constructor_calls PairHolder constructor calls, expected 2/1" >&2
   exit 1
 fi
 "$lowir2cy86" -o "$cy86_source" "$lowir"

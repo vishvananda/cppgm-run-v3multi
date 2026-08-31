@@ -3,6 +3,180 @@
 ## Current Checkpoint Review
 
 This bounded review covers clean landed checkpoint
+`617c137a3881fe78a40e068cbb14c45fbbcc6380` (`PA16 complete typed object-call
+boundary`) relative to parent `4a5bbdd5`.  The review is limited to the three
+landed PA12 semantic owners, regression 428, and the PA16 plan/audit documents:
+typed assignment, same-class functional construction in the supported
+declaration path, and direct/imported member-function publication, hiding,
+access views, selection, and lowering.  No handout tests, fixtures, references,
+exit-status sidecars, harnesses, comparators, generated outputs, coverage
+rules, source-set files, or unrelated residual surfaces were changed.  The
+bounded audit and repair are complete and committed below.
+
+### Authority and exact residual boundary
+
+The primary authority is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its turn-start `make test-pa16` result is exit `2`, `234/243` passing, complete
+`243/243` identity coverage, and exactly these nine residual failures:
+
+```text
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The landed increment repaired only the three removed identities:
+`200-reference-member-class-init.t`, `300-overloaded-deref-user-assignment.t`,
+and `300-using-base-static-same-signature-derived-preferred.t`.  Final broad
+validation reproduces the authority exactly: exit `2`, `234/243` passing,
+complete `243/243` identity coverage, and the same nine residual identities
+listed above.  The sorted identity comparison is baseline-only `0`, final-only
+`0`, and unrecognized `0`; no added failure or coverage delta occurred.
+
+### Complete typed ownership trace
+
+The representative assignment path is:
+
+```text
+PA11 canonical member/operator bindings and types
+  -> PA12 typed left/right expression facts
+  -> semantic_operator_call and shared typed candidate selection
+  -> selected binding, callable TypeId, result TypeId/category, conversions
+  -> PA15 selected-call lowering and hidden-object ABI
+```
+
+For simple `=`, PA12 checks the modifiable lvalue first, forms the typed member
+and nonmember operator boundary, and probes overload selection before the
+builtin conversion.  A viable `Iter::operator=(int)` therefore owns the call
+fact and its `Iter&` result; when no typed overload is viable, the existing
+builtin assignment path remains responsible for scalar/pointer conversion.
+The invalid `Reject = int*` control still fails at the typed conversion
+boundary.  Result type and value category come from the selected function's
+typed result, not from assignment syntax.
+
+The construction path recognizes a same-class functional call while handling a
+non-direct initializer for a non-aggregate class with constructors.  It
+resolves the functional target through `functional_cast_target`, unwraps only
+one-child parenthesized expression nodes, copies the existing argument-node
+range, and invokes `semantic_constructor_action` in direct context.  This
+preserves reference binding and permits the inner direct construction's
+explicit constructor without materializing a PA16 copy/value helper.  Other
+initializer forms continue through their existing context-sensitive path.
+
+The member path publishes direct and using-imported bindings as `ValueRef`s
+with declared owner and access-view owner intact.  Each candidate query builds
+one non-owning signature index for direct declarations, then suppresses only an
+imported candidate in the same static/non-static category whose canonical
+function signature matches.  The key includes parameter `TypeId`s, function
+cv, variadic state, and category, and excludes return type.  Candidate owner,
+class scope, binding owner, access-view owner, and access are validated before
+selection.  Qualified static validation accepts a base binding re-exposed by a
+derived using-view only when that view owner is the qualified class.  Selection
+and `finish_member_call` retain the selected scope, hidden object/base path,
+callable type, conversions, result type, and category for PA15.
+
+### Findings and bounded repairs
+
+The review found one narrow hole in the landed construction repair: a supported
+same-class functional initializer wrapped in redundant parentheses did not
+reach the typed direct-constructor branch.  The in-scope repair unwraps that
+AST wrapper before target/argument inspection; it does not parse text, retry a
+parallel model, or introduce copy/value semantics.  No additional semantic
+defect was found in the landed assignment or member-publication repairs.
+
+Regression 428 was strengthened in scope.  It now checks the original 64/65
+base/derived publication scale and differing-return suppression, static versus
+non-static imported/direct selection, const-signature preservation through a
+const derived view, explicit one- and two-reference constructors (including a
+parenthesized wrapper), and `&(*it = 17)` to require an lvalue assignment
+result.  It retains scalar/pointer builtin assignment and non-convertible
+overloaded-assignment rejection controls and runs the repository LowIR/CY86
+pipeline.
+
+A disposable two-argument variadic-member probe reached PA12 but was rejected
+by the downstream `lowir2cy86` fixed-call-arity check.  The signature key
+itself carries the variadic bit, but that downstream ABI/lowering issue is
+outside the allowlisted PA12 files; it is not counted as passing evidence and
+does not authorize a PA15 change here.
+
+### Focused evidence
+
+Fresh focused evidence is recorded below after the final in-scope source and
+regression edits:
+
+```text
+make -C dev cppgm++
+sh -n cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh
+sh cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-reference-member-class-init.t tests/general/300-overloaded-deref-user-assignment.t tests/general/300-using-base-static-same-signature-derived-preferred.t tests/general/300-reference-member-same-name-as-class.t tests/general/300-overloaded-unary-deref-base-ref-return.t tests/general/300-subobject-member-deref-after-prefix-decrement.t tests/general/300-using-base-same-signature-derived-preferred.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/general/200-copy-init-explicit-ctor-overload-refinement.t tests/general/200-static-nonstatic-same-pointer-signature.t tests/general/300-basic-operator-overloads.t tests/general/300-member-binary-operator-eq.t tests/general/300-member-binary-operator-ne-wrapper.t tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t'
+make -C pa15 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-scalar-assignment-address-lvalue.t tests/general/200-pointer-compound-assignment-scale.t tests/general/200-prefix-pointer-decrement-reference-argument.t tests/general/200-global-pointer-array-nullptr-init.t'
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/100-static-member-qualified-call.t tests/general/100-static-member-object-access.t tests/general/100-static-member-overload-skips-nonstatic-this.t tests/general/200-inherited-static-member-qualified-call.t tests/general/200-const-member-call-prefers-const-object-overload.t tests/general/200-const-object-nonconst-member-call-bad.t tests/general/300-private-base-using-method-call.t tests/general/300-using-declaration-public-private-base-member.t tests/general/300-class-using-declaration-reexposes-protected-field.t tests/general/300-static-const-member-address.t'
+```
+
+Expected/observed focused summaries are build `exit 0`, shell syntax `exit 0`,
+428 `PASS`, PA16 focused `PASS (14/14)`, and PA15 focused `PASS (4/4)`.
+The access-view/static/member control set also passes `10/10`.  The corrected
+PA16 filename is `300-value-init-empty-functional-cast-aggregate.t`.
+
+### Final validation, bounds, and next checkpoint
+
+The supervisor-authorized final gates completed as follows:
+
+```text
+make test-pa16
+exit 2
+===== TEST SUMMARY: 234 / 243 TESTS PASSED =====
+
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+exit 0
+===== ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167) =====
+
+perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
+exit 0
+File audit passed for pa16 with 6 warning(s).
+```
+
+The final PA16 run enumerated all `243` identities and reproduced the exact
+turn-start nine-item residual map above.  The through-PA15 gate remains
+`1167/1167`.  File audit warnings are the six known nonfatal `bad-division`
+warnings for `dev/src/abi_mangle.h`, `dev/src/cpp_semantic_core.h`,
+`dev/src/lowir_model.h`, `dev/src/pa11_semantic_model.h`,
+`dev/src/pa12_semantic_selection.h`, and `dev/src/pa15_lowering.h`; each says
+the header contains substantial implementation body and prefers `.cpp`
+ownership.
+
+The final bounded path audit found only the four allowlisted paths:
+`dev/src/pa12_semantic_construction.cpp`,
+`cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh`,
+`pa16/plan.md`, and `pa16/audit.md`.  `git diff --check` is clean, and the
+committed tree is verified clean below.  No handout test, fixture, reference,
+sidecar, harness, comparator, coverage/source-set file, unrelated residual
+owner, host compiler, reference binary, text-answer shortcut, or parallel
+pipeline was added or changed.
+
+For a query with `D` direct declarations, `C` reachable candidates, and `A`
+parameters/arguments, the added publication work is one `O(D)` direct index
+and one `O(C)` ordered pass; existing typed selection remains `O(C*A)`.  The
+key is non-owning over the append-only canonical type arena, and the
+construction wrapper walk is bounded by the parenthesis depth.  Regression 428
+provides structural scale of 64 base and 65 derived overloads plus category,
+cv, constructor, reference, assignment, and lowering controls.  No timing or
+RSS claim is made.
+
+Next checkpoint is a separate residual, beginning with
+`200-local-default-class-array-lifecycle.t`; none of the nine residual owners
+is claimed by this audit.
+
+## Historical Typed Cooked-String UDL Checkpoint Review (2cfa1111)
+
+This bounded review covers clean landed checkpoint
 `2cfa111111cf8a675c9e248e18508dedb0b61592` (`PA16: lower typed cooked-string
 UDL calls`) relative to parent `2ca2323aa66519896c05f5382da4bd3558eb6fff`.
 The PA16 boundary, active plan, relevant spec sections, landed diff, target
@@ -4423,3 +4597,4 @@ conversion slices.
 | `24d555c8` typed no-op construction effects checkpointAudit | Completed final bounded audit of landed `24d555c882a3e15ea3ffe5be42ed5d9953084df6` relative to `d889058c0d159bd4414ffb6e9f5ac75227ce0192`: PA12 typed constructor facts flow through PA15 memoized constructor/zero-init summaries, demand traversal, aggregate/construction lowering, and typed address paths. The audit repairs the semantic demand/action-shape split, fail-closed enclosing action-graph ownership/layout/result validation, and inconsistent direct-base metadata handling before pruning; current-block address reuse, cache cycle handling, leaf retention, DMI/destructor/lifetime barriers, argumented construction, and scalar/value stores remain guarded. Focused targets, course 404/409, and the constructor matrix pass; the exact prior-through gate is `1167/1167`; fresh PA16 is `222/243` with the exact unchanged 21-failure identity set; authority/fresh failures are `21/21`, authority-only/fresh-only are `0/0`, and discovered/reference/fresh inventories are `243/243/243` with all missing/unexpected comparisons `0`. The file audit exits `0` with five pre-existing warnings, the structural scale probe retains 128 base entries while emitting 0 derived wrappers/calls, and final diff-check and clean-tree verification pass. | completed audit |
 | `6d2ed09c` typed ToVoid discarded lowering checkpointAudit | Completed audit of landed `6d2ed09cd4b3daf55ab28282addcf3a878a8adba` relative to `14cadc0c`: PA12's typed `ToVoid` producer and PA15's discarded-expression consumer are traced through O0 LowIR. The consumer now fail-closes in-range typed source/target mismatches; the narrow non-reference scalar-parameter read and volatile/function/reference/class/comma/conditional/assignment/increment boundaries remain intact. Serial reconfirmation is build `0`, PA16 `3/3`, and PA15 `4/4`; the exact prior-through gate is `1167/1167`; final PA16 is status `2` at `224/243` with exactly the same 19 failures; identity comparison is `19 -> 19`, retained `19`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243` with all missing/unexpected counts `0`; file audit is status `0` with five pre-existing warnings; diff-check and bounded path audit pass. Durable evidence is in the final checkpoint directory. No test, fixture, reference, harness, comparator, generated-output, coverage, source-set, or unrelated stage change. |
 | `75f7944aacd312b09b3183170e62f35e69808a44` | Completed committed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings. |
+| `617c137a` typed object-call boundary checkpointAudit | Completed committed bounded audit/repair: typed assignment, same-class constructor, and direct/imported member candidates remain single-forward and PA15-consumable; the parenthesized functional-construction wrapper is repaired; regression 428, focused PA16/PA15/access controls, and final gates pass. Final PA16 is exit `2` at `234/243` with the exact unchanged nine residual identities and `243/243` coverage; comparison is baseline-only `0`, final-only `0`, unrecognized `0`; through-PA15 is `1167/1167`; file audit exits `0` with six known header-division warnings. No out-of-scope files or residual owners changed. |

@@ -200,17 +200,21 @@ bool PA11SemanticModel::semantic_class_object_initializer(
 		// directly.  Preserve its typed argument facts (especially Box&) instead
 		// of treating the prvalue Holder as an argument to Holder's copy
 		// constructor.
-		if (clause->kind == PA10NodeKind::CallExpression &&
-			clause->children.size() == 2 &&
-			(clause->children.back().kind == PA10NodeKind::ArgumentList ||
-				clause->children.back().kind == PA10NodeKind::ParenArgumentList))
+		const PA10AstNode* functional_clause = clause;
+		while (functional_clause->kind == PA10NodeKind::ParenthesizedExpression &&
+			functional_clause->children.size() == 1)
+			functional_clause = &functional_clause->children.front();
+		if (functional_clause->kind == PA10NodeKind::CallExpression &&
+			functional_clause->children.size() == 2 &&
+			(functional_clause->children.back().kind == PA10NodeKind::ArgumentList ||
+				functional_clause->children.back().kind == PA10NodeKind::ParenArgumentList))
 		{
 			TypeId functional_target;
-			if (functional_cast_target(clause->children.front(), access_scope,
+			if (functional_cast_target(functional_clause->children.front(), access_scope,
 				&functional_target) &&
 				class_record_for_object_type(functional_target) == record)
 			{
-				const PA10AstNode& argument_list = clause->children.back();
+				const PA10AstNode& argument_list = functional_clause->children.back();
 				std::vector<const PA10AstNode*> arguments;
 				arguments.reserve(argument_list.children.size());
 				for (std::size_t i = 0; i < argument_list.children.size(); ++i)
