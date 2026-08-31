@@ -2,11 +2,12 @@
 
 ## Current Checkpoint Review
 
-This checkpoint review audits landed increment
+This checkpoint review covers committed audit/repair
+`75f7944aacd312b09b3183170e62f35e69808a44` (`PA16: audit empty-base layout
+ownership`), which audits landed increment
 `69bbe80097030fb38b4aed6c6d5cf937a2dd6e87` relative to `148ef591`, with
 bookkeeping-only follow-ups `a5839138` and `3348d274`.  The turn-start clean
-HEAD was `3348d274`; the current implementation/docs milestone is an explicit
-working-tree, pre-commit marker pending the first audit/repair commit.  The PA16 boundary and design notes, `spec.md`
+HEAD was `3348d274`; the bounded implementation/docs result is committed.  The PA16 boundary and design notes, `spec.md`
 Purpose and sections 1--5 and 7, the landed diff, current bounded source, the
 named tests for observation, and the relevant typed consumers were inspected.
 No handout tests, fixtures, refs, sidecars, harnesses, comparators, generated
@@ -143,8 +144,10 @@ emitted one deepest inherited-call projection; no timing or RSS claim is made.
 
 This milestone changes only `dev/src/pa11_record_layout.cpp` plus the two
 requested records.  It leaves the exact 13 residual identities untouched and
-does not claim completion of PA16.  The first audit/repair commit and the
-docs-only hash-recording follow-up remain; no other residual was re-audited.
+does not claim completion of PA16.  The stable audit/repair checkpoint is
+`75f7944aacd312b09b3183170e62f35e69808a44`; the subsequent documentation-only
+commit records that hash and changes no implementation or evidence.  No other
+residual was re-audited.
 
 ## Historical Elaborated-Member Review (29d9c4ce)
 
@@ -4236,4 +4239,4 @@ conversion slices.
 | `e470e9df` prvalue derived-base reference binding checkpointAudit | Final bounded audit of landed `e470e9dfed07ca09a373d227640f3c8042cc2cbf` relative to `f3afe9d5`: the PA12 repair confines prvalue derived-to-base reference binding to const non-volatile lvalue references, restores exact same-class temporary-reference ranking, and retains typed access/path publication into the validated PA15 projection consumer. Focused matrix is `8/8`; required through-PA15 is `1167/1167`; file audit exits `0` with five known warnings; fresh `make test-pa16` exits `2` at `220/243` with `23` failures; exact comparison to the supplied current authority is `23/23`, fresh-only `0`, authority-only `0`, and discovered/reference/fresh coverage `243/243/243` with missing/unexpected `0/0`. No test, fixture, reference, harness, comparator, generated output, coverage rule, source-set file, or unrelated stage code changed; PA16 remains incomplete with the same 23 residual identities. | completed audit |
 | `24d555c8` typed no-op construction effects checkpointAudit | Completed final bounded audit of landed `24d555c882a3e15ea3ffe5be42ed5d9953084df6` relative to `d889058c0d159bd4414ffb6e9f5ac75227ce0192`: PA12 typed constructor facts flow through PA15 memoized constructor/zero-init summaries, demand traversal, aggregate/construction lowering, and typed address paths. The audit repairs the semantic demand/action-shape split, fail-closed enclosing action-graph ownership/layout/result validation, and inconsistent direct-base metadata handling before pruning; current-block address reuse, cache cycle handling, leaf retention, DMI/destructor/lifetime barriers, argumented construction, and scalar/value stores remain guarded. Focused targets, course 404/409, and the constructor matrix pass; the exact prior-through gate is `1167/1167`; fresh PA16 is `222/243` with the exact unchanged 21-failure identity set; authority/fresh failures are `21/21`, authority-only/fresh-only are `0/0`, and discovered/reference/fresh inventories are `243/243/243` with all missing/unexpected comparisons `0`. The file audit exits `0` with five pre-existing warnings, the structural scale probe retains 128 base entries while emitting 0 derived wrappers/calls, and final diff-check and clean-tree verification pass. | completed audit |
 | `6d2ed09c` typed ToVoid discarded lowering checkpointAudit | Completed audit of landed `6d2ed09cd4b3daf55ab28282addcf3a878a8adba` relative to `14cadc0c`: PA12's typed `ToVoid` producer and PA15's discarded-expression consumer are traced through O0 LowIR. The consumer now fail-closes in-range typed source/target mismatches; the narrow non-reference scalar-parameter read and volatile/function/reference/class/comma/conditional/assignment/increment boundaries remain intact. Serial reconfirmation is build `0`, PA16 `3/3`, and PA15 `4/4`; the exact prior-through gate is `1167/1167`; final PA16 is status `2` at `224/243` with exactly the same 19 failures; identity comparison is `19 -> 19`, retained `19`, authority-only/fresh-only `0/0`, and discovered/reference/fresh `243/243/243` with all missing/unexpected counts `0`; file audit is status `0` with five pre-existing warnings; diff-check and bounded path audit pass. Durable evidence is in the final checkpoint directory. No test, fixture, reference, harness, comparator, generated-output, coverage, source-set, or unrelated stage change. |
-| `working-tree` (pending; based on `3348d274`) | Completed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings; first commit/hash-recording follow-up pending. |
+| `75f7944aacd312b09b3183170e62f35e69808a44` | Completed committed empty-base checkpoint audit/repair and final evidence: PA11 layout identity validation is fail-closed, PA16 is `230/243` with the exact unchanged 13 residual identities, through-PA15 is `1167/1167`, artifact coverage is `243/243/243`, and file audit exits `0` with six nonfatal warnings. |

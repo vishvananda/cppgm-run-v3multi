@@ -52,10 +52,11 @@ surface changed.
 
 ## Current checkpoint
 
-The bounded implementation correction and final validation are complete, based
-on clean HEAD `3348d274`.  The first audit/repair commit is still pending, so
-the current record uses a truthful pre-commit marker; its hash will be written
-in place after that commit.
+The bounded implementation correction and final validation are committed in
+`75f7944aacd312b09b3183170e62f35e69808a44` (`PA16: audit empty-base layout
+ownership`), based on clean HEAD `3348d274`.  The present record documents that
+stable audit/repair checkpoint; the later documentation-only commit changes no
+implementation or evidence.
 
 The in-scope repair is fail-closed PA11 identity validation.  The nested
 zero-offset query now verifies canonical class scope, owner bindings, member
@@ -129,14 +130,13 @@ inherited-call projection; it made no timing or RSS claim.
 
 ## Active / next checkpoint
 
-Active: final bounded validation is complete with the exact authority
-residual map above; the first audit/repair commit and hash-recording follow-up
-remain to be made.
+Active: committed audit/repair checkpoint
+`75f7944aacd312b09b3183170e62f35e69808a44`, with final validation complete and
+the exact authority residual map above.
 
-Next: commit the bounded source/docs result, convert the existing pending
-markers and ledger rows in place to that commit hash, make the docs-only
-follow-up, and verify the final clean tree.  No separate residual checkpoint
-is selected or re-audited in this milestone.
+Next: retain this bounded checkpoint and select a separate residual only under
+new authorization; no separate residual checkpoint is selected or re-audited
+in this milestone.
 
 ## Checkpoint ledger
 
@@ -148,4 +148,4 @@ is selected or re-audited in this milestone.
 | d5bf2600 | Completed the typed constructor-overload/lifetime ownership audit; focused matrix passed and PA16 reached `227/243` with 16 residual failures. |
 | 29d9c4ce | Completed the PA10 elaborated-member parameter-clause repair and PA15 ABI owner consolidation; PA16 reached `228/243` with this exact 15-item residual set and `243/243/243` inventories. |
 | 69bbe800 | Empty-base layout/address projection: post-commit PA16 `230/243`, two target identities resolved, 13 exact residuals retained; through-PA15 `1167/1167`, file audit pass with six warnings. |
-| working-tree (pending; based on `3348d274`) | Completed empty-base checkpoint audit/repair and final evidence; source/docs remain uncommitted until the first audit/repair commit, with exact unchanged 13-failure identity set and `243/243/243` artifact coverage. |
+| `75f7944aacd312b09b3183170e62f35e69808a44` | Committed empty-base checkpoint audit/repair and final evidence: exact unchanged 13-failure identity set, `243/243/243` artifact coverage, through-PA15 `1167/1167`, and file audit exit `0` with six nonfatal warnings. |
