@@ -851,6 +851,16 @@ bool fact_parameter_specifier_start_at(
 		type == SimpleTokenType::KW_DECLTYPE;
 }
 
+bool fact_elaborated_specifier_start_at(
+	const std::vector<PA10Token>& tokens, std::size_t absolute,
+	std::size_t& work)
+{
+	return fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_CLASS, work) ||
+		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_STRUCT, work) ||
+		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_UNION, work) ||
+		fact_fixed_at(tokens, absolute, 0, SimpleTokenType::KW_ENUM, work);
+}
+
 PA10ParenthesizedGroupKind fact_parenthesized_group_kind_at(
 	const std::vector<PA10ParenthesizedGroupKind>& groups,
 	std::size_t absolute, std::size_t& work)
@@ -879,6 +889,12 @@ NewParameterClauseKind parameter_clause_kind_at(const std::vector<PA10Token>& to
 		return NewParameterNone;
 	if (delimiter_close_index[open] == open + 1 ||
 		fact_fixed_at(tokens, open, 1, SimpleTokenType::OP_DOTS, work))
+		return NewParameterDefinite;
+	// An elaborated-specifier is declaration-only syntax: it cannot be the
+	// expression in a parenthesized declarator/initializer.  Keep this
+	// discriminator at the shared indexed boundary so the actual specifier is
+	// still parsed once by parse_decl_specifier_seq/classify_elaborated_specifier.
+	if (fact_elaborated_specifier_start_at(tokens, open + 1, work))
 		return NewParameterDefinite;
 	fact_step(work);
 	if (tokens[open + 1].kind == PA10TokenKind::Fixed)
