@@ -414,7 +414,8 @@ struct Scope
 	// PA12 owns the exact synthetic object parameter for a member function.
 	// Consumers must not rediscover it from names or parameter ordering.
 	BindingId implicit_object_binding;
-	bool inline_namespace;
+	// Namespace identity and propagated linkage are typed scope facts.
+	bool inline_namespace, unnamed_namespace, internal_linkage_scope;
 	std::vector<ScopeId> children;
 	std::vector<BindingId> bindings;
 	FlatIndex<NameId, TypeId, IdentityHash<NameId> > types;
@@ -428,23 +429,20 @@ struct Scope
 	std::vector<EffectiveUsingDirective> effective_using_directives;
 	std::vector<DumpBindingViewId> binding_views;
 	std::vector<DumpScopeViewId> scope_views;
-	std::size_t creation_order;
-	std::size_t depth;
-
+	std::size_t creation_order, depth;
 	Scope(ScopeKind kind = ScopeKind::Namespace, ScopeId parent = ScopeId(),
 		NameId name = NameId(), NamedRecordId record = NamedRecordId(),
 		bool inline_namespace = false, std::size_t creation_order = 0,
 		std::size_t depth = 0)
 		: kind(kind), parent(parent), name(name), record(record),
 		  implicit_object_binding(),
-		  inline_namespace(inline_namespace),
+		  inline_namespace(inline_namespace), unnamed_namespace(false), internal_linkage_scope(false),
 		  children(), bindings(),
 		  types(), namespaces(), namespace_aliases(), values(), using_types(),
 		  using_directives(), effective_using_directives(), binding_views(),
 		  scope_views(), creation_order(creation_order), depth(depth)
 	{}
 };
-
 struct SourceInterval
 {
 	struct SourceIndex
@@ -955,7 +953,8 @@ struct SemanticFact
 	bool bool_context_operand, operator_result;
 	bool size_type_derived;
 	bool has_callee;
-	bool value_initialize;
+	// Exact provenance for the internal namespace-scope default-constructor demand.
+	bool value_initialize, internal_namespace_default_constructor_demand;
 	// A direct member call stores its typed implicit object as child zero.
 	bool has_implicit_object;
 	bool temporary_object;
@@ -983,7 +982,7 @@ struct SemanticFact
 			contains_member_value(false), bool_context_operand(false), operator_result(false),
 			size_type_derived(false),
 			has_callee(false),
-			value_initialize(false),
+			value_initialize(false), internal_namespace_default_constructor_demand(false),
 			has_implicit_object(false), temporary_object(false)
 	{}
 };
@@ -1356,6 +1355,7 @@ private:
 	NamedRecordId record = NamedRecordId(),
 	bool inline_namespace = false, bool attach = true)
 	;
+	ScopeId create_unnamed_namespace(ScopeId parent);
 	const PA10AstNode* child_of_kind(const PA10AstNode& node,
 	PA10NodeKind kind) const
 	;

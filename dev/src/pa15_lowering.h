@@ -561,6 +561,7 @@ private:
 	const std::string& spelling(SpellingId id) const;
 	SpellingId intern_spelling(const std::string& value);
 	SpellingId symbol_spelling(const std::string& name);
+	std::string namespace_component(ScopeId scope) const;
 	std::vector<std::string> function_components(const FunctionFact& fact) const;
 	std::vector<std::string> value_components(ScopeId owner, NameId name) const;
 	std::vector<std::string> function_abi_components(BindingId binding_id,

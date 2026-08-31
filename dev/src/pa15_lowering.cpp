@@ -251,14 +251,30 @@ void Pa15Lowerer::finish_generated_function()
 		reorder_function_blocks();
 	}
 
+std::string Pa15Lowerer::namespace_component(ScopeId scope) const
+{
+	if (!scope.valid() || scope.value >= model_.scopes_.size() ||
+		model_.scopes_[scope.value].kind != ScopeKind::Namespace)
+		throw std::runtime_error("PA15 namespace component scope is invalid");
+	const Scope& namespace_scope = model_.scopes_[scope.value];
+	if (namespace_scope.name.valid())
+		return model_.name_text(namespace_scope.name);
+	if (!namespace_scope.unnamed_namespace)
+		return std::string();
+	return "_GLOBAL__N_1";
+}
+
 std::vector<std::string> Pa15Lowerer::function_components(const FunctionFact& fact) const{
 		std::vector<std::string> reversed;
 		ScopeId scope = fact.owner;
 		while (scope.valid())
 		{
 			const Scope& current = model_.scopes_[scope.value];
-			if (current.kind == ScopeKind::Namespace && current.name.valid())
-				reversed.push_back(model_.name_text(current.name));
+			if (current.kind == ScopeKind::Namespace)
+			{
+				const std::string component = namespace_component(scope);
+				if (!component.empty()) reversed.push_back(component);
+			}
 			else if (current.kind == ScopeKind::Class && current.record.valid() &&
 				current.record.value < model_.named_.size() &&
 				model_.named_[current.record.value].name.valid())
@@ -294,8 +310,11 @@ std::vector<std::string> Pa15Lowerer::value_components(ScopeId owner, NameId nam
 		while (scope.valid())
 		{
 			const Scope& current = model_.scopes_[scope.value];
-			if (current.kind == ScopeKind::Namespace && current.name.valid())
-				reversed.push_back(model_.name_text(current.name));
+			if (current.kind == ScopeKind::Namespace)
+			{
+				const std::string component = namespace_component(scope);
+				if (!component.empty()) reversed.push_back(component);
+			}
 			else if (current.kind == ScopeKind::Class && current.record.valid() &&
 				current.record.value < model_.named_.size() &&
 				model_.named_[current.record.value].name.valid())
@@ -955,10 +974,14 @@ void Pa15Lowerer::collect_functions(){
 			const bool strong_out_of_class_special = is_special_member &&
 				fact.out_of_class_definition && sidecar != NULL &&
 				!sidecar->inline_member;
+			const bool trivial_lifecycle = is_constructor && fact.synthetic &&
+				constructor_function_is_noop(FunctionFactId(i), false);
 			function.metadata.binding = strong_out_of_class_special ?
-				lowir_model::SBM_STRONG : is_special_member ?
-				lowir_model::SBM_WEAK : (binding.internal_linkage ?
-				lowir_model::SBM_INTERNAL : lowir_model::SBM_STRONG);
+				lowir_model::SBM_STRONG : binding.internal_linkage ?
+				lowir_model::SBM_INTERNAL : is_special_member ?
+				lowir_model::SBM_WEAK : lowir_model::SBM_STRONG;
+			if (trivial_lifecycle)
+				function.metadata.object_trivial_lifecycle = true;
 			if (binding.language_linkage == LanguageLinkage::C)
 				function.metadata.linkage = lowir_model::LLM_C;
 			const bool is_main = components.size() == 1 && components.front() == "main";
@@ -982,7 +1005,8 @@ void Pa15Lowerer::collect_functions(){
 			function_name_ids_[fact.binding.value] = name_id;
 			symbol_name_ids_[function.symbol_id.index] = name_id;
 			if (is_special_member && !fact.constructor_base_entry &&
-				!fact.destructor_base_entry)
+				!fact.destructor_base_entry &&
+				!(trivial_lifecycle && binding.internal_linkage))
 			{
 				lowir_model::ObjectAlias alias;
 				alias.object_name_id = intern_spelling(abi_symbol(fact,

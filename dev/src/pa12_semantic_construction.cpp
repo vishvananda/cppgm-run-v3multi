@@ -313,9 +313,15 @@ void PA11SemanticModel::semantic_variable_initializer(
 	const bool class_object_initializer = value.kind == BindingKind::Variable &&
 		(local_object_scope || (nonautomatic_class_object && named_class_object)) &&
 		named_class_object;
-	const bool namespace_default_object = nonautomatic_class_object &&
+	const bool namespace_scope_default_object = nonautomatic_class_object &&
 		named_class_object && source.children.size() == 1;
-	if ((default_object || namespace_default_object) && direct_operand == NULL &&
+	const bool internal_namespace_scope_default_demand =
+		namespace_scope_default_object &&
+		namespace_object_scope && declaration.scope.valid() &&
+		declaration.scope.value < scopes_.size() &&
+		scopes_[declaration.scope.value].internal_linkage_scope &&
+		!has_constructor_declaration(record);
+	if ((default_object || namespace_scope_default_object) && direct_operand == NULL &&
 		!has_constructor_declaration(record))
 		(void)implicit_default_constructor_supported(record);
 	const bool constructor_initializer = class_object_initializer &&
@@ -369,10 +375,33 @@ void PA11SemanticModel::semantic_variable_initializer(
 		*initializer_fact = converted.fact;
 	}
 	else if (anonymous_union_object || legacy_empty_default_object ||
-		((default_object || namespace_default_object) &&
-			constructor_requires_runtime(record)))
-		set_semantic_children(variable, std::vector<SemanticFactId>(1,
-			semantic_constructor_action(storage, source)));
+		((default_object || namespace_scope_default_object) &&
+			constructor_requires_runtime(record)) ||
+		internal_namespace_scope_default_demand)
+	{
+		if (internal_namespace_scope_default_demand)
+		{
+			const ExprInfo initializer = semantic_aggregate_constructor_value(source,
+				value.type, declaration.scope, std::vector<const PA10AstNode*>(),
+				false);
+			if (!initializer.fact.valid() || initializer.fact.value >=
+				semantic_facts_.size() || !semantic_facts_[initializer.fact.value].has_callee)
+				throw std::runtime_error(
+					"PA12 internal namespace default action is incomplete");
+			semantic_facts_[initializer.fact.value].
+				internal_namespace_default_constructor_demand = true;
+			set_semantic_children(variable, std::vector<SemanticFactId>(1,
+				initializer.fact));
+			// This is the exact object-demand boundary for the internal helper pair;
+			// PA15 will decide whether to emit them, but the typed base-entry
+			// identity must be published before the const lowering pass begins.
+			(void)ensure_constructor_base_entry(
+				semantic_facts_[initializer.fact.value].selected_binding);
+		}
+		else
+			set_semantic_children(variable, std::vector<SemanticFactId>(1,
+				semantic_constructor_action(storage, source)));
+	}
 	if (defines_variable &&
 		nonautomatic_class_object && !declaration.is_thread_local)
 		record_namespace_lifetime(storage, value.type,
@@ -1108,6 +1137,8 @@ BindingId PA11SemanticModel::matching_constructor_declaration(
 {
 	const NamedRecord& record = named_[record_id.value];
 	BindingId declared_constructor;
+	const bool expected_internal_linkage =
+		scopes_[owner_scope.value].internal_linkage_scope;
 	const ValueList* values = scopes_[owner_scope.value].values.find(record.name);
 	if (values != NULL)
 		for (std::size_t i = 0; i < values->entries.size(); ++i)
@@ -1140,7 +1171,7 @@ BindingId PA11SemanticModel::matching_constructor_declaration(
 			const TypeKey& candidate_signature = types_[candidate.type.value];
 			if (!(candidate_signature == requested_signature) ||
 				candidate.language_linkage != current_language_linkage_ ||
-				candidate.internal_linkage)
+				candidate.internal_linkage != expected_internal_linkage)
 				continue;
 			if (declared_constructor.valid())
 				throw std::runtime_error(
@@ -1272,11 +1303,14 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 				binding_owners_[function_binding.value] != owner_scope)
 				throw std::runtime_error("PA11 destructor binding owner is invalid");
 			Binding& existing_binding = binding(function_binding);
+			const bool expected_internal_linkage = owner_scope.valid() &&
+				owner_scope.value < scopes_.size() &&
+				scopes_[owner_scope.value].internal_linkage_scope;
 			if (existing_binding.kind != BindingKind::Function ||
 				existing_binding.name != record.name ||
 				existing_binding.type != type ||
 				existing_binding.language_linkage != current_language_linkage_ ||
-				existing_binding.internal_linkage)
+				existing_binding.internal_linkage != expected_internal_linkage)
 				throw std::runtime_error("PA11 conflicting destructor declaration");
 			const BindingSidecar* existing_sidecar =
 				binding_sidecar(function_binding);
@@ -1294,6 +1328,9 @@ void PA11SemanticModel::process_special_member(const PA10AstNode& node,
 			Binding value(BindingKind::Function, record.name, type);
 			value.has_definition = definition;
 			value.language_linkage = current_language_linkage_;
+			value.internal_linkage = owner_scope.valid() &&
+				owner_scope.value < scopes_.size() &&
+				scopes_[owner_scope.value].internal_linkage_scope;
 			function_binding = store_binding(owner_scope, value);
 		}
 	}

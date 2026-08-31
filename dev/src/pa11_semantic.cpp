@@ -8,7 +8,6 @@ using namespace pa11_semantic_storage;
 
 namespace
 {
-
 bool has_virtual_member_specifier_impl(const PA10AstNode& node, bool root)
 {
 	// A nested declaration owns its own members.  Do not let a virtual
@@ -1679,8 +1678,7 @@ void PA11SemanticModel::process_namespace(const PA10AstNode& node, ScopeId paren
 			namespace_id = *existing;
 		else
 		{
-			namespace_id = create_scope(ScopeKind::Namespace, parent,
-				NameId());
+			namespace_id = create_unnamed_namespace(parent);
 			unnamed_namespace_index_.set(parent, namespace_id);
 			scope_declaration_points_.set(namespace_id, declaration_point);
 			// An unnamed namespace is visible through a typed implicit
@@ -2152,6 +2150,8 @@ BindingId PA11SemanticModel::add_value(ScopeId scope, NameId name, TypeId type,
 		throw std::runtime_error(
 			"literal operator must have namespace owner and C++ linkage");
 	Scope& current = scopes_[scope.value];
+	// Typed scope ownership supplements explicit `static` linkage.
+	internal_linkage = internal_linkage || current.internal_linkage_scope;
 	if (!literal_operator && direct_namespace_exists(scope, name))
 		throw std::runtime_error("value conflicts with namespace");
 	const TypeId* type_found = current.types.find(name);

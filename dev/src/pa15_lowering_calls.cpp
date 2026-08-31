@@ -451,7 +451,13 @@ void Pa15Lowerer::collect_demanded_member_functions(
 				fact.callable_type;
 			return;
 		}
-		if (!no_op)
+		// An unnamed-namespace default object has an ABI-visible internal
+		// constructor pair even when its empty implicit constructor has no runtime
+		// store.  The PA12 fact marker is the typed demand edge; do not infer this
+		// from the rendered namespace or from the constructor's LowIR spelling.
+		const bool internal_namespace_default_demand = global_root &&
+			fact.internal_namespace_default_constructor_demand;
+		if (!no_op || internal_namespace_default_demand)
 		{
 			if (!(*demanded)[target_id->value])
 			{

@@ -1,6 +1,5 @@
 #include "pa11_semantic_model.h"
 #include <limits>
-
 namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
@@ -317,14 +316,19 @@ ScopeId PA11SemanticModel::create_scope(ScopeKind kind, ScopeId parent, NameId n
 	bool inline_namespace , bool attach )
 {
 	const ScopeId result(scopes_.size());
-	const std::size_t depth = parent.valid() ?
-		scopes_[parent.value].depth + 1 : 0;
-	scopes_.push_back(Scope(kind, parent, name, record,
-		inline_namespace, creation_order_++, depth));
-	if (parent.valid() && attach)
-		scopes_[parent.value].children.push_back(result);
-	if (parent.valid() && !attach)
-		deferred_scopes_.push_back(result);
+	const std::size_t depth = parent.valid() ? scopes_[parent.value].depth + 1 : 0;
+	scopes_.push_back(Scope(kind, parent, name, record, inline_namespace, creation_order_++, depth));
+	if (parent.valid() && scopes_[parent.value].internal_linkage_scope)
+		scopes_[result.value].internal_linkage_scope = true;
+	if (parent.valid() && attach) scopes_[parent.value].children.push_back(result);
+	if (parent.valid() && !attach) deferred_scopes_.push_back(result);
+	return result;
+}
+ScopeId PA11SemanticModel::create_unnamed_namespace(ScopeId parent)
+{
+	const ScopeId result = create_scope(ScopeKind::Namespace, parent, NameId());
+	scopes_[result.value].unnamed_namespace = true;
+	scopes_[result.value].internal_linkage_scope = true;
 	return result;
 }
 const PA10AstNode* PA11SemanticModel::child_of_kind(const PA10AstNode& node,

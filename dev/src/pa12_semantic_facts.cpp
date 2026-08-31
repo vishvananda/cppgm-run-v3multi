@@ -444,6 +444,7 @@ BindingId PA11SemanticModel::ensure_aggregate_constructor(
 	Binding helper(BindingKind::Function, record.name, constructor_type);
 	helper.has_definition = true;
 	helper.language_linkage = LanguageLinkage::Cxx;
+	helper.internal_linkage = scopes_[record.scope.value].internal_linkage_scope;
 	const BindingId binding_id = store_binding(record.scope, helper);
 	BindingSidecar constructor_sidecar;
 	const BindingSidecar* existing_binding = binding_sidecar(binding_id);
@@ -769,10 +770,10 @@ BindingId PA11SemanticModel::ensure_inheriting_constructor(
 				continue;
 			return entry.binding;
 		}
-
 	Binding wrapper(BindingKind::Function, derived.name, wrapper_type);
 	wrapper.has_definition = true;
 	wrapper.language_linkage = base_binding.language_linkage;
+	wrapper.internal_linkage = scopes_[derived.scope.value].internal_linkage_scope;
 	const BindingId wrapper_id = store_binding(derived.scope, wrapper);
 	BindingSidecar wrapper_sidecar;
 	wrapper_sidecar.constructor_record = derived_id;
@@ -906,8 +907,12 @@ BindingId PA11SemanticModel::ensure_implicit_destructor(NamedRecordId record_id)
 		throw std::runtime_error("implicit destructor has no owner");
 	const TypeId destructor_type = make_function(std::vector<TypeId>(), false,
 		fundamental(FundamentalType::Void));
+	Binding destructor_binding(BindingKind::Function, record.name,
+		destructor_type);
+	destructor_binding.internal_linkage =
+		scopes_[record.scope.value].internal_linkage_scope;
 	const BindingId binding_id = store_binding(record.scope,
-		Binding(BindingKind::Function, record.name, destructor_type));
+		destructor_binding);
 	NamedRecordSidecar record_sidecar;
 	if (existing != NULL)
 		record_sidecar = *existing;

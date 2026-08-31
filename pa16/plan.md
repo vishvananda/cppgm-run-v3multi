@@ -1,146 +1,117 @@
-# PA16 nested braced aggregate-member checkpoint
+# PA16 unnamed-namespace identity and lifecycle-demand checkpoint
 
-## Stage design and spec alignment
+## Stage Design
 
-`PA10` recognizes `Value{...}` as one `CallExpression` containing one
-`BracedInitList`; the renderer preserves braces while ordinary parenthesized
-calls retain parentheses.  `PA12`'s `AggregateAppertainer` accepts that shape
-only when its typed functional target is the exact destination class record,
-then forwards the existing AST argument nodes to
-`semantic_aggregate_constructor_value` and `select_constructor`.  The result
-is one typed `ConstructorAction` with selected binding, scope, callable type,
-and converted semantic argument edges.  `PA15` consumes those edges directly,
-projects the aggregate member/subobject address before any permitted call
-elision, and emits every observable argument or constructor body.
+PA11 is the sole semantic owner of namespace/scope identity and binding
+linkage.  An unnamed namespace is a typed `Scope` fact; its parent-keyed
+`unnamed_namespace_index_` reuses the same `ScopeId` on reopen, and
+`internal_linkage_scope` propagates to each child scope once at creation.
+`add_value` and synthesized class special-member bindings fold that typed
+owner fact into canonical `Binding::internal_linkage`.  The global namespace
+is still a distinct non-unnamed scope.
 
-This is one forward pipeline under `spec.md` Purpose and §§1–5,7: no source
-text reparse, second semantic model, broad retry, host/reference compiler, or
-untyped class-value transfer.  Unsupported or malformed shapes fail closed.
-The PA16 README boundary still excludes general temporary materialization,
-copy/move transfer, by-value parameter/return semantics, virtuals, and eager
+PA12 creates one typed empty constructor action only for an internal
+namespace-scope class default-object demand and marks it
+`internal_namespace_default_constructor_demand`; it also publishes the
+typed constructor base-entry relation.  PA15 consumes that marker through its
+existing global-root demand worklist, emits only the required internal
+constructor facts, and keeps the zero-data object path free of a startup call.
+At the PA15 symbol boundary, typed namespace components render a fixed
+`_GLOBAL__N_1` for every unnamed namespace under its named owner.  No stage
+parses or matches rendered names, creates a second semantic owner, retries the
+whole program, or eagerly emits helpers.
+
+This is aligned with `spec.md` Purpose and §§1–5/§7: one forward pipeline,
+continuity of typed identity/linkage/lifetime/demand facts, and demand-driven
+helper emission.  Named namespaces, ordinary namespace/class globals,
+hidden-friend lookup/ADL, and nontrivial lifecycle paths retain their typed
+owners and prior behavior.
+
+## Failure Map
+
+Turn-start authority was `make test-pa16 = 235/243`, with complete `243/243`
+identity coverage and exactly these eight failures:
+
+1. `pa16/tests/general/200-local-default-class-array-lifecycle.t` — PA12/PA15
+   local default-array construction and cleanup demand.
+2. `pa16/tests/general/200-reference-indexed-pointer-member-access.t` — typed
+   reference/index/member address projection and lowering.
+3. `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
+   — active cluster: PA11 unnamed-scope identity/linkage, PA15 ABI rendering,
+   and internal trivial-constructor demand.
+4. `pa16/tests/general/300-friend-function-definition-skip.t` — hidden-friend
+   definition selection and function-demand filtering.
+5. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t` — nested
+   enum/operator identity, ADL, and bitmask lowering.
+6. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t` — typed
+   bit-field read/modify/write lowering.
+7. `pa16/tests/general/400-signed-bit-field-read.t` — signed bit-field
+   extraction and represented-value conversion.
+8. `pa16/tests/general/400-signed-enum-bit-field-read.t` — signed underlying
+   enum bit-field extraction and conversion.
+
+The fresh PA16 gate is `236/243` with complete `243/243` identity coverage.
+The exact seven residual identities are items 1, 2, and 4–8 above; item 3 is
+resolved.  The residual clusters were not broadened by this checkpoint.
+
+## Active Checkpoint
+
+Scope is limited to typed unnamed-namespace identity/linkage, its ABI symbol
+boundary, and the internal namespace-scope default-constructor demand edge.
+Reopened anonymous namespaces reuse their parent’s typed scope; distinct named
+parents each render `_GLOBAL__N_1`; namespace/class-owned entities retain
+internal binding; and duplicate semantic definitions are not emitted.  The
+normal PA16 function collection order is retained; no presentation-only
+function reorder is present.  The active fixture emits no useless
+`__cppgm_init`/`__cppgm_fini` path and emits only its required constructor
 helpers.
 
-## Exact failure map
+Changed files:
 
-Turn-start authority is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`:
-`make test-pa16` exited `2` at `235/243`, with complete `243/243` identity
-coverage and exactly these eight residual owners:
+- `dev/src/pa11_semantic.cpp`
+- `dev/src/pa11_semantic_core.cpp`
+- `dev/src/pa11_semantic_model.h`
+- `dev/src/pa12_semantic_construction.cpp`
+- `dev/src/pa12_semantic_facts.cpp`
+- `dev/src/pa15_lowering.h`
+- `dev/src/pa15_lowering.cpp`
+- `dev/src/pa15_lowering_calls.cpp`
+- `cppgm.tests/course/pa16/430-typed-unnamed-namespace-per-parent-regression.sh`
+- `pa16/plan.md`
 
-1. `pa16/tests/general/200-local-default-class-array-lifecycle.t`
-2. `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
-3. `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
-4. `pa16/tests/general/300-friend-function-definition-skip.t`
-5. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
-6. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
-7. `pa16/tests/general/400-signed-bit-field-read.t`
-8. `pa16/tests/general/400-signed-enum-bit-field-read.t`
+The bounded course regression uses two named namespaces, an unnamed namespace
+reopen under the first parent, and internal globals/friends/constructors.  It
+checks one fixed ABI component, internal bindings, and one definition per
+entity.  No handout test, `.ref`, exit-status sidecar, comparator, harness, or
+fixture changed.  Remaining uncertainty is limited to the seven pre-existing
+residual identities and unmeasured timing/RSS; no C++11/PA16 contract conflict
+was found.
 
-The nested-braced target is outside that residual set and passes focused
-validation below.  Prior-through and file-audit results were reused at turn
-start, then freshly rerun after the audit repair.  No added pass changes the
-failure ceiling or coverage requirement.
+## Performance Evidence
 
-## Current audit milestone
+New scope work is O(1) per consumed scope: parent-keyed unnamed-scope reuse,
+one typed unnamed fact, and one O(1) propagated internal-linkage bit.  PA12
+adds one constructor action/base-entry relation per actual qualifying demand.
+PA15 uses existing dense binding/function/fact worklists; the new code adds no
+O(F) reorder pass, and ordinary collection order remains canonicalized by the
+existing top-level entry handling.  New work is therefore linear in consumed
+typed scopes/bindings/functions/actions/edges, plus the existing owner-component
+rendering path; the fixed ABI component adds no scope/name search.
 
-The landed checkpoint is `2e48cd6dd87726828ee329d6b47e89435d964fc0`, relative
-to parent `67d8f53b`.  The reviewed implementation boundary is
-`dev/src/pa10_ast.cpp`, `dev/src/pa10_renderer.cpp`,
-`dev/src/pa12_semantic_aggregate.cpp`, `dev/src/pa15_lowering.h`,
-`dev/src/pa15_lowering_aggregate.cpp`,
-`dev/src/pa15_lowering_construction.cpp`, and regression 429.  This audit's
-documentation boundary additionally includes this plan and `pa16/audit.md`.
+Measured structural evidence is the bounded two-parent/reopen regression;
+`sh -n` and the regression both pass.  No timing or RSS claim is made.
 
-The repair makes the constructor no-op memo explicitly two-dimensional:
-`(FunctionFactId, require_empty_parameters)`.  The old single vector was not
-call-order independent: an empty user constructor with parameters is false
-when the policy requires an empty signature and true when typed parameters are
-allowed, while the old complete-cache branch ignored the policy on later
-calls.  The policy-separated dense caches preserve cycle invalidation for both
-queries.  The aggregate suppression proof now also requires exact action type,
-valid binding/layout ownership, and the selected binding's hidden-object
-callable signature and parameter edges.
+The post-correction commands and results are: `make build` exit 0; active
+focused check `1/1`; eight relevant named/unnamed namespace,
+lifecycle/hidden-friend controls `8/8`; `make test-pa16` exit 2 with
+`236/243` and the seven residuals above; exact PA15 prior gate exit 0 with
+`1167/1167`; `perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src`
+exit 0 with six existing warnings; and no prohibited paths in the diff.
 
-The side-effect-free recursion validates fact/child ranges and types, rejects
-volatile facts, calls, assignments, increment/decrement, identifiers, and
-unknown kinds conservatively, and treats cycles as effectful.  Only a complete,
-memberless, non-union class with a non-synthetic empty-body constructor and
-typed side-effect-free arguments can be suppressed.  Member projection/address
-calculation remains before that final suppression decision; arrays, ordinary
-zero-initialization, nonempty members, volatile reads, effectful arguments, and
-effectful constructor bodies remain observable.
+## Checkpoint Ledger
 
-## Structural performance evidence
-
-The parser creates one braced AST node and PA12 performs one typed argument
-forwarding pass.  Constructor selection retains its existing `O(C*A)`
-candidate/argument work.  PA15 uses one memo/visiting map-set traversal over
-reachable typed facts, structurally `O((A+E) log(A+E))` with `O(A+E)` temporary
-storage; the constructor no-op policy caches are dense `O(F)` per policy and
-the zero-initialization cache is dense `O(T)`.  Regression 429 uses a fixed
-64-argument member constructor and checks pure projection retention,
-side-effecting argument evaluation, an effectful constructor body, and a
-volatile read.  These are structural bounds and bounded scale evidence only;
-there is no timing or RSS claim.
-
-## Focused and final-gate evidence
-
-The following commands were run after the repair:
-
-```text
-make build                                                        # exit 0
-sh -n cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
-                                                                    # exit 0
-sh cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
-                                                                    # PASS
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-nested-braced-member-aggregate-init.t'
-                                                                    # PASS (1/1)
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-aggregate-class-member-subobject-init-target.t tests/general/200-member-initializer-aggregate-member.t tests/general/200-aggregate-array-member-brace-elision.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/spec/200-direct-list-init-explicit-ctor.t tests/general/200-copy-list-init-explicit-ctor-bad.t'
-                                                                    # PASS (6/6)
-sh cppgm.tests/course/pa16/409-typed-constructor-boundary-regression.sh
-                                                                    # exit 0 (silent)
-sh cppgm.tests/course/pa16/429-nested-braced-aggregate-member-regression.sh
-                                                                    # PASS
-make test-pa16                                                     # exit 2; 235 / 243
-n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
-                                                                    # exit 0; 1167 / 1167
-perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src
-                                                                    # exit 0; 6 warnings, no fatals
-git diff --check                                                   # exit 0
-```
-
-The fresh PA16 failure set equals the turn-start authority: `8` versus `8`,
-with `authority-only=0` and `fresh-only=0`.  Identity coverage is complete at
-`243/243`; missing and unexpected identities are `0/0`.  The file-audit
-warnings are the six existing `bad-division` findings in
-`dev/src/abi_mangle.h`, `dev/src/cpp_semantic_core.h`, `dev/src/lowir_model.h`,
-`dev/src/pa11_semantic_model.h`, `dev/src/pa12_semantic_selection.h`, and
-`dev/src/pa15_lowering.h`.  No handout test, fixture, reference,
-exit-status sidecar, harness, comparator, generated output, source-set file,
-or unrelated residual owner was changed.
-
-## Uncertainties and next checkpoint
-
-The full eight-owner failure map is unchanged by fresh comparison.  The no-op
-proof deliberately does not cover unsupported temporary/copy paths or
-constructors with bodies/actions, and no claim is made for unrelated residuals.
-The six file-audit warnings are known header findings, not checkpoint defects;
-no in-scope correctness uncertainty remains.  PA16 remains incomplete.  Next
-checkpoint: `200-local-default-class-array-lifecycle.t`, the first residual
-owner.
-
-## Checkpoint ledger
-
-| checkpoint | compact result |
+| checkpoint | compact state |
 |---|---|
-| d54e32d1 | Authority was 224/243 with 19 failures and complete identity coverage. |
-| b58ddd2a | Typed `nullptr_t` carrier path completed through PA11/PA12/PA15. |
-| e09d8223 | Recorded nullptr state: 225/243 authority, 18 residual failures, 243/243 inventories. |
-| d5bf2600 | Typed constructor-overload/lifetime audit reached 227/243 with 16 residual failures. |
-| 29d9c4ce | PA10 elaborated-member parameter repair/PA15 ABI ownership reached 228/243 with 15 residuals. |
-| 69bbe800 | Empty-base layout/address projection reached 230/243 with 13 residuals. |
-| 75f7944a | Empty-base identity validation audit completed; through-PA15 remained 1167/1167. |
-| 2ca2323a | Clean turn-start state; baseline 230/243 and exact 13-item map. |
-| 2cfa1111 | Final committed UDL checkpoint: PA16 231/243, exact 12 failures, 243/243 coverage. |
-| 4a5bbdd5 | Clean turn-start baseline: PA16 231/243 with complete 243/243 coverage. |
-| `617c137a` typed object-call boundary checkpointAudit | Completed committed audit/repair at 234/243 with the exact unchanged nine residual identities and complete coverage. |
-| `2e48cd6d` nested-braced aggregate-member checkpoint | Completed bounded audit/repair and documentation: fresh PA16 is exit `2` at `235/243` with the exact unchanged eight residual identities and `243/243` coverage; authority-only/fresh-only are `0/0`; through-PA15 is `1167/1167`; file audit exits `0` with six known header warnings; focused target/control checks are `1/1` and `6/6`, course 409 exits `0`, and regression 429 plus syntax pass. PA16 remains incomplete. |
+| prior `2e48cd6d` | Nested braced aggregate-member checkpoint; historical PA16 authority `235/243`, eight residuals, and `243/243` identity coverage. |
+| HEAD `542b136a` | Clean turn-start authority `235/243`, complete `243/243` identity coverage, exactly the eight failures in the map. |
+| corrected uncommitted checkpoint | Active target resolved; fresh PA16 `236/243` with exactly seven residual identities and full `243/243` coverage; PA1–PA15 `1167/1167`; build, focused controls, course regression, and file audit pass. Commit-ready after final diff/stage/clean-status evidence. |
