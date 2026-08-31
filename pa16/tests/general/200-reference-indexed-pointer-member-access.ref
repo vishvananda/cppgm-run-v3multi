@@ -8,11 +8,12 @@ function @read(%elements : ptr, %subscript : ptr [pass=reference]) -> i32 [bindi
     %t1 = load ptr $elements
     %t2 = load ptr $subscript
     %t3 = load i32 %t2
-    %t4 = binary mul i64 %t3, 4
-    %t5 = index i8 [projection=array_element] %t1, %t4
-    %t6 = index i8 [projection=field] %t5, 0
-    %t7 = load i32 %t6
-    return i32 %t7
+    %t4 = convert sext i64 i32 %t3
+    %t5 = binary mul i64 %t4, 4
+    %t6 = index i8 [projection=array_element] %t1, %t5
+    %t7 = index i8 [projection=field] %t6, 0
+    %t8 = load i32 %t7
+    return i32 %t8
 }
 function @main() -> i32 [role=entry, binding=strong, keep_alias=yes] {
   slot $values : obj<4x4>

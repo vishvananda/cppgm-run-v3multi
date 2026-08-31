@@ -1261,4 +1261,176 @@ void Pa15Lowerer::initialize_aggregate_value(
 	if (next_element != element_count) throw std::runtime_error("PA15 aggregate member sparse index is invalid");
 }
 
+void Pa15Lowerer::append_constructor_cleanup(ArrayCleanupChain* cleanup,
+	const ConstructedElement& element)
+{
+	if (cleanup == NULL)
+		throw std::runtime_error("PA15 constructor cleanup chain is missing");
+	if (!element.destructor.valid()) return;
+	const BlockId saved_current = current_block_id();
+	if (!cleanup->base.valid())
+	{
+		cleanup->base = block_id(new_block("array_ctor_cleanup_base"));
+		set_current(cleanup->base);
+		Instruction resume;
+		resume.kind = Instruction::IK_RESUME;
+		block().instructions.push_back(resume);
+	}
+	const BlockId prior = cleanup->head.valid() ? cleanup->head : cleanup->base;
+	const BlockId node = block_id(new_block("array_ctor_cleanup"));
+	set_current(node);
+	emit_destructor_call(element.destructor,
+		recompute_constructed_element_address(element));
+	emit_jump(prior);
+	cleanup->head = node;
+	if (saved_current.valid()) set_current(saved_current);
+	else current_block_ = InvalidIdentityValue;
+}
+
+void Pa15Lowerer::materialize_constructor_cleanup(ArrayCleanupChain* cleanup,
+	const std::vector<ConstructedElement>& completed)
+{
+	if (cleanup == NULL || cleanup->materialized > completed.size())
+		throw std::runtime_error("PA15 constructor cleanup prefix is invalid");
+	for (std::size_t i = cleanup->materialized; i < completed.size(); ++i)
+	{
+		append_constructor_cleanup(cleanup, completed[i]);
+		++cleanup->materialized;
+	}
+}
+
+void Pa15Lowerer::emit_constructor_elements(TypeId target,
+	const LoweredValue& destination, BindingId constructor,
+	std::size_t argument_begin, std::size_t argument_count,
+	const std::vector<SemanticFactId>* semantic_arguments,
+	ArrayCleanupChain* cleanup,
+	std::vector<ConstructedElement>* completed,
+	bool value_initialize,
+	const ArrayAddressRoot& root,
+	const std::vector<ConstructorAddressStep>& path,
+	bool destination_deferred, bool constructor_may_throw)
+{
+	if (!destination_deferred && !destination.type.is_pointer())
+		throw std::runtime_error("PA15 array constructor target is not addressable");
+	if (cleanup == NULL)
+		throw std::runtime_error("PA15 array constructor cleanup chain is missing");
+	std::vector<ConstructedElement> local_completed;
+	if (completed == NULL)
+	{
+		local_completed.reserve(1);
+		completed = &local_completed;
+	}
+	const TypeId object = model_.strip_cv_type(
+		model_.expression_object_type(target));
+	if (!object.valid() || object.value >= model_.types_.size())
+		throw std::runtime_error("PA15 array constructor target is invalid");
+	if (model_.type_kind(object) == TypeKind::Array)
+	{
+		const TypeKey& array = model_.types_[object.value];
+		if (array.unknown_bound || array.bound.value > static_cast<std::size_t>(
+			std::numeric_limits<long long>::max()))
+			throw std::runtime_error("PA15 array constructor bound is invalid");
+		LoweredValue sequence;
+		if (!destination_deferred)
+			sequence = emit_decay(destination);
+		for (std::size_t i = 0; i < array.bound.value; ++i)
+		{
+			const TypeId child = array.child;
+			std::vector<ConstructorAddressStep> element_path = path;
+			element_path.push_back(ConstructorAddressStep(BindingId(), i, true));
+			const bool defer_element = !completed->empty() &&
+				constructor_may_throw;
+			LoweredValue element;
+			if (defer_element)
+			{
+				// The terminal constructor emits its own address after installing
+				// the matching handler.  Do not let an address producer from this
+				// normal block become an exception-edge input.
+			}
+			else if (destination_deferred)
+			{
+				const ConstructedElement address_root(root, element_path);
+				element = recompute_constructed_element_address(address_root);
+			}
+			else if (i != 0)
+			{
+				const ConstructedElement address_root(root, element_path);
+				element = recompute_constructed_element_address(address_root);
+			}
+			else
+				element = emit_index(sequence, emit_array_element_offset(object, i),
+					array_element_instruction_type(child),
+					lowir_model::IPK_ARRAY_ELEMENT);
+			emit_constructor_elements(child, element, constructor,
+				argument_begin, argument_count, semantic_arguments,
+				cleanup, completed, value_initialize, root, element_path,
+				defer_element, constructor_may_throw);
+		}
+		return;
+	}
+	const NamedRecordId record = model_.class_record_for_object_type(object);
+	if (!record.valid() || record.value >= model_.named_.size() ||
+		model_.named_[record.value].class_tag == ClassTag::Union)
+		throw std::runtime_error("PA15 array constructor element is not a class");
+	const FunctionFact& constructor_function =
+		checked_constructor_function(constructor, record);
+	const ConstructedElement completed_element(root, path,
+		model_.destructor_binding(record), record);
+	LoweredValue call_destination = destination;
+	if (destination_deferred && value_initialize &&
+		constructor_function.synthetic)
+		call_destination = recompute_constructed_element_address(
+			completed_element);
+	if (value_initialize && constructor_function.synthetic)
+		zero_initialize_value_initialized_object(object, call_destination);
+	const FunctionFactId* constructor_id =
+		model_.function_binding_fact_index_.find(constructor);
+	const bool no_op = constructor_function.synthetic && constructor_id != NULL &&
+		constructor_id->valid() && constructor_id->value <
+		model_.function_facts_.size() && constructor_function_is_noop(*constructor_id);
+	const bool throwing = constructor_may_throw;
+	bool emitted = false;
+	if (!no_op && throwing && !completed->empty())
+	{
+		materialize_constructor_cleanup(cleanup, *completed);
+		if (cleanup->head.valid())
+		{
+			const BlockId dispatch = cleanup->head;
+			const BlockId continuation =
+				block_id(new_block("array_ctor_continue"));
+			Instruction eh;
+			eh.kind = Instruction::IK_EH_TRY;
+			eh.first = block_operand(dispatch);
+			block().instructions.push_back(eh);
+			const LoweredValue eh_destination = destination_deferred ?
+				recompute_constructed_element_address(completed_element) : destination;
+			if (semantic_arguments != NULL)
+				emit_constructor_call(constructor, eh_destination,
+					*semantic_arguments);
+			else
+				emit_constructor_call(constructor, eh_destination,
+					argument_begin, argument_count);
+			Instruction end;
+			end.kind = Instruction::IK_EH_END;
+			block().instructions.push_back(end);
+			emit_jump(continuation);
+			set_current(continuation);
+			emitted = true;
+		}
+	}
+	if (!no_op && !emitted)
+	{
+		if (destination_deferred && !call_destination.type.is_pointer())
+			call_destination = recompute_constructed_element_address(
+				completed_element);
+		if (semantic_arguments != NULL)
+			emit_constructor_call(constructor, call_destination,
+				*semantic_arguments);
+		else
+			emit_constructor_call(constructor, call_destination,
+				argument_begin, argument_count);
+	}
+	completed->push_back(completed_element);
+}
+
 } // namespace pa11_semantic_internal

@@ -66,6 +66,13 @@ bool special_member_is_destructor(const PA10AstNode& node)
 	return false;
 }
 
+bool is_body_bearing_function_node(const PA10AstNode* node)
+{
+	return node != NULL &&
+		(node->kind == PA10NodeKind::FunctionDefinition ||
+			node->kind == PA10NodeKind::SpecialMemberDefinition);
+}
+
 }
 
 TypeId PA11SemanticModel::named_type(NamedRecordId named) const
@@ -1555,8 +1562,7 @@ void PA11SemanticModel::CanonicalTruthFinalizer::initialize_domain()
 	for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 	{
 		const FunctionFact& function = model_.function_facts_[i];
-		if (function.node == NULL ||
-			function.node->kind != PA10NodeKind::FunctionDefinition)
+		if (!is_body_bearing_function_node(function.node))
 			continue;
 		const FunctionFactId id(i);
 		defined_functions_.push_back(id);
@@ -1736,8 +1742,7 @@ void PA11SemanticModel::CanonicalTruthFinalizer::build_return_owner_edges()
 				"PA12 retained return owner result is not a return statement");
 		const FunctionFact& source_function =
 			model_.function_facts_[function.value];
-		if (source_function.node == NULL ||
-			source_function.node->kind != PA10NodeKind::FunctionDefinition ||
+		if (!is_body_bearing_function_node(source_function.node) ||
 			!source_function.body_fact.valid() ||
 			source_function.body_fact.value >= semantic_count_ ||
 			!source_function.binding.valid() ||
