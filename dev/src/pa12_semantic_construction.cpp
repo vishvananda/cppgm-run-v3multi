@@ -195,6 +195,32 @@ bool PA11SemanticModel::semantic_class_object_initializer(
 	if (context != ConstructorInitializationContext::Direct &&
 		has_constructor_declaration(record) && !aggregate)
 	{
+		// A same-class functional construction in a copy initializer already
+		// owns the constructor selection and can initialize the destination
+		// directly.  Preserve its typed argument facts (especially Box&) instead
+		// of treating the prvalue Holder as an argument to Holder's copy
+		// constructor.
+		if (clause->kind == PA10NodeKind::CallExpression &&
+			clause->children.size() == 2 &&
+			(clause->children.back().kind == PA10NodeKind::ArgumentList ||
+				clause->children.back().kind == PA10NodeKind::ParenArgumentList))
+		{
+			TypeId functional_target;
+			if (functional_cast_target(clause->children.front(), access_scope,
+				&functional_target) &&
+				class_record_for_object_type(functional_target) == record)
+			{
+				const PA10AstNode& argument_list = clause->children.back();
+				std::vector<const PA10AstNode*> arguments;
+				arguments.reserve(argument_list.children.size());
+				for (std::size_t i = 0; i < argument_list.children.size(); ++i)
+					arguments.push_back(&argument_list.children[i]);
+				set_semantic_children(variable, std::vector<SemanticFactId>(1,
+					semantic_constructor_action(storage, source, arguments,
+						access_scope, ConstructorInitializationContext::Direct)));
+				return true;
+			}
+		}
 		std::vector<const PA10AstNode*> arguments;
 		if (clause->kind == PA10NodeKind::BracedInitList)
 		{

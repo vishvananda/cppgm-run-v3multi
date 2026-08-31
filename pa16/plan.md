@@ -1,93 +1,114 @@
-# PA16 typed user-defined-literal checkpoint
+# PA16 typed object-call candidate/result checkpoint
 
 ## Stage Design
 
-The posttoken collector owns decoded `UserDefinedLiteralData` (kind, suffix,
-prefix/value).  PA10 transfers each occurrence once into a sparse typed
-sidecar range; source spelling remains presentation text only.  PA11 owns
-literal-operator declaration identity, namespace-scope ownership, C++11
-non-template parameter legality, and suffix matching through the shared
-namespace/value indexes and ordinary using-directive lookup.  PA12 forms the
-cooked string array/size arguments, admits only the canonical non-variadic
-`const decoded-element*`/`unsigned long` signature, filters legal other-form
-same-suffix entries, applies normal typed call selection and conversions, and records
-the selected call.  PA15 consumes that call and its conversion/address facts
-through existing typed call and literal-storage lowering.  No suffix/value
-reparsing, parallel semantic path, retained whole-program scan, or
-host/reference invocation is introduced.  This follows
-`spec.md` Purpose and §§1–5,7: one forward pipeline, typed fact continuity,
-canonical owners, demand-driven lookup, bounded work, and an auditable
-typed-to-emission path.
+PA11 publishes canonical function types, reference-qualified parameter facts,
+member origins, and using-declaration access views.  PA12 owns the typed
+object-call boundary: it normalizes direct/imported member signatures, gathers
+reachable candidates, ranks conversions, and publishes selected argument,
+binding, result type, and value-category facts.  Its transient signature key is
+a non-owning view over a canonical `TypeKey`; it includes parameter TypeIds,
+function cv, variadic state, and static/non-static category, while excluding
+return type.  Constructor storage actions, overloaded assignment calls, and
+static-member calls consume that same selection boundary; PA15 lowers the
+resulting typed facts.  The pipeline has one forward path with no reparse,
+parallel lookup, or host/reference compiler invocation, following `spec.md`
+Purpose and §§1–5,7.
 
 ## Failure Map
 
-Turn-start authority was 231/243 with complete 243/243 coverage and exactly
-these 12 failures:
+Turn-start authority was `231/243` with complete `243/243` identity coverage
+and exactly these 12 failures:
 
-- `pa16/tests/general/200-local-default-class-array-lifecycle.t`
-- `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
-- `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
-- `pa16/tests/general/200-reference-member-class-init.t`
-- `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
-- `pa16/tests/general/300-friend-function-definition-skip.t`
-- `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
-- `pa16/tests/general/300-overloaded-deref-user-assignment.t`
-- `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t`
-- `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
-- `pa16/tests/general/400-signed-bit-field-read.t`
-- `pa16/tests/general/400-signed-enum-bit-field-read.t`
+1. `pa16/tests/general/200-local-default-class-array-lifecycle.t`
+2. `pa16/tests/general/200-nested-braced-member-aggregate-init.t`
+3. `pa16/tests/general/200-reference-indexed-pointer-member-access.t`
+4. `pa16/tests/general/200-reference-member-class-init.t` [PA12 no viable function]
+5. `pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t`
+6. `pa16/tests/general/300-friend-function-definition-skip.t`
+7. `pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`
+8. `pa16/tests/general/300-overloaded-deref-user-assignment.t` [PA12 invalid conversion]
+9. `pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t` [PA12 ambiguous function call]
+10. `pa16/tests/general/400-bit-field-prefix-postfix-increment.t`
+11. `pa16/tests/general/400-signed-bit-field-read.t`
+12. `pa16/tests/general/400-signed-enum-bit-field-read.t`
 
-The final authority and fresh runs both cover `243/243` identities.  The
-normalized failure map is unchanged: all 12 entries above remain outside this
-checkpoint, with no fresh-only or authority-only identity.
+All `243/243` identities remain represented; this checkpoint must not alter
+coverage or hide any authority failure.
 
 ## Active Checkpoint
 
-Audit and complete the C++11 cooked string UDL expression pipeline for
-`operator ""_pick(const char*, size_t)`, including block `using namespace`
-visibility, suffix-aware merging in the shared literal-operator lookup bucket,
-canonical signature/owner validation, malformed-declaration rejection, legal
-other-form filtering, normal selection/conversion facts,
-literal storage/address bytes, and ABI suffix emission.  The bounded repair
-separates ordinary source names from the internal lookup bucket and filters
-before scope shadowing.  Regression 427 checks `_other`, 64 visible
-`_slot00`--`_slot63` suffixes, a late `_slot63` selection, early-shadow
-fallback, legal-other-form filtering, malformed declaration rejection,
-ordinary `operatorliteral` collision,
-and class/function-scope rejection.
+Complete the shared typed PA11/PA12 object-call boundary for failures 4, 8,
+and 9.  A same-class functional construction in copy initialization must
+retain its selected constructor's ordinary lvalue-reference argument binding;
+simple assignment must probe the selected `operator=` after an overloaded
+unary `operator*` publishes an `Iter&` lvalue result; and a direct derived
+member declaration must suppress an imported base candidate with the same
+function signature, including static members.  PA11 remains the typed-fact
+producer, PA12 remains candidate/viability/ranking owner, and PA15 remains a
+typed consumer.  No other PA16 failure owner is in scope.
 
 ## Performance Evidence
 
-The implementation performs O(1) typed sidecar transfer per UDL, reachable
-scope-graph plus visible-candidate work for suffix filtering, expected O(C)
-candidate deduplication, and existing candidate-by-argument selection.  It
-adds no persistent transitive closure or whole-program retry.  Regression 427
-generates 64 declaration/definition pairs, observes 64 unique `_slot` ABI
-symbols, selects late `_slot63`, and executes the early-shadow,
-legal-other-form, malformed-declaration, scope-negative, and bucket-collision
-controls.  This is
-structural bounded-work evidence only; no timing or RSS claim is made.
+For each static/non-static candidate query, the member boundary builds one
+direct-signature index and makes one ordered candidate pass.  The non-owning
+key hashes/equates the canonical parameter TypeIds, cv, variadic state, and
+category, so it avoids per-candidate owning parameter-vector copies; its
+expected normalization cost is `O(C*A)`, followed by the existing `O(C*A)`
+argument-conversion work for `C` reachable candidates and `A` parameters or
+arguments, with `O(D)` transient index entries for `D` direct declarations.
+Separate category filtering prevents one collection from erasing the only
+candidate in the other.  Regression 428 publishes 64 base and 65 derived
+`choose` candidates, selects the late direct `tag63*` result and the imported
+non-colliding `tag62*` result, and runs Holder, Iter, scalar, pointer, and
+non-convertible overloaded-assignment rejection controls through repository
+LowIR tools.  This is structural evidence only; no timing or RSS claim is
+made.
 
 ## Focused Evidence
 
-The final focused build and checks pass:
+The checkpoint-start three targets failed with the listed PA12 diagnostics.
+The exact correction and focused evidence is:
 
 ```text
-git diff --check
-sh -n cppgm.tests/course/pa16/427-typed-user-defined-literal-boundary-regression.sh
 make -C dev cppgm++
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/300-user-defined-string-literal-operator.t
-make -C pa10 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/200-literal-operator-id.t
-make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST=tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
-sh cppgm.tests/course/pa16/427-typed-user-defined-literal-boundary-regression.sh
+sh -n cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh
+sh cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh
 ```
 
-Results are respectively `exit 0`, `exit 0`, `exit 0`, `PASS (1/1)`,
-`PASS (1/1)`, `PASS (1/1)`, and `PASS`.  Full PA16 exits `2` at `231/243`
-with the exact 12-item authority map and `243/243` coverage.  Normalized
-comparison is `12/12`, fresh-only/authority-only `0/0`, inventories
-`243/243/243`; through-PA15 is `1167/1167`.  The final file audit exits `0`
-with six known nonfatal `bad-division` warnings, and diff/path audits pass.
+These exit `0`; 428 reports `PASS`, including typed publication `64/65`,
+LowIR/CY86 runtime success, scalar and pointer builtin assignment controls,
+and EXIT_FAILURE for the non-convertible `operator=(int)` pointer-argument
+control.  The focused PA16 check below passes `14/14`, and the focused PA15
+check passes `4/4`:
+
+```text
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-reference-member-class-init.t tests/general/300-overloaded-deref-user-assignment.t tests/general/300-using-base-static-same-signature-derived-preferred.t tests/general/300-reference-member-same-name-as-class.t tests/general/300-overloaded-unary-deref-base-ref-return.t tests/general/300-subobject-member-deref-after-prefix-decrement.t tests/general/300-using-base-same-signature-derived-preferred.t tests/general/300-value-init-empty-functional-cast-aggregate.t tests/general/200-copy-init-explicit-ctor-overload-refinement.t tests/general/200-static-nonstatic-same-pointer-signature.t tests/general/300-basic-operator-overloads.t tests/general/300-member-binary-operator-eq.t tests/general/300-member-binary-operator-ne-wrapper.t tests/general/300-compound-assignment-adl-nonmember-after-member-reject.t'
+make -C pa15 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-scalar-assignment-address-lvalue.t tests/general/200-pointer-compound-assignment-scale.t tests/general/200-prefix-pointer-decrement-reference-argument.t tests/general/200-global-pointer-array-nullptr-init.t'
+```
+
+The authorized broad evidence is:
+
+```text
+make test-pa16
+```
+
+This exits `2` at `234/243`: all 243 identities are enumerated, the repaired
+failures 4, 8, and 9 are absent, and the exact residual map is 1, 2, 3, 5,
+6, 7, 10, 11, and 12 above.  No new failure identity appears.  The required
+through report exits `0` with `1167/1167`:
+
+```text
+n=16; if [ "$n" -le 1 ]; then echo '===== ALL TESTS PASSED SUCCESSFULLY! (0/0) ====='; else make test-report-through-pa$((n - 1)); fi
+```
+
+`perl scripts/cppgm_file_audit.pl --stage pa16 --paths dev/src` exits `0`
+with six existing `bad-division` warnings for `abi_mangle.h`,
+`cpp_semantic_core.h`, `lowir_model.h`, `pa11_semantic_model.h`,
+`pa12_semantic_selection.h`, and `pa15_lowering.h`.  The repeated 428
+`sh -n` and runtime checks exit `0`, and `git diff --check` is clean.  The
+bounded changed-path audit contains only the three PA12 sources, this plan,
+and `cppgm.tests/course/pa16/428-typed-object-call-candidate-boundary-regression.sh`.
 
 ## Checkpoint Ledger
 
@@ -101,4 +122,6 @@ with six known nonfatal `bad-division` warnings, and diff/path audits pass.
 | 69bbe800 | Empty-base layout/address projection reached 230/243 with 13 residuals. |
 | 75f7944a | Empty-base identity validation audit completed; through-PA15 remained 1167/1167. |
 | 2ca2323a | Clean turn-start state; baseline 230/243 and exact 13-item map. |
-| 2cfa1111 | Final committed checkpoint audit: suffix-aware lookup and ordinary/internal separation, canonical PA11 namespace/linkage and non-template parameter validation, PA12 legal-other-form filtering, durable 427 malformed-declaration controls, PA16 `231/243` with exact unchanged 12 failures and `243/243` coverage, authority/fresh `12/12` with fresh-only/authority-only `0/0`, discovered/reference/fresh `243/243/243`, through-PA15 `1167/1167`, and file audit `0` with six known warnings. |
+| 2cfa1111 | Final committed UDL checkpoint: PA16 231/243, exact 12 failures, 243/243 coverage, through-PA15 1167/1167, and file audit 0 with six known warnings. |
+| 4a5bbdd5 | Clean turn-start baseline: PA16 231/243 with complete 243/243 coverage; through-PA15 and file audit passed. |
+| PA16 typed object-call boundary | Final `234/243` with residual failures 1, 2, 3, 5, 6, 7, 10, 11, and 12; complete `243/243` identity coverage; through-PA15 `1167/1167`; audit exit `0` with six known warnings; 428 and focused controls pass. Committed in this checkpoint. |

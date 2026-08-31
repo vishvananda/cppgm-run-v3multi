@@ -1621,8 +1621,31 @@ ExprInfo PA11SemanticModel::semantic_assignment_expression(const PA10AstNode& no
 	const TypeId right_operation = integral_id(right.type) ?
 		integral_operation_type(right) : right.type;
 	if (node.token == SimpleTokenType::OP_ASS)
-		apply_context_conversion(right, target, semantic_facts_[right.fact.value].source,
-			scope);
+	{
+		// Simple assignment has the same typed operator boundary as compound
+		// assignment.  Probe it before the builtin conversion so an lvalue
+		// result such as Iter& from operator* remains the member object and
+		// selects Iter::operator=(int).
+		std::vector<TypeId> associated_objects;
+		associated_objects.push_back(left.type);
+		associated_objects.push_back(right.type);
+		std::vector<const PA10AstNode*> member_nodes(1, &node.children[1]);
+		std::vector<ExprInfo> member_arguments(1, right);
+		std::vector<const PA10AstNode*> nonmember_nodes;
+		nonmember_nodes.push_back(&node.children[0]);
+		nonmember_nodes.push_back(&node.children[1]);
+		std::vector<ExprInfo> nonmember_arguments;
+		nonmember_arguments.push_back(left);
+		nonmember_arguments.push_back(right);
+		const ExprInfo overloaded = semantic_operator_call(node, scope,
+			PA10OperatorFunctionKind::Token, node.token, left,
+			associated_objects, member_nodes, member_arguments,
+			nonmember_nodes, nonmember_arguments);
+		if (overloaded.fact.valid())
+			return overloaded;
+		apply_context_conversion(right, target,
+			semantic_facts_[right.fact.value].source, scope);
+	}
 	else
 	{
 		// Compound assignment operators have the same ordinary overloaded

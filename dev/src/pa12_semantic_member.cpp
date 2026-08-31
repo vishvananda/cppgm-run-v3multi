@@ -6,6 +6,65 @@ namespace pa11_semantic_internal
 {
 using namespace pa11_semantic_storage;
 
+namespace
+{
+
+// A using-declaration contributes the base binding to the derived value list,
+// but a direct declaration with the same member-function signature hides that
+// imported candidate.  The view points into the append-only type arena; these
+// const candidate queries do not grow that arena, so no parameter vector is
+// copied into the transient index.  Return type is deliberately absent: it is
+// not part of the overload signature used by this lookup boundary.
+struct MemberFunctionSignatureKey
+{
+	const TypeKey* function;
+	bool static_member;
+
+	MemberFunctionSignatureKey(const TypeKey* function = NULL,
+		bool static_member = false)
+		: function(function), static_member(static_member)
+	{}
+
+	bool operator==(const MemberFunctionSignatureKey& other) const
+	{
+		if (static_member != other.static_member)
+			return false;
+		if (function == NULL || other.function == NULL)
+			return function == other.function;
+		return function->kind == other.function->kind &&
+			function->cv == other.function->cv &&
+			function->variadic == other.function->variadic &&
+			function->parameters == other.function->parameters;
+	}
+};
+
+struct MemberFunctionSignatureHash
+{
+	std::size_t operator()(const MemberFunctionSignatureKey& key) const
+	{
+		std::size_t result = key.static_member ? 1 : 0;
+		if (key.function == NULL)
+			return result;
+		result = TypeKeyHash::combine(result,
+			static_cast<std::size_t>(key.function->kind));
+		result = TypeKeyHash::combine(result, key.function->cv);
+		result = TypeKeyHash::combine(result, key.function->variadic ? 1 : 0);
+		result = TypeKeyHash::combine(result, key.function->parameters.size());
+		for (std::size_t i = 0; i < key.function->parameters.size(); ++i)
+			result = TypeKeyHash::combine(result,
+				key.function->parameters[i].value);
+		return result;
+	}
+};
+
+MemberFunctionSignatureKey member_function_signature_key(
+	const TypeKey& function, bool static_member)
+{
+	return MemberFunctionSignatureKey(&function, static_member);
+}
+
+}
+
 NamedRecordId PA11SemanticModel::class_record_for_object_type(TypeId type) const
 {
 	if (!type.valid() || type.value >= types_.size())
@@ -1339,6 +1398,25 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 	const ValueList* values = scopes_[member_scope.value].values.find(name);
 	if (values == NULL)
 		return result;
+	FlatIndex<MemberFunctionSignatureKey, bool,
+		MemberFunctionSignatureHash> direct_signatures;
+	for (std::size_t i = 0; i < values->entries.size(); ++i)
+	{
+		const ValueEntry& entry = values->entries[i];
+		if (entry.origin != member_scope)
+			continue;
+		if (!entry.binding.valid() || entry.binding.value >= bindings_.size() ||
+			entry.binding.value >= binding_owners_.size() ||
+			binding_owners_[entry.binding.value] != member_scope)
+			throw std::runtime_error("PA12 direct member candidate owner is invalid");
+		const Binding& candidate = binding(entry.binding);
+		if (candidate.kind == BindingKind::Function && candidate.type.valid() &&
+			candidate.type.value < types_.size() &&
+			type_kind(candidate.type) == TypeKind::Function &&
+			!is_static_member(entry.binding))
+			direct_signatures.set(member_function_signature_key(
+				types_[candidate.type.value], false), true);
+	}
 	for (std::size_t i = 0; i < values->entries.size(); ++i)
 	{
 		const BindingId candidate_id = values->entries[i].binding;
@@ -1352,9 +1430,15 @@ std::vector<ValueRef> PA11SemanticModel::member_function_candidates_in_scope(
 		else if (values->entries[i].access_view_owner.valid())
 			throw std::runtime_error(
 				"PA12 unowned member access view is invalid");
-		if (candidate.kind == BindingKind::Function &&
-			type_kind(candidate.type) == TypeKind::Function &&
-			!is_static_member(candidate_id))
+		const bool function_candidate = candidate.kind == BindingKind::Function &&
+			candidate.type.valid() && candidate.type.value < types_.size() &&
+			type_kind(candidate.type) == TypeKind::Function;
+		if (function_candidate && !is_static_member(candidate_id) &&
+			values->entries[i].origin != member_scope &&
+			direct_signatures.find(member_function_signature_key(
+				types_[candidate.type.value], false)) != NULL)
+			continue;
+		if (function_candidate && !is_static_member(candidate_id))
 		{
 			const ScopeId owner = values->entries[i].origin.valid() ?
 				values->entries[i].origin : member_scope;
@@ -1381,6 +1465,25 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 	const ValueList* values = scopes_[member_scope.value].values.find(name);
 	if (values == NULL)
 		return result;
+	FlatIndex<MemberFunctionSignatureKey, bool,
+		MemberFunctionSignatureHash> direct_signatures;
+	for (std::size_t i = 0; i < values->entries.size(); ++i)
+	{
+		const ValueEntry& entry = values->entries[i];
+		if (entry.origin != member_scope)
+			continue;
+		if (!entry.binding.valid() || entry.binding.value >= bindings_.size() ||
+			entry.binding.value >= binding_owners_.size() ||
+			binding_owners_[entry.binding.value] != member_scope)
+			throw std::runtime_error("PA12 direct static candidate owner is invalid");
+		const Binding& candidate = binding(entry.binding);
+		if (candidate.kind == BindingKind::Function && candidate.type.valid() &&
+			candidate.type.value < types_.size() &&
+			type_kind(candidate.type) == TypeKind::Function &&
+			is_static_member(entry.binding))
+			direct_signatures.set(member_function_signature_key(
+				types_[candidate.type.value], true), true);
+	}
 	for (std::size_t i = 0; i < values->entries.size(); ++i)
 	{
 		const BindingId candidate_id = values->entries[i].binding;
@@ -1394,9 +1497,15 @@ std::vector<ValueRef> PA11SemanticModel::static_member_function_candidates_in_sc
 		else if (values->entries[i].access_view_owner.valid())
 			throw std::runtime_error(
 				"PA12 unowned static access view is invalid");
-		if (candidate.kind == BindingKind::Function &&
-			type_kind(candidate.type) == TypeKind::Function &&
-			is_static_member(candidate_id))
+		const bool function_candidate = candidate.kind == BindingKind::Function &&
+			candidate.type.valid() && candidate.type.value < types_.size() &&
+			type_kind(candidate.type) == TypeKind::Function;
+		if (function_candidate && is_static_member(candidate_id) &&
+			values->entries[i].origin != member_scope &&
+			direct_signatures.find(member_function_signature_key(
+				types_[candidate.type.value], true)) != NULL)
+			continue;
+		if (function_candidate && is_static_member(candidate_id))
 		{
 			const ScopeId owner = values->entries[i].origin.valid() ?
 				values->entries[i].origin : member_scope;
@@ -1797,7 +1906,11 @@ void PA11SemanticModel::validate_direct_static_member_call(
 		is_static_member(selected.binding);
 	if (qualified_class_member)
 	{
-		if (!selected_class_static || selected.scope != qualified_static_scope ||
+		const bool selected_qualified_owner = selected.scope ==
+			qualified_static_scope ||
+			(selected.has_access_override && selected.access_view_owner ==
+				qualified_static_scope);
+		if (!selected_class_static || !selected_qualified_owner ||
 			!member_accessible(selected.binding, selected.scope, access_scope,
 				TypeId(), selected.has_access_override,
 				selected.access_override, selected.access_view_owner))
