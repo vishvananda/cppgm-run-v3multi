@@ -1,15 +1,71 @@
 #include "pa11_semantic_model.h"
 
 #include <limits>
-#include <set>
 
 namespace pa11_semantic_internal
 {
 
+int compare_standard_conversion_components(
+	ConversionRankCategory left_category, ConversionKind left_kind,
+	unsigned int left_rank, unsigned int left_base_distance,
+	unsigned int left_added_cv, bool left_rvalue_reference,
+	ConversionRankCategory right_category, ConversionKind right_kind,
+	unsigned int right_rank, unsigned int right_base_distance,
+	unsigned int right_added_cv, bool right_rvalue_reference)
+{
+	const bool left_derived = left_kind == ConversionKind::DerivedToBase;
+	const bool right_derived = right_kind == ConversionKind::DerivedToBase;
+	// Preserve the established numeric ordering for pairs that contain no
+	// class adjustment, but retain the typed qualification subset when the
+	// score carries cv metadata (notably an implicit member object).  The
+	// category/path ordering below is for a candidate whose standard sequence
+	// includes DerivedToBase.
+	if (left_category != right_category)
+		return static_cast<int>(left_category) <
+			static_cast<int>(right_category) ? -1 : 1;
+	if (!left_derived && !right_derived)
+	{
+		if (left_rank == right_rank)
+		{
+			if (left_kind == ConversionKind::ReferenceBinding &&
+				right_kind == ConversionKind::ReferenceBinding &&
+				left_rvalue_reference != right_rvalue_reference)
+				return left_rvalue_reference ? -1 : 1;
+			const unsigned int left_extra = left_added_cv & ~right_added_cv;
+			const unsigned int right_extra = right_added_cv & ~left_added_cv;
+			if (left_extra != 0 && right_extra == 0)
+				return 1;
+			if (right_extra != 0 && left_extra == 0)
+				return -1;
+			return 0;
+		}
+		return left_rank < right_rank ? -1 : 1;
+	}
+	if (left_derived || right_derived)
+	{
+		// [over.ics.rank] gives a derived-to-base pointer/reference conversion
+		// precedence over the competing base/void conversion at this category.
+		if (left_derived != right_derived)
+			return left_derived ? -1 : 1;
+		if (left_base_distance != right_base_distance)
+			return left_base_distance < right_base_distance ? -1 : 1;
+		// Qualification is a subset ordering, not a bit-count ordering.
+		const unsigned int left_extra = left_added_cv & ~right_added_cv;
+		const unsigned int right_extra = right_added_cv & ~left_added_cv;
+		if (left_extra != 0 && right_extra == 0)
+			return 1;
+		if (right_extra != 0 && left_extra == 0)
+			return -1;
+		return 0;
+	}
+	return 0;
+}
+
 // [over.ics.rank] compares the standard/user-defined/ellipsis sequence
-// boundary before any legacy numeric rank.  The latter is the rank of the
-// first standard sequence inside a user-defined conversion and cannot order
-// two otherwise indistinguishable user-defined sequences.
+// boundary before any legacy numeric rank.  A user-defined score's legacy
+// rank is the first standard sequence, but [over.ics.rank] 13.3.3.2 p3 may
+// compare the second standard sequence when the same typed constructor is
+// used on both sides.
 int compare_conversion_scores(const ConversionScore& left,
 	const ConversionScore& right)
 {
@@ -28,50 +84,28 @@ int compare_conversion_scores(const ConversionScore& left,
 		if (left.rank_category != right.rank_category)
 			return left.rank_category == ConversionRankCategory::UserDefined ?
 				-1 : 1;
+		if (left.rank_category == ConversionRankCategory::UserDefined &&
+				left.user_defined_constructor.valid() &&
+				left.user_defined_constructor == right.user_defined_constructor &&
+				left.user_defined_target.valid() &&
+				left.user_defined_target == right.user_defined_target &&
+				!left.user_defined_ambiguous &&
+				!right.user_defined_ambiguous)
+			return compare_standard_conversion_components(
+				conversion_rank_category(left.kind, left.legacy_rank),
+				left.kind, left.legacy_rank, left.base_distance,
+				left.added_cv,
+				left.user_defined_second_rvalue_reference,
+				conversion_rank_category(right.kind, right.legacy_rank),
+				right.kind, right.legacy_rank, right.base_distance,
+				right.added_cv,
+				right.user_defined_second_rvalue_reference);
 		return 0;
 	}
-	const bool left_derived = left.kind == ConversionKind::DerivedToBase;
-	const bool right_derived = right.kind == ConversionKind::DerivedToBase;
-	// Preserve the established numeric ordering for pairs that contain no
-	// class adjustment, but retain the typed qualification subset when the
-	// score carries cv metadata (notably an implicit member object).  The
-	// category/path ordering below is for a candidate whose standard sequence
-	// includes DerivedToBase.
-	if (!left_derived && !right_derived)
-	{
-		if (left.legacy_rank == right.legacy_rank)
-		{
-			const unsigned int left_extra = left.added_cv & ~right.added_cv;
-			const unsigned int right_extra = right.added_cv & ~left.added_cv;
-			if (left_extra != 0 && right_extra == 0)
-				return 1;
-			if (right_extra != 0 && left_extra == 0)
-				return -1;
-			return 0;
-		}
-		return left.legacy_rank < right.legacy_rank ? -1 : 1;
-	}
-	if (left.rank_category != right.rank_category)
-		return static_cast<int>(left.rank_category) <
-			static_cast<int>(right.rank_category) ? -1 : 1;
-	if (left_derived || right_derived)
-	{
-		// [over.ics.rank] gives a derived-to-base pointer/reference conversion
-		// precedence over the competing base/void conversion at this category.
-		if (left_derived != right_derived)
-			return left_derived ? -1 : 1;
-		if (left.base_distance != right.base_distance)
-			return left.base_distance < right.base_distance ? -1 : 1;
-		// Qualification is a subset ordering, not a bit-count ordering.
-		const unsigned int left_extra = left.added_cv & ~right.added_cv;
-		const unsigned int right_extra = right.added_cv & ~left.added_cv;
-		if (left_extra != 0 && right_extra == 0)
-			return 1;
-		if (right_extra != 0 && left_extra == 0)
-			return -1;
-		return 0;
-	}
-	return 0;
+	return compare_standard_conversion_components(left.rank_category, left.kind,
+		left.legacy_rank, left.base_distance, left.added_cv, false,
+		right.rank_category, right.kind, right.legacy_rank,
+		right.base_distance, right.added_cv, false);
 }
 
 int compare_conversion_choices(const ConversionChoice& left,
@@ -122,82 +156,252 @@ bool PA11SemanticModel::supports_pa16_class_value_parameter(
 		strip_cv_type(expression_object_type(argument.type)) == parameter_object;
 }
 
-ConversionChoice PA11SemanticModel::implicit_constructor_conversion(
+void PA11SemanticModel::collect_implicit_constructor_candidates(
+	NamedRecordId record_id, ConstructorInitializationContext context,
+	std::vector<ValueRef>& candidates,
+	std::vector<NamedRecordId>& active) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		named_[record_id.value].kind != NamedKind::Class ||
+		named_[record_id.value].class_tag == ClassTag::Union)
+		throw std::runtime_error(
+			"PA12 implicit constructor candidate record is invalid");
+	const NamedRecord& record = named_[record_id.value];
+	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id ||
+		!record.name.valid())
+		throw std::runtime_error(
+			"PA12 implicit constructor candidate owner is invalid");
+	for (std::size_t i = 0; i < active.size(); ++i)
+		if (active[i] == record_id)
+			throw std::runtime_error(
+				"PA12 implicit constructor candidate relation cycle");
+	if (active.size() >= named_.size())
+		throw std::runtime_error(
+			"PA12 implicit constructor candidate depth is invalid");
+	active.push_back(record_id);
+
+	// Keep the pure viability view separate from expand_inheriting_constructor_candidates:
+	// the latter publishes wrapper bindings and constructor actions for selected
+	// materialization, while this view must not make speculative overload probes
+	// source-order dependent or demand unused helpers.
+	std::vector<ValueRef> direct;
+	FlatIndex<BindingId, bool, IdentityHash<BindingId> > seen;
+	FlatIndex<ConstructorSignatureKey, bool, ConstructorSignatureHash>
+		direct_signatures;
+	const ValueList* values = scopes_[record.scope.value].values.find(
+		record.name);
+	if (values != NULL)
+	{
+		for (std::size_t i = 0; i < values->entries.size(); ++i)
+		{
+			const ValueEntry& entry = values->entries[i];
+			const BindingId candidate_id = entry.binding;
+			if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
+				candidate_id.value >= binding_owners_.size() ||
+				binding_owners_[candidate_id.value] != record.scope ||
+				entry.origin != record.scope)
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate identity is invalid");
+			if (seen.find(candidate_id) != NULL)
+				throw std::runtime_error(
+					"PA12 duplicate implicit constructor candidate identity");
+			seen.set(candidate_id, true);
+			const Binding& candidate = binding(candidate_id);
+			const FunctionFact* function = function_fact_for_binding(candidate_id);
+			if (function != NULL && function->inheriting_constructor)
+				continue;
+			if (candidate.kind != BindingKind::Function ||
+				!candidate.type.valid() || candidate.type.value >= types_.size() ||
+				type_kind(candidate.type) != TypeKind::Function)
+				continue;
+			const BindingSidecar* sidecar = binding_sidecar(candidate_id);
+			if (sidecar == NULL || sidecar->constructor_record != record_id)
+				continue;
+			if (function == NULL || !function->is_constructor ||
+				function->binding != candidate_id || function->owner != record.scope ||
+				function->constructor_record != record_id)
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate fact is missing");
+			const TypeKey& signature = types_[candidate.type.value];
+			if (!signature.variadic && signature.parameters.size() == 1)
+				direct_signatures.set(ConstructorSignatureKey(
+					signature.parameters.front(), signature.result, signature.cv), true);
+			if (context == ConstructorInitializationContext::Copy &&
+				sidecar->explicit_constructor)
+				continue;
+			direct.push_back(ValueRef(record.scope, candidate_id));
+		}
+	}
+
+	FlatIndex<BindingId, bool, IdentityHash<BindingId> > output_seen;
+	const auto append_one_argument_candidate =
+		[this, context, &candidates, &output_seen](const ValueRef& candidate_ref) {
+			if (!candidate_ref.binding.valid() ||
+				candidate_ref.binding.value >= bindings_.size() ||
+				candidate_ref.binding.value >= binding_owners_.size() ||
+				!candidate_ref.scope.valid() ||
+				candidate_ref.scope.value >= scopes_.size() ||
+				binding_owners_[candidate_ref.binding.value] != candidate_ref.scope ||
+				scopes_[candidate_ref.scope.value].kind != ScopeKind::Class)
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate owner is invalid");
+			const NamedRecordId candidate_record =
+				scopes_[candidate_ref.scope.value].record;
+			if (!candidate_record.valid() || candidate_record.value >= named_.size() ||
+				named_[candidate_record.value].kind != NamedKind::Class)
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate record is invalid");
+			const Binding& candidate = binding(candidate_ref.binding);
+			if (candidate.kind != BindingKind::Function ||
+				!candidate.type.valid() || candidate.type.value >= types_.size() ||
+				type_kind(candidate.type) != TypeKind::Function)
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate function is invalid");
+			const BindingSidecar* sidecar = binding_sidecar(candidate_ref.binding);
+			const FunctionFact* function = function_fact_for_binding(
+				candidate_ref.binding);
+			if (sidecar == NULL || sidecar->constructor_record != candidate_record ||
+				function == NULL || !function->is_constructor ||
+				function->binding != candidate_ref.binding ||
+				function->owner != candidate_ref.scope ||
+				function->constructor_record != candidate_record ||
+				(context == ConstructorInitializationContext::Copy &&
+					sidecar->explicit_constructor))
+				throw std::runtime_error(
+					"PA12 implicit constructor candidate fact is invalid");
+			const TypeKey& signature = types_[candidate.type.value];
+			if (signature.variadic || signature.parameters.empty())
+				return;
+			std::size_t required = signature.parameters.size();
+			while (required > 1 && function_default_argument(
+				candidate_ref.binding, required - 1).valid())
+				--required;
+			if (required != 1)
+				return;
+			if (output_seen.find(candidate_ref.binding) != NULL)
+				throw std::runtime_error(
+					"PA12 duplicate implicit constructor candidate");
+			output_seen.set(candidate_ref.binding, true);
+			candidates.push_back(candidate_ref);
+		};
+	for (std::size_t i = 0; i < direct.size(); ++i)
+		append_one_argument_candidate(direct[i]);
+
+	const NamedRecordSidecar* record_sidecar = named_record_sidecar(record_id);
+	if (record_sidecar != NULL)
+	{
+		FlatIndex<NamedRecordId, bool, IdentityHash<NamedRecordId> > relation_seen;
+		for (std::size_t relation_index = 0;
+			relation_index < record_sidecar->inheriting_constructors.size();
+			++relation_index)
+		{
+			const NamedRecordId base_record =
+				record_sidecar->inheriting_constructors[relation_index].base_record;
+			if (!base_record.valid() || base_record.value >= named_.size() ||
+				named_[base_record.value].kind != NamedKind::Class ||
+				base_record != record.direct_base)
+				throw std::runtime_error(
+					"PA12 implicit inherited constructor relation is invalid");
+			if (relation_seen.find(base_record) != NULL)
+				throw std::runtime_error(
+					"PA12 duplicate implicit inherited constructor relation");
+			relation_seen.set(base_record, true);
+			std::vector<ValueRef> base_candidates;
+			collect_implicit_constructor_candidates(base_record, context,
+				base_candidates, active);
+			for (std::size_t base_index = 0;
+				base_index < base_candidates.size(); ++base_index)
+			{
+				const ValueRef& base_ref = base_candidates[base_index];
+				const Binding& base_binding = binding(base_ref.binding);
+				const TypeKey& base_signature = types_[base_binding.type.value];
+				if (base_signature.variadic || base_signature.parameters.empty() ||
+					inherited_constructor_minimum_arity(base_ref.binding,
+						base_signature) > 1)
+					continue;
+				if (direct_signatures.find(ConstructorSignatureKey(
+					base_signature.parameters.front(), base_signature.result,
+					base_signature.cv)) == NULL)
+					append_one_argument_candidate(base_ref);
+			}
+		}
+	}
+	active.pop_back();
+}
+
+ImplicitConstructorConversion PA11SemanticModel::implicit_constructor_conversion(
 	const ExprInfo& argument, TypeId target, ScopeId scope) const
 {
 	if (!target.valid() || target.value >= types_.size() ||
 		!argument.fact.valid() || argument.fact.value >= semantic_facts_.size())
-		return ConversionChoice();
+		return ImplicitConstructorConversion();
 	const TypeKind target_kind = type_kind(target);
 	if ((target_kind != TypeKind::LvalueReference &&
 		target_kind != TypeKind::RvalueReference))
-		return ConversionChoice();
+		return ImplicitConstructorConversion();
 	const TypeId referred = types_[target.value].child;
+	if (!referred.valid() || referred.value >= types_.size())
+		return ImplicitConstructorConversion();
 	if (target_kind == TypeKind::LvalueReference &&
-		type_kind(referred) != TypeKind::Cv)
-		return ConversionChoice();
+		(type_kind(referred) != TypeKind::Cv ||
+			(cv_qualifiers(referred) & 2u) != 0))
+		return ImplicitConstructorConversion();
 	const TypeId object = strip_cv_type(expression_object_type(referred));
 	const NamedRecordId record_id = named_record_for_type(object);
 	if (!record_id.valid() || record_id.value >= named_.size() ||
 		named_[record_id.value].kind != NamedKind::Class ||
 		named_[record_id.value].class_tag == ClassTag::Union)
-		return ConversionChoice();
+		return ImplicitConstructorConversion();
 	const NamedRecord& record = named_[record_id.value];
 	if (!record.scope.valid() || record.scope.value >= scopes_.size() ||
 		scopes_[record.scope.value].kind != ScopeKind::Class ||
 		!record.name.valid())
 		throw std::runtime_error("PA12 implicit constructor owner is invalid");
-	const ValueList* values = scopes_[record.scope.value].values.find(record.name);
-	if (values == NULL)
-		return ConversionChoice();
 	const SemanticFact& source_fact = semantic_facts_[argument.fact.value];
+	const ConversionChoice second = conversion_for(object,
+		SemanticValueCategory::Prvalue, target, source_fact.source, false, scope);
+	if (!second.valid)
+		return ImplicitConstructorConversion();
 	bool found = false;
 	bool ambiguous = false;
 	unsigned int best_rank = std::numeric_limits<unsigned int>::max();
 	ConversionScore best_score;
-	std::set<std::size_t> seen;
-	for (std::size_t i = 0; i < values->entries.size(); ++i)
+	BindingId best_constructor;
+	std::vector<ValueRef> candidates;
+	std::vector<NamedRecordId> active;
+	collect_implicit_constructor_candidates(record_id,
+		ConstructorInitializationContext::Copy, candidates, active);
+	for (std::size_t i = 0; i < candidates.size(); ++i)
 	{
-		const ValueEntry& entry = values->entries[i];
-		const BindingId candidate_id = entry.binding;
-		if (!candidate_id.valid() || candidate_id.value >= bindings_.size() ||
-			candidate_id.value >= binding_owners_.size() ||
-			binding_owners_[candidate_id.value] != record.scope ||
-			entry.origin != record.scope)
-			throw std::runtime_error(
-				"PA12 implicit constructor index identity is invalid");
-		if (!seen.insert(candidate_id.value).second)
-			throw std::runtime_error(
-				"PA12 duplicate implicit constructor index entry");
+		const ValueRef& candidate_ref = candidates[i];
+		const BindingId candidate_id = candidate_ref.binding;
 		const Binding& candidate = binding(candidate_id);
 		if (candidate.kind != BindingKind::Function || !candidate.type.valid() ||
 			candidate.type.value >= types_.size() ||
 			type_kind(candidate.type) != TypeKind::Function)
 			continue;
 		const BindingSidecar* sidecar = binding_sidecar(candidate_id);
-		if (sidecar == NULL || sidecar->constructor_record != record_id ||
-			sidecar->explicit_constructor ||
-			function_declaration_kind(candidate_id) ==
-				FunctionDeclarationKind::Deleted)
+		const FunctionFact* candidate_function =
+			function_fact_for_binding(candidate_id);
+		if (sidecar == NULL || candidate_function == NULL ||
+			!candidate_function->is_constructor)
+			throw std::runtime_error(
+				"PA12 implicit constructor candidate fact is invalid");
+		if (sidecar->explicit_constructor)
 			continue;
-		const TypeKey function = types_[candidate.type.value];
-		if (function.variadic || function.parameters.empty())
-			continue;
-		std::size_t required = function.parameters.size();
-		while (required > 1 && function_default_argument(candidate_id,
-			required - 1).valid())
-			--required;
-		if (required != 1)
-			continue;
-		const TypeId parameter = function.parameters.front();
+		const TypeKey& signature = types_[candidate.type.value];
+		if (signature.variadic || signature.parameters.empty())
+			throw std::runtime_error(
+				"PA12 implicit constructor candidate signature is invalid");
+		const TypeId parameter = signature.parameters.front();
 		const NamedRecordId parameter_record = named_record_for_type(
 			strip_cv_type(expression_object_type(parameter)));
 		if (parameter_record.valid() && parameter_record.value < named_.size() &&
 			named_[parameter_record.value].kind == NamedKind::Class &&
 			type_kind(parameter) != TypeKind::LvalueReference &&
 			type_kind(parameter) != TypeKind::RvalueReference)
-			continue;
-		if (!member_accessible(candidate_id, record.scope, scope, object))
 			continue;
 		const ConversionChoice conversion = conversion_for(argument, parameter,
 			source_fact.source, scope);
@@ -212,17 +416,32 @@ ConversionChoice PA11SemanticModel::implicit_constructor_conversion(
 			ambiguous = false;
 			best_rank = conversion.rank;
 			best_score = score;
+			best_constructor = candidate_id;
 		}
 		else if (comparison == 0)
 			ambiguous = true;
 	}
-	if (!found || ambiguous)
-		return ConversionChoice();
-	// The constructor is one user-defined conversion sequence.  Keep the
-	// first standard sequence's rank as metadata only; the shared typed
-	// comparator orders the user-defined category independently of it.
-	ConversionChoice result(true, best_rank, ConversionKind::ReferenceBinding);
-	result.rank_category = ConversionRankCategory::UserDefined;
+	if (!found)
+		return ImplicitConstructorConversion();
+	// Even an ambiguous constructor-level conversion is a viable, indistinguish-
+	// able user-defined sequence for the enclosing overload set.  Keep the
+	// first standard rank as metadata only.  A unique constructor identity and
+	// its second standard sequence are retained solely for outer ranking; if
+	// this candidate wins, target-aware materialization re-enters
+	// select_constructor and diagnoses the ambiguous constructor.
+	ImplicitConstructorConversion result;
+	result.choice = ConversionChoice(true, best_rank,
+		ConversionKind::ReferenceBinding);
+	result.choice.rank_category = ConversionRankCategory::UserDefined;
+	result.ambiguous = ambiguous;
+	result.second = second;
+	result.second_rvalue_reference =
+		type_kind(target) == TypeKind::RvalueReference;
+	if (!ambiguous)
+	{
+		result.constructor = best_constructor;
+		result.target = record_id;
+	}
 	return result;
 }
 
@@ -348,11 +567,16 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 				}
 			}
 			if (!choice.valid)
-				choice = implicit_constructor_conversion(arguments[argument],
-					function.parameters[argument], scope);
-			if (!choice.valid)
-				break;
-			score.ranks.push_back(ConversionScore(choice));
+			{
+				const ImplicitConstructorConversion implicit =
+					implicit_constructor_conversion(arguments[argument],
+						function.parameters[argument], scope);
+				if (!implicit.choice.valid)
+					break;
+				score.ranks.push_back(ConversionScore(implicit));
+			}
+			else
+				score.ranks.push_back(ConversionScore(choice));
 		}
 		if (score.ranks.size() == arguments.size())
 			viable.push_back(score);
@@ -952,10 +1176,22 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						choice = resolution.conversion;
 					}
 				}
+				ImplicitConstructorConversion implicit;
+				bool used_implicit = false;
 				if (!choice.valid)
-					choice = implicit_constructor_conversion(initial_arguments[argument],
-						function.parameters[argument], scope);
-				if (!choice.valid)
+				{
+					implicit = implicit_constructor_conversion(
+						initial_arguments[argument], function.parameters[argument], scope);
+					if (!implicit.choice.valid)
+					{
+						arguments_viable = false;
+						break;
+					}
+					used_implicit = true;
+				}
+				ConversionChoice& selected_choice = used_implicit ?
+					implicit.choice : choice;
+				if (!selected_choice.valid)
 				{
 					arguments_viable = false;
 					break;
@@ -968,14 +1204,19 @@ TypedOperatorSelection PA11SemanticModel::select_typed_operator(
 						function.parameters.front());
 					const TypeId actual_object = expression_object_type(object.type);
 					if (required_object.valid() && actual_object.valid())
+					{
 						score.object_cv = cv_qualifiers(required_object) &
 							~cv_qualifiers(actual_object);
+					}
 					if (score.object_cv != 0 &&
 						strip_cv_type(required_object) == strip_cv_type(actual_object) &&
-						choice.kind == ConversionKind::ReferenceBinding)
-						choice.added_cv = score.object_cv;
+						selected_choice.kind == ConversionKind::ReferenceBinding)
+						selected_choice.added_cv = score.object_cv;
 				}
-				score.ranks.push_back(ConversionScore(choice));
+				if (used_implicit)
+					score.ranks.push_back(ConversionScore(implicit));
+				else
+					score.ranks.push_back(ConversionScore(choice));
 			}
 			if (arguments_viable)
 			{

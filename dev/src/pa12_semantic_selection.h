@@ -151,6 +151,41 @@ enum class ConversionRankCategory
 	Ellipsis
 };
 
+// A constructor signature used for inherited-constructor hiding.  Keeping the
+// key typed and compact lets both speculative viability and selected
+// materialization share a bounded signature index without rendering types or
+// scanning every direct declaration for every inherited candidate.
+struct ConstructorSignatureKey
+{
+	TypeId parameter;
+	TypeId result;
+	unsigned int cv;
+
+	ConstructorSignatureKey(TypeId parameter = TypeId(),
+		TypeId result = TypeId(), unsigned int cv = 0)
+		: parameter(parameter), result(result), cv(cv)
+	{}
+
+	bool operator==(const ConstructorSignatureKey& other) const
+	{
+		return parameter == other.parameter && result == other.result &&
+			cv == other.cv;
+	}
+};
+
+struct ConstructorSignatureHash
+{
+	std::size_t operator()(const ConstructorSignatureKey& key) const
+	{
+		std::size_t result = key.parameter.value;
+		result ^= key.result.value + static_cast<std::size_t>(0x9e3779b9U) +
+			(result << 6) + (result >> 2);
+		result ^= key.cv + static_cast<std::size_t>(0x85ebca6bU) +
+			(result << 6) + (result >> 2);
+		return result;
+	}
+};
+
 inline ConversionRankCategory conversion_rank_category(ConversionKind kind,
 	unsigned int rank)
 {
@@ -212,24 +247,73 @@ inline ConversionChoice make_derived_base_choice(
 	return result;
 }
 
+// UDC-only overload detail.  This is returned by the speculative constructor
+// probe and never enters the general ConversionChoice or semantic-fact arenas.
+// The second sequence remains a full typed choice until its compact score is
+// formed, so standard payload fields can be reused rather than duplicated.
+struct ImplicitConstructorConversion
+{
+	ConversionChoice choice;
+	BindingId constructor;
+	NamedRecordId target;
+	bool ambiguous;
+	ConversionChoice second;
+	bool second_rvalue_reference;
+
+	ImplicitConstructorConversion()
+		: choice(), constructor(), target(), ambiguous(false), second(),
+		  second_rvalue_reference(false)
+	{}
+};
+
 struct ConversionScore
 {
+	// Keep the two typed UDC identity fields together at the naturally aligned
+	// front of the record; the remaining standard payload is reused for the
+	// second sequence when rank_category is UserDefined.
+	BindingId user_defined_constructor;
+	NamedRecordId user_defined_target;
 	ConversionRankCategory rank_category;
 	ConversionKind kind;
 	unsigned int legacy_rank;
 	unsigned int base_distance;
 	unsigned int added_cv;
+	bool user_defined_ambiguous;
+	bool user_defined_second_rvalue_reference;
 
 	ConversionScore()
-		: rank_category(ConversionRankCategory::Exact),
+		: user_defined_constructor(), user_defined_target(),
+		  rank_category(ConversionRankCategory::Exact),
 		  kind(ConversionKind::Identity), legacy_rank(0), base_distance(0),
-		  added_cv(0)
+		  added_cv(0),
+		  user_defined_ambiguous(false),
+		  user_defined_second_rvalue_reference(false)
 	{}
 
 	explicit ConversionScore(const ConversionChoice& choice)
-		: rank_category(choice.rank_category), kind(choice.kind),
+		: user_defined_constructor(), user_defined_target(),
+		  rank_category(choice.rank_category), kind(choice.kind),
 		  legacy_rank(choice.rank), base_distance(choice.base_distance),
-		  added_cv(choice.added_cv)
+		  added_cv(choice.added_cv),
+		  user_defined_ambiguous(false),
+		  user_defined_second_rvalue_reference(false)
+	{}
+
+	// A UDC score uses the existing standard payload for the second standard
+	// sequence.  Only the typed constructor/target identity and the two
+	// exceptional ranking bits are additional score state.
+	explicit ConversionScore(const ImplicitConstructorConversion& conversion)
+		: user_defined_constructor(conversion.ambiguous ? BindingId() :
+			conversion.constructor),
+		  user_defined_target(conversion.ambiguous ? NamedRecordId() :
+			conversion.target),
+		  rank_category(ConversionRankCategory::UserDefined),
+		  kind(conversion.second.kind), legacy_rank(conversion.second.rank),
+		  base_distance(conversion.second.base_distance),
+		  added_cv(conversion.second.added_cv),
+		  user_defined_ambiguous(conversion.ambiguous),
+		  user_defined_second_rvalue_reference(
+			conversion.second_rvalue_reference)
 	{}
 
 	static ConversionScore ellipsis_score(unsigned int rank)

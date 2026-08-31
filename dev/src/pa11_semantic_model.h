@@ -14,6 +14,7 @@
 #include "pa11_semantic_aggregate.h"
 #include "pa12_semantic_builtins.h"
 #include "pa12_semantic_selection.h"
+#include "pa12_semantic_constructor_facts.h"
 namespace lowir_model
 {
 struct Program;
@@ -323,9 +324,6 @@ struct UsingDirectiveRelation
 		SourcePoint declaration_point = SourcePoint())
 		: target(target), declaration_point(declaration_point)
 	{}
-};
-struct InheritingConstructorRelation {
-	NamedRecordId base_record; SourcePoint declaration_point;
 };
 struct EffectiveUsingDirective
 {
@@ -1002,42 +1000,6 @@ struct DeclarationFact
 		  lifetime_begin(InvalidIdentityValue), lifetime_count(0)
 	{}
 };
-enum class ConstructorActionTarget { Base, Member };
-struct ConstructorActionFact
-{
-	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
-	BindingId constructor; SemanticFactId initializer;
-	std::size_t argument_begin; std::size_t argument_count; bool value_initialize;
-	TypeId object_type; TypeId callable_type;
-	ConstructorActionFact(ConstructorActionTarget target = ConstructorActionTarget::Member,
-		NamedRecordId base_record = NamedRecordId(), BindingId member = BindingId(),
-		BindingId constructor = BindingId(), SemanticFactId initializer = SemanticFactId())
-		: target(target), base_record(base_record), member(member),
-		  constructor(constructor), initializer(initializer),
-		  argument_begin(InvalidIdentityValue), argument_count(0),
-		  value_initialize(false), object_type(), callable_type()
-	{}
-};
-struct DestructorActionFact
-{
-	ConstructorActionTarget target; NamedRecordId base_record; BindingId member;
-	BindingId destructor; TypeId object_type;
-	DestructorActionFact(ConstructorActionTarget target = ConstructorActionTarget::Member,
-		NamedRecordId base_record = NamedRecordId(), BindingId member = BindingId(),
-		BindingId destructor = BindingId(), TypeId object_type = TypeId())
-		: target(target), base_record(base_record), member(member), destructor(destructor),
-		  object_type(object_type)
-		{}
-	};
-enum class LifetimeStorageKind { Automatic, Namespace };
-struct LifetimeFact
-{
-	BindingId object; TypeId object_type; BindingId destructor; ScopeId scope; LifetimeStorageKind storage;
-	LifetimeFact(BindingId object = BindingId(), TypeId object_type = TypeId(),
-		BindingId destructor = BindingId(), ScopeId scope = ScopeId(), LifetimeStorageKind storage = LifetimeStorageKind::Automatic)
-			: object(object), object_type(object_type), destructor(destructor), scope(scope), storage(storage) {}
-	};
-enum class ConstructorRuntimeCacheState : std::uint8_t { Unseen, InProgress, Complete };
 struct FunctionFact
 {
 	const PA10AstNode* node;
@@ -1630,8 +1592,21 @@ private:
 	;
 	void record_automatic_lifetime(BindingId object, TypeId object_type, ScopeId scope);
 	void record_namespace_lifetime(BindingId object, TypeId object_type, ScopeId scope);
-	ConstructorSelection select_constructor(NamedRecordId record, ScopeId access_scope, const std::vector<const PA10AstNode*>& argument_nodes, bool allow_implicit_default, ConstructorInitializationContext context, BindingId forced_binding = BindingId());
-	void expand_inheriting_constructor_candidates(NamedRecordId record, ConstructorInitializationContext context, std::vector<ValueRef>& candidates, std::vector<NamedRecordId>& active);
+	ConstructorSelection select_constructor(
+		NamedRecordId record, ScopeId access_scope,
+		const std::vector<const PA10AstNode*>& argument_nodes,
+		bool allow_implicit_default, ConstructorInitializationContext context,
+		BindingId forced_binding = BindingId());
+	void expand_inheriting_constructor_candidates(
+		NamedRecordId record, ConstructorInitializationContext context,
+		std::vector<ValueRef>& candidates,
+		std::vector<NamedRecordId>& active);
+	void collect_implicit_constructor_candidates(
+		NamedRecordId record, ConstructorInitializationContext context,
+		std::vector<ValueRef>& candidates,
+		std::vector<NamedRecordId>& active) const;
+	ImplicitConstructorConversion implicit_constructor_conversion(
+		const ExprInfo& argument, TypeId target, ScopeId scope) const;
 	BindingId ensure_anonymous_union_constructor(NamedRecordId record)
 	;
 	const AnonymousUnionFact* anonymous_union_fact(
@@ -1978,7 +1953,6 @@ private:
 		const std::vector<const PA10AstNode*>& argument_nodes,
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
 		bool allow_pa16_class_value = false);
-	ConversionChoice implicit_constructor_conversion(const ExprInfo& argument, TypeId target, ScopeId scope) const;
 	void collect_associated_adl_records(const std::vector<TypeId>& associated_objects, std::vector<NamedRecordId>* associated_records) const; void collect_associated_adl_namespaces(const std::vector<NamedRecordId>& associated_records, std::vector<ScopeId>* associated_namespaces) const; void append_adl_function_candidates(NameId name, const std::vector<TypeId>& associated_objects, SourcePoint point, std::vector<ValueRef>* candidates) const;
 	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;

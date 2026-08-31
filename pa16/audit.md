@@ -3,6 +3,305 @@
 ## Current Checkpoint Review
 
 This bounded checkpoint audit covers landed commit
+`d5bf26009aa73a113473070913e5fc199faf7081` (`PA16 fix constructor overload
+viability`) relative to `d5bf2600^`.  The audited ownership path is the seven
+landed source files named in the checkpoint request, plus the bounded PA12
+candidate/scoring repair, constructor extraction, and source-set registration
+recorded below.  The PA16 boundary and Out Of Scope text,
+`spec.md` Purpose and sections 1--5 and 7, the active plan, this audit, the
+landed diff, the two resolved tests and refs for observation, and the named
+constructor/external controls were read before editing.  The turn-start tree
+was clean.  No tests, fixtures, refs, sidecars, harnesses, comparators,
+generated outputs, or coverage rules were changed; the source-set list changed
+only to register the extracted PA12 implementation file.  The final bounded
+snapshot contains no fixture, test, reference, sidecar, harness, comparator,
+generated-output, or coverage-rule change.
+
+### Authority and exact residual boundary
+
+The authoritative primary log is
+`/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`.
+Its turn-start authority is `make test-pa16` status `2`, `227/243` passing,
+exactly `16` failures, and complete `243/243/243` discovered/reference/fresh
+coverage.  The previous
+checkpoint state was `225/243` with `18` failures; the landed increment had
+already resolved exactly these two identities:
+
+```text
+pa16/tests/general/200-external-ctor-overload-nonfirst-argument.t
+pa16/tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t
+```
+
+The residual budget is unchanged and exact:
+
+```text
+pa16/tests/general/200-elaborated-member-forward-type.t
+pa16/tests/general/200-friend-intermediate-derived-protected-base-method.t
+pa16/tests/general/200-local-default-class-array-lifecycle.t
+pa16/tests/general/200-nested-braced-member-aggregate-init.t
+pa16/tests/general/200-reference-indexed-pointer-member-access.t
+pa16/tests/general/200-reference-member-class-init.t
+pa16/tests/general/200-unnamed-namespace-hidden-friend-single-definition.t
+pa16/tests/general/300-callable-field-hides-private-base-method.t
+pa16/tests/general/300-friend-function-definition-skip.t
+pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
+pa16/tests/general/300-overloaded-deref-user-assignment.t
+pa16/tests/general/300-user-defined-string-literal-operator.t
+pa16/tests/general/300-using-base-static-same-signature-derived-preferred.t
+pa16/tests/general/400-bit-field-prefix-postfix-increment.t
+pa16/tests/general/400-signed-bit-field-read.t
+pa16/tests/general/400-signed-enum-bit-field-read.t
+```
+
+The final serial rerun retained exactly the same normalized 16 identities:
+authority-only `0`, fresh-only `0`, and `16` on each side.  Fresh discovery,
+reference status sidecars, and generated status sidecars each cover `243`
+tests.  The final through-PA15 gate is `1167/1167`.  The turn-start file-audit
+authority reported five pre-existing warnings; the final audit passes with
+the six exact non-fatal warnings recorded below.
+
+### Typed ownership trace and findings
+
+The affected path is:
+
+```text
+PA10 AST argument
+  -> PA12 ExprInfo/SemanticFact
+  -> relevant ordinary/operator candidates
+  -> per-argument ConversionChoice/ConversionScore
+  -> selected declaration and target-aware materialization
+  -> ConstructorAction/CallExpression and contiguous ConversionFact range
+  -> PA15 declaration/call/constructor/constant-address lowering
+```
+
+`select_typed_function` retains the full relevant candidate set.  Its argument
+loop stops the current candidate at the first impossible argument, while the
+outer loop continues with later candidates; the external `Box` control
+exercises exactly that non-first-argument case.  The shared
+`implicit_constructor_conversion` owner scores the first parameter of each
+eligible converting constructor with the same typed conversion comparator,
+honors trailing defaults, excludes explicit constructors in copy context, and
+does not admit class-by-value parameters.  If several constructor sequences
+are indistinguishable, the owner still returns a valid user-defined score for
+the enclosing candidate; target-aware materialization diagnoses the ambiguous
+constructor only if that enclosing candidate wins.  When the same constructor
+is used by two outer candidates, the score also carries its typed identity and
+second standard-sequence metadata for N3485 13.3.3.2 p3; different constructors
+remain indistinguishable.  The direct and operator call paths use this same
+owner.
+
+The audit found six bounded defects/risks in the landed path and repaired them
+within the PA12 constructor/call ownership boundary:
+
+1. The probe was filtering inaccessible and deleted constructors before
+   overload ranking, unlike `select_constructor`, which ranks them and checks
+   access/deletion after the selected declaration is known.  Those filters are
+   gone; focused direct and inherited private/deleted probes now select the
+   canonical path and fail at the required post-selection boundary.
+2. The probe used a node-based `std::set<std::size_t>` for duplicate detection.
+   It now retains typed `BindingId`/`NamedRecordId` keys in compact
+   `FlatIndex` tables, avoiding a textual/numeric identity downgrade and
+   per-node allocation.
+3. Only already-published inherited wrappers were visible to speculative
+   viability.  A pure, bounded recursive candidate view now follows the
+   typed single-inheritance relation, default ranges, direct-signature hiding,
+   and explicitness without publishing a wrapper or constructor action.  The
+   canonical `expand_inheriting_constructor_candidates` path remains the sole
+   publisher during selected materialization.  This removes the source-order
+   difference between a `Derived` conversion before and after direct
+   construction.  Explicit derived declarations are included in the hiding
+   view even when copy initialization excludes them as candidates.
+4. An ambiguous best constructor sequence was being reported as no conversion,
+   which could remove an outer function candidate.  The probe now retains a
+   valid `UserDefined` score whenever at least one constructor sequence exists;
+   the canonical target-aware materializer remains responsible for the final
+   ambiguity diagnostic.
+5. The viability score discarded the converting-constructor identity and the
+   second standard sequence, making `f(const A&)` versus `f(A&&)` ambiguous
+   even when both paths use the same `A(int)` constructor.  A dedicated
+   ephemeral `ImplicitConstructorConversion` detail result now carries typed
+   identity, first/second sequence metadata, and an ambiguity marker into a
+   compact `ConversionScore`; p3 compares the second sequence only for the
+   same constructor and target, while different constructors and ambiguous
+   constructor-level sequences still compare equal.  The general
+   `ConversionChoice` layout is unchanged; its standard payload is reused only
+   when the dedicated UDC result is converted into a score.
+6. Both speculative and materialization hiding checks compared every inherited
+   candidate with every direct constructor.  The pure view now uses a compact
+   one-argument `ConstructorSignatureKey` index, and materialization uses the
+   interned full function `TypeId` index.  `expand_inheriting_constructor_candidates`
+   moved by a readable cohesive extraction (no minification or same-line
+   packing) to `pa12_semantic_constructor_candidates.cpp`; the constructor and
+   lifetime fact types moved to the normal preamble-included
+   `pa12_semantic_constructor_facts.h`.  The cppgm++ source set registers only
+   the extracted implementation file, leaving
+   `pa12_semantic_construction.cpp` at 1876 lines,
+   `pa12_semantic_constructor_candidates.cpp` at 215 lines, and
+   `pa11_semantic_model.h` at 2374 lines.
+
+The pure view is fail-closed on record/scope/binding/function ownership,
+relation cycles, duplicate identities, malformed signatures, and bounded
+inheritance depth.  In accordance with N3485 13.3.3.1 p2, accessibility is
+ignored while an implicit conversion sequence is formed; access and deleted
+status remain typed declaration facts in the candidate set, and the canonical
+selector diagnoses the selected declaration afterward.  Volatile
+lvalue-reference temporary binding is rejected consistently with target-aware
+materialization.  Rvalue/lvalue reference categories, sequence ranking,
+qualification, and `const` element qualification remain in `conversion_for`;
+mutable `void*` is not made viable for a string literal.
+
+After viability, `semantic_expression_for_target` calls `select_constructor`
+and publishes one typed `CallExpression` plus `ConstructorAction` with the
+selected binding, scope, callable type, and child argument facts.  No
+speculative fact is published.  For an inherited selection, the pure view
+uses the canonical base binding as its typed signature source and the selected
+materializer creates/reuses the derived wrapper and records that wrapper in
+the action/call facts.  The score's constructor identity is ranking metadata,
+not a second materialization owner; the canonical selector remains the one
+publisher of the selected declaration/action identity.  The focused default,
+transitive, explicit-hide, private, deleted, and before/after-publication
+probes exercise the same candidate-set decisions.
+
+The PA12 array-to-`void*` repair retains the array/literal fact as the lowering
+root, publishes typed `ArrayToPointer` then `PointerToVoid` edges, and records
+the constant address idempotently.  The resolved string-literal test confirms
+the `const void*` route and rejection of mutable `void*`.  PA15 consumes the
+selected declaration/call/constructor facts directly.  The generated-slot
+change retains stable `SlotId` allocation, records declaration source order in
+a typed side index, and reorders only the presentation vector; no source text
+or overload lookup is recovered in lowering.  No defect was found in those
+PA15 declaration, call, constructor, or constant-address consumers.
+
+### Focused evidence
+
+The final-correction compiler rebuild passed:
+
+```text
+make -C dev cppgm++                         status 0
+```
+
+The two landed tests and five named controls passed together:
+
+```text
+make -C pa16 CPPGM_SKIP_DEV_REBUILD=1 check TEST='tests/general/200-external-ctor-overload-nonfirst-argument.t tests/general/200-string-literal-does-not-convert-to-mutable-void-pointer.t tests/general/200-constructor-overload-default-arg-nonfirst-argument.t tests/general/200-copy-init-explicit-ctor-overload-refinement.t tests/general/500-inheriting-external-transitive-constructor.t tests/general/500-inheriting-constructors.t tests/general/500-inherited-constructor-using-access.t'
+pa16 check: PASS (7/7)
+```
+
+The disposable structural layout probe `/tmp/pa16-udc-size-probe.cpp`
+reported:
+
+```text
+                         parent   current
+ConversionChoice             56        56 bytes
+ConversionScore              20        40 bytes
+```
+
+`ConversionChoice` remains the compact general conversion record.  The
+dedicated `ImplicitConstructorConversion` is ephemeral; its constructor and
+target identities are copied into typed `ConversionScore` only for a viable
+UDC, while the existing standard payload fields carry the second standard
+sequence.  The current score has no `user_defined_second_ambiguous` field;
+the explicit ambiguity marker and invalid typed identity keep an ambiguous
+constructor-level sequence indistinguishable from every other UDC.  No timing
+or RSS measurement is inferred from this size probe.
+
+The disposable compiler probes passed the focused semantic boundaries.  The
+discriminating outer-UDC probe (two indistinguishable constructors for one
+target and one constructor for the competing target) returned status `1`,
+`ERROR: PA12 ambiguous function call`; the old invalid-return path would have
+removed the first outer candidate.  The private-best/public-worse probe
+returned status `1`, `ERROR: PA12 constructor is inaccessible`, and the
+deleted-best/public-worse probe returned status `1`,
+`ERROR: PA12 call selects deleted function`.  These messages show canonical
+post-selection diagnosis rather than no-viable-conversion rejection.  The
+single-target constructor ambiguity probe returned status `1`,
+`ERROR: PA12 ambiguous function call`.
+
+Inherited conversion with no prior wrapper publication, after direct
+construction, and with a trailing default each returned status `0`; the
+inherited overloaded-operator probe also returned status `0`.  Inherited
+explicit, explicit-derived-hide, deleted, and private probes returned status
+`1` with respectively `ERROR: PA12 no viable function`,
+`ERROR: PA12 no viable function`, `ERROR: PA12 call selects deleted function`,
+and `ERROR: PA12 constructor is inaccessible`.  The non-const-reference probe
+returned status `1`, `ERROR: PA12 no viable function`; the class-value probe
+returned status `1`, `ERROR: PA11 unsupported class-value constructor boundary`.
+The same-constructor second-SCS probe returned status `0`; its typed LowIR
+contains `call i32 @f__2(%t1)` and the selected function has object symbol
+`_Z1fO1A` (`A&&`), while the competing const-lvalue overload is
+`_Z1fRK1A`.  All probes were outside the repository and did not alter test or
+reference files.
+
+The final serial broad evidence is:
+
+```text
+make test-pa16
+status 2
+TEST SUMMARY: 227 / 243 TESTS PASSED
+exact normalized residual comparison: authority 16, fresh 16,
+  authority-only 0, fresh-only 0
+
+n=16; make test-report-through-pa15
+status 0
+ALL TESTS PASSED SUCCESSFULLY! (1167 / 1167)
+```
+
+The fresh PA16 failure identities are exactly the 16 listed in the authority
+section above, and the discovered/reference/fresh status inventories are
+`243/243/243`.  No new failure was offset by a newly passing residual.
+
+### Architecture, bounds, and disposition
+
+For `C` outer candidates, `A` arguments, `D` direct constructors, `I`
+inherited candidate identities, `W` materialized wrapper arities, and `R`
+single-inheritance relation depth, non-constructor ordinary conversion work is
+O(C*A) with an early break per impossible candidate.  A constructor-based
+argument probe adds the pure candidate-view and constructor scan, so its
+worst-case structural bound is O(C*A*(D + I + R^2)); the current vector
+active-stack cycle guard accounts for the explicit R^2 term.  The avoidable
+direct-vs-inherited hiding term is no longer D*I: each inherited candidate
+performs one expected/amortized O(1) lookup in the contiguous typed
+direct-signature index.  Selected materialization is O(D + I + W + R^2) in
+this same bound; its exact interned-function-type index gives one lookup per
+wrapper arity, not D*W.  Representative structural counts are: the Box
+probe has C=2 outer candidates and A=3 arguments, with the first candidate
+stopping at argument 2; the library has C=2 and A=1, with one relevant
+path-constructor probe; the default inherited case has one relation, one base
+constructor, and two default-derived wrapper arities; and the
+explicit-derived-hide case has D=1, I=1, and one hiding lookup.  These are
+structural bounds and candidate counts, not timing or RSS measurements.  PA15
+source anchoring performs one declaration-map lookup per owned slot and a
+bounded source-order vector insertion; stable slot IDs are not renumbered.
+
+The landed ownership path is respected.  The final source repair stays
+in the shared PA12 viability/candidate/scoring path in
+`pa11_semantic_model.h`, `pa12_semantic_selection.h`,
+`pa12_semantic_calls.cpp`, `pa12_semantic_construction.cpp`,
+`pa12_semantic_constructor_candidates.cpp`, and
+`pa12_semantic_constructor_facts.h`, with its required source-set
+registration.  The final file audit passes with six warnings and no fatal
+finding:
+
+```text
+[warning][bad-division] dev/src/abi_mangle.h:1: header contains substantial implementation body; prefer .cpp ownership
+[warning][bad-division] dev/src/cpp_semantic_core.h:1: header contains substantial implementation body; prefer .cpp ownership
+[warning][bad-division] dev/src/lowir_model.h:1: header contains substantial implementation body; prefer .cpp ownership
+[warning][bad-division] dev/src/pa11_semantic_model.h:1: header contains substantial implementation body; prefer .cpp ownership
+[warning][bad-division] dev/src/pa12_semantic_selection.h:1: header contains substantial implementation body; prefer .cpp ownership
+[warning][bad-division] dev/src/pa15_lowering.h:1: header contains substantial implementation body; prefer .cpp ownership
+```
+
+The final path/status audit contains only the five modified tracked
+implementation/source-set paths, the two new PA12 source/header paths, and
+the two `pa16` documentation paths; the new
+implementation file is registered only in the cppgm++ source set.  No
+residual PA16 identity was re-audited or repaired.  The next separate
+checkpoint is `pa16/tests/general/200-elaborated-member-forward-type.t`; it
+must not reopen this bounded constructor-overload path without new evidence.
+
+## Historical Typed nullptr Carrier Review (b58ddd2a)
+
+This bounded checkpoint audit covers landed commit
 `b58ddd2a86740ad5d70ed3a17d61038279936131` (`PA16: carry nullptr_t through ABI
 and LowIR`) relative to parent `d54e32d1`.  The landed source is
 `dev/src/pa15_lowering.cpp` and the landed plan is `pa16/plan.md`.  The PA16
@@ -3587,6 +3886,7 @@ conversion slices.
 
 | checkpoint | result and disposition |
 | --- | --- |
+| `d5bf2600` constructor-overload viability checkpointAudit | Completed bounded follow-up repair of the shared PA12 constructor/call owner: ambiguous constructor-level sequences remain viable UDCs, same-constructor UDCs retain typed second-standard-sequence ranking, access/deleted status is diagnosed after selection, inherited hiding uses contiguous typed indexes, and the inheriting-constructor publisher plus constructor/lifetime facts are extracted within the source-audit limits. The final hot-record probe is `ConversionChoice` parent/current `56/56` bytes and `ConversionScore` `20/40` bytes; the latter reuses standard payload fields for second-SCS detail and adds only typed UDC identity/markers. Focused build, the exact 7-test matrix, all discriminating access/deleted/ambiguity/inherited probes, and the same-constructor LowIR probe pass. Final `make test-pa16` is status `2` at `227/243` with exactly the unchanged 16 identities; normalized authority/fresh comparison is `16/16`, authority-only/fresh-only `0/0`, and discovered/reference/fresh coverage is `243/243/243`. Through-PA15 is `1167/1167`; file audit exits `0` with the six exact warnings recorded above; diff-check and bounded path/artifact checks pass. No handout/test/reference mutation; next checkpoint is the separate residual `200-elaborated-member-forward-type.t`. | completed audit |
 | `b58ddd2a` typed nullptr carrier checkpointAudit | Completed the bounded carrier audit and structural ABI extraction: PA11/PA12/PA15 typed ownership, exact pointer/bool endpoints, canonical i64/u8 carriers, lvalue source evaluation, and the narrow integer-zero consumer guard are recorded. Final post-extraction build and focused PA16 `1/1`, PA12 `4/4`, PA13 `1/1`, PA15 `1/1` pass; target/equality/pointer/endpoint LowIR is byte-identical across extraction; final PA16 is `225/243` with exactly 18 failures, exact comparison authority-only `0`/fresh-only `0`, and `243/243/243` inventories; prior-through is `1167/1167`; file audit passes with five known warnings; no fixture/reference change. Final changed paths are exactly `dev/src/pa15_lowering.cpp`, `dev/src/pa15_lowering_abi.cpp`, `dev/frontend_source_sets.mk`, `pa16/audit.md`, and `pa16/plan.md`. | completed audit |
 | `15e9897b` effective-using visibility and typed call-publication checkpointAudit | Final bounded audit of landed `15e9897bc038499f724d69cb3cfe70e806b9fb36` relative to its parent: common-ancestor effective-using registration, canonical lexical owner/source-point filtering, NamePath lookup, typed one-argument overload publication, and the existing PA15 narrow class-value boundary are traced. The directly caused deferred-PA12 local source-order leak is repaired with RAII lookup-point contexts at statement/call and nested identifier owners in the four approved sources. Focused PA16/PA12/PA15 matrices pass `12/12`, `6/6`, `6/6`; final PA16 is `219/243` with the exact supplied 24-failure set, fresh-only `0`, authority-only `0`, and `243/243/243` inventories; through-PA15 is `1167/1167`; file audit passes with five known warnings; exact six-path and artifact/coverage checks pass. PA16 remains incomplete with the same residual 24. No tests, fixtures, references, harnesses, comparators, generated outputs, coverage rules, or source-set files changed. |
 | `08472cce` typed pragma-pack record-layout checkpointAudit | Bounded audit of landed `08472cce8e96daa585f5f07f4ee9d2233e13ade9` relative to `0ff3fdef`: the shared preprocessing cap/stack, include and inactive-conditional behavior, ordered typed `PPPackDirective`, token-transparent posttoken handoff, PA10 whitespace-free boundary, PA11 binary-search lookup, `NamedRecord` cap, and canonical member/base/bit-field/final layout are traced. The audit repairs the wide-bit-field path to use capped storage alignment and makes raw/PA10 typed-fact validation reject invalid operation/state/order/boundary data, including facts after EOF; PA11 also checks the operation domain. Focused build, course 422 (`sh -n` plus execution), packed/natural/conditional/alignas/pop/string probes, and the temporary typed-buffer rejection probe pass. Supplied latest and fresh authority are both `210/243`, `33` failures, `243/243` covered; the durable exact comparison reports fresh-only `0`, authority-only `0`, inventory `243`, and unexpected `0`. The known `300-pragma-pack-followed-by-endif.t` LowIR trunc-before-zext shape remains unrelated. Through-PA15 is `1167/1167`; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-through-pa15-20260830.log`. File audit exits `0` with five known warnings and no fatals; its durable transcript is `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/pa16-checkpoint-audit-file-audit-20260830.log`. Diff-check passes. No handout, fixture, reference, harness, source-set, or generated output changed; course 422 is the sole added public regression. PA16 remains incomplete. |
