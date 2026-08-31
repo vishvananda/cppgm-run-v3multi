@@ -3,162 +3,130 @@
 ## Current Checkpoint Review
 
 This bounded `checkpointAudit` covers landed increment
-`8c60e658572a1f73aa0387ffaf6dc5546e5c2bda` (`PA16: demand hidden friend
-definitions`) relative to `dff21435b183d2bb123c508522627ed4b5e20421`.  The
-working tree started at clean HEAD
-`544904edcd691ea7fc77599236a63fe9b40f1bd3`.  The supplied authority is
+`71a40cfd8fb20f6b5a52725649b9b2610b3ddfc8` (`PA16: schedule typed binary
+operand conversions`) relative to `c529ea6a`.  The working tree was clean at
+that HEAD.  The supplied authority is
 `/home/vishvananda/work/.ralph/v3multi-gpt-5.6-sol-xhigh/last-test.log`; its
-`make test-pa16` result is `237/243`, with complete `243/243` identity
-coverage and exactly these six residual owners.  The fresh final run has the
-same result and the same six identities:
+`make test-pa16` result is the baseline `238/243`, with complete `243/243`
+coverage and exactly these five residual owners:
 
 ```text
 pa16/tests/general/200-local-default-class-array-lifecycle.t
 pa16/tests/general/200-reference-indexed-pointer-member-access.t
-pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t
 pa16/tests/general/400-bit-field-prefix-postfix-increment.t
 pa16/tests/general/400-signed-bit-field-read.t
 pa16/tests/general/400-signed-enum-bit-field-read.t
 ```
 
-The repaired checkpoint identity,
-`pa16/tests/general/300-friend-function-definition-skip.t`, is no longer in
-that map.  Its reference retains `operator==` because the validated
-`operator!=` body has a typed call edge to it, while omitting the unrooted
-`operator!=` definition.
+The landed active identity,
+`pa16/tests/general/300-nested-enum-hidden-friend-bitmask-adl.t`, is no
+longer residual.  Fresh final validation reproduces `238/243` with exactly the
+same five identities: authority-only, fresh-only, and new-failure sets are all
+empty.  Discovered tests, checked-in reference sidecars, and fresh status
+sidecars are complete and equal at `243/243/243`; the reference and fresh
+status distributions both contain 224 `EXIT_SUCCESS` and 19 `EXIT_FAILURE`,
+with zero status mismatches.  The exact prior-through gate is `1167/1167`, and
+the exact file audit passes with six known nonfatal warnings.
 
 ### Changed-path boundary
 
-The landed increment is confined to
-`dev/src/pa15_lowering.h`, `dev/src/pa15_lowering.cpp`, and
-`dev/src/pa15_lowering_calls.cpp`, plus its plan record.  This audit repairs
-only `dev/src/pa15_lowering_calls.cpp` and updates this review, the plan, and
-one ledger row.  The final changed-path set is exactly those three files.  No
-handout test, fixture, `.ref` file, exit-status sidecar, harness, comparator,
-generated output, source-set manifest, or unrelated residual owner is
-changed; no new regression is needed because the repair is an internal
-malformed-fact guard and existing public controls cover the definition-demand
-boundary.
+The landed implementation change is `dev/src/pa15_lowering_flow.cpp`, with
+the landed plan refresh.  The final audit/repair boundary is limited to the
+three PA15 source/header paths `dev/src/pa15_lowering.cpp`,
+`dev/src/pa15_lowering.h`, and `dev/src/pa15_lowering_flow.cpp`, plus this
+review, the plan, and the single new course regression
+`cppgm.tests/course/pa16/432-typed-binary-cast-boundary-regression.sh`.
+No handout test, fixture, `.ref` file, exit-status sidecar, harness,
+comparator, generated oracle output, source-set manifest, or unrelated PA16
+residual owner was changed.
 
 ### Complete typed ownership trace
 
-The hidden-friend path remains a single typed pipeline:
+The affected path is one typed pipeline:
 
 ```text
-PA11 BindingId + BindingSidecar(hidden_friend) + namespace owner
-  -> PA12 namespace-owned FunctionFact + body_scope/body_fact
-  -> PA15 canonical function_binding_fact_index_ lookup
-  -> dense demanded_namespace_functions[FunctionFactId]
-  -> FunctionPlan and direct typed LowIR body emission
+PA10 CastExpression syntax
+  -> PA12 SemanticFactId child order and ConversionFact range
+  -> PA15 lower_expression_impl(..., defer_conversions)
+  -> PA15 lower_binary_expression / apply_conversions
+  -> typed LowIR instructions in deterministic evaluation order
 ```
 
-PA11's `add_value` stores a hidden friend under its actual namespace-owned
-`BindingId`; its sidecar and friend lexical relation retain hidden visibility
-and class access without making a rendered name an owner.  PA12 validates the
-definition body and publishes its `CompoundStatement` `body_fact`, including
-for a definition that will not be emitted.
+PA10's explicit cast node is preserved as a typed syntax fact.  PA12's cast
+builders append the cast's selected conversion edge(s) to the cast fact and
+the binary semantic owner appends any contextual promotion to that same
+contiguous range.  The conversion records retain typed source, target, kind,
+rank, and any existing path metadata; no spelling or name is recovered.
 
-PA15 first indexes declaration facts and global roots.  The demand pass seeds
-ordinary namespace definitions, C-linkage hidden friends, and internal-linkage
-hidden friends.  It walks all semantically validated namespace definition
-bodies once, as required by the active fixture, but sets a hidden definition
-bit only through typed edges: `CallExpression.selected_binding` for direct
-calls, `IdExpression.binding` for function address/reference paths, and the
-namespace-scope `Variable` declaration wrapper when an ordinary namespace
-redeclaration makes a canonical function visible.  Global/static initializer
-roots traverse their typed children, so a function pointer/address edge is
-not lost when the initializer is constant-folded.  Member, static-member,
-constructor, destructor, lifetime, and base-entry demand remains on the
-pre-existing typed paths.
-
-The `function_binding_fact_index_` lookup is checked against the canonical
-binding and owner before setting the dense bit.  `collect_functions` consumes
-that bit before creating a `FunctionPlan`; an unrooted external hidden friend
-therefore has a validated body but no emitted definition or body lowering.
-Function declarations are a separate demand/materialization boundary.  Direct
-calls and addresses still require their typed symbol/declaration plan, while
-an unused hidden definition does not acquire a definition plan merely from
-semantic validation.
+PA15 validates the semantic child range through `children`.  At the binary
+boundary, the immediate child's `SemanticFactKind::CastExpression` is the
+correct typed discriminator for the special operand-owned boundary, including
+PA12-generated typed cast wrappers.  The complete conversion range is first
+validated for identity, bounds, and typed continuity.  A linear walk then
+finds the cast-owned prefix whose endpoint reaches the cast fact's typed
+result; a contextual suffix is not moved across sibling evaluation.  If a
+nonempty cast range starts at the cast result and has no cast-owned endpoint,
+the range is a valid zero-owned reference wrapper and remains after the
+sibling boundary.  Otherwise a missing or discontinuous typed boundary fails
+closed.  `apply_conversions` validates the whole range before validating and
+consuming the requested subrange; existing conversion-kind consumers still own
+the detailed typed endpoint and carrier checks.
 
 ### Findings and bounded repair
 
-The landed root and edge split is correct for the fixture-defined rule: walking
-an unplanned hidden-friend body can demand a different hidden friend, but the
-walked body itself does not become a plan.  Dense per-fact bits, visited
-function/fact sets, and canonical `BindingId` indexes provide stable
-deduplication without name recovery, a second semantic owner, or a retry loop.
+The landed schedule was correct for the active nested-enum hidden-friend
+body: each direct cast's conversion appeared with its operand, producing the
+required load/cast/load/cast/or shape.  The audit found one directly caused
+ordering defect: the full cast fact range was applied early.  For
+`static_cast<short>(left_value()) + right_value()`, PA12's later `short ->
+long` parent promotion shared the cast range and was emitted before the right
+call.  That is outside the intended PA15 boundary of evaluating both operands
+before parent contextual conversions.
 
-The audit found one in-scope fail-closed defect.  The new namespace demand
-consumer previously returned silently for a defined binding whose canonical
-  `FunctionFact` had a missing/malformed function scope or body, and ignored
-invalid selected/reference IDs.  The repair distinguishes valid PA12
-bodyless default-argument declaration placeholders and deleted/defaulted
-declarations with no body `FunctionFact` from a normal definition, validates
-namespace/function/block ownership, body range
-and kind, binding type, canonical fact identity, and required selected/
-reference IDs, and throws on malformed combinations.  A broad prior-gate
-probe exposed the important deleted-declaration case: its merged binding can
-carry `has_definition` without a body fact.  Only a normal definition with a
-missing fact is malformed.  Valid bodyless declarations remain
-declaration-only and do not set definition demand.  This is a constant-sized
-validation at each canonical edge and does not change valid member or
-lifecycle demand.
+The repair keeps only the cast-owned prefix with the operand, then applies
+the remaining left and right ranges after both operands.  The boundary walk
+has no PA12 edge-count assumption: it consumes the complete typed range and
+also preserves contiguous typed reference-binding edges for a value temporary.
+The shared conversion consumer now validates the complete range, including the
+narrow reference-temporary retarget boundary, and fails closed on malformed
+fact, range, subrange, or endpoint identities instead of relying on unchecked
+vector access.  No correction was made to array lifetime, pointer-index
+widening, or bit-field increment/read owners.
 
-No improper reachability shortcut was found: namespace body scanning is
-deliberately broader than emitted-caller reachability for this checkpoint, and
-the active `operator==`/`operator!=` fixture exercises that distinction.
-Ordinary namespace functions remain roots; C/internal hidden friends remain
-roots; external C++ hidden friends require a typed call/address/ordinary-
-visibility edge.  No names, rendered ABI spellings, or declaration text are
-used to make the decision.
+Nested/effectful operands retain left-then-right evaluation.  Comma and
+short-circuit operators return through their existing lowering owners before
+this builtin-binary path; overloaded operators remain typed call boundaries.
+The member-pointer const-typedef return regression remains protected because
+its implicit promotions are in the post-sibling suffix, after both pointer
+loads.
 
-### Focused evidence and exact residual boundary
+### Focused evidence, structural performance, and disposition
 
-After the repair, the focused evidence is:
+Final focused evidence is:
 
 ```text
 make build                                             exit 0
-PA15 deleted-declaration control                         PASS (1/1)
-active handout check                                   PASS (1/1)
-hidden-friend/ADL/address/member control matrix       PASS (14/14)
-course 430 typed unnamed-namespace regression        PASS
-course 431 internal special-member ABI regression     PASS
+active nested-enum + member-pointer check              PASS (2/2)
+PA15 conversion/binary matrix                          PASS (6/6)
+PA16 operator/member/friend/chained matrix              PASS (6/6)
+course 432 cast-boundary regression                    PASS
+typed zero-owned reference-cast probe                  PASS
+git diff --check                                       exit 0
 ```
 
-The 14-test matrix covers function address/reference roots, ordinary and
-static namespace/member functions, friend declarations, C++ namespace
-declarations, unnamed-namespace hidden-friend lifetime, ordinary operators,
-hidden-friend ADL calls, mixed/nullptr operators, derived-base friend
-operators, and qualified friend definitions.  The active check and both
-course scripts were run against the rebuilt compiler.  Final broad evidence
-is `make test-pa16` exit `2` at `237/243`, with all `243/243` identities
-covered and the exact six residuals above.  Relative to the supplied
-authority, authority-only, fresh-only, and new failure counts are `0/0/0`.
-The exact prior gate exits `0` at `1167/1167`.  The exact file audit exits `0`
-with six known nonfatal `bad-division` warnings at
-`dev/src/abi_mangle.h`, `dev/src/cpp_semantic_core.h`,
-`dev/src/lowir_model.h`, `dev/src/pa11_semantic_model.h`,
-`dev/src/pa12_semantic_selection.h`, and `dev/src/pa15_lowering.h` (each at
-line 1).  Discovered source tests, checked-in reference sidecars, and fresh
-output sidecars are each `243`; every identity-set delta is `0`.  Reference
-and fresh exit-status distributions are both `224` `EXIT_SUCCESS` and `19`
-`EXIT_FAILURE`, with `0` status mismatches.  `git diff --check` is part of the
-final bounded validation and exits `0`.
+Course 432 is justified because the newly found ordering defect is a public
+typed LowIR contract; no fixture or reference regeneration is needed.  The
+implementation validates a complete typed conversion range and walks it
+linearly to find the cast boundary; fixed split/application calls preserve
+O(number of consumed conversion records) work per binary node without a
+hardcoded edge count.  LowIR order remains deterministic, with no retry loop,
+name scan, or cache.  No timing, RSS, allocation, generated-program, or other
+material performance claim is made.
 
-### Structural performance, uncertainties, and disposition
-
-The pass uses dense arrays over the existing function/fact domains, one
-canonical function-index lookup per typed edge, and monotonic function/fact
-worklists.  Namespace body, global-root, and runtime-fact traversal is linear
-in the consumed typed facts (with two explicit global root modes); class-owner
-validation is linear in class bindings.  No whole-program retry, rendered-name
-scan, eager emitted-body sweep, or unbounded cache was added.  No timing, RSS,
-allocation, or generated-program performance claim is made.
-
-The checkpoint audit is complete and the bounded three-file result is
-committed at this checkpoint.  PA16 remains incomplete only at the six
-supplied residual identities.  The next checkpoint is the separately scoped
-`pa16/tests/general/200-local-default-class-array-lifecycle.t` owner.
+Fresh final broad validation reproduces the exact five residual identities and
+the exact `238/243` result from the supplied authority.  The audit is complete
+for this bounded increment; the five residual owners remain separately scoped
+and no unrelated PA16 repair is included.
 
 ## Historical Unnamed-Namespace Identity/Lifecycle Checkpoint Review (8708859c)
 
@@ -4971,3 +4939,4 @@ conversion slices.
 | `2e48cd6d` nested-braced aggregate-member checkpointAudit | Completed bounded audit of landed `2e48cd6d` versus `67d8f53b`: the typed PA10→PA12→PA15 path is traced, the `(FunctionFactId, require_empty_parameters)` no-op cache-key defect is repaired, aggregate ownership checks are fail-closed, and regression 429 covers pure projection, side effects, constructor-body effects, and volatile reads. Focused target/control checks pass `1/1` and `6/6`; course 409 exits `0`; regression 429 and shell syntax pass. Fresh `make test-pa16` exits `2` at `235/243` with the exact unchanged eight residual identities, complete `243/243` coverage, and authority-only/fresh-only `0/0`; through-PA15 is `1167/1167`; file audit exits `0` with the six known header warnings above; diff-check exits `0`. No handout, fixture, reference, sidecar, harness, comparator, generated-output, source-set, or unrelated-owner change; PA16 remains incomplete. |
 | `8708859c` unnamed-namespace identity/lifecycle checkpointAudit | Completed follow-up audit/repair of landed `8708859c48a0327d4a975e1bce059a066b4676ca` relative to `542b136a`, carried through checkpoint commit `6ea5d117f8a443b4ce3c1164ca1d3f5c9e4ad5ad`: parent-keyed unnamed `ScopeId`, typed internal ownership, hidden-friend/ADL continuity, the narrow global-root default-constructor demand marker, typed PA15 ABI components, fail-closed demanded typed base-entry alias ownership, and the `TemplateParameters` declaration bridge align with `spec.md` Purpose and §§1–5/§7. The follow-up found a third in-scope defect: `strong_out_of_class_special` had precedence over canonical `binding.internal_linkage`, so an unnamed-owned out-of-class special member could be labeled strong. PA15 now selects `SBM_INTERNAL` first; ordinary externally linked out-of-class special members remain strong and other external special members remain weak. Regression 431 requires `OutDtor` complete `D1` and base-entry `D2` definitions to have internal metadata, exactly one object owner each, and no duplicate `D2` alias; its in-class `WithDtor` no-base-entry control retains exactly one `D2` alias, and the constructor pair checks remain. The typed scope repair, alias ownership repair, and metadata-precedence repair use constant-sized typed checks with no name inference, retry loop, eager helper sweep, or timing/RSS claim. Focused build, shell syntax, regressions 430/431, active target `1/1`, and the relevant named/internal/out-of-class-special-member matrix `10/10` pass. Fresh `make test-pa16` exits `2` at `236/243` with exactly the same seven residual identities; authority/fresh failures are `7/7`, authority-only/fresh-only `0/0`, and discovered/reference/fresh inventories are `243/243/243` with zero inventory deltas. The exact through-PA15 gate is `1167/1167`; file audit exits `0` with six known nonfatal `bad-division` warnings; `git diff --check` and the bounded changed-path audit pass with only the four follow-up paths (`dev/src/pa15_lowering.cpp`, regression 431, `pa16/plan.md`, and `pa16/audit.md`). PA16 remains incomplete only because the same seven residuals remain; the next checkpoint is the separately scoped `200-local-default-class-array-lifecycle.t`. | completed audit |
 | `8c60e658572a1f73aa0387ffaf6dc5546e5c2bda` hidden-friend emission-demand checkpointAudit | Completed the bounded audit of the landed hidden-friend definition-demand split relative to `dff21435b183d2bb123c508522627ed4b5e20421`: canonical `BindingId`/sidecar and namespace ownership flow through PA12 `FunctionFact`/`body_fact` into dense PA15 definition demand, with typed call, address/reference, ordinary-visibility, global-root, C-linkage, and internal-linkage boundaries preserved. The audit repairs only `dev/src/pa15_lowering_calls.cpp`, making malformed normal-definition facts and selected/reference identities fail closed while retaining valid bodyless default-argument declaration placeholders, deleted/defaulted declarations without body facts, and existing member/lifecycle demand. Final build is exit `0`; the PA15 deleted-declaration control is `PASS (1/1)`, the active handout is `PASS (1/1)`, the representative affected matrix is `PASS (14/14)`, and courses 430/431 pass. Fresh `make test-pa16` exits `2` at `237/243` with complete `243/243` coverage and exactly the supplied six residual identities; authority-only/fresh-only/new failures are `0/0/0`. Discovered/reference/fresh identities are `243/243/243` with zero set deltas; reference/fresh exit-status distributions are both `224` success and `19` failure with zero mismatches. The exact through-PA15 gate exits `0` at `1167/1167`; file audit exits `0` with six known nonfatal header-division warnings; final diff-check and bounded path/artifact checks pass. No handout, fixture, reference, sidecar, harness, comparator, generated output, source-set, or unrelated residual owner changed; the bounded result is complete and committed at this checkpoint. | completed checkpointAudit |
+| `71a40cfd` typed binary conversion-boundary checkpointAudit | Completed final bounded audit/repair of landed `71a40cfd8fb20f6b5a52725649b9b2610b3ddfc8` relative to `c529ea6a`: PA10 explicit cast syntax, PA12 typed child/range publication, PA15 deferred operand lowering, and deterministic LowIR order are traced. The immediate typed `CastExpression` discriminator is retained; a complete validated typed-range walk identifies the cast-owned prefix, valid zero-owned reference wrappers remain at the parent boundary, and contextual suffixes remain after both operands. `apply_conversions` validates the entire typed range, including the narrow reference-temporary retarget rule, rejects empty ranges with a begin, and consumes only validated subranges. Focused build, active/member pair `2/2`, PA15 matrix `6/6`, PA16 matrix `6/6`, typed zero-owned reference probe, course 432, shell syntax, and diff-check pass. Fresh PA16 is exit `2` at `238/243` with exactly the same five residual identities as authority; authority-only/fresh-only/new failures are `0/0/0`, discovered/reference/fresh coverage is `243/243/243`, and status mismatches are `0` with matching `224` success/`19` failure distributions. The exact prior-through gate is `1167/1167`; file audit exits `0` with six known nonfatal warnings and no fatal finding. No handout, fixture, reference, sidecar, harness, comparator, generated output, source-set, or unrelated residual owner changed; the six-path checkpoint audit is complete. The next checkpoint is the separately scoped `200-local-default-class-array-lifecycle.t`. | completed checkpointAudit |

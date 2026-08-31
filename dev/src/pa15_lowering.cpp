@@ -2204,22 +2204,22 @@ bool Pa15Lowerer::apply_structural_conversion(LoweredValue* result,
 }
 LoweredValue Pa15Lowerer::apply_conversions(SemanticFactId id, LoweredValue result,
 	bool omit_boolean_context, bool materialize_lvalue,
-	bool force_integral_literal_conversion, bool suppress_bit_field_copy){
-		const SemanticFact& fact = model_.semantic_facts_[id.value];
-		if (fact.conversion_count != 0 && fact.conversion_begin == InvalidIdentityValue)
-			throw std::runtime_error("PA15 invalid semantic conversion range");
-		std::size_t conversion_count = fact.conversion_count;
-		if (omit_boolean_context && conversion_count != 0)
+	bool force_integral_literal_conversion, bool suppress_bit_field_copy, std::size_t conversion_first, std::size_t conversion_last){
+		validate_conversion_range(id); const SemanticFact& fact = model_.semantic_facts_[id.value];
+		if (conversion_first > fact.conversion_count || (conversion_last != InvalidIdentityValue && (conversion_last > fact.conversion_count || conversion_first > conversion_last)))
+			throw std::runtime_error("PA15 invalid conversion subrange");
+		std::size_t conversion_end = conversion_last == InvalidIdentityValue ? fact.conversion_count : conversion_last;
+		if (omit_boolean_context && conversion_first != conversion_end)
 		{
 			FundamentalType target_fundamental;
 			const ConversionFact& last = model_.conversion_facts_[
-				fact.conversion_begin + conversion_count - 1];
+				fact.conversion_begin + conversion_end - 1];
 			if (model_.fundamental_of(model_.expression_object_type(last.target),
 				&target_fundamental) && target_fundamental == FundamentalType::Bool &&
 				!model_.floating_id(last.source))
-				--conversion_count;
+				--conversion_end;
 		}
-		for (std::size_t i = 0; i < conversion_count; ++i)
+		for (std::size_t i = conversion_first; i < conversion_end; ++i)
 		{
 			const ConversionFact& conversion = model_.conversion_facts_[
 				fact.conversion_begin + i];

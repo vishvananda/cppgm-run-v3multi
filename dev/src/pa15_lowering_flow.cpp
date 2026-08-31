@@ -3,6 +3,57 @@
 namespace pa11_semantic_internal
 {
 
+void Pa15Lowerer::validate_conversion_range(SemanticFactId id) const{
+		if (!id.valid() || id.value >= model_.semantic_facts_.size())
+			throw std::runtime_error("PA15 invalid conversion fact identity");
+		const SemanticFact& fact = model_.semantic_facts_[id.value];
+		const std::size_t conversion_total = model_.conversion_facts_.size();
+		if (fact.conversion_count == 0)
+		{
+			// PA12 starts a range at the first appended record and increments its
+			// count for that record.  There is no published empty range with a
+			// non-invalid begin; accepting one would make later indexing ambiguous.
+			if (fact.conversion_begin != InvalidIdentityValue)
+				throw std::runtime_error("PA15 empty conversion range has a begin");
+			return;
+		}
+		if (fact.conversion_begin == InvalidIdentityValue ||
+			fact.conversion_begin > conversion_total ||
+			fact.conversion_count > conversion_total - fact.conversion_begin)
+			throw std::runtime_error("PA15 invalid semantic conversion range");
+		if (!fact.type.valid() || fact.type.value >= model_.types_.size())
+			throw std::runtime_error("PA15 conversion fact has invalid result type");
+		for (std::size_t i = 0; i < fact.conversion_count; ++i)
+		{
+			const ConversionFact& conversion = model_.conversion_facts_[
+				fact.conversion_begin + i];
+			if (!conversion.source.valid() || conversion.source.value >=
+				model_.types_.size() || !conversion.target.valid() ||
+				conversion.target.value >= model_.types_.size())
+				throw std::runtime_error("PA15 conversion has invalid type identity");
+			if (i == 0)
+				continue;
+			const ConversionFact& previous = model_.conversion_facts_[
+				fact.conversion_begin + i - 1];
+			if (conversion.source == previous.target)
+				continue;
+			// PA12's reference temporary publishes a reference target, then
+			// appends the parent conversion from the temporary's value type.
+			// This is the one typed retarget boundary shared by the current
+			// producers; cv identity and all ordinary edges remain exact.
+			const TypeKind previous_kind = model_.type_kind(previous.target);
+			const bool reference_retarget =
+				(previous_kind == TypeKind::LvalueReference ||
+				 previous_kind == TypeKind::RvalueReference) &&
+				model_.expression_object_type(previous.target) ==
+					model_.expression_object_type(fact.type) &&
+				conversion.source == fact.type;
+			if (!reference_retarget)
+				throw std::runtime_error(
+					"PA15 conversion range is not typed-contiguous");
+		}
+}
+
 std::string Pa15Lowerer::abi_tls_wrapper_symbol(BindingId binding_id,
 	ScopeId owner) const{
 		const Binding& binding = model_.binding(binding_id);
@@ -91,8 +142,7 @@ void Pa15Lowerer::index_global_storage_demands(){
 				throw std::runtime_error(
 					"PA15 global demand conversion range is invalid");
 			if (fact.conversion_count == 0 &&
-				fact.conversion_begin != InvalidIdentityValue &&
-				fact.conversion_begin > conversion_count)
+				fact.conversion_begin != InvalidIdentityValue)
 				throw std::runtime_error(
 					"PA15 global demand conversion range is invalid");
 			for (std::size_t j = 0; j < fact.child_count; ++j)
@@ -848,31 +898,102 @@ LoweredValue Pa15Lowerer::lower_binary_expression(SemanticFactId id){
 		const bool right_pointer = pointer_like(
 			model_.semantic_facts_[operands[1].value].type);
 		const bool force_size_operands = fact.size_type_derived;
-		const bool left_has_explicit_cast =
-			model_.semantic_facts_[operands[0].value].kind ==
-			SemanticFactKind::CastExpression;
-		const bool right_has_explicit_cast =
-			model_.semantic_facts_[operands[1].value].kind ==
-			SemanticFactKind::CastExpression;
+		// PA12 appends a parent contextual edge to the child's typed range.  A
+		// cast owns the prefix ending at its typed result; only that prefix is
+		// part of operand evaluation.  The remaining parent range keeps the
+		// established post-sibling schedule.  The boundary walk consumes the
+		// complete validated range, so future PA12-owned edges do not require a
+		// PA15 shape assumption or source-text reconstruction.
+		auto cast_owned_conversion_count = [this](SemanticFactId operand_id) {
+			if (!operand_id.valid() || operand_id.value >=
+				model_.semantic_facts_.size())
+				throw std::runtime_error("PA15 invalid binary operand identity");
+			const SemanticFact& operand = model_.semantic_facts_[operand_id.value];
+			if (operand.kind != SemanticFactKind::CastExpression)
+				return static_cast<std::size_t>(0);
+			validate_conversion_range(operand_id);
+			if (operand.conversion_count == 0)
+				return static_cast<std::size_t>(0);
+			if (operand.child_count != 1 ||
+				operand.child_begin == InvalidIdentityValue ||
+				operand.child_begin >= model_.semantic_children_.size() ||
+				operand.child_count > model_.semantic_children_.size() -
+					operand.child_begin)
+				throw std::runtime_error("PA15 cast child range is invalid");
+			const SemanticFactId child_id = model_.semantic_children_[
+				operand.child_begin];
+			if (!child_id.valid() || child_id.value >= model_.semantic_facts_.size())
+				throw std::runtime_error("PA15 cast child identity is invalid");
+			const SemanticFact& child = model_.semantic_facts_[child_id.value];
+			if (!child.type.valid() || child.type.value >= model_.types_.size())
+				throw std::runtime_error("PA15 cast child type is invalid");
+			const ConversionFact& first = model_.conversion_facts_[
+				operand.conversion_begin];
+			const TypeId child_object = model_.expression_object_type(child.type);
+			if (first.source != operand.type && first.source != child.type &&
+				first.source != child_object)
+				throw std::runtime_error(
+					"PA15 cast conversion has no typed source boundary");
+			// A nonempty range can be entirely parent-owned.  This is the
+			// reference-cast case: PA12 publishes the cast result as the source
+			// of the first contextual edge but has no cast-owned edge to split.
+			// A first edge that reaches the cast result is instead cast-owned.
+			if (first.source == operand.type && first.target != operand.type)
+				return static_cast<std::size_t>(0);
+			std::size_t owned = InvalidIdentityValue;
+			for (std::size_t i = 0; i < operand.conversion_count; ++i)
+			{
+				const ConversionFact& conversion = model_.conversion_facts_[
+					operand.conversion_begin + i];
+				if (conversion.target == operand.type)
+				{
+					owned = i + 1;
+					break;
+				}
+			}
+			if (owned == InvalidIdentityValue)
+				throw std::runtime_error(
+					"PA15 cast conversion has no typed result boundary");
+			// A PA12 value temporary may finish with a typed reference binding
+			// before the parent resumes from the temporary's value type.  Include
+			// any such contiguous reference edges without assuming a fixed count.
+			while (owned < operand.conversion_count)
+			{
+				const ConversionFact& previous = model_.conversion_facts_[
+					operand.conversion_begin + owned - 1];
+				const ConversionFact& next = model_.conversion_facts_[
+					operand.conversion_begin + owned];
+				if (next.source != previous.target)
+					break;
+				const TypeKind next_kind = model_.type_kind(next.target);
+				if (next_kind != TypeKind::LvalueReference &&
+					next_kind != TypeKind::RvalueReference)
+					break;
+				if (model_.expression_object_type(next.target) !=
+					model_.expression_object_type(operand.type))
+					break;
+				++owned;
+			}
+			return owned;
+		};
+		const std::size_t left_cast_conversions =
+			cast_owned_conversion_count(operands[0]);
+		const std::size_t right_cast_conversions =
+			cast_owned_conversion_count(operands[1]);
 		LoweredValue left = lower_expression_impl(operands[0], false, true,
 			force_size_operands, true);
-		// An explicit cast is an operand-owned typed boundary.  Parent-assigned
-		// implicit conversions retain the established schedule: evaluate both
-		// operands first, then apply their contextual conversion ranges.
-		if (left_has_explicit_cast)
+		if (left_cast_conversions != 0)
 			left = apply_conversions(operands[0], left, false, true,
-				force_size_operands, true);
+				force_size_operands, true, 0, left_cast_conversions);
 		LoweredValue right = lower_expression_impl(operands[1], false, true,
 			force_size_operands, true);
-		if (right_has_explicit_cast)
+		if (right_cast_conversions != 0)
 			right = apply_conversions(operands[1], right, false, true,
-				force_size_operands, true);
-		if (!left_has_explicit_cast)
-			left = apply_conversions(operands[0], left, false, true,
-				force_size_operands, true);
-		if (!right_has_explicit_cast)
-			right = apply_conversions(operands[1], right, false, true,
-				force_size_operands, true);
+				force_size_operands, true, 0, right_cast_conversions);
+		left = apply_conversions(operands[0], left, false, true,
+			force_size_operands, true, left_cast_conversions);
+		right = apply_conversions(operands[1], right, false, true,
+			force_size_operands, true, right_cast_conversions);
 		if ((fact.token == SimpleTokenType::OP_PLUS ||
 			fact.token == SimpleTokenType::OP_MINUS) && left_pointer &&
 			!right_pointer && left.type.is_pointer())
