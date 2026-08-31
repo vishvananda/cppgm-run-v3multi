@@ -362,6 +362,60 @@ void Pa15Lowerer::emit_store(const LowType& type, const Operand& value,
 	block().instructions.push_back(instruction);
 }
 
+bool Pa15Lowerer::class_value_conversion(SemanticFactId id, TypeId target,
+	ConversionFact* conversion) const
+{
+	if (!id.valid() || id.value >= model_.semantic_facts_.size() ||
+		!target.valid() || target.value >= model_.types_.size())
+		return false;
+	validate_conversion_range(id);
+	const SemanticFact& fact = model_.semantic_facts_[id.value];
+	bool found = false;
+	for (std::size_t i = 0; i < fact.conversion_count; ++i)
+	{
+		const ConversionFact& candidate = model_.conversion_facts_[
+			fact.conversion_begin + i];
+		if (candidate.kind != ConversionKind::ClassValue)
+			continue;
+		if (found || candidate.target != target || !candidate.source.valid() ||
+			candidate.source.value >= model_.types_.size() ||
+			!model_.class_value_transfer_type(candidate.target) ||
+			!model_.class_value_type(candidate.source) ||
+			model_.strip_cv_type(model_.expression_object_type(candidate.source)) !=
+			model_.strip_cv_type(model_.expression_object_type(candidate.target)))
+			throw std::runtime_error("PA15 class-value conversion boundary is invalid");
+		found = true;
+		if (conversion != NULL)
+			*conversion = candidate;
+	}
+	return found;
+}
+
+void Pa15Lowerer::emit_copy_object(TypeId type, LoweredValue source,
+	LoweredValue destination)
+{
+	const LowType object = low_type(type);
+	if (!object.is_object() || object.storage_size() == 0 ||
+		object.storage_alignment() == 0)
+		throw std::runtime_error("PA15 class copy object shape is invalid");
+	if (source.lvalue && source.type.is_object())
+		source = address_of_storage(source);
+	if (destination.lvalue && destination.type.is_object())
+		destination = address_of_storage(destination);
+	if ((!source.type.is_pointer() && !source.type.is_object()) ||
+		!destination.type.is_pointer())
+		throw std::runtime_error("PA15 class copy object address is invalid");
+	if (source.type.is_object() && source.type != object)
+		throw std::runtime_error("PA15 class copy source shape is invalid");
+	Instruction instruction;
+	instruction.kind = Instruction::IK_COPYOBJ;
+	instruction.byte_count = object.storage_size();
+	instruction.byte_alignment = object.storage_alignment();
+	instruction.first = source.value;
+	instruction.second = destination.value;
+	block().instructions.push_back(instruction);
+}
+
 LoweredValue Pa15Lowerer::mark_bit_field_address(
 	const LoweredValue& address, BindingId binding_id,
 	BitFieldAddressProjectionId projection) const

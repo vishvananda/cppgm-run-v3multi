@@ -3,6 +3,131 @@
 namespace pa11_semantic_internal
 {
 
+bool Pa15Lowerer::class_value_function_abi(BindingId binding,
+	const FunctionFact* function, TypeId function_type) const
+{
+	if (function == NULL || !binding.valid() || function->binding != binding ||
+		function->is_constructor || !function->owner.valid() ||
+		function->owner.value >= model_.scopes_.size() ||
+		model_.scopes_[function->owner.value].kind != ScopeKind::Namespace ||
+		!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[function_type.value];
+	if (signature.variadic)
+		return false;
+	if (model_.class_value_type(signature.result) &&
+		!model_.class_value_transfer_type(signature.result))
+		return false;
+	for (std::size_t parameter = 0;
+		parameter < signature.parameters.size(); ++parameter)
+		if (model_.class_value_type(signature.parameters[parameter]) &&
+			!model_.class_value_transfer_type(signature.parameters[parameter]))
+			return false;
+	return model_.class_value_type(signature.result) ||
+		std::find_if(signature.parameters.begin(), signature.parameters.end(),
+			[this](TypeId type) { return model_.class_value_type(type); }) !=
+			signature.parameters.end();
+}
+
+bool Pa15Lowerer::class_value_result_indirect(TypeId type) const
+{
+	if (!model_.class_value_transfer_type(type))
+		return false;
+	const LowType object = low_type(type);
+	// The semantic object boundary remains direct through 16 bytes.  Larger
+	// complete objects use the explicit caller-owned result pointer required by
+	// the LowIR ABI contract.
+	return object.is_object() && object.storage_size() > 16;
+}
+
+void Pa15Lowerer::append_indirect_result_parameter(Function& function)
+{
+	Parameter result_parameter;
+	result_parameter.name_id = intern_spelling("%ret");
+	result_parameter.type.kind = LowType::TYPE_POINTER;
+	result_parameter.metadata.passing = lowir_model::PPM_INDIRECT_RESULT;
+	function.params.push_back(result_parameter);
+}
+
+bool Pa15Lowerer::function_abi_supported(BindingId binding,
+	const FunctionFact* function, TypeId function_type) const
+{
+	if (!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[function_type.value];
+	bool has_class_value = model_.class_value_type(signature.result);
+	for (std::size_t parameter = 0;
+		parameter < signature.parameters.size(); ++parameter)
+		if (model_.class_value_type(signature.parameters[parameter]))
+			has_class_value = true;
+	if (!has_class_value)
+		return true;
+	if (empty_class_value_function_abi(binding, function, function_type))
+		return true;
+	if (class_value_function_abi(binding, function, function_type))
+		return true;
+	if (function == NULL || !binding.valid() || function->binding != binding ||
+		!function->is_constructor ||
+		!model_.narrow_class_value_constructor(*function))
+		return false;
+	return model_.void_id(signature.result) && !signature.variadic &&
+		signature.parameters.size() == 1 &&
+		model_.empty_class_value_type(signature.parameters.front());
+}
+
+bool Pa15Lowerer::checkpoint_zero_storage_eligible(TypeId type) const{
+	// This remains the narrow zero-storage query used by legacy aggregate
+	// lowering; it does not establish PA17 class-value transfer eligibility.
+	type = model_.strip_cv_type(type);
+	if (!type.valid()) return false;
+	const TypeKind kind = model_.type_kind(type);
+	if (kind == TypeKind::Cv)
+		return checkpoint_zero_storage_eligible(model_.types_[type.value].child);
+	if (kind == TypeKind::Fundamental)
+		return model_.types_[type.value].fundamental != FundamentalType::Void;
+	if (kind == TypeKind::Pointer)
+		return true;
+	if (kind == TypeKind::Array)
+	{
+		return !model_.types_[type.value].unknown_bound &&
+			checkpoint_zero_storage_eligible(model_.types_[type.value].child);
+	}
+	if (kind == TypeKind::MemberPointer || kind == TypeKind::LvalueReference ||
+		kind == TypeKind::RvalueReference || kind == TypeKind::Function)
+		return false;
+	if (kind != TypeKind::Named)
+		return false;
+	const NamedRecordId record_id = model_.types_[type.value].named;
+	if (!record_id.valid() || record_id.value >= model_.named_.size())
+		return false;
+	const NamedRecord& record = model_.named_[record_id.value];
+	if (record.kind == NamedKind::Enum)
+		return true;
+	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+		record.has_virtual_member || record.direct_base_virtual)
+		return false;
+	const RecordLayout& layout = model_.record_layout(record_id);
+	return layout.state == RecordLayoutState::Complete &&
+		layout.checkpoint_zero_storage_eligible;
+}
+
+LowType Pa15Lowerer::function_low_return_type(TypeId function_type) const
+{
+	if (!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		throw std::runtime_error("PA15 function return signature is invalid");
+	const TypeId result = model_.types_[function_type.value].result;
+	if (class_value_result_indirect(result))
+	{
+		LowType void_type;
+		void_type.kind = LowType::TYPE_VOID;
+		return void_type;
+	}
+	return function_result_low_type(result);
+}
+
 static lowir_model::CallEffectsMode builtin_effects_mode(
 	BuiltinCallEffects effects)
 {
@@ -1313,7 +1438,7 @@ void Pa15Lowerer::collect_function_declarations(){
 				!model_.is_static_member(binding_id) &&
 				(base_entry || !has_definition);
 			declaration.name_id = symbol_spelling(declaration_name);
-			declaration.return_type = function_result_low_type(type.result);
+			declaration.return_type = function_low_return_type(binding.type);
 			const BindingSidecar* sidecar = model_.binding_sidecar(binding_id);
 			if (sidecar != NULL && sidecar->nonthrowing)
 				declaration.boundary.unwind = lowir_model::CUM_NO;
@@ -1333,6 +1458,15 @@ void Pa15Lowerer::collect_function_declarations(){
 				declaration.metadata.linkage = lowir_model::LLM_C;
 			declaration.boundary.arity = type.variadic ?
 				lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
+			if (class_value_result_indirect(type.result))
+			{
+				Parameter parameter_record;
+				parameter_record.name_id = intern_spelling("%ret");
+				parameter_record.type.kind = LowType::TYPE_POINTER;
+				parameter_record.metadata.passing =
+					lowir_model::PPM_INDIRECT_RESULT;
+				declaration.params.push_back(parameter_record);
+			}
 			if (member_scope && !model_.is_static_member(binding_id))
 			{
 				Parameter parameter_record;
@@ -1431,7 +1565,8 @@ void Pa15Lowerer::collect_function_declarations(){
 	}
 }
 
-LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
+LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
+	const LoweredValue* result_destination)
 {
 	const SemanticFact& fact = model_.semantic_facts_[id.value];
 	const std::vector<SemanticFactId> facts = children(id);
@@ -1439,6 +1574,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	const TypeKey* function_type = NULL;
 	std::size_t argument_begin = 0;
 	bool constructor_call = false;
+	bool indirect_result = false;
+	LoweredValue indirect_result_storage;
 	bool class_value_argument = false;
 	bool class_value_source_has_declaration_address = false;
 	TypeId class_value_target;
@@ -1469,6 +1606,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 		if (!function_abi_supported(fact.selected_binding, selected_function,
 			callee_binding->type))
 			throw std::runtime_error("PA15 unsupported class-value function ABI");
+		indirect_result = class_value_result_indirect(function_type->result);
 		instruction.direct_callee_id = symbol->second;
 		instruction.first = global_operand(symbol->second,
 			function_name_ids_.find(fact.selected_binding.value)->second);
@@ -1761,16 +1899,75 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 		instruction.has_call_signature = true;
 	}
 	const std::size_t explicit_argument_count = facts.size() - argument_begin;
-	const std::size_t argument_count = explicit_argument_count +
+	const std::size_t semantic_argument_count = explicit_argument_count +
 		(fact.has_implicit_object ? 1 : 0) + (constructor_call ? 1 : 0);
+	const std::size_t argument_count = semantic_argument_count +
+		(indirect_result ? 1 : 0);
 	if (!function_type || (!function_type->variadic &&
-		argument_count != function_type->parameters.size()) ||
-		(function_type->variadic && argument_count < function_type->parameters.size()))
+		argument_count != function_type->parameters.size() +
+		(indirect_result ? 1 : 0)) ||
+		(function_type->variadic && argument_count < function_type->parameters.size() +
+		(indirect_result ? 1 : 0)))
 		throw std::runtime_error("PA15 call arity mismatch");
-	instruction.call_return_type = low_type(function_type->result);
+	if (indirect_result)
+	{
+		if (result_destination != NULL)
+			indirect_result_storage = *result_destination;
+		else
+			indirect_result_storage = generated_slot(low_type(function_type->result),
+				"retobj");
+		if (indirect_result_storage.lvalue &&
+			indirect_result_storage.type.is_object())
+			indirect_result_storage = address_of_storage(indirect_result_storage);
+		if (!indirect_result_storage.type.is_pointer())
+			throw std::runtime_error("PA15 indirect result destination is not a pointer");
+		instruction.args.insert(instruction.args.begin(),
+			indirect_result_storage.value);
+	}
+	instruction.call_return_type = indirect_result ? LowType() :
+		low_type(function_type->result);
+	if (indirect_result)
+		instruction.call_return_type.kind = LowType::TYPE_VOID;
 	instruction.call_returns_void = instruction.call_return_type.is_void();
 	instruction.call_boundary.arity = function_type->variadic ?
 		lowir_model::CAM_VARIADIC : lowir_model::CAM_FIXED;
+	std::vector<unsigned char> class_value_arguments(explicit_argument_count, 0);
+	std::vector<LoweredValue> class_value_sources(explicit_argument_count);
+	std::vector<LoweredValue> class_value_temporaries(explicit_argument_count);
+	std::vector<LoweredValue> class_value_addresses(explicit_argument_count);
+	if (!class_value_argument && !constructor_call && !fact.has_implicit_object)
+	{
+		for (std::size_t i = 0; i < explicit_argument_count; ++i)
+		{
+			if (i >= function_type->parameters.size() ||
+				!model_.class_value_transfer_type(function_type->parameters[i]))
+				continue;
+			ConversionFact conversion;
+			if (!class_value_conversion(facts[argument_begin + i],
+				function_type->parameters[i], &conversion))
+				throw std::runtime_error(
+					"PA15 class-value call conversion is missing");
+			class_value_sources[i] = lower_expression_impl(
+				facts[argument_begin + i], false, false, false, true);
+			if (!class_value_sources[i].type.is_object())
+				throw std::runtime_error(
+					"PA15 class-value call source is not an object");
+			class_value_arguments[i] = 1;
+		}
+		for (std::size_t i = 0; i < explicit_argument_count; ++i)
+			if (class_value_arguments[i] != 0)
+			{
+				class_value_temporaries[i] = generated_slot(
+					low_type(function_type->parameters[i]), "argobj");
+				class_value_addresses[i] = address_of_storage(
+					class_value_temporaries[i]);
+			}
+		for (std::size_t i = 0; i < explicit_argument_count; ++i)
+			if (class_value_arguments[i] != 0)
+				emit_copy_object(function_type->parameters[i],
+					class_value_sources[i],
+					class_value_addresses[i]);
+	}
 	if (class_value_argument && !constructor_call)
 	{
 		class_value_temporary = generated_slot(low_type(class_value_target),
@@ -1782,7 +1979,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	{
 		const SemanticFactId argument = facts[argument_begin + i];
 		instruction.args.push_back(class_value_argument && i == 0 ?
-			class_value_temporary.value : lower_expression(argument).value);
+			class_value_temporary.value : class_value_arguments[i] != 0 ?
+			class_value_temporaries[i].value : lower_expression(argument).value);
 	}
 	if (!fact.has_callee)
 		instruction.first = lower_expression(facts.front()).value;
@@ -1805,6 +2003,8 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id)
 	if (instruction.call_returns_void)
 	{
 		block().instructions.push_back(instruction);
+		if (indirect_result && result_destination == NULL)
+			return indirect_result_storage;
 		return LoweredValue(Operand(), instruction.call_return_type, false);
 	}
 	const ValueId value = destination(instruction.call_return_type, &instruction);

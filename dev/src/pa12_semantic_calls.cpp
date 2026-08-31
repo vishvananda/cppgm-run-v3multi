@@ -115,7 +115,7 @@ int compare_conversion_choices(const ConversionChoice& left,
 		ConversionScore(right));
 }
 
-bool PA11SemanticModel::supports_pa16_class_value_parameter(
+bool PA11SemanticModel::supports_class_value_parameter(
 	const ValueRef& candidate_ref, std::size_t parameter,
 	const ExprInfo& argument, TypeId parameter_type) const
 {
@@ -132,27 +132,23 @@ bool PA11SemanticModel::supports_pa16_class_value_parameter(
 	else if (!function->owner.valid() || function->owner.value >= scopes_.size() ||
 		scopes_[function->owner.value].kind != ScopeKind::Namespace)
 		return false;
-	if (parameter != 0 || candidate_ref.binding.value >= bindings_.size())
+	if (candidate_ref.binding.value >= bindings_.size())
 		return false;
 	const TypeId function_type = binding(candidate_ref.binding).type;
 	if (!function_type.valid() || function_type.value >= types_.size() ||
 		type_kind(function_type) != TypeKind::Function ||
 		types_[function_type.value].variadic ||
-		types_[function_type.value].parameters.size() != 1 ||
-		types_[function_type.value].parameters.front() != parameter_type ||
-		class_value_type(types_[function_type.value].result))
+		parameter >= types_[function_type.value].parameters.size() ||
+		types_[function_type.value].parameters[parameter] != parameter_type)
+		return false;
+	if (!class_value_transfer_type(parameter_type) ||
+		type_kind(parameter_type) == TypeKind::LvalueReference ||
+		type_kind(parameter_type) == TypeKind::RvalueReference)
 		return false;
 	const TypeId parameter_object = strip_cv_type(
 		expression_object_type(parameter_type));
-	const NamedRecordId parameter_record = named_record_for_type(
-		parameter_object);
-	if (!parameter_record.valid() || parameter_record.value >= named_.size() ||
-		type_kind(parameter_type) == TypeKind::LvalueReference ||
-		type_kind(parameter_type) == TypeKind::RvalueReference ||
-		!empty_class_value_type(parameter_type))
-		return false;
 	return argument.fact.valid() &&
-		argument.category == SemanticValueCategory::Lvalue &&
+		argument.fact.value < semantic_facts_.size() &&
 		strip_cv_type(expression_object_type(argument.type)) == parameter_object;
 }
 
@@ -449,7 +445,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	const std::vector<ValueRef>& candidates,
 	const std::vector<const PA10AstNode*>& argument_nodes,
 	const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-	bool allow_pa16_class_value)
+	bool allow_class_value)
 {
 	if (argument_nodes.size() != initial_arguments.size())
 		throw std::runtime_error("PA12 function argument boundary mismatch");
@@ -467,12 +463,12 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 	std::vector<CandidateScore> viable;
 	const unsigned int ellipsis_rank = std::numeric_limits<unsigned int>::max() / 4;
 	const auto supported_class_value_parameter = [this, &arguments,
-		allow_pa16_class_value](const ValueRef& candidate_ref,
+		allow_class_value](const ValueRef& candidate_ref,
 		std::size_t parameter, TypeId parameter_type) -> bool
 	{
-		if (!allow_pa16_class_value || parameter >= arguments.size())
+		if (!allow_class_value || parameter >= arguments.size())
 			return false;
-		return supports_pa16_class_value_parameter(candidate_ref, parameter,
+		return supports_class_value_parameter(candidate_ref, parameter,
 			arguments[parameter], parameter_type);
 	};
 	for (std::size_t i = 0; i < candidates.size(); ++i)
@@ -496,7 +492,7 @@ TypedFunctionSelection PA11SemanticModel::select_typed_function(
 		// specialization may publish more typed facts and invalidate a vector
 		// reference into types_.
 		const TypeKey function = types_[candidate_type.value];
-		if (allow_pa16_class_value)
+		if (allow_class_value)
 		{
 			bool supported = true;
 			for (std::size_t parameter = 0;
@@ -1666,7 +1662,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 		scope, qualified_class_member, qualified_static_candidates);
 	std::vector<ExprInfo> arguments;
 	bool arguments_ready = false;
-	bool allow_pa16_class_value = false;
+	bool allow_class_value = false;
 	// ADL is formed only for an unqualified-id.  Ordinary lookup remains the
 	// first candidate source; an empty ordinary set is also the point at which
 	// an otherwise unknown unqualified name can be recovered through ADL.
@@ -1693,7 +1689,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 			(candidates.empty() ? ordinary.empty() : !ordinary.empty());
 		if (allow_adl)
 		{
-			allow_pa16_class_value = true;
+			allow_class_value = true;
 			arguments_ready = true;
 			arguments.reserve(argument_node.children.size());
 			for (std::size_t i = 0; i < argument_node.children.size(); ++i)
@@ -1796,7 +1792,7 @@ ExprInfo PA11SemanticModel::semantic_call_expression(const PA10AstNode& node, Sc
 			argument_nodes.push_back(&argument_node.children[i]);
 		const TypedFunctionSelection selection = select_typed_function(
 			candidates, argument_nodes, arguments, scope,
-			allow_pa16_class_value);
+			allow_class_value);
 		selected = selection.selected;
 		selected_type = selection.type;
 		arguments = selection.arguments;

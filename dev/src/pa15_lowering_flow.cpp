@@ -466,67 +466,6 @@ bool Pa15Lowerer::empty_class_value_function_abi(BindingId binding,
 		!model_.class_value_type(signature.result);
 }
 
-bool Pa15Lowerer::function_abi_supported(BindingId binding,
-	const FunctionFact* function, TypeId function_type) const
-{
-	if (!function_type.valid() || function_type.value >= model_.types_.size() ||
-		model_.type_kind(function_type) != TypeKind::Function)
-		return false;
-	const TypeKey& signature = model_.types_[function_type.value];
-	bool has_class_value = model_.class_value_type(signature.result);
-	for (std::size_t parameter = 0;
-		parameter < signature.parameters.size(); ++parameter)
-		if (model_.class_value_type(signature.parameters[parameter]))
-			has_class_value = true;
-	if (!has_class_value)
-		return true;
-	if (empty_class_value_function_abi(binding, function, function_type))
-		return true;
-	if (function == NULL || !binding.valid() || function->binding != binding ||
-		!function->is_constructor ||
-		!model_.narrow_class_value_constructor(*function))
-		return false;
-	return model_.void_id(signature.result) && !signature.variadic &&
-		signature.parameters.size() == 1 &&
-		model_.empty_class_value_type(signature.parameters.front());
-}
-
-bool Pa15Lowerer::checkpoint_zero_storage_eligible(TypeId type) const{
-	// RecordLayout owns the class summary.  PA15 only unwraps type wrappers;
-	// it never walks a class binding scope while collecting globals.
-	type = model_.strip_cv_type(type);
-	if (!type.valid()) return false;
-	const TypeKind kind = model_.type_kind(type);
-	if (kind == TypeKind::Cv)
-		return checkpoint_zero_storage_eligible(model_.types_[type.value].child);
-	if (kind == TypeKind::Fundamental)
-		return model_.types_[type.value].fundamental != FundamentalType::Void;
-	if (kind == TypeKind::Pointer)
-		return true;
-	if (kind == TypeKind::Array)
-	{
-		return !model_.types_[type.value].unknown_bound &&
-			checkpoint_zero_storage_eligible(model_.types_[type.value].child);
-	}
-	if (kind == TypeKind::MemberPointer || kind == TypeKind::LvalueReference ||
-		kind == TypeKind::RvalueReference || kind == TypeKind::Function)
-		return false;
-	if (kind != TypeKind::Named)
-		return false;
-	const NamedRecordId record_id = model_.types_[type.value].named;
-	if (!record_id.valid() || record_id.value >= model_.named_.size())
-		return false;
-	const NamedRecord& record = model_.named_[record_id.value];
-	if (record.kind == NamedKind::Enum)
-		return true;
-	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
-		record.has_virtual_member || record.direct_base_virtual)
-		return false;
-	const RecordLayout& layout = model_.record_layout(record_id);
-	return layout.state == RecordLayoutState::Complete &&
-		layout.checkpoint_zero_storage_eligible;
-}
-
 LowType Pa15Lowerer::function_result_low_type(TypeId type) const{
 	const TypeId object = model_.strip_cv_type(type);
 	if (object.valid() && model_.type_kind(object) == TypeKind::Named)
@@ -2455,6 +2394,14 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 								std::make_pair(current_block_, address);
 					}
 				}
+				else if (storage.type.is_object() &&
+					class_value_conversion(facts.front(),
+						model_.binding(fact.binding).type, NULL))
+				{
+					initialize_constructor_value(
+						model_.binding(fact.binding).type, facts.front(),
+						address_of_storage(storage));
+				}
 				else
 				{
 					const LoweredValue value = lower_expression(facts.front());
@@ -2481,7 +2428,48 @@ void Pa15Lowerer::lower_statement(SemanticFactId id){
 			instruction.type = function().return_type;
 			if (facts.size() == 1)
 			{
-				if (instruction.type.is_void())
+				if (!current_function_fact_.valid() ||
+					current_function_fact_.value >= model_.function_facts_.size())
+					throw std::runtime_error(
+						"PA15 return function fact owner is invalid");
+				const FunctionFact& owner = model_.function_facts_[
+					current_function_fact_.value];
+				if (!owner.binding.valid() ||
+					owner.binding.value >= model_.bindings_.size() ||
+					model_.type_kind(model_.binding(owner.binding).type) !=
+						TypeKind::Function)
+					throw std::runtime_error(
+						"PA15 return function owner is invalid");
+				const TypeId semantic_result = model_.types_[
+					model_.binding(owner.binding).type.value].result;
+				if (class_value_conversion(facts.front(), semantic_result, NULL))
+				{
+					const bool indirect_result = !function().params.empty() &&
+						function().params.front().metadata.passing ==
+						lowir_model::PPM_INDIRECT_RESULT;
+					if (indirect_result)
+					{
+						const lowir_model::Parameter& result_parameter =
+							function().params.front();
+						const LoweredValue destination(temporary_operand(
+							result_parameter.value_id, result_parameter.name_id),
+							result_parameter.type, false);
+						initialize_constructor_value(semantic_result,
+							facts.front(), destination);
+					}
+					else if (instruction.type.is_object())
+					{
+						const LoweredValue result_storage = generated_slot(
+							instruction.type, "retobj");
+						initialize_constructor_value(semantic_result,
+							facts.front(), address_of_storage(result_storage));
+						instruction.first = result_storage.value;
+					}
+					else
+						throw std::runtime_error(
+							"PA15 class return has no object result");
+				}
+				else if (instruction.type.is_void())
 					lower_discarded_expression(facts.front());
 				else
 					instruction.first = lower_expression(facts.front()).value;
@@ -2728,6 +2716,9 @@ void Pa15Lowerer::emit_destructor_body_unwind_cleanup()
 
 void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		current_function_ = plan.program_index;
+		if (plan.fact_index >= model_.function_facts_.size())
+			throw std::runtime_error("PA15 function fact plan is invalid");
+		current_function_fact_ = FunctionFactId(plan.fact_index);
 		current_block_ = InvalidIdentityValue;
 		temp_ordinal_ = 0;
 		block_ordinal_ = 0;
@@ -2748,7 +2739,8 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 		reachable_blocks_.clear();
 		reachability_work_.clear();
 		Function& target = function();
-		const FunctionFact& fact = model_.function_facts_[plan.fact_index];
+		const FunctionFact& fact = model_.function_facts_[
+			current_function_fact_.value];
 		if (!fact.function_scope.valid() || fact.function_scope.value >=
 			lifetime_function_scope_flags_.size() ||
 			model_.scopes_[fact.function_scope.value].kind != ScopeKind::Function)
@@ -2810,35 +2802,48 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 	else if (empty_class_value_function_abi(fact.binding, &fact,
 		model_.binding(fact.binding).type))
 		suppress_class_value_parameter_store = true;
-	const std::size_t value_begin = target.value_begin.index;
-	std::vector<unsigned char> class_value_parameter_stores;
-		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
-		{
-			const Binding& parameter = model_.binding(function_scope.bindings[i]);
-			if (parameter.kind != BindingKind::Parameter)
-				continue;
-			const bool class_value = suppress_class_value_parameter_store &&
-				model_.class_value_type(parameter.type);
-			class_value_parameter_stores.push_back(class_value ? 0 : 1);
-		}
+	const bool legacy_empty_class_value_abi =
+		empty_class_value_function_abi(fact.binding, &fact,
+			model_.binding(fact.binding).type);
+	const bool copy_class_value_parameters = !fact.is_constructor &&
+		!legacy_empty_class_value_abi && class_value_function_abi(fact.binding,
+			&fact, model_.binding(fact.binding).type);
+	const bool indirect_result = !target.params.empty() &&
+		target.params.front().metadata.passing == lowir_model::PPM_INDIRECT_RESULT;
 		const BlockId entry = block_id(new_block("entry"));
 		set_current(entry);
 		mark_reachable(entry);
-		for (std::size_t i = 0; i < target.params.size(); ++i)
+		std::size_t target_parameter = indirect_result ? 1 : 0;
+		for (std::size_t i = 0; i < function_scope.bindings.size(); ++i)
 		{
-			const lowir_model::Parameter& parameter = target.params[i];
-			if (i < target.slots.size() &&
-				(i >= class_value_parameter_stores.size() ||
-					class_value_parameter_stores[i] != 0))
+			const BindingId parameter_id = function_scope.bindings[i];
+			const Binding& parameter_binding = model_.binding(parameter_id);
+			if (parameter_binding.kind != BindingKind::Parameter)
+				continue;
+			if (target_parameter >= target.params.size())
+				throw std::runtime_error("PA15 function parameter mapping is invalid");
+			const lowir_model::Parameter& parameter = target.params[target_parameter++];
+			const LoweredValue source(temporary_operand(parameter.value_id,
+				parameter.name_id), parameter.type, false);
+			const LoweredValue storage = storage_for(parameter_id);
+			const bool class_value = copy_class_value_parameters &&
+				model_.class_value_transfer_type(parameter_binding.type);
+			if (class_value)
+				emit_copy_object(parameter_binding.type, source,
+					address_of_storage(storage));
+			else if (!(suppress_class_value_parameter_store &&
+				model_.class_value_type(parameter_binding.type)))
 			{
 				Instruction store;
 				store.kind = Instruction::IK_STORE;
 				store.type = parameter.type;
-				store.first = temporary_operand(parameter.value_id, parameter.name_id);
-				store.second = slot_operand(target.slots[i].slot_id);
+				store.first = source.value;
+				store.second = storage.value;
 				block().instructions.push_back(store);
 			}
 		}
+		if (target_parameter != target.params.size())
+			throw std::runtime_error("PA15 function parameter mapping is incomplete");
 		function_has_nontrivial_lifetime_ =
 			lifetime_function_scope_flags_[fact.function_scope.value] != 0;
 		active_constructor_record_ = NamedRecordId();
@@ -2972,7 +2977,7 @@ void Pa15Lowerer::lower_function(const FunctionPlan& plan){
 				}
 			}
 		}
-		target.value_count = next_value_ - value_begin;
+		target.value_count = next_value_ - target.value_begin.index;
 		target.slot_count = next_slot_ - target.slot_begin.index;
 		reorder_function_blocks();
 		active_constructor_record_ = NamedRecordId();

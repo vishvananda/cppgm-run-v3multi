@@ -71,6 +71,17 @@ struct ArrayBound
 	bool operator==(const ArrayBound& other) const { return value == other.value; }
 };
 
+enum class ClassValueTransferState { Unknown, Computing, Complete, Failed };
+
+struct ClassValueTransferFact
+{
+	ClassValueTransferState state;
+	bool eligible;
+	ClassValueTransferFact(
+		ClassValueTransferState state = ClassValueTransferState::Unknown,
+		bool eligible = false) : state(state), eligible(eligible) {}
+};
+
 template <typename Key>
 struct IdentityHash
 {

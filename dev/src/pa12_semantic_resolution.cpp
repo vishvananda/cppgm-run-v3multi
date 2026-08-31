@@ -1210,6 +1210,21 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 			return ExprInfo(expression.fact, target, category, false);
 		}
 	}
+	// A same-class complete object initializer/return is a source-language
+	// value transfer.  Keep that fact explicit so PA15 can choose copyobj and
+	// never mistake the object representation for a scalar load/store.
+	if (type_kind(target) != TypeKind::LvalueReference &&
+		type_kind(target) != TypeKind::RvalueReference &&
+		class_value_transfer_type(target) && class_value_type(expression.type) &&
+		strip_cv_type(expression_object_type(expression.type)) ==
+		strip_cv_type(expression_object_type(target)))
+	{
+		if (!expression.fact.valid() || expression.fact.value >= semantic_facts_.size())
+			throw std::runtime_error("PA12 class-value conversion fact is missing");
+		set_fact_conversion(expression.fact, add_conversion(expression.type,
+			target, ConversionChoice(true, 0, ConversionKind::ClassValue)));
+		return expression;
+	}
 	const ConversionChoice choice = conversion_for(expression, target, source_node,
 		access_scope);
 	if (!choice.valid)

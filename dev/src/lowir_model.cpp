@@ -411,6 +411,12 @@ void emit_instruction(std::ostream &out, const Program &program,
       add_metadata(out, boundary_items);
     }
     break;
+  case Instruction::IK_COPYOBJ:
+    out << "copyobj " << instruction.byte_count << "x" <<
+        instruction.byte_alignment << " " <<
+        operand_text(program, instruction.first) << ", " <<
+        operand_text(program, instruction.second);
+    break;
   case Instruction::IK_JUMP:
     out << "jump " << operand_text(program, instruction.first);
     break;

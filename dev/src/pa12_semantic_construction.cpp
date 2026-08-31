@@ -198,6 +198,28 @@ bool PA11SemanticModel::semantic_class_object_initializer(
 	}
 	if (clause == NULL)
 		return false;
+	// Copy-initialization of an eligible complete class is a typed transfer
+	// action.  It deliberately bypasses constructor lookup: synthesized
+	// field-wise copy helpers are outside this checkpoint, while PA15 can
+	// lower this exact trivial boundary directly as copyobj.
+	if (context != ConstructorInitializationContext::Direct &&
+		clause->kind != PA10NodeKind::BracedInitList && storage.valid() &&
+		storage.value < bindings_.size() &&
+		class_value_transfer_type(binding(storage).type))
+	{
+		const ExprInfo expression = semantic_expression(*clause, access_scope);
+		if (class_value_type(expression.type) &&
+			strip_cv_type(expression_object_type(expression.type)) ==
+			strip_cv_type(expression_object_type(binding(storage).type)))
+		{
+			const ExprInfo converted = apply_context_conversion(expression,
+				binding(storage).type,
+				semantic_facts_[expression.fact.value].source, access_scope);
+			set_semantic_children(variable,
+				std::vector<SemanticFactId>(1, converted.fact));
+			return true;
+		}
+	}
 	const bool aggregate = aggregate_class_initialization_supported(record);
 	if (context != ConstructorInitializationContext::Direct &&
 		has_constructor_declaration(record) && !aggregate)

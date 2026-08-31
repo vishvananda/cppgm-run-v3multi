@@ -532,6 +532,7 @@ private:
 	std::size_t next_slot_;
 	std::size_t next_block_;
 	std::size_t current_function_;
+	FunctionFactId current_function_fact_;
 	std::size_t current_block_;
 	std::size_t temp_ordinal_;
 	std::size_t block_ordinal_;
@@ -615,9 +616,14 @@ private:
 	std::string abi_tls_wrapper_symbol(BindingId binding_id, ScopeId owner) const;
 	LowType low_type(TypeId type) const;
 	LowType function_result_low_type(TypeId type) const;
+	LowType function_low_return_type(TypeId function_type) const;
 	bool class_object_type(TypeId type) const;
 	bool empty_class_value_function_abi(BindingId binding,
 		const FunctionFact* function, TypeId function_type) const;
+	bool class_value_function_abi(BindingId binding,
+		const FunctionFact* function, TypeId function_type) const;
+	bool class_value_result_indirect(TypeId type) const;
+	void append_indirect_result_parameter(Function& function);
 	bool function_abi_supported(BindingId binding, const FunctionFact* function,
 		TypeId function_type) const;
 	bool checkpoint_zero_storage_eligible(TypeId type) const;
@@ -720,6 +726,10 @@ private:
 	void materialize_lvalue_value(LoweredValue* result, const LowType& type,
 		bool publish_bit_field_value = false);
 	void emit_store(const LowType& type, const Operand& value, const Operand& storage);
+	bool class_value_conversion(SemanticFactId id, TypeId target,
+		ConversionFact* conversion) const;
+	void emit_copy_object(TypeId type, LoweredValue source,
+		LoweredValue destination);
 	LoweredValue mark_bit_field_address(const LoweredValue& address,
 		BindingId binding,
 		BitFieldAddressProjectionId projection = BitFieldAddressProjectionId()) const;
@@ -812,7 +822,8 @@ private:
 	LoweredValue lower_incdec(SemanticFactId id, bool postfix);
 	SimpleTokenType fact_token(SemanticFactId id) const;
 	LoweredValue lower_assignment(SemanticFactId id, bool preserve_lvalue = false);
-	LoweredValue lower_call(SemanticFactId id);
+	LoweredValue lower_call(SemanticFactId id,
+		const LoweredValue* result_destination = NULL);
 	LoweredValue lower_destructor_call(SemanticFactId id);
 	bool conditional_address_result(SemanticFactId id) const;
 	LoweredValue lower_conditional_address(SemanticFactId id);

@@ -104,6 +104,105 @@ const RecordLayout& PA11SemanticModel::record_layout(
 	return record_layouts_[record_id.value];
 }
 
+bool PA11SemanticModel::pa17_transfer_field_type(TypeId type) const
+{
+	// This deliberately walks only the canonical type wrappers.  A named class
+	// is a hard boundary for this checkpoint: without a typed proof of its
+	// special members, an outer object must not be lowered as a raw copy.
+	TypeId current = type;
+	while (current.valid() && current.value < types_.size())
+	{
+		const TypeKey& key = types_[current.value];
+		switch (key.kind)
+		{
+		case TypeKind::Cv:
+		case TypeKind::Array:
+			if (key.kind == TypeKind::Array && key.unknown_bound)
+				return false;
+			current = key.child;
+			continue;
+		case TypeKind::Fundamental:
+			return key.fundamental != FundamentalType::Void;
+		case TypeKind::Pointer:
+			return true;
+		case TypeKind::Named:
+			return key.named.valid() && key.named.value < named_.size() &&
+				named_[key.named.value].kind == NamedKind::Enum;
+		case TypeKind::MemberPointer:
+		case TypeKind::LvalueReference:
+		case TypeKind::RvalueReference:
+		case TypeKind::Function:
+			return false;
+		}
+	}
+	return false;
+}
+
+bool PA11SemanticModel::pa17_class_value_transfer_eligible(
+	NamedRecordId record_id) const
+{
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		record_id.value >= record_layouts_.size())
+		return false;
+	const RecordLayout& layout = record_layouts_[record_id.value];
+	ClassValueTransferFact& fact = layout.pa17_class_value_transfer;
+	if (fact.state == ClassValueTransferState::Complete)
+		return fact.eligible;
+	if (fact.state == ClassValueTransferState::Failed)
+		return false;
+	if (fact.state == ClassValueTransferState::Computing)
+	{
+		// The current policy rejects class subobjects before recursion, but keep
+		// the state transition explicit so a future typed recursive proof is
+		// cycle-safe and conservative by construction.
+		fact.state = ClassValueTransferState::Failed;
+		fact.eligible = false;
+		return false;
+	}
+	fact.state = ClassValueTransferState::Computing;
+	fact.eligible = false;
+	const NamedRecord& record = named_[record_id.value];
+	bool eligible = layout.state == RecordLayoutState::Complete &&
+		record.kind == NamedKind::Class && record.class_tag != ClassTag::Union &&
+		record.defined && !record.has_base && !record.direct_base.valid() &&
+		!record.direct_base_virtual && !record.has_virtual_member &&
+		!layout.has_direct_base && !layout.direct_base.record.valid() &&
+		record.scope.valid() && record.scope.value < scopes_.size() &&
+		scopes_[record.scope.value].kind == ScopeKind::Class &&
+		scopes_[record.scope.value].record == record_id;
+	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
+	if (eligible && sidecar != NULL &&
+		(sidecar->has_constructor_declaration ||
+		 sidecar->has_destructor_declaration ||
+		 sidecar->has_default_member_initializer))
+		eligible = false;
+	if (eligible)
+	{
+		for (std::size_t i = 0; i < layout.members.size(); ++i)
+		{
+			const BindingId member_id = layout.members[i].binding;
+			if (!member_id.valid() || member_id.value >= bindings_.size() ||
+				member_id.value >= binding_owners_.size() ||
+				binding_owners_[member_id.value] != record.scope)
+			{
+				eligible = false;
+				break;
+			}
+			const Binding& member = binding(member_id);
+			if (member.kind != BindingKind::Variable ||
+				is_static_member(member_id) ||
+				!pa17_transfer_field_type(member.type))
+			{
+				eligible = false;
+				break;
+			}
+		}
+	}
+	fact.eligible = eligible;
+	fact.state = ClassValueTransferState::Complete;
+	return fact.eligible;
+}
+
 TypeLayout PA11SemanticModel::type_layout(TypeId type) const
 {
 	if (!type.valid() || type.value >= types_.size())
@@ -565,6 +664,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 	{
 		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
+		layout.pa17_class_value_transfer = ClassValueTransferFact(
+			ClassValueTransferState::Failed);
 		throw std::runtime_error("record layout previously failed");
 	}
 	if (layout.state == RecordLayoutState::Computing)
@@ -572,16 +673,21 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		layout.state = RecordLayoutState::Failed;
 		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
+		layout.pa17_class_value_transfer = ClassValueTransferFact(
+			ClassValueTransferState::Failed);
 		throw std::runtime_error("cyclic record layout computation");
 	}
 	layout.empty = false;
 	layout.checkpoint_zero_storage_eligible = false;
+	layout.pa17_class_value_transfer = ClassValueTransferFact();
 	if (record.kind != NamedKind::Class || !record.defined ||
 		!record.scope.valid() || record.scope.value >= scopes_.size() ||
 		scopes_[record.scope.value].kind != ScopeKind::Class ||
 		scopes_[record.scope.value].record != record_id)
 	{
 		layout.state = RecordLayoutState::Failed;
+		layout.pa17_class_value_transfer = ClassValueTransferFact(
+			ClassValueTransferState::Failed);
 		throw std::runtime_error("record definition is incomplete");
 	}
 	if (record.has_virtual_member || record.direct_base_virtual ||
@@ -596,6 +702,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		layout.empty = false;
 		layout.size = 0;
 		layout.alignment = 0;
+		layout.pa17_class_value_transfer = ClassValueTransferFact(
+			ClassValueTransferState::Failed);
 		layout.has_direct_base = false;
 		layout.direct_base = RecordLayoutBase();
 		layout.members.clear();
@@ -747,6 +855,7 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 			(!layout.has_direct_base || layout.direct_base.zero_size);
 		layout.checkpoint_zero_storage_eligible =
 			checkpoint_zero_storage_eligible;
+		layout.pa17_class_value_transfer = ClassValueTransferFact();
 		layout.state = RecordLayoutState::Complete;
 	}
 	catch (...)
@@ -754,6 +863,8 @@ void PA11SemanticModel::complete_record_layout(NamedRecordId record_id)
 		layout.state = RecordLayoutState::Failed;
 		layout.empty = false;
 		layout.checkpoint_zero_storage_eligible = false;
+		layout.pa17_class_value_transfer = ClassValueTransferFact(
+			ClassValueTransferState::Failed);
 		layout.size = 0;
 		layout.alignment = 0;
 		layout.has_direct_base = false;

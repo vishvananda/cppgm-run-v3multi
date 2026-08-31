@@ -638,20 +638,18 @@ struct RecordLayout
 	// direct base is represented as a zero-size subobject.  Complete class
 	// objects still use size >= 1; this is a base-layout eligibility fact.
 	bool empty;
-	// Narrow PA15 checkpoint fact; this is not a full C++ triviality claim.
-	// It is meaningful only for a Complete layout and is reset on failure.
+	// Narrow PA15 zero-storage fact; not a full C++ triviality claim.
 	bool checkpoint_zero_storage_eligible;
+	mutable ClassValueTransferFact pa17_class_value_transfer;
 	std::vector<RecordLayoutMember> members;
 	FlatIndex<BindingId, std::size_t, IdentityHash<BindingId> > member_offsets;
-
 	RecordLayout()
 		: state(RecordLayoutState::Incomplete), size(0), alignment(0),
 		  has_direct_base(false), direct_base(),
 		  empty(false),
-		  checkpoint_zero_storage_eligible(false), members(), member_offsets()
+		  checkpoint_zero_storage_eligible(false), pa17_class_value_transfer(), members(), member_offsets()
 	{}
 };
-
 struct TypeLayout
 {
 	std::size_t size;
@@ -1651,6 +1649,8 @@ private:
 	;
 	bool type_checkpoint_zero_storage_eligible(TypeId type) const
 	;
+	bool pa17_transfer_field_type(TypeId type) const;
+	bool pa17_class_value_transfer_eligible(NamedRecordId record) const;
 	bool type_has_zero_offset_record(TypeId type,
 		const RecordTypeSet& records) const
 	;
@@ -1975,7 +1975,7 @@ private:
 		const std::vector<ValueRef>& candidates,
 		const std::vector<const PA10AstNode*>& argument_nodes,
 		const std::vector<ExprInfo>& initial_arguments, ScopeId scope,
-		bool allow_pa16_class_value = false);
+		bool allow_class_value = false);
 	void collect_associated_adl_records(const std::vector<TypeId>& associated_objects, std::vector<NamedRecordId>* associated_records) const; void collect_associated_adl_namespaces(const std::vector<NamedRecordId>& associated_records, std::vector<ScopeId>* associated_namespaces) const; void append_adl_function_candidates(NameId name, const std::vector<TypeId>& associated_objects, SourcePoint point, std::vector<ValueRef>* candidates) const;
 	TypedOperatorSelection select_typed_operator(const std::vector<ValueRef>& member_candidates, const std::vector<ValueRef>& nonmember_candidates, const ExprInfo& member_object, const std::vector<const PA10AstNode*>& member_argument_nodes, const std::vector<ExprInfo>& member_arguments, const std::vector<const PA10AstNode*>& nonmember_argument_nodes, const std::vector<ExprInfo>& nonmember_arguments, ScopeId scope);
 	void collect_operator_candidates(PA10OperatorFunctionKind kind, SimpleTokenType token, TypeId member_object, const std::vector<TypeId>& associated_objects, ScopeId scope, std::vector<ValueRef>* member_candidates, std::vector<ValueRef>* nonmember_candidates) const;
@@ -2180,7 +2180,7 @@ private:
 	;
 	TypeId function_result_type(TypeId type) const
 	;
-	bool class_value_type(TypeId type) const; bool empty_class_value_type(TypeId type) const; bool narrow_class_value_constructor(const FunctionFact& function) const; bool supports_pa16_class_value_parameter(const ValueRef& candidate, std::size_t parameter, const ExprInfo& argument, TypeId parameter_type) const;
+	bool class_value_type(TypeId type) const; bool class_value_transfer_type(TypeId type) const; bool empty_class_value_type(TypeId type) const; bool narrow_class_value_constructor(const FunctionFact& function) const; bool supports_class_value_parameter(const ValueRef& candidate, std::size_t parameter, const ExprInfo& argument, TypeId parameter_type) const;
 	TypeId callable_function_type(TypeId type) const
 	;
 	ConversionChoice conversion_for(TypeId source, SemanticValueCategory category, TypeId target, const PA10AstNode* source_node, bool source_integer_zero = false, ScopeId access_scope = ScopeId(), TypeId source_operation_type = TypeId(), BindingId source_binding = BindingId()) const;

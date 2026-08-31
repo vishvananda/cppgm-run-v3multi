@@ -962,8 +962,7 @@ void Pa15Lowerer::collect_functions(){
 			Function function;
 			function.symbol_id = SymbolId(next_symbol_++);
 			function.name_id = name_id;
-			function.return_type = function_result_low_type(
-				model_.types_[binding.type.value].result);
+			function.return_type = function_low_return_type(binding.type);
 			const bool is_constructor = fact.is_constructor || (sidecar != NULL &&
 				sidecar->constructor_record.valid());
 			const bool is_destructor = fact.is_destructor || (sidecar != NULL &&
@@ -1069,8 +1068,9 @@ void Pa15Lowerer::collect_functions(){
 			used_slot_names_.clear();
 			slot_collision_counters_.clear();
 			stored.slot_begin = lowir_model::SlotId(next_slot_);
-
 			const Scope& function_scope = model_.scopes_[fact.function_scope.value];
+			if (class_value_result_indirect(model_.types_[binding.type.value].result))
+				append_indirect_result_parameter(stored);
 			for (std::size_t parameter = 0; parameter < function_scope.bindings.size(); ++parameter)
 			{
 				const BindingId id = function_scope.bindings[parameter];

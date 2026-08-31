@@ -846,6 +846,25 @@ bool PA11SemanticModel::class_value_type(TypeId type) const
 	const TypeId object = strip_cv_type(expression_object_type(type));
 	return object.valid() && class_scope_for_type(object).valid();
 }
+bool PA11SemanticModel::class_value_transfer_type(TypeId type) const
+{
+	if (!class_value_type(type))
+		return false;
+	const TypeId object = strip_cv_type(expression_object_type(type));
+	const NamedRecordId record_id = named_record_for_type(object);
+	if (!record_id.valid() || record_id.value >= named_.size() ||
+		record_id.value >= record_layouts_.size())
+		return false;
+	const NamedRecord& record = named_[record_id.value];
+	if (record.kind != NamedKind::Class || record.class_tag == ClassTag::Union ||
+		!record.defined || record.has_base || record.direct_base.valid() ||
+		record.direct_base_virtual || record.has_virtual_member ||
+		!record.scope.valid() || record.scope.value >= scopes_.size() ||
+		scopes_[record.scope.value].kind != ScopeKind::Class ||
+		scopes_[record.scope.value].record != record_id)
+		return false;
+	return pa17_class_value_transfer_eligible(record_id);
+}
 bool PA11SemanticModel::empty_class_value_type(TypeId type) const
 {
 	if (!class_value_type(type))
@@ -2228,7 +2247,7 @@ FunctionIdResolution PA11SemanticModel::resolve_single_argument_function(const N
 			continue;
 		const ConversionChoice choice = conversion_for(argument, function.parameters.front(), semantic_facts_[argument.fact.value].source, scope);
 		ConversionChoice selected_choice = choice;
-		if (choice.valid && supports_pa16_class_value_parameter(candidates[i], 0, argument, function.parameters.front()))
+		if (choice.valid && supports_class_value_parameter(candidates[i], 0, argument, function.parameters.front()))
 			selected_choice = ConversionChoice(true, 0, ConversionKind::ClassValue);
 		if (!selected_choice.valid)
 			continue;

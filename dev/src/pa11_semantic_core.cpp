@@ -1427,12 +1427,12 @@ const NamePath* PA11SemanticModel::type_display_path(TypeId type) const
 	return sidecar != NULL && sidecar->has_display_path ?
 		&sidecar->display_path : NULL;
 }
-void PA11SemanticModel::set_named_record_sidecar(NamedRecordId id,
-	const NamedRecordSidecar& sidecar)
+void PA11SemanticModel::set_named_record_sidecar(NamedRecordId id, const NamedRecordSidecar& sidecar)
 {
-	if (!id.valid() || id.value >= named_.size())
-		throw std::runtime_error("invalid PA11 named-record sidecar identity");
+	if (!id.valid() || id.value >= named_.size()) throw std::runtime_error("invalid PA11 named-record sidecar identity");
 	named_record_sidecars_.set(id, sidecar);
+	if (id.value < record_layouts_.size())
+		record_layouts_[id.value].pa17_class_value_transfer = ClassValueTransferFact();
 }
 const NamedRecordAlignmentFact* PA11SemanticModel::named_record_alignment_fact(
 	NamedRecordId id) const

@@ -336,6 +336,14 @@ LoweredValue Pa15Lowerer::lower_variable_expression(SemanticFactId id)
 						std::make_pair(current_block_, address);
 			}
 		}
+		else if (storage.type.is_object() &&
+			class_value_conversion(initializer.front(),
+				model_.binding(fact.binding).type, NULL))
+		{
+			initialize_constructor_value(
+				model_.binding(fact.binding).type, initializer.front(),
+				address_of_storage(storage));
+		}
 		else
 		{
 			const LoweredValue value = lower_expression(initializer.front());
@@ -2353,6 +2361,30 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 		model_.expression_object_type(target));
 	if (!object.valid() || object.value >= model_.types_.size())
 		throw std::runtime_error("PA15 constructor target is invalid");
+	ConversionFact class_conversion;
+	if (class_value_conversion(initializer, target, &class_conversion))
+	{
+		LoweredValue destination = destination_value;
+		if (destination.lvalue && destination.type.is_object())
+			destination = address_of_storage(destination);
+		bool indirect_call = false;
+		if (fact.kind == SemanticFactKind::CallExpression &&
+			fact.callable_type.valid() &&
+			fact.callable_type.value < model_.types_.size() &&
+			model_.type_kind(fact.callable_type) == TypeKind::Function)
+			indirect_call = class_value_result_indirect(
+				model_.types_[fact.callable_type.value].result);
+		if (indirect_call)
+		{
+			(void)lower_call(initializer, &destination);
+			return;
+		}
+		const LoweredValue source = fact.kind == SemanticFactKind::CallExpression ?
+			lower_call(initializer) : lower_expression_impl(initializer, false,
+				false, false, true);
+		emit_copy_object(class_conversion.target, source, destination);
+		return;
+	}
 	if (fact.kind != SemanticFactKind::BracedInitList)
 	{
 		if (fact.kind == SemanticFactKind::Literal &&
