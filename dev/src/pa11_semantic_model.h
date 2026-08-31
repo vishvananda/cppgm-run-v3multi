@@ -668,7 +668,7 @@ struct NamedRecordSidecar
 	BindingId backing_storage;
 	BindingId aggregate_constructor_binding; BindingId constructor_binding; BindingId default_constructor_binding;
 	BindingId destructor_binding;
-	bool has_constructor_declaration; bool has_destructor_declaration; bool has_default_member_initializer;
+	bool has_constructor_declaration; bool has_destructor_declaration; bool has_move_assignment_declaration; bool has_default_member_initializer;
 	bool has_display_path;
 	NamePath display_path;
 	std::vector<HiddenFriendFunctionRelation> hidden_friend_functions;
@@ -684,7 +684,7 @@ struct NamedRecordSidecar
 		  aggregate_constructor_binding(), constructor_binding(constructor_binding),
 		  default_constructor_binding(default_constructor_binding),
 		  destructor_binding(), has_constructor_declaration(has_constructor_declaration),
-		  has_destructor_declaration(false), has_default_member_initializer(false),
+		  has_destructor_declaration(false), has_move_assignment_declaration(false), has_default_member_initializer(false),
 		  has_display_path(false),
 		display_path(), hidden_friend_functions(), friend_class_records(), inheriting_constructors()
 	{}
@@ -1509,7 +1509,7 @@ private:
 	;
 	bool is_static_member(BindingId id) const
 	;
-	void mark_static_member(BindingId id)
+	void mark_static_member(BindingId id); void mark_move_assignment_declaration(BindingId id)
 	;
 	void record_mutable_member(BindingId id, TypeId type, bool record_member);
 	MemberAccess member_access(BindingId id) const

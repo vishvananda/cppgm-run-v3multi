@@ -620,6 +620,7 @@ private:
 	bool class_object_type(TypeId type) const;
 	bool empty_class_value_function_abi(BindingId binding,
 		const FunctionFact* function, TypeId function_type) const;
+	bool class_value_signature_abi(TypeId function_type) const;
 	bool class_value_function_abi(BindingId binding,
 		const FunctionFact* function, TypeId function_type) const;
 	bool class_value_result_indirect(TypeId type) const;

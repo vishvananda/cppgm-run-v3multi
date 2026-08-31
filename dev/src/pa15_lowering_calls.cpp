@@ -9,25 +9,9 @@ bool Pa15Lowerer::class_value_function_abi(BindingId binding,
 	if (function == NULL || !binding.valid() || function->binding != binding ||
 		function->is_constructor || !function->owner.valid() ||
 		function->owner.value >= model_.scopes_.size() ||
-		model_.scopes_[function->owner.value].kind != ScopeKind::Namespace ||
-		!function_type.valid() || function_type.value >= model_.types_.size() ||
-		model_.type_kind(function_type) != TypeKind::Function)
+		model_.scopes_[function->owner.value].kind != ScopeKind::Namespace)
 		return false;
-	const TypeKey& signature = model_.types_[function_type.value];
-	if (signature.variadic)
-		return false;
-	if (model_.class_value_type(signature.result) &&
-		!model_.class_value_transfer_type(signature.result))
-		return false;
-	for (std::size_t parameter = 0;
-		parameter < signature.parameters.size(); ++parameter)
-		if (model_.class_value_type(signature.parameters[parameter]) &&
-			!model_.class_value_transfer_type(signature.parameters[parameter]))
-			return false;
-	return model_.class_value_type(signature.result) ||
-		std::find_if(signature.parameters.begin(), signature.parameters.end(),
-			[this](TypeId type) { return model_.class_value_type(type); }) !=
-			signature.parameters.end();
+	return class_value_signature_abi(function_type);
 }
 
 bool Pa15Lowerer::class_value_result_indirect(TypeId type) const
@@ -67,6 +51,12 @@ bool Pa15Lowerer::function_abi_supported(BindingId binding,
 	if (empty_class_value_function_abi(binding, function, function_type))
 		return true;
 	if (class_value_function_abi(binding, function, function_type))
+		return true;
+	// An indirect call has no named FunctionFact to prove, but its callable
+	// expression still carries the complete typed signature.  Keep this
+	// boundary separate from the named-function identity checks above.
+	if (function == NULL && !binding.valid() &&
+		class_value_signature_abi(function_type))
 		return true;
 	if (function == NULL || !binding.valid() || function->binding != binding ||
 		!function->is_constructor ||
@@ -1895,6 +1885,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
 		if (facts.empty()) throw std::runtime_error("PA15 indirect call has no callee");
 		if (!function_abi_supported(BindingId(), NULL, fact.callable_type))
 			throw std::runtime_error("PA15 unsupported class-value function ABI");
+		indirect_result = class_value_result_indirect(function_type->result);
 		argument_begin = 1;
 		instruction.has_call_signature = true;
 	}
@@ -1947,11 +1938,6 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
 				function_type->parameters[i], &conversion))
 				throw std::runtime_error(
 					"PA15 class-value call conversion is missing");
-			class_value_sources[i] = lower_expression_impl(
-				facts[argument_begin + i], false, false, false, true);
-			if (!class_value_sources[i].type.is_object())
-				throw std::runtime_error(
-					"PA15 class-value call source is not an object");
 			class_value_arguments[i] = 1;
 		}
 		for (std::size_t i = 0; i < explicit_argument_count; ++i)
@@ -1961,6 +1947,15 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
 					low_type(function_type->parameters[i]), "argobj");
 				class_value_addresses[i] = address_of_storage(
 					class_value_temporaries[i]);
+			}
+		for (std::size_t i = 0; i < explicit_argument_count; ++i)
+			if (class_value_arguments[i] != 0)
+			{
+				class_value_sources[i] = lower_expression_impl(
+					facts[argument_begin + i], false, false, false, true);
+				if (!class_value_sources[i].type.is_object())
+					throw std::runtime_error(
+						"PA15 class-value call source is not an object");
 			}
 		for (std::size_t i = 0; i < explicit_argument_count; ++i)
 			if (class_value_arguments[i] != 0)
@@ -1985,6 +1980,15 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
 	if (!fact.has_callee)
 		instruction.first = lower_expression(facts.front()).value;
 	if (instruction.has_call_signature)
+	{
+		if (indirect_result)
+		{
+			Parameter parameter;
+			parameter.name_id = intern_spelling("%ret");
+			parameter.type.kind = LowType::TYPE_POINTER;
+			parameter.metadata.passing = lowir_model::PPM_INDIRECT_RESULT;
+			instruction.call_params.push_back(parameter);
+		}
 		for (std::size_t i = 0; i < function_type->parameters.size(); ++i)
 		{
 			Parameter parameter;
@@ -2000,6 +2004,7 @@ LoweredValue Pa15Lowerer::lower_call(SemanticFactId id,
 				parameter.metadata.passing = lowir_model::PPM_REFERENCE;
 			instruction.call_params.push_back(parameter);
 		}
+	}
 	if (instruction.call_returns_void)
 	{
 		block().instructions.push_back(instruction);

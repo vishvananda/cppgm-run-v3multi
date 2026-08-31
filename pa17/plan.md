@@ -1,81 +1,89 @@
-## Stage Design
+# PA17 Checkpoint Plan
 
-PA12 owns the semantic value category, selected conversion, and constructor or
-call facts.  Record identity and completed `RecordLayout` own the distinct
-cached `ClassValueTransferFact`; it is a conservative PA17 proof for a
-same-class, complete, non-polymorphic transfer subset, not a claim derived
-from `checkpoint_zero_storage_eligible` or a general C++ triviality trait.
-The demand-driven fact checks typed special-member declaration metadata and
-accepts only flat scalar/pointer/enum/known-array leaves.  PA15 consumes these
-typed facts: class-value parameters are indirect object values copied into
-parameter storage, direct results remain object results, larger results add
-the leading typed indirect result destination, and initializer/argument/return
-materialization emits `copyobj` at the source-language transfer boundary.
+## Spec Alignment
+
+The landed `868403c6` increment, whose checkpoint entry was recorded at
+`18aafb67`, keeps PA12 conversion, selection, construction, and call facts
+typed; uses canonical record/layout identity for `ClassValueTransferFact`; and
+lets PA15 lower only complete, non-polymorphic, no-base, flat trivial
+same-class transfers. The bounded audit correction also records a declared
+same-class rvalue assignment operator in the owning typed sidecar before the
+eligibility fact can be used. References, volatile sources, unions, nested or
+nontrivial class objects, and unsupported arrays remain guarded. Parameters,
+returns, hidden indirect results, materialization, and direct `copyobj` follow
+the PA17 Assignment Boundary and the typed PA13 object ABI. Implementation is
+under `dev/` and `dev/src/`; the only added test is a compliant status-only
+course regression with no LowIR fixture.
 
 ## Failure Map
 
-Turn-start baseline: 37/228 passing, 191 failures.  Current overlapping
-clusters are copy/value (55 keyword-adjacent), ref/xvalue (20), allocation
-(26), conversion/operator (41), union (7), and temporary/lifetime (23).
-The active boundary is PA16's narrow empty-class value transfer; this
-checkpoint generalizes only the stable complete-object trivial transfer path.
+The historical initial checkpoint baseline was 37/228 passing with 191
+failures. The landed milestone improved that to 45/228 (+8), with 183 failures
+and all 228 original tests covered. The overlapping residual clusters remain
+copy/value (55), ref/xvalue (20), allocation (26), conversion/operator (41),
+union (7), and temporary/lifetime (23); these counts are diagnostic overlaps,
+not a partition. The current full stage is 51/229: 50/228 original tests pass,
+178 original tests fail, and the added course regression is the 1/1 additional
+status pass. Identity comparison against the supplied primary log found no
+former-pass regression or new failure and five recovered original failures.
 
-## Active Checkpoint
-
-In scope are same-class complete non-polymorphic objects proven by
-`ClassValueTransferFact` in pass-by-value and return-by-value paths, temporary
-materialization for common copy/call/return cases, and direct `copyobj`
-lowering for supported transfers; the existing empty-class/reference behavior
-remains compatible.  The fact rejects class and array-of-class subobjects in
-this checkpoint, so a nested nontrivial copy/move cannot reach raw copying.
-Excluded are field/base-wise synthesized copy/move helpers, assignment helper
-synthesis, deleted/defaulted propagation, ref-qualified members, allocation,
-unions, and conversion-operator expansion.
-
-Invariants: typed facts never become source text; record/layout identity, not
-spelling, decides eligibility; a required construction/materialization cannot
-fall back to a raw object load/store; unsupported class transfers stay
-rejected.  Validation is the four named transfer tests plus a passing
-class-reference guard and the two nontrivial guards; broad gates follow this
-correction pass.
+The original focused evidence was 5/5, and the post-correction focused
+evidence was also 5/5. The current focused set is 9/9: eight existing
+supported/reference-backed probes plus the new move-assignment status probe.
+The two named nested/nontrivial guards,
+`tests/general/200-nested-subobject-pass-return-by-value.t` and
+`tests/general/300-generated-move-constructor-nontrivial-member.t`, remain
+rejected with `EXIT_FAILURE` / `PA12 no viable function`; they are residual
+out-of-scope behavior, not hidden fixture edits.
 
 ## Performance Evidence
 
-`ClassValueTransferFact` setup is O(m + w) for a demanded record, where m is
-its cached layout member count and w is the bounded canonical cv/array wrapper
-chain; class subobjects stop the check without recursive record traversal.
-Its state is cycle-safe for any future recursive proof, and completed hot uses
-are O(1).  Function/call lowering remains O(parameters + arguments + emitted
-IR), with no per-use class-scope scan, textual identity reconstruction, or
-recursive layout walk.  The correction focus rebuilt the affected compiler in
-24.4 seconds wall time; peak RSS was not sampled.  Required full-stage
-`/usr/bin/time` wall/max-RSS evidence is recorded below.
+Eligibility is O(m + w) on first demand, for the bounded layout member list and
+cv/known-array wrapper chain, with O(1) cached hits. The typed move-assignment
+marker performs a bounded function-signature/owner lookup at declaration or
+definition time; it does not scan class scope, retry broadly, or create a
+recursive child dependency. Call lowering remains O(parameters + arguments +
+emitted IR), including hidden-result and class-argument mapping.
+
+Historical/non-comparative evidence retained from the earlier checkpoint is a
+24.4s correction build with RSS not sampled and a stage sample of
+`wall=1.04s`, `maxrss=9928kB`. The current descriptive full-stage sample is
+`wall=1.27s`, `maxrss=20808kB`; it is recorded for context, not as a
+comparative performance claim.
+
+## Validation and Identity
+
+The exact required prior-through command exited 0:
+`===== ALL TESTS PASSED SUCCESSFULLY! (1410 / 1410) =====`.
+`perl scripts/cppgm_file_audit.pl --stage pa17 --paths dev/src` exited 0 with
+the six established nonfatal header-division warnings. `make test-pa17`
+exited 2 with `===== TEST SUMMARY: 51 / 229 TESTS PASSED =====`, within the
+checkpoint allowance of no more than 183 failures. The 228 original test
+identities were all present in the current run; the five recovered identities
+were `100-copy-constructor-default-parameter`,
+`100-derived-converting-ctor-beats-base-copy`,
+`200-pass-return-forwarding`, `300-empty-class-copy-member-address`, and
+`300-function-pointer-class-return-call`. No original former pass regressed.
+The separately added course case expected and produced `EXIT_FAILURE`.
+
+## Next Checkpoint
+
+Next substantive checkpoint: select and implement a separately bounded PA17
+general special-member propagation slice, beginning with deleted/defaulted
+copy/move construction under its own typed eligibility boundary. Assignment
+synthesis, ref-qualified members, allocation, unions, conversion operators,
+and broad temporary/lifetime work remain separate checkpoints.
 
 ## Checkpoint Ledger
 
-- Baseline: 37/228 passing, 191 failures.
-- Focused result (original milestone): 5/5 (four named transfer cases plus the class-reference guard).
-- Focused result (post-correction): 5/5, with the same five tests after the
-  cached eligibility and current-owner corrections.
-- Nontrivial guards: 0/2 against compile-pass references; both actual statuses
-  are `EXIT_FAILURE` with `ERROR: PA12 no viable function`.  No `.check` LowIR
-  was emitted and neither guard has a `copyobj` artifact; current artifacts are
-  the two `.check.exit_status`/`.check.stdout` pairs under
-  `pa17/tests/general/` for the named guards.
-- `make test-pa17`: 45/228 passed, 183 failures; all 228 tests remained in the
-  stage and the failure count fell by 8 from baseline.  The command exited 2
-  because the remaining checked-in failures are expected at this checkpoint.
-  `/usr/bin/time` recorded `wall=1.04 maxrss_kb=9928` in
-  `/tmp/pa17-stage.time`.
-- Prior-through result: `n=17; ... make test-report-through-pa16` exited 0,
-  `1410/1410` passed.
-- Audit: `perl scripts/cppgm_file_audit.pl --stage pa17 --paths dev/src`
-  passed with six existing header-division warnings.
-- Remaining scope: nontrivial nested class/array subobjects, synthesized
-  field/base-wise special members, assignment synthesis, deleted/defaulted
-  propagation, ref-qualified members, allocation, unions, and conversion
-  operators remain excluded; residual failures remain in the overlapping
-  copy/value, ref/xvalue, allocation, conversion/operator, union, and
-  temporary/lifetime clusters listed above.
-- Commit: final PA17 implementation commit `868403c6`; this ledger update is
-  the follow-up documentation commit.
+| item | state | evidence |
+| --- | --- | --- |
+| landed ClassValueTransferFact increment | completed before this audit | implementation `868403c6`; ledger entry `18aafb67` |
+| checkpointAudit | completed | source/spec/test audit; move-assignment correction; focused 9/9; prior-through `1410/1410`; file audit passed with 6 warnings; full stage `51/229`; identity comparison clean; final bounded changes committed |
+
+Durable historical evidence: the original/post-correction focused result was
+5/5; the two nontrivial guards were rejected; the original milestone result
+was 45/228 (+8) with 183 failures and 228 tests covered; prior through-PA16
+was 1410/1410; the prior file audit passed with six warnings; and the prior
+24.4s build plus `wall=1.04s`, `maxrss=9928kB` sample were historical and
+non-comparative.

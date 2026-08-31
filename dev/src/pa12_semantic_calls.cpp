@@ -145,6 +145,9 @@ bool PA11SemanticModel::supports_class_value_parameter(
 		type_kind(parameter_type) == TypeKind::LvalueReference ||
 		type_kind(parameter_type) == TypeKind::RvalueReference)
 		return false;
+	const TypeId argument_object = expression_object_type(argument.type);
+	if (!argument_object.valid() || (cv_qualifiers(argument_object) & 2u) != 0)
+		return false;
 	const TypeId parameter_object = strip_cv_type(
 		expression_object_type(parameter_type));
 	return argument.fact.valid() &&

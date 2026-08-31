@@ -173,8 +173,9 @@ bool PA11SemanticModel::pa17_class_value_transfer_eligible(
 	const NamedRecordSidecar* sidecar = named_record_sidecar(record_id);
 	if (eligible && sidecar != NULL &&
 		(sidecar->has_constructor_declaration ||
-		 sidecar->has_destructor_declaration ||
-		 sidecar->has_default_member_initializer))
+			sidecar->has_destructor_declaration ||
+			sidecar->has_move_assignment_declaration ||
+			sidecar->has_default_member_initializer))
 		eligible = false;
 	if (eligible)
 	{
@@ -884,6 +885,56 @@ std::size_t PA11SemanticModel::type_size(TypeId type) const
 std::size_t PA11SemanticModel::type_alignment(TypeId type) const
 {
 	return type_layout(type).alignment;
+}
+
+void PA11SemanticModel::mark_move_assignment_declaration(BindingId id)
+{
+	if (!id.valid() || id.value >= bindings_.size() ||
+		id.value >= binding_owners_.size())
+		throw std::runtime_error("invalid PA11 move-assignment identity");
+	const BindingSidecar* function_sidecar = binding_sidecar(id);
+	if (function_sidecar == NULL ||
+		function_sidecar->operator_function_kind !=
+			PA10OperatorFunctionKind::Token ||
+		function_sidecar->operator_token != SimpleTokenType::OP_ASS ||
+		is_static_member(id))
+		return;
+	const ScopeId owner = binding_owners_[id.value];
+	if (!owner.valid() || owner.value >= scopes_.size() ||
+		scopes_[owner.value].kind != ScopeKind::Class ||
+		!scopes_[owner.value].record.valid())
+		return;
+	const NamedRecordId record = scopes_[owner.value].record;
+	if (record.value >= named_.size() || named_[record.value].kind !=
+		NamedKind::Class)
+		return;
+	const Binding& function = binding(id);
+	if (function.kind != BindingKind::Function || !function.type.valid() ||
+		function.type.value >= types_.size() ||
+		type_kind(function.type) != TypeKind::Function)
+		return;
+	const TypeKey& signature = types_[function.type.value];
+	if (signature.parameters.empty() || type_kind(signature.parameters.front()) !=
+		TypeKind::RvalueReference)
+		return;
+	// A same-class rvalue first parameter is enough to establish the narrow
+	// move-assignment exclusion.  Treat extra parameters conservatively; this
+	// prevents a declaration with defaulted trailing parameters from bypassing
+	// the C++11 implicit-copy suppression rule without classifying scalar or
+	// ordinary copy-assignment overloads as move assignment.
+	const TypeId parameter_object = strip_cv_type(expression_object_type(
+		signature.parameters.front()));
+	const NamedRecordId parameter_record = named_record_for_type(parameter_object);
+	if (!parameter_record.valid() || parameter_record != record)
+		return;
+	NamedRecordSidecar record_sidecar;
+	const NamedRecordSidecar* existing = named_record_sidecar(record);
+	if (existing != NULL)
+		record_sidecar = *existing;
+	if (record_sidecar.has_move_assignment_declaration)
+		return;
+	record_sidecar.has_move_assignment_declaration = true;
+	set_named_record_sidecar(record, record_sidecar);
 }
 
 }

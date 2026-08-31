@@ -3,6 +3,28 @@
 namespace pa11_semantic_internal
 {
 
+bool Pa15Lowerer::class_value_signature_abi(TypeId function_type) const
+{
+	if (!function_type.valid() || function_type.value >= model_.types_.size() ||
+		model_.type_kind(function_type) != TypeKind::Function)
+		return false;
+	const TypeKey& signature = model_.types_[function_type.value];
+	if (signature.variadic)
+		return false;
+	if (model_.class_value_type(signature.result) &&
+		!model_.class_value_transfer_type(signature.result))
+		return false;
+	for (std::size_t parameter = 0;
+		parameter < signature.parameters.size(); ++parameter)
+		if (model_.class_value_type(signature.parameters[parameter]) &&
+			!model_.class_value_transfer_type(signature.parameters[parameter]))
+			return false;
+	return model_.class_value_type(signature.result) ||
+		std::find_if(signature.parameters.begin(), signature.parameters.end(),
+			[this](TypeId type) { return model_.class_value_type(type); }) !=
+			signature.parameters.end();
+}
+
 std::string Pa15Lowerer::abi_variable_symbol(BindingId binding_id,
 	ScopeId owner) const{
 	const Binding& binding = model_.binding(binding_id);

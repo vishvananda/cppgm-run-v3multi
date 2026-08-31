@@ -174,6 +174,27 @@ LoweredValue Pa15Lowerer::lower_address(SemanticFactId id){
 			return lower_conditional_address(id);
 		case SemanticFactKind::CallExpression:
 		{
+			// A direct class-valued call result is a value, not an addressable
+			// storage root.  Materialize it at the address-demand boundary before
+			// member projection (or an explicit address use); this keeps the typed
+			// call result intact while giving later lowering a stable object slot.
+			const TypeId call_result = model_.expression_object_type(fact.type);
+			if (fact.category == SemanticValueCategory::Prvalue &&
+				model_.class_value_transfer_type(fact.type) && call_result.valid() &&
+				model_.type_kind(
+				model_.strip_cv_type(call_result)) == TypeKind::Named &&
+				fact.callable_type.valid() && fact.callable_type.value <
+				model_.types_.size() && model_.type_kind(fact.callable_type) ==
+				TypeKind::Function && !class_value_result_indirect(
+				model_.types_[fact.callable_type.value].result))
+			{
+				const LoweredValue temporary = generated_slot(low_type(fact.type),
+					"tmpobj");
+				const LoweredValue address = address_of_storage(temporary);
+				const LoweredValue call = lower_call(id);
+				emit_copy_object(fact.type, call, address);
+				return address;
+			}
 			const LoweredValue call = lower_call(id);
 			if (!call.type.is_pointer() && !call.lvalue)
 				throw std::runtime_error("PA15 reference call has no address");
@@ -2374,6 +2395,23 @@ void Pa15Lowerer::initialize_constructor_value(TypeId target,
 			model_.type_kind(fact.callable_type) == TypeKind::Function)
 			indirect_call = class_value_result_indirect(
 				model_.types_[fact.callable_type.value].result);
+		// Empty eligible classes have no payload to copy.  Still lower a call
+		// source for its effects; a plain identifier has no evaluation work and
+		// is intentionally omitted so reference-backed subobjects retain their
+		// address-only ABI path.
+		if (model_.empty_class_value_type(class_conversion.target))
+		{
+			if (fact.kind == SemanticFactKind::CallExpression)
+			{
+				if (indirect_call)
+					(void)lower_call(initializer, &destination);
+				else
+					(void)lower_call(initializer);
+			}
+			else if (fact.kind != SemanticFactKind::IdExpression)
+				(void)lower_expression_impl(initializer, false, false, false, true);
+			return;
+		}
 		if (indirect_call)
 		{
 			(void)lower_call(initializer, &destination);
@@ -2550,6 +2588,8 @@ void Pa15Lowerer::lower_constructor_action(
 			model_.named_type(action.base_record) : model_.binding(action.member).type;
 		const SemanticFact& initializer = model_.semantic_facts_[
 			action.initializer.value];
+		const bool class_value_initializer = class_value_conversion(
+			action.initializer, target, NULL);
 		if (initializer.kind == SemanticFactKind::ConstructorAction &&
 			constructor_action_is_noop(initializer))
 			return;
@@ -2557,7 +2597,8 @@ void Pa15Lowerer::lower_constructor_action(
 		// address.  This preserves the source-order LowIR boundary for a
 		// constructor expression such as b(a + 3).
 		if (initializer.kind != SemanticFactKind::BracedInitList &&
-			initializer.kind != SemanticFactKind::ConstructorAction)
+			initializer.kind != SemanticFactKind::ConstructorAction &&
+			!class_value_initializer)
 		{
 			const LoweredValue value = lower_expression(action.initializer);
 			const BitFieldFact* bit_field = model_.bit_field_fact(action.member);

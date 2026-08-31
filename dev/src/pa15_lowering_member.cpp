@@ -381,6 +381,8 @@ bool Pa15Lowerer::class_value_conversion(SemanticFactId id, TypeId target,
 			candidate.source.value >= model_.types_.size() ||
 			!model_.class_value_transfer_type(candidate.target) ||
 			!model_.class_value_type(candidate.source) ||
+			(model_.cv_qualifiers(model_.expression_object_type(
+				candidate.source)) & 2u) != 0 ||
 			model_.strip_cv_type(model_.expression_object_type(candidate.source)) !=
 			model_.strip_cv_type(model_.expression_object_type(candidate.target)))
 			throw std::runtime_error("PA15 class-value conversion boundary is invalid");

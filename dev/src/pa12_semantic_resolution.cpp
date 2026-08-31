@@ -1216,6 +1216,7 @@ ExprInfo PA11SemanticModel::apply_context_conversion(const ExprInfo& expression,
 	if (type_kind(target) != TypeKind::LvalueReference &&
 		type_kind(target) != TypeKind::RvalueReference &&
 		class_value_transfer_type(target) && class_value_type(expression.type) &&
+		(cv_qualifiers(expression_object_type(expression.type)) & 2u) == 0 &&
 		strip_cv_type(expression_object_type(expression.type)) ==
 		strip_cv_type(expression_object_type(target)))
 	{

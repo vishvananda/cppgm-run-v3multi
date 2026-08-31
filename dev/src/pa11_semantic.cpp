@@ -1579,7 +1579,7 @@ void PA11SemanticModel::process_function_definition(const PA10AstNode& node, Sco
 	if (spec.is_static && target.value < scopes_.size() &&
 		scopes_[target.value].kind == ScopeKind::Class)
 		mark_static_member(function_binding);
-	const ScopeId function_scope = create_scope(ScopeKind::Function, target,
+	mark_move_assignment_declaration(function_binding); const ScopeId function_scope = create_scope(ScopeKind::Function, target,
 		name.path.last());
 	function_bindings_.set(function_scope, function_binding);
 	if (friend_record.valid())

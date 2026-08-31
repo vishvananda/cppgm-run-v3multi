@@ -191,6 +191,27 @@ bool PA11SemanticModel::semantic_class_object_initializer(
 {
 	if (direct_operand != NULL)
 	{
+		// Direct member initialization of the supported flat trivial subset uses
+		// the same typed transfer fact as copy-initialization.  The eligibility
+		// fact already excludes declared special members and nested class storage,
+		// so this cannot bypass a user-defined constructor.
+		if (storage.valid() && storage.value < bindings_.size() &&
+			class_value_transfer_type(binding(storage).type))
+		{
+			const ExprInfo expression = semantic_expression(*direct_operand,
+				access_scope);
+			if (class_value_type(expression.type) &&
+				strip_cv_type(expression_object_type(expression.type)) ==
+				strip_cv_type(expression_object_type(binding(storage).type)))
+			{
+				const ExprInfo converted = apply_context_conversion(expression,
+					binding(storage).type,
+					semantic_facts_[expression.fact.value].source, access_scope);
+				set_semantic_children(variable,
+					std::vector<SemanticFactId>(1, converted.fact));
+				return true;
+			}
+		}
 		std::vector<const PA10AstNode*> arguments(1, direct_operand);
 		set_semantic_children(variable, std::vector<SemanticFactId>(1,
 			semantic_constructor_action(storage, source, arguments, access_scope)));
@@ -403,10 +424,11 @@ void PA11SemanticModel::semantic_variable_initializer(
 			std::vector<SemanticFactId>(1, converted.fact));
 		*initializer_fact = converted.fact;
 	}
-	else if (anonymous_union_object || legacy_empty_default_object ||
+	else if (!constructor_initializer &&
+		(anonymous_union_object || legacy_empty_default_object ||
 		((default_object || namespace_scope_default_object) &&
 			constructor_requires_runtime(record)) ||
-		internal_namespace_scope_default_demand)
+		internal_namespace_scope_default_demand))
 	{
 		if (internal_namespace_scope_default_demand)
 		{
@@ -732,6 +754,29 @@ void PA11SemanticModel::append_constructor_class_action(
 		throw std::runtime_error("PA12 class constructor action target is invalid");
 	ConstructorActionFact action(target_kind, base, member);
 	action.object_type = target_type;
+	// A direct member initializer with one same-class operand is the same
+	// source-language value transfer as a copy initializer.  Keep it as a
+	// ConversionKind::ClassValue fact so PA15 does not require an unimplemented
+	// synthesized copy-constructor call for the supported flat trivial subset.
+	if (argument != NULL && argument->children.size() == 1 &&
+		(argument->kind == PA10NodeKind::ParenArgumentList ||
+			argument->kind == PA10NodeKind::BracedInitList) &&
+		class_value_transfer_type(target_type))
+	{
+		const ExprInfo expression = semantic_expression(argument->children.front(),
+			function_scope);
+		if (class_value_type(expression.type) &&
+			strip_cv_type(expression_object_type(expression.type)) ==
+			strip_cv_type(expression_object_type(target_type)))
+		{
+			const ExprInfo converted = apply_context_conversion(expression, target_type,
+				semantic_facts_[expression.fact.value].source, function_scope);
+			action.initializer = converted.fact;
+			append_constructor_action(actions, arguments, action,
+				std::vector<SemanticFactId>());
+			return;
+		}
+	}
 	if (argument != NULL &&
 		((argument->kind == PA10NodeKind::BracedInitList ||
 			argument->kind == PA10NodeKind::ParenArgumentList) &&

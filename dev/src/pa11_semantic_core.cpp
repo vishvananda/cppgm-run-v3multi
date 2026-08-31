@@ -2542,7 +2542,7 @@ void PA11SemanticModel::process_simple_declaration(const PA10AstNode& node, Scop
 		if (spec.is_static && target.value < scopes_.size() &&
 			scopes_[target.value].kind == ScopeKind::Class)
 			mark_static_member(binding_id);
-		const bool record_member = binding(binding_id).kind ==
+		mark_move_assignment_declaration(binding_id); const bool record_member = binding(binding_id).kind ==
 			BindingKind::Variable && !is_static_member(binding_id) &&
 			type_kind(type) != TypeKind::Function &&
 			target.value < scopes_.size() &&
