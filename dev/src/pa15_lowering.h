@@ -615,8 +615,9 @@ private:
 		lowir_model::SymbolRole role);
 	void finish_generated_function();
 	void index_function_scope_variables();
-	void collect_demanded_member_functions(
+	void collect_demanded_functions(
 		std::vector<unsigned char>* demanded,
+		std::vector<unsigned char>* demanded_namespace_functions,
 		std::vector<unsigned char>* declarations,
 		std::vector<TypeId>* declaration_types) const;
 	void collect_functions();

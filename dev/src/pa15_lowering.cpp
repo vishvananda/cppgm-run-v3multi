@@ -904,11 +904,11 @@ void Pa15Lowerer::collect_functions(){
 			ConstructorRuntimeCacheState::Unseen);
 		semantic_nothrow_results_.assign(model_.semantic_facts_.size(), 0);
 		semantic_nothrow_invalid_.assign(model_.semantic_facts_.size(), 0);
-		std::vector<unsigned char> demanded_member_functions(
-			model_.function_facts_.size(), 0);
+		std::vector<unsigned char> demanded_member_functions(model_.function_facts_.size(), 0);
+		std::vector<unsigned char> demanded_namespace_functions(model_.function_facts_.size(), 0);
 		demanded_member_declarations_.assign(model_.bindings_.size(), 0);
 		demanded_member_declaration_types_.assign(model_.bindings_.size(), TypeId());
-		collect_demanded_member_functions(&demanded_member_functions,
+		collect_demanded_functions(&demanded_member_functions, &demanded_namespace_functions,
 			&demanded_member_declarations_, &demanded_member_declaration_types_);
 		for (std::size_t i = 0; i < model_.function_facts_.size(); ++i)
 		{
@@ -924,6 +924,12 @@ void Pa15Lowerer::collect_functions(){
 					fact_binding.type))
 				throw std::runtime_error(
 					"PA15 unsupported class-value function ABI");
+			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+			if (sidecar != NULL && sidecar->hidden_friend && !fact_binding.internal_linkage &&
+				fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
+				model_.scopes_[fact.owner.value].kind == ScopeKind::Namespace &&
+				demanded_namespace_functions[i] == 0)
+				continue;
 			if (fact.owner.valid() && fact.owner.value < model_.scopes_.size() &&
 				model_.scopes_[fact.owner.value].kind == ScopeKind::Class &&
 				demanded_member_functions[i] == 0)
@@ -958,7 +964,6 @@ void Pa15Lowerer::collect_functions(){
 			function.name_id = name_id;
 			function.return_type = function_result_low_type(
 				model_.types_[binding.type.value].result);
-			const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
 			const bool is_constructor = fact.is_constructor || (sidecar != NULL &&
 				sidecar->constructor_record.valid());
 			const bool is_destructor = fact.is_destructor || (sidecar != NULL &&

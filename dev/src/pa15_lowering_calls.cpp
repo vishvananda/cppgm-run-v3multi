@@ -214,16 +214,19 @@ bool Pa15Lowerer::constructor_record_layout_is_consistent(
 				!base_layout.direct_base.record.valid()));
 }
 
-void Pa15Lowerer::collect_demanded_member_functions(
+void Pa15Lowerer::collect_demanded_functions(
 	std::vector<unsigned char>* demanded,
+	std::vector<unsigned char>* demanded_namespace_functions,
 	std::vector<unsigned char>* declarations,
 	std::vector<TypeId>* declaration_types) const
 {
 	if (demanded == NULL || demanded->size() != model_.function_facts_.size() ||
+		demanded_namespace_functions == NULL ||
+		demanded_namespace_functions->size() != model_.function_facts_.size() ||
 		declarations == NULL || declarations->size() != model_.bindings_.size() ||
 		declaration_types == NULL || declaration_types->size() !=
 		model_.bindings_.size())
-		throw std::runtime_error("PA15 member demand output is missing");
+		throw std::runtime_error("PA15 function demand output is missing");
 	// Build the canonical class-owner relation once from scope-owned binding
 	// identities.  Static call facts can then validate their selected owner in
 	// O(1); duplicate or malformed ownership is rejected before the reachable
@@ -263,6 +266,14 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			model_.scopes_[fact.owner.value].kind != ScopeKind::Namespace ||
 			!fact.function_scope.valid())
 			continue;
+		if (!fact.binding.valid() || fact.binding.value >= model_.bindings_.size())
+			throw std::runtime_error("PA15 namespace function binding is missing");
+		const Binding& binding = model_.binding(fact.binding);
+		const BindingSidecar* sidecar = model_.binding_sidecar(fact.binding);
+		const bool hidden_friend = sidecar != NULL && sidecar->hidden_friend;
+		if (!hidden_friend || binding.internal_linkage ||
+			binding.language_linkage == LanguageLinkage::C)
+			(*demanded_namespace_functions)[i] = 1;
 		function_work.push_back(FunctionFactId(i));
 	}
 	// A fact can be shared by a global initializer and an ordinary function.
@@ -537,6 +548,51 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		}
 		demand_special_member_base_entry(fact.selected_binding, false);
 	};
+	// Namespace-owned definitions are normally emitted roots.  Hidden friends
+	// are the exception: retain only a typed reference to a defined namespace
+	// function, leaving its owner and body identity in the PA11/PA12 model.  A
+	// declaration without a FunctionFact remains a declaration demand handled
+	// by the ordinary call/address lowering path.
+	const auto demand_namespace_function = [this,
+		demanded_namespace_functions](BindingId binding_id) {
+		if (!binding_id.valid() || binding_id.value >= model_.bindings_.size())
+			throw std::runtime_error("PA15 namespace function reference is invalid");
+		const Binding& binding = model_.binding(binding_id);
+		if (binding.kind != BindingKind::Function || !binding.type.valid() ||
+			binding.type.value >= model_.types_.size() ||
+			model_.type_kind(binding.type) != TypeKind::Function)
+			return;
+		const FunctionFactId* function_id =
+			model_.function_binding_fact_index_.find(binding_id);
+		if (function_id == NULL)
+			return;
+		if (!function_id->valid() || function_id->value >=
+			model_.function_facts_.size())
+			throw std::runtime_error("PA15 namespace function fact is invalid");
+		const FunctionFact& function = model_.function_facts_[function_id->value];
+		if (function.binding != binding_id || !function.owner.valid() ||
+			function.owner.value >= model_.scopes_.size() ||
+			model_.scopes_[function.owner.value].kind != ScopeKind::Namespace)
+			return;
+		if (!function.function_scope.valid() ||
+			function.function_scope.value >= model_.scopes_.size() ||
+			model_.scopes_[function.function_scope.value].kind != ScopeKind::Function ||
+			model_.scopes_[function.function_scope.value].parent != function.owner ||
+			!function.body_fact.valid() ||
+			function.body_fact.value >= model_.semantic_facts_.size() ||
+			!binding.has_definition)
+			return;
+		(*demanded_namespace_functions)[function_id->value] = 1;
+	};
+	const auto scan_namespace_function_reference =
+		[&demand_namespace_function](const SemanticFact& fact) {
+		if ((fact.kind == SemanticFactKind::IdExpression ||
+			fact.kind == SemanticFactKind::Variable) && fact.binding.valid())
+			demand_namespace_function(fact.binding);
+		if (fact.kind == SemanticFactKind::CallExpression && fact.has_callee &&
+			fact.selected_binding.valid())
+			demand_namespace_function(fact.selected_binding);
+	};
 	// Global/static roots are lowered after function collection and therefore
 	// are not reachable from a namespace function body.  Walk their typed
 	// semantic roots once so a constructor selected by an aggregate edge is
@@ -588,6 +644,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 		scanned_global_fact_modes[fact_id.value] |= global_mode;
 		const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 		validate_fact_base_path(fact);
+		scan_namespace_function_reference(fact);
 		if (model_.aggregate_ranges_.find(fact_id) != NULL)
 		{
 			std::size_t element_count = 0;
@@ -810,6 +867,7 @@ void Pa15Lowerer::collect_demanded_member_functions(
 			scanned_runtime_facts[fact_id.value] = 1;
 			const SemanticFact& fact = model_.semantic_facts_[fact_id.value];
 			validate_fact_base_path(fact);
+			scan_namespace_function_reference(fact);
 			if (model_.aggregate_ranges_.find(fact_id) != NULL)
 			{
 				std::size_t element_count = 0;
